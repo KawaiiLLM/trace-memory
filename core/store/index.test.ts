@@ -617,3 +617,17 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.query("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 2 });
   });
 });
+
+describe("incremental raw recording", () => {
+  test("a turn is appended at the prompt and completed later with its assistant text and end time", () => {
+    const p = store.createProject({ name: "proj", declaredBy: "mark" });
+    const s = makeSession(p.id);
+    const t = store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "hi", startedAt: "2026-01-01T00:00:00Z" });
+    expect(t.assistantText).toBeNull();
+    const done = store.updateTurn(t.id, { assistantText: "hello", endedAt: "2026-01-01T00:00:09Z" });
+    expect(done.assistantText).toBe("hello");
+    expect(done.endedAt).toBe("2026-01-01T00:00:09Z");
+    expect(store.updateTurn(t.id, { endedAt: null }).assistantText).toBe("hello");
+    expect(() => store.updateTurn(424242, { assistantText: "x" })).toThrow("does not exist");
+  });
+});

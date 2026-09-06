@@ -93,7 +93,8 @@ export interface TraceMemory {
   note(input: NoteInput): Promise<NoteResult>;
   settle(input: SettleInput): Promise<SettleResult>;
   compact(sessionId: number, branch?: string, headTurnId?: number): string;
-  inject(sessionId: number, branch?: string | null): string;
+  /** A session id after the first reply; before it exists (first prompt), the project alone: global + project entries, no deliveries. */
+  inject(target: number | { projectId: number }, branch?: string | null): string;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(input: MarkInput): string;

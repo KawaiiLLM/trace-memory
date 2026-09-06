@@ -495,6 +495,18 @@ export class Store {
     return this.getTurn(Number(info.lastInsertRowid))!;
   }
 
+  /** Raw is recorded incrementally: the turn row exists from the prompt; text and end time land when the turn ends. */
+  updateTurn(id: number, patch: { assistantText?: string | null; endedAt?: string | null }): Turn {
+    const turn = this.getTurn(id);
+    if (!turn) throw new Error(`turn T${id} does not exist`);
+    this.db.run("UPDATE turns SET assistant_text = ?, ended_at = ? WHERE id = ?", [
+      patch.assistantText === undefined ? turn.assistantText : patch.assistantText,
+      patch.endedAt === undefined ? turn.endedAt : patch.endedAt,
+      id,
+    ]);
+    return this.getTurn(id)!;
+  }
+
   getTurn(id: number): Turn | null {
     const row = this.db.query("SELECT * FROM turns WHERE id = ?").get(id);
     return row ? toTurn(row) : null;

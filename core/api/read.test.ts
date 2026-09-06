@@ -235,3 +235,15 @@ test("a legacy delivery without fact ownership is preserved on render failure", 
   expect(() => memory.inject(s.id)).toThrow("lacks committed fact IDs");
   expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
 });
+
+test("first-prompt injection by project needs no session: global and project entries, no deliveries", () => {
+  const { s, f } = populated();
+  const p = memory.store.getSession(s.id)!.projectId;
+  entry(s.id, f.id, "constraint", "session", "session-only");
+  const byProject = memory.inject({ projectId: p });
+  const bySession = memory.inject(s.id);
+  expect(byProject).toContain("[E1@");
+  expect(byProject).not.toContain("session-only");
+  expect(bySession).toContain("session-only");
+  expect(() => memory.inject({ projectId: 999 })).toThrow("does not exist");
+});

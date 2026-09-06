@@ -33,11 +33,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   };
   const factLine = (id: number) => renderFact(store.getFact(id)!, store.listFactRelations(id));
   const entryLine = (value: EntryWithRevision) => renderEntry(value, store.listMarks(value.entry.id).filter((m) => m.rev === value.revision.rev));
-  const entries = (id: number) => {
-    const s = session(id);
-    const active = budgetEntries(store.listVisibleEntries(id, s.projectId), config.render.entriesBlockTokens, entryLine);
+  const entriesFor = (projectId: number, sessionId = 0) => {
+    const active = budgetEntries(store.listVisibleEntries(sessionId, projectId), config.render.entriesBlockTokens, entryLine);
     return { content: renderEntriesBlock(active.groups), receipts: active.receipts };
   };
+  const entries = (id: number) => entriesFor(session(id).projectId, id);
   const trace = (address: string, options: ListingOptions = {}): string => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
@@ -58,7 +58,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   };
   return {
     trace,
-    inject: (sessionId: number, branch: string | null = "main"): string => {
+    inject: (target: number | { projectId: number }, branch: string | null = "main"): string => {
+      if (typeof target === "object") {
+        // First prompt: no session id yet (allocated at the first reply), so no session entries and no deliveries.
+        if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
+        return finish(entriesFor(target.projectId));
+      }
+      const sessionId = target;
       const block = entries(sessionId);
       const delivery = store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("pending_notes", facts.map((f) => factLine(f.id)).join("\n")) : "");
       return finish({ content: block.content + (delivery ? `\n\n${delivery}` : ""), receipts: block.receipts });
