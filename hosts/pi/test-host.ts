@@ -17,10 +17,11 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];
   const requests: unknown[] = [], conversations: Conversation[] = [];
   let provider = async (_conversation: Conversation) => reply("[]");
-  const model = { provider: "fake", id: "test" };
+  const model = { provider: "fake", id: "test", api: "openai-completions" };
   const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s) },
     sessionManager: { getSessionId: () => "pi-test", getBranch: () => entries, getEntries: () => allEntries },
-    modelRegistry: { find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
+    modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
+      find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
       complete: async (selected: unknown, conversation: Conversation, options: any) => {
         conversations.push(structuredClone(conversation));
         const payload = { providerSpecific: true, model: selected, system: conversation.systemPrompt, messages: structuredClone(conversation.messages), tools: [] };

@@ -1,8 +1,9 @@
-# Pi host (ticket 05)
+# Pi host (tickets 05–06)
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
-its exposed store. Both note and settle use subagent mode.
+its exposed store. Notes use verified branch mode by default; settle uses
+subagent mode. Both run only at turn stop (`agent_settled`).
 
 Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
@@ -26,9 +27,11 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","note.triggerAn
   and `session` both resolve to the current session model's audited provider/id.
 - Core settings use dotted names: every `render.*`, `note.*`, and `settle.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
-- This ticket explicitly overrides the two mode defaults at each call: both are
-  `subagent`, even if a configured mode default requests branch mode. Branch-mode
-  calls and abandoned-branch summaries belong to ticket 06.
+- `note.branchModeDefault` defaults to `true`. Set it to `false` for subagent
+  notes. Branch notes always use the session model, including on fallback;
+  `noteModel` applies only when subagent mode is explicitly configured.
+- Settle remains subagent-only, including its candidate/final continuation.
+  Abandoned-branch summaries are outside this ticket.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
@@ -164,3 +167,154 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
 
 Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
+
+
+## Branch request and verification contract
+
+Branch mode inherits the latest captured provider request: system instructions,
+messages, tools, and all body options (including cache controls, sampling and
+reasoning settings). It appends exactly one user message containing the note
+prompt, two newlines, and the core's range-only input. Subagent mode has the note
+prompt as system instructions, one full rendered input message, and no tools.
+Inherited tools are definitions only: this one-call note path does not execute
+model tool calls. Settle's two-call continuation is unchanged.
+
+`before_provider_request` captures a detached JSON snapshot per Pi session in
+memory. It is never appended to the Pi session file. Session/tree restoration
+invalidates the capture; missing captures and model changes since capture fall
+back. Captures are the **last request**, not a reconstruction of the session:
+the assistant response to that request is not in its own input. The mandated
+single range-only append does not add that response. Live extraction quality
+for the final reply therefore needs human evaluation separately from identity.
+
+`branch.ts` supports `anthropic-messages`, `openai-completions`, and
+`openai-responses` payloads. Other APIs fall back with an explicit reason.
+Anthropic system content blocks and OpenAI system/developer messages retain all
+fields byte for byte under deterministic serialization; Responses uses `input`
+and `instructions`. No provider-native messages are converted back into Pi
+messages. `complete` receives an empty serialization context and `onPayload`
+replaces the generated body with the built branch body. The request record is a
+snapshot of **that replacement object**, not the discarded callback argument.
+The supported installed adapters send this replacement (Anthropic enforces
+`stream: true`, already present in its captured streaming request).
+
+Direct completion uses `@earendil-works/pi-ai/compat.complete`, verified in
+`dist/compat.d.ts:64` of Pi's nested pi-ai **0.85.0**, and the workspace's pi-ai
+**0.85.1**. `dist/types.d.ts:52–104` declares payload replacement and auth options.
+Coding-agent **0.85.0** signatures were checked in
+`dist/core/extensions/types.d.ts:519` and `dist/core/model-registry.d.ts:30–33`.
+The host resolves auth, headers, environment and base URL with
+`getApiKeyAndHeaders`, and passes the same Pi session id for cache routing.
+All request-body options are copied. The hook does **not** expose Pi's private
+transport, retry, timeout settings, or other extensions' header rewrites; direct
+completion uses pi-ai defaults for those transport settings. Full transport-option
+parity cannot be established through this public hook.
+
+Every branch attempt is compared, stronger than checking only the first per key.
+The key is `(model id, provider, SHA-256 of tool definitions)`; `firstForKey` marks
+initial verification and any change from the previous successful key. Comparison
+sorts JSON object keys recursively, preserves array order and every string
+character (including whitespace and Unicode), and compares the complete bodies
+allowing only the appended message. It therefore covers each message prefix,
+tools, system instructions and other body options. `differingPath` identifies the
+first unequal path. Hashes cover the two complete deterministically serialized
+UTF-8 bodies, so the captured hash and request hash normally **differ**.
+
+`runs.response.verification` contains `passed`, `capturedHash`, `requestHash`,
+`appendedMessage`, `differingPath`, `key`, and `firstForKey`. Reply
+`usage.cacheRead` is also copied to `verification.cache_read` when numeric;
+it never affects `passed`. Missing usage leaves the observation absent. Pi-ai
+normalizes some absent provider counters to zero: zero is not proof of an
+explicit provider measurement. Its Anthropic adapter maps
+`cache_read_input_tokens`; OpenAI maps `cached_tokens` (verified in nested
+`dist/api/anthropic-messages.js:411`, `openai-completions.js:1180`, and
+`openai-responses-shared.js:441`). `response.usage` preserves the full SDK usage.
+
+A mismatch prevents the branch provider call. The same note run uses the full
+frozen subagent input, records `mode: subagent`, `response.fallbackReason`, and
+the failed verification with both hashes. `runs.request` is the actual fallback
+request, while the failed branch hash describes the rejected candidate. Missing
+or unsupported captures have a reason but no fabricated comparison/hashes.
+Notification happens once per Pi session. Provider/auth failures after a passed
+comparison remain branch failures; they do not trigger another billable call.
+
+The small core contract correction for this ticket exposes the already-frozen
+full note input as `subagentInput`, accepts the actual returned `mode`, and
+preserves `verification`/`fallbackReason` in the response envelope. Without it,
+fallback would send range-only context and falsely record branch mode. No store
+schema or settle behavior changed.
+
+## Live prefix identity procedure
+
+This is a human-run check, not an automated claim of live cache hits.
+
+1. Create `/private/tmp/trace-memory-manual` and place this diagnostic extension
+   in `/private/tmp/trace-memory-manual/capture.ts`. It writes only a diagnostic
+   body outside the Pi session file:
+
+   ```ts
+   import { writeFileSync } from "node:fs";
+   export default function (pi) {
+     pi.on("before_provider_request", event => {
+       writeFileSync("/private/tmp/trace-memory-manual/captured.json", JSON.stringify(event.payload));
+     });
+   }
+   ```
+
+2. Enable branch mode and a one-turn trigger with an isolated database:
+
+   ```sh
+   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","note.branchModeDefault":true,"note.triggerAnsweredTurns":1}'
+   node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+     --extension /private/tmp/trace-memory-manual/capture.ts \
+     --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
+   ```
+
+   Use a session model with one of the three supported APIs. Load both diagnostic
+   and Trace Memory hooks **after all payload-rewriting extensions**, in the
+   order above. Pi runs hooks in load order; a later rewriter can invalidate the
+   capture without this host seeing it. Verify the active extension order in Pi.
+   No payload rewriter should follow Trace Memory.
+
+3. Send a substantial prompt with several explicit project constraints. Wait for
+   the assistant and the note to finish before another prompt; `/trace` is
+   read-only. From a second terminal, in the repository root, run:
+
+   ```sh
+   node --input-type=module <<'JS'
+   import assert from 'node:assert/strict';
+   import { readFileSync } from 'node:fs';
+   import { DatabaseSync } from 'node:sqlite';
+   import { hash, serialize } from './hosts/pi/branch.ts';
+   const db = new DatabaseSync('/private/tmp/trace-memory-manual/branch.db', { readOnly: true });
+   const run = db.prepare("SELECT * FROM runs WHERE kind='note' ORDER BY id DESC LIMIT 1").get();
+   assert.ok(run, 'Wait for the note to finish');
+   const response = JSON.parse(run.response);
+   console.log({ mode: run.mode, model: run.model, outcome: run.outcome, ...response });
+   assert.equal(run.mode, 'branch');
+   const captured = JSON.parse(readFileSync('/private/tmp/trace-memory-manual/captured.json', 'utf8'));
+   const sent = JSON.parse(run.request);
+   const key = Array.isArray(captured.messages) ? 'messages' : 'input';
+   assert.equal(sent[key].length, captured[key].length + 1);
+   assert.deepEqual(Buffer.from(serialize(sent[key].slice(0, -1))), Buffer.from(serialize(captured[key])));
+   assert.deepEqual({ ...sent, [key]: sent[key].slice(0, -1) }, captured);
+   assert.equal(hash(captured), response.verification.capturedHash);
+   assert.equal(hash(sent), response.verification.requestHash);
+   assert.deepEqual(sent[key].at(-1), response.verification.appendedMessage);
+   assert.equal(response.verification.passed, true);
+   assert.equal(response.verification.differingPath, null);
+   db.close();
+   JS
+   ```
+
+4. Save the two bodies and printed response. Check `usage.cacheRead` and
+   `verification.cache_read` for cached input tokens. A positive count is an
+   observation, not identity proof; zero/missing counts do not fail comparison.
+   Hashes should each match their respective body, not each other. Inspect the
+   appended message: note prompt followed by range-only input, no copied raw.
+5. Change the session model, then send another prompt and wait. Repeat the check:
+   a supported model's first new run should have `firstForKey: true`. Repeat
+   after changing active tool definitions. For an unsupported API expect
+   subagent mode, a fallback reason and one notice, rather than invented hashes.
+   Compare with a separate database using `note.branchModeDefault: false` to
+   evaluate extraction quality and cost before choosing the operational default.

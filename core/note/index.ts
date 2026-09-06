@@ -26,6 +26,8 @@ export interface NoteAgentInput {
   prompt: string;
   promptHash: string;
   input: string;
+  /** Frozen full context for a host fallback after branch verification fails. */
+  subagentInput: string;
   trace: (address: string) => string;
 }
 export type NoteResult =
@@ -77,15 +79,16 @@ export async function runNote(
   // Branch mode appends one message to the live conversation: the raw turns, the facts delivered
   // after earlier notes, and the injected entries are already in the model's context, so the
   // message carries only the range. Subagent mode must carry everything.
-  const content = mode === "branch"
-    ? [`Range: ${range.from}..${range.to}`,
-       "The raw turns of this range, the facts delivered after earlier notes, and the active entries are already in this conversation."].join("\n\n")
-    : [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
-       "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n");
+  const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
+    "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
+  const input = mode === "branch"
+    ? finish({ content: [`Range: ${range.from}..${range.to}`,
+       "The raw turns of this range, the facts delivered after earlier notes, and the active entries are already in this conversation."].join("\n\n"), receipts: [] })
+    : subagentInput;
   const fetched: { address: string; content: string }[] = [];
   let fetching = true;
   const agentInput: NoteAgentInput = { kind: "note", sessionId, branch, range, readEntryRevisions: structuredClone(readEntryRevisions), model, mode,
-    prompt, promptHash, input: finish({ content, receipts: mode === "branch" ? [] : receipts }), trace: (address) => {
+    prompt, promptHash, subagentInput, input, trace: (address) => {
       if (!fetching) throw new Error("note run has finished");
       const content = trace(address); fetched.push({ address, content }); return content;
     } };
@@ -97,9 +100,12 @@ export async function runNote(
     result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
       output: error instanceof Error ? error.message : String(error) };
   } finally { fetching = false; }
+  run.mode = result.mode ?? mode;
   run.request = result.request === undefined ? null : JSON.stringify(result.request);
   const record = (problems: string[]) => {
-    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, fetched, problems });
+    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, fetched, problems,
+      ...(result.verification !== undefined ? { verification: result.verification } : {}),
+      ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   };
   const fail = (outcome: "failure" | "cancelled" | "bounced", problems: string[]): NoteResult => {
     record(problems);

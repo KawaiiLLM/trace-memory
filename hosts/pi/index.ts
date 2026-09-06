@@ -3,6 +3,8 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { complete } from "@earendil-works/pi-ai/compat";
+import { buildRequest, verifyRequest, hash, snapshot, type Body } from "./branch.ts";
 import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
@@ -54,16 +56,56 @@ export default function (pi: ExtensionAPI) {
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   let ctx: ExtensionContext;
+  type Capture = { payload: Body; model: string; provider: string; branch: string };
+  const sessions = new Map<string, { capture?: Capture; verified?: string; notified?: boolean }>();
   const continuations = new Map<string, { conversation: Conversation; reply: Reply; owner: string }>();
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NoteAgentInput | SettleAgentInput;
-    const registry = ctx.modelRegistry;
+    const callContext = ctx;
+    const callPiId = callContext.sessionManager.getSessionId();
+    const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
-    const model = input.model === "session" ? ctx.model : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
+    const model = ((input.kind === "note" && input.mode === "branch") || input.model === "session") ? callContext.model : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
     let request: unknown = null;
+    let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
+    let fallbackReason: string | undefined;
+    let mode: "branch" | "subagent" = "subagent";
     try {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
-      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.input, timestamp: Date.now() }] };
+      if (input.kind === "note" && input.mode === "branch") {
+        const session = sessions.get(callPiId)!;
+        const captured = session.capture;
+        let candidate: Body | undefined;
+        try {
+          if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
+          if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
+          const instruction = `${input.prompt}\n\n${input.input}`;
+          candidate = buildRequest(captured.payload, model.api, instruction);
+          // The Anthropic adapter enforces this after onPayload; audit that exact body.
+          if (model.api === "anthropic-messages") candidate.stream = true;
+          const key = JSON.stringify([model.id, model.provider, hash(captured.payload.tools ?? null)]);
+          verification = { ...verifyRequest(captured.payload, candidate, model.api, instruction), key, firstForKey: session.verified !== key };
+          if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
+          session.verified = key;
+        } catch (error) {
+          fallbackReason = String(error);
+          session.verified = undefined;
+          if (!session.notified) { contextNotice(fallbackReason); session.notified = true; }
+        }
+        if (!fallbackReason && candidate) {
+          mode = "branch";
+          const auth = await registry.getApiKeyAndHeaders(model);
+          if (!auth.ok) throw new Error(auth.error);
+          const reply = await complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
+            { messages: [] }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
+              sessionId: callPiId,
+              onPayload() { request = snapshot(candidate); return snapshot(candidate); } });
+          if (verification && typeof reply.usage?.cacheRead === "number") verification.cache_read = reply.usage.cacheRead;
+          return { outcome: reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success",
+            output: text(reply), usage: reply.usage, request, mode, verification };
+        }
+      }
+      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "note" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }] };
       if (input.kind === "settle" && input.continuation) {
         const key = JSON.stringify(input.continuation.request);
         const prior = continuations.get(key);
@@ -78,11 +120,12 @@ export default function (pi: ExtensionAPI) {
       const outcome = reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success";
       if (input.kind === "settle" && input.round === "candidate" && outcome === "success")
         continuations.set(JSON.stringify(request), { conversation: structuredClone(conversation), reply: structuredClone(reply), owner: `${input.sessionId}/${input.branch}` });
-      return { outcome, output: text(reply), usage: reply.usage, request };
+      return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason };
     } catch (error) {
-      return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request };
+      return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }
   }, core);
+  const contextNotice = (reason: string) => ctx.ui.notify(`Trace Memory: note fell back to subagent mode. ${reason}`, "warning");
   type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean };
   let state: State;
   let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
@@ -93,6 +136,9 @@ export default function (pi: ExtensionAPI) {
     const saved = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath).at(-1);
     const piId = ctx.sessionManager.getSessionId();
+    if (!sessions.has(piId)) sessions.set(piId, {});
+    // A tree switch invalidates the old branch body, even when returning to a saved head.
+    sessions.get(piId)!.capture = undefined;
     if (saved) {
       const tip = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
         .map(e => (e as { data: State & { dbPath: string } }).data)
@@ -120,6 +166,11 @@ export default function (pi: ExtensionAPI) {
   const flush = (ended = false) => {
     if (current?.id && current.replied) memory.store.updateTurn(current.id, { assistantText: [current.completed, current.partial].filter(Boolean).join("\n"), ...(ended ? { endedAt: now() } : {}) });
   };
+  pi.on("before_provider_request", (event, context) => {
+    ensure(context);
+    if (context.model) sessions.get(state.piId)!.capture = { payload: snapshot(event.payload) as Body,
+      model: context.model.id, provider: context.model.provider, branch: state.branch };
+  });
   pi.on("session_start", (_event, context) => restore(context));
   pi.on("session_tree", (_event, context) => { restore(context, true); save(); });
   pi.on("before_agent_start", (event, context) => {
@@ -182,7 +233,9 @@ export default function (pi: ExtensionAPI) {
       void promise.catch(error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
     };
     if (answered >= memory.config.note.triggerAnsweredTurns || tokens >= memory.config.note.triggerTokens)
-      background(memory.note({ sessionId, branch, headTurnId: head, mode: "subagent", model: model("note") }));
+      background(memory.note({ sessionId, branch, headTurnId: head,
+        mode: memory.config.note.branchModeDefault ? "branch" : "subagent",
+        model: memory.config.note.branchModeDefault ? ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session" : model("note") }));
     const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastSettledFact ?? 0)).length;
     if (count >= memory.config.settle.triggerUnsettledFacts)
       background(memory.settle({ sessionId, branch, mode: "subagent", model: model("settle") }).then(result => {

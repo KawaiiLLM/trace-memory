@@ -11,6 +11,7 @@
     "smoke:pi": "node hosts/pi/smoke.ts"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.85.0",
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {

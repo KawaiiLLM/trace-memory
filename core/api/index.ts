@@ -80,6 +80,9 @@ export interface RunAgentResult {
   output: unknown;
   usage?: unknown;
   request?: unknown;
+  mode?: "branch" | "subagent";
+  verification?: unknown;
+  fallbackReason?: string;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
