@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Note slice.
 
-**Status:** ready-for-agent
+**Status:** split into 03a, 03b, 03c (Codex reported the chunk too large); acceptance criteria below are inherited by the parts
 
 - [ ] Settle triggers when unsettled facts reach the configured count; the range and read revisions are frozen at start
 - [ ] The initial input separately lists all visible active entries whose current supports contain a fact negated by a range fact, with both facts and the recorded strength through the shared renderer. Test multiple entries citing the same negated fact, strong and weak negations, unrelated entries excluded, and visibility preserved. Listing alone changes no status and requires no new acknowledgement; a settler may retain an entry unchanged.
