@@ -1,0 +1,60 @@
+// Ruling test points: each test pins a user ruling that an implementation could silently deviate
+// from. Names quote the ruling; dates are the conversation the ruling was made in (2026-09-06).
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { TraceMemory, type NoteAgentInput, type RunAgentResult } from "./index";
+import { tokens } from "../render/index";
+
+let directory: string;
+let memory: TraceMemory;
+let calls: NoteAgentInput[];
+const time = "2026-09-06T00:00:00Z";
+const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
+
+beforeEach(() => {
+  directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
+  calls = [];
+  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NoteAgentInput); return ok([]); });
+});
+afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
+
+function session() {
+  const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
+  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
+  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
+  return { s, t };
+}
+
+test("Q12: token estimate weighs CJK at 0.75 per character and everything else at 0.25", () => {
+  expect(tokens("abcd")).toBe(1);
+  expect(tokens("地形值")).toBe(3);
+  expect(tokens("mapC 地形")).toBe(Math.ceil(5 * 0.25 + 2 * 0.75));
+  // A Chinese line must never be estimated as if it were ASCII: 40 characters is 30 tokens, not 10.
+  expect(tokens("一".repeat(40))).toBe(30);
+});
+
+test("08:53: in branch mode the appended note message carries only the range; subagent mode carries the raw", async () => {
+  const { s, t } = session();
+  await memory.note({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
+  await memory.note({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
+  const [branch, subagent] = calls;
+  expect(branch!.mode).toBe("branch");
+  expect(branch!.input).toContain(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
+  expect(branch!.input).not.toContain("pnpm");
+  expect(branch!.input).not.toContain("Raw:");
+  expect(subagent!.input).toContain("Raw:");
+  expect(subagent!.input).toContain("用 pnpm，不要 npm");
+});
+
+test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does not resolve", () => {
+  const { s, t } = session();
+  const plain = memory.trace(`T${t.id}`);
+  expect(memory.trace(`S${s.id}/T${t.id}`)).toBe(plain);
+  expect(() => memory.trace(`S${s.id + 1}/T${t.id}`)).toThrow("does not exist");
+});
+
+// 09:43 "sessions of one project settle separately": pinned in core/api/settle.test.ts,
+// "each session settles only its own branch facts and shares already-settled context".

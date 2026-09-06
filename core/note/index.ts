@@ -89,12 +89,18 @@ export async function runNote(
       if (group.length) receipts.push(`omitted ${group.length} ${category} entries; expand: ${group.map(({ entry }) => `E${entry.id}`).join(", ")}`);
     } else { entryLines.push(text); entryTokens += tokens(text); }
   }
-  const content = [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
-    "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n");
+  // Branch mode appends one message to the live conversation: the raw turns, the facts delivered
+  // after earlier notes, and the injected entries are already in the model's context, so the
+  // message carries only the range. Subagent mode must carry everything.
+  const content = mode === "branch"
+    ? [`Range: ${range.from}..${range.to}`,
+       "The raw turns of this range, the facts delivered after earlier notes, and the active entries are already in this conversation."].join("\n\n")
+    : [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
+       "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n");
   const fetched: { address: string; content: string }[] = [];
   let fetching = true;
   const agentInput: NoteAgentInput = { kind: "note", sessionId, branch, range, readEntryRevisions: structuredClone(readEntryRevisions), model, mode,
-    prompt, promptHash, input: finish({ content, receipts }), trace: (address) => {
+    prompt, promptHash, input: finish({ content, receipts: mode === "branch" ? [] : receipts }), trace: (address) => {
       if (!fetching) throw new Error("note run has finished");
       const content = trace(address); fetched.push({ address, content }); return content;
     } };

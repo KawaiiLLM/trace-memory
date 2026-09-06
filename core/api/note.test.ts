@@ -3,8 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type NoteAgentInput, type RunAgentResult, type ConfigOverride } from "./index";
-import fixture from "./fixtures/note/turns.json";
-import memories from "./fixtures/note/facts.json";
+import fixture from "../../test/fixtures/note/turns.json";
+import memories from "../../test/fixtures/note/facts.json";
 
 let directory: string;
 let memory: ReturnType<typeof TraceMemory>;
@@ -37,7 +37,7 @@ function turn(parentTurnId: number | null = null, index = 0) {
   for (const c of f.calls) memory.store.appendToolCall({ turnId: t.id, name: c.name, input: c.input, result: c.result, status: c.status });
   return t;
 }
-const note = (headTurnId: number, branch = "main") => memory.note({ sessionId, branch, headTurnId, model: "fake-model" });
+const note = (headTurnId: number, branch = "main") => memory.note({ sessionId, branch, headTurnId, model: "fake-model", mode: "subagent" });
 function deferred() {
   let resolve!: (result: RunAgentResult) => void;
   const promise = new Promise<RunAgentResult>((r) => { resolve = r; });
@@ -183,7 +183,7 @@ test("read entry revisions and exact provider request are recorded, even when an
   expect(run.request).not.toBe(calls[1]!.input);
 });
 
-const golden = (name: string) => readFileSync(new URL(`./fixtures/note/${name}.txt`, import.meta.url), "utf8").trimEnd();
+const golden = (name: string) => readFileSync(new URL(`../../test/fixtures/note/${name}.txt`, import.meta.url), "utf8").trimEnd();
 const small = { render: { commandTokens: 20, stdoutHeadTokens: 8, stdoutTailTokens: 8 } };
 test("fixture turn golden and note input use identical rendering with receipts last", async () => {
   memory.close(); open(small);

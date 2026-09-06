@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { TraceMemory } from "./index";
-import fixture from "./fixtures/trace.json";
+import fixture from "../../test/fixtures/trace.json";
 
 let memory: ReturnType<typeof TraceMemory>;
 let sessionId: number;

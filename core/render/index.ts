@@ -6,8 +6,14 @@ type Budgets = TraceMemoryConfig["render"];
 export interface TurnOptions { tool?: number; full?: boolean; cap?: number }
 export interface Rendered { content: string; receipts: string[] }
 
-// Approximate tokens as ceil(UTF-16 code units / 4); omission counts use those same code units.
-export const tokens = (text: string): number => Math.ceil(text.length / 4);
+// Token estimate (ruled, no tokenizer dependency): 0.75 per CJK character, 0.25 per other code unit.
+// Omission counts still report UTF-16 code units.
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]/u;
+export const tokens = (text: string): number => {
+  let cjk = 0;
+  for (const ch of text) if (CJK.test(ch)) cjk++;
+  return Math.ceil(cjk * 0.75 + (text.length - cjk) * 0.25);
+};
 
 function cut(text: string, head: number, tail: number): string {
   if (tokens(text) <= head + tail) return text;

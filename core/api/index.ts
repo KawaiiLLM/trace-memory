@@ -157,8 +157,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (!fact) throw new Error(`fact ${target} does not exist`);
       return renderFact(fact, store.listFactRelations(fact.id));
     }
-    const turnMatch = /^T([1-9]\d*)$/.exec(target ?? "");
-    if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[1]))) throw invalid();
+    const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)$/.exec(target ?? "");
+    if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
+    const sessionOfAddress = turnMatch[1] === undefined ? undefined : Number(turnMatch[1]);
     const options: TurnOptions = {};
     for (const flag of flags) {
       if (flag === "full") options.full = true;
@@ -166,8 +167,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       else if (/^cap=\d+$/.test(flag) && Number.isSafeInteger(Number(flag.slice(4)))) options.cap = Number(flag.slice(4));
       else throw new Error(`invalid trace option: ${flag}`);
     }
-    const turn = store.getTurn(Number(turnMatch[1]));
+    const turn = store.getTurn(Number(turnMatch[2]));
     if (!turn) throw new Error(`turn ${target} does not exist`);
+    if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
     return finish(renderTurn(turn, calls, cfg.render, options));

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type SettleAgentInput, type RunAgentResult, type ConfigOverride } from "./index";
-import memories from "./fixtures/note/facts.json";
+import memories from "../../test/fixtures/note/facts.json";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
 let calls: SettleAgentInput[], script: ((input: SettleAgentInput) => Promise<RunAgentResult>)[];
@@ -403,7 +403,7 @@ test("settlement revisions and success record roll back if watermark writing fai
 });
 
 test("simulation v7m fixture settles through the facade with traceable Chinese evidence", async () => {
-  const fixture = JSON.parse(readFileSync(new URL("./fixtures/settle.json", import.meta.url), "utf8"));
+  const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/settle.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, source: source.source, createdAt: source.timestamp }));
   const output = { ...empty, new: [{ ...fixture.entry, supports: fixture.entry.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };

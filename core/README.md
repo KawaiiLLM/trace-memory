@@ -62,7 +62,8 @@ Without a cap, `full` removes standard cuts and expands read/write payloads.
 Filtering keeps other calls' metadata and counted omission markers. User and
 assistant text are always uncut. Cuts occur at whole-line boundaries, including
 stdout, stderr and reports; an oversized single line can be omitted entirely.
-Counts describe omitted lines and UTF-16 characters. Token estimates are
+Counts describe omitted lines and UTF-16 characters. Token estimates weigh
+CJK characters at 0.75 and other characters at 0.25 (user ruling); they are
 approximate; caps bound retained payload, not metadata or omission markers.
 
 Hosts may store plain strings or JSON in tool input/result. JSON command inputs
@@ -72,6 +73,10 @@ names are `Read`, `read_file`, `Search`, `Grep`, or `Glob` (case-insensitive), w
 in `note`, `settle`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
+
+In branch mode the note `input` carries only the range: the raw turns, the
+facts delivered after earlier notes, and the injected entries are already in the
+conversation the host appends to. Subagent mode carries the full context below.
 
 Note context uses the episodic budget for all rendered raw plus recent facts
 by descending timestamp, then id. Raw is never dropped; overage is receipted.
