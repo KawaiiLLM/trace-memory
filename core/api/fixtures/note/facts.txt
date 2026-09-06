@@ -1,0 +1,9 @@
+[F1] 2026-08-16 02:54 [observation/agent] 地形层和高度层需要一起读。 · inbound support F2 weak · inbound negate F3 strong
+  quote: "地形值 = 9 且 高度 = 水位"
+  source: T1#assistant
+
+[F2] 2026-08-16 02:54 [interpretation/agent] 贴图路线还需要确定贴图与地形数字的对应关系。 · support F1 weak
+  source: T2#assistant
+
+[F3] 2026-08-16 02:54 [observation/agent] 紧跟高度数据的贴图是天空和云层，不是地表。 · negate F1 strong
+  source: T2#assistant

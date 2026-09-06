@@ -1,0 +1,60 @@
+[S1/T2] 2026-08-16 02:54 [turn]
+[Source entry id: T2#user]
+能不能从贴图推断
+[T2#t1] tool=mcp__plugin_claude-mnemo_mnemo__note status=skipped omitted=true
+receipt: mcp__plugin_claude-mnemo_mnemo__note skipped
+[omitted 16 characters of input/result]
+[T2#t2] tool=Bash status=success omitted=true
+command:
+/Users/zhaoqixuan/Projects/AI-NPC/.venv/bin/python - <<'PY'
+
+[omitted 6 lines, 240 characters]
+stdout:
+解出图像数 32
+写 /tmp/wftx_sheet.png (1024, 304)
+[T2#t3] tool=Read status=skipped omitted=false
+Read file_path=/tmp/wftx_sheet.png
+[Source entry id: T2#assistant]
+We already have a WFTX decoder from the portrait work. Locating the map's texture blocks:
+
+8 images per block × 4 blocks = **32 images** — exactly the number of terrain values. Decoding them:
+
+Those look like cloud/fog layers, not terrain — my layout guess was wrong. 3,145,728 = 1024×1024×3; trying that:
+
+Those are sky/cloud layers with time-of-day tints, not ground. Surveying what texture blocks the package actually contains:
+
+Decoder works — those are clean building textures. Correcting the standing assumption in the notes:
+
+**能，而且比视频更强 —— 但我们一直记着的那个「贴图在哪」是错的。**
+
+## 好消息：解码没问题
+
+游戏的贴图格式我们**早就解出来了**（做头像提取时解的）。拿同一套代码读这个包，出来的是干净的建筑贴图 —— 木料、砖石、瓦顶、墙面，清清楚楚。
+
+## 坏消息：找错地方了
+
+笔记里有**三处**都写着「高度数据后面紧跟的就是地表贴图，那是下一条最好的证据」。实测：**那几块是天空和云层**（带不同色调的云带，应该是不同时段的天色），不是地面。
+
+已经把这条错误前提在笔记里改掉了 —— 它误导了我们三次。
+
+## 要走通还差两步，都不是技术难点
+
+整个包里有 **1050 张贴图**。剩下的是：
+
+1. **在这 1050 张里找到地面贴图**；
+2. **确定「第几张贴图 ↔ 哪个地形数字」的对应关系** —— 这才是真正的难点，跟当初钉高度数据的对齐是同一类问题。
+
+## 为什么值得做
+
+它会是**第四条独立证据**，而且有一个视频给不了的优势：**视频只能覆盖拍到的区域，贴图对全部 32 个数字一次给全**。
+
+配上我们已有的三条（高度、几何、游戏画面），基本能把这张图的地形语义收干净。
+
+**同一个边界仍然在**：贴图只能说明「长什么样」，说明不了「船能不能过」。那个还是得另找证据。
+
+要我开票做这个吗？我估计难点在第 2 步——如果贴图是按地形值顺序排的，一眼就能对上；如果不是，得像当初钉高度对齐那样找锚点。
+
+Receipts:
+T2: 2 omitted calls (including partial calls)
+expand: T2 tool=1 full
+expand: T2 tool=2 full

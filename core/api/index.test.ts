@@ -39,9 +39,6 @@ test("a partial config overrides only the sections given, keeping the rest defau
 });
 
 describe("methods not yet implemented in this ticket", () => {
-  test("note throws NotImplementedError", async () => {
-    await expect(memory.note({})).rejects.toBeInstanceOf(NotImplementedError);
-  });
   test("settle throws NotImplementedError", async () => {
     await expect(memory.settle({})).rejects.toBeInstanceOf(NotImplementedError);
   });

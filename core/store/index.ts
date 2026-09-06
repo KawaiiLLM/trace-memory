@@ -13,6 +13,7 @@ import type {
   EntryScope,
   Fact,
   FactCategory,
+  FactRelation,
   Mark,
   MarkKind,
   PendingDelivery,
@@ -504,6 +505,24 @@ export class Store {
     );
     const row = this.db.query("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
     return toToolCall(row);
+  }
+
+  listToolCalls(turnId: number): ToolCall[] {
+    return this.db.query("SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY ordinal").all(turnId).map(toToolCall);
+  }
+
+  listSessionFacts(sessionId: number): Fact[] {
+    return this.db.query(
+      "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.created_at DESC, f.id DESC",
+    ).all(sessionId).map(toFact);
+  }
+
+  listFactRelations(factId: number): FactRelation[] {
+    return (this.db.query(
+      "SELECT * FROM fact_relations WHERE from_fact = ? OR to_fact = ? ORDER BY from_fact, to_fact, kind, strength",
+    ).all(factId, factId) as any[]).map((r) => ({
+      fromFact: r.from_fact, toFact: r.to_fact, kind: r.kind, strength: r.strength,
+    }));
   }
 
   // -- runs (standalone: failure / cancelled, or a run with nothing else to commit) --
