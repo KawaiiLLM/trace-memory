@@ -1,7 +1,7 @@
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
 import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index";
-import { finish, renderFact, renderTurn, type TurnOptions } from "../render/index";
+import { finish, renderFact, renderTurn, renderEntryTrace, renderEntryDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index";
 export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index";
 import { openStore, type Store } from "../store/index";
 import type { RunOutcome } from "../model/index";
@@ -108,14 +108,51 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);
   const trace = (address: string): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
+    const invalid = () => new Error(`invalid trace address: ${address}`);
+    const entryMatch = /^E([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target ?? "");
+    if (entryMatch) {
+      const [id, from, to] = entryMatch.slice(1).map((n) => n === undefined ? undefined : Number(n));
+      if (flags.length || [id, from, to].some((n) => n !== undefined && !Number.isSafeInteger(n)) ||
+          (to !== undefined && to < from!)) throw invalid();
+      const entry = store.getEntry(id!);
+      if (!entry) throw new Error(`entry E${id} does not exist`);
+      const revision = (rev: number) => {
+        const value = store.getEntryRevision(id!, rev);
+        if (!value) throw new Error(`entry E${id} has no revision ${rev}`);
+        return value;
+      };
+      if (to !== undefined) return renderEntryDiff(revision(from!), revision(to),
+        store.listEntryRevisions(id!).filter((r) => r.rev > from! && r.rev <= to));
+      if (from !== undefined) return renderEntryTrace({ entry, revision: revision(from) });
+      return renderEntryTrace({ entry, revision: revision(entry.currentRevision) },
+        store.listEntryRevisions(id!), store.listEntryLinks(id!));
+    }
+    const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
+    if (walkMatch) {
+      const id = Number(walkMatch[1]);
+      if (flags.length || !Number.isSafeInteger(id)) throw invalid();
+      const steps: NegationStep[] = [], pending = [{ id, depth: 0 }];
+      while (pending.length) {
+        const { id, depth } = pending.pop()!;
+        const fact = store.getFact(id);
+        if (!fact) throw new Error(`fact F${id} does not exist`);
+        const relations = store.listFactRelations(id);
+        // Later facts have larger allocated IDs; stored edges point newer -> older.
+        const children = relations.filter((r) => r.toFact === id && r.fromFact > id && r.kind === "negate" && r.strength === "strong");
+        steps.push({ fact, relations, depth, terminal: children.length === 0 });
+        for (const child of children.reverse()) pending.push({ id: child.fromFact, depth: depth + 1 });
+      }
+      return renderNegationWalk(steps);
+    }
     const factMatch = /^F([1-9]\d*)$/.exec(target ?? "");
     if (factMatch && !flags.length) {
+      if (!Number.isSafeInteger(Number(factMatch[1]))) throw invalid();
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
       return renderFact(fact, store.listFactRelations(fact.id));
     }
     const turnMatch = /^T([1-9]\d*)$/.exec(target ?? "");
-    if (!turnMatch) throw new NotImplementedError("trace address " + address);
+    if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[1]))) throw invalid();
     const options: TurnOptions = {};
     for (const flag of flags) {
       if (flag === "full") options.full = true;

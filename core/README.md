@@ -82,3 +82,46 @@ entry revision read at start is recorded, including budget-omitted entries.
 Entry expansion addresses are emitted for future trace support; this ticket
 implements only `T<n>` and `F<n>` trace targets. The other façade methods retain
 their ticket-01 placeholders.
+
+
+## Entry trace and negation walks (ticket 03a)
+
+`trace("E1")` renders the current entry, status, outbound entry links, and all
+revisions in ascending order. Each revision line carries its address, operation,
+stored time, and `because` fact addresses (`none` for an empty/null list).
+Supports and triggering facts are addresses; `trace("F1")` expands their content.
+`E1@2` is only that snapshot and its revision metadata, without today's status
+or links. Merged entries retain their own last revision; `merged_into` names the
+exact survivor revision stored in the link, even if that survivor later changes.
+Archives render the stored archive revision, including its triggering facts.
+
+`E1@2..4` compares endpoint snapshots and lists revisions 3 and 4, including
+changes later reverted. Equal endpoints are allowed (no transitions); descending
+ranges are invalid. Added/removed supports use set membership in stored order;
+unchanged category and scope fields are omitted. Text uses lossless lexical
+LCS tokens: individual Han characters, other word/number runs, whitespace runs,
+and individual punctuation/symbols. Adjacent removals use `[-text-]`, additions
+use `{+text+}`, and unchanged spans remain in place. LCS ties prefer removal.
+These display markers are not a patch serialization format. LCS uses quadratic
+time and space in the two token counts; trace does not truncate entry text.
+
+`F1..` includes the starting fact and follows later inbound strong negations
+(newer facts point to older facts in storage), depth first, in ascending fact-id
+order. Two spaces per level show branching. Shared descendants appear on each
+branch; every leaf ends with `no later strong negation recorded`. Fact lines
+retain all normal relation annotations, even though weak negations and supports
+are not traversed. Later means allocation order, not potentially backdated fact
+timestamps. No model call or derived fact status is involved.
+
+IDs and revisions must be positive safe integers without leading zeros. Entry
+and negation-walk addresses reject options; malformed addresses and missing
+entries/facts/revisions raise descriptive errors. Session addresses, comma lists,
+and cursors remain for later tickets.
+
+The trace fixture in `api/fixtures/trace.json` is cut from simulation v7m's
+`entries.json` (entry 2, both revisions) and `facts.jsonl` (facts 2, 8, 35, 81).
+Only required records/fields are copied. Category and strength enums are mapped
+to English; Chinese text, quotes, and source addresses are preserved. Tests remap
+entry/fact IDs to allocated IDs. Simulation revision `at` values are retained as
+stored times because the source has settle-boundary labels, not wall-clock times.
+Four checked-in goldens cover current entry, snapshot, diff, and negation walk.

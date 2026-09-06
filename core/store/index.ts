@@ -9,6 +9,7 @@ import type {
   Entry,
   EntryCategory,
   EntryOp,
+  EntryLink,
   EntryRevision,
   EntryScope,
   Fact,
@@ -676,6 +677,14 @@ export class Store {
   getEntryRevision(entryId: number, rev: number): EntryRevision | null {
     const row = this.db.query("SELECT * FROM entry_revisions WHERE entry_id = ? AND rev = ?").get(entryId, rev);
     return row ? toEntryRevision(row) : null;
+  }
+
+  listEntryLinks(entryId: number): EntryLink[] {
+    return (this.db.query(
+      "SELECT * FROM entry_links WHERE from_entry = ? ORDER BY from_rev, kind, to_entry, to_rev",
+    ).all(entryId) as any[]).map((r) => ({
+      fromEntry: r.from_entry, fromRev: r.from_rev, kind: r.kind, toEntry: r.to_entry, toRev: r.to_rev,
+    }));
   }
 
   listEntryRevisions(entryId: number): EntryRevision[] {

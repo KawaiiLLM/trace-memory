@@ -1,4 +1,4 @@
-import type { Fact, FactRelation, ToolCall, Turn } from "../model/index";
+import type { EntryLink, EntryRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index";
 import type { EntryWithRevision } from "../store/index";
 import type { TraceMemoryConfig } from "../api/index";
 
@@ -91,4 +91,64 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
 
 export function renderEntry({ entry, revision: r }: EntryWithRevision): string {
   return `[E${entry.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
+}
+
+const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+const revisionLine = (r: EntryRevision): string =>
+  `  E${r.entryId}@${r.rev} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
+const revisionSummary = (revisions: EntryRevision[]): string =>
+  revisions.length ? `Revisions:\n${revisions.map(revisionLine).join("\n")}` : "Revisions: none";
+
+export function renderEntryTrace(value: EntryWithRevision, revisions?: EntryRevision[], links: EntryLink[] = []): string {
+  return [renderEntry(value), ...(revisions ? [
+    `  status: ${value.entry.status}`,
+    ...links.map((l) => `  ${l.kind}: E${l.toEntry}@${l.toRev} (from E${l.fromEntry}@${l.fromRev})`),
+    revisionSummary(revisions),
+  ] : [revisionLine(value.revision)])].join("\n");
+}
+
+// Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
+// Unlike whitespace splitting, this exposes edits inside unspaced Chinese memory content.
+function diffText(before: string, after: string): string {
+  const split = (text: string) => text.match(/\p{Script=Han}|[\p{L}\p{N}\p{M}_]+|\s+|[^\s]/gu) ?? [];
+  // Exclude Han from the word alternative so a Latin prefix cannot swallow a Han suffix.
+  const tokenize = (text: string) => split(text).flatMap((part) =>
+    part.match(/\p{Script=Han}|[^\p{Script=Han}]+/gu) ?? []);
+  const a = tokenize(before), b = tokenize(after);
+  const lengths = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      lengths[i]![j] = a[i] === b[j] ? 1 + lengths[i + 1]![j + 1]!
+        : Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
+    }
+  }
+  const spans: { kind: "same" | "remove" | "add"; text: string }[] = [];
+  const append = (kind: "same" | "remove" | "add", text: string) => {
+    if (spans.at(-1)?.kind === kind) spans.at(-1)!.text += text;
+    else spans.push({ kind, text });
+  };
+  let i = 0, j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { append("same", a[i++]!); j++; }
+    else if (i < a.length && (j === b.length || lengths[i + 1]![j]! >= lengths[i]![j + 1]!)) append("remove", a[i++]!);
+    else append("add", b[j++]!);
+  }
+  return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
+}
+
+export function renderEntryDiff(a: EntryRevision, b: EntryRevision, revisions: EntryRevision[]): string {
+  return [`[E${a.entryId}@${a.rev}..${b.rev}]`, `  text: ${diffText(a.text, b.text)}`,
+    `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
+    `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
+    ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
+    ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
+    revisionSummary(revisions)].join("\n");
+}
+
+export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }
+export function renderNegationWalk(steps: NegationStep[]): string {
+  return steps.flatMap(({ fact, relations, depth, terminal }) => [
+    ...renderFact(fact, relations).split("\n").map((line) => "  ".repeat(depth) + line),
+    ...(terminal ? ["  ".repeat(depth + 1) + "no later strong negation recorded"] : []),
+  ]).join("\n");
 }

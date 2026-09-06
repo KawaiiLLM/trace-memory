@@ -48,8 +48,8 @@ describe("methods not yet implemented in this ticket", () => {
   test("inject throws NotImplementedError", () => {
     expect(() => memory.inject({})).toThrow(NotImplementedError);
   });
-  test("trace throws NotImplementedError", () => {
-    expect(() => memory.trace("E1")).toThrow(NotImplementedError);
+  test("trace reports a missing entry", () => {
+    expect(() => memory.trace("E1")).toThrow("entry E1 does not exist");
   });
   test("search throws NotImplementedError", () => {
     expect(() => memory.search("pnpm")).toThrow(NotImplementedError);

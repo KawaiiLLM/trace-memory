@@ -1,0 +1,85 @@
+{
+  "entry": {
+    "originalId": 2,
+    "log": [
+      {
+        "at": "settle@F50",
+        "op": "new",
+        "because": [],
+        "text": "mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。",
+        "category": "reference",
+        "scope": "project",
+        "supports": [
+          2,
+          35
+        ]
+      },
+      {
+        "at": "settle@F86",
+        "op": "edit",
+        "because": [
+          "F81"
+        ],
+        "text": "mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。血色衣冠运行时表将9号命名为“丘陵”（原版称“荒地”），与 mod 说明文档“荒地地形改为丘陵地形”的说法一致，此前认为二者矛盾的疑虑已解除。",
+        "category": "reference",
+        "scope": "project",
+        "supports": [
+          2,
+          35,
+          81
+        ]
+      }
+    ]
+  },
+  "facts": [
+    {
+      "id": 2,
+      "category": "observation",
+      "actor": "agent",
+      "text": "mapC 编辑器整表导出（40000 格，UTF-8，2,175,557 字节，取自 Windows 机 Downloads 目录）中，编辑器标注为「海」的地形值全图 2200 格里只有 551 格处于水位高度，编辑器标注为「荒地」的地形值 2481 格里有 1993 格处于水位高度。",
+      "quote": "全图 2200 格里只有 551 格在水位上……2481 格里有 1993 格恰好在水位上",
+      "timestamp": "2026-08-16 03:05",
+      "source": [
+        "S18993/T249#tools",
+        "S18993/T249#assistant"
+      ]
+    },
+    {
+      "id": 8,
+      "category": "observation",
+      "actor": "agent",
+      "text": "mod 自身说明文档写着「荒地地形改为丘陵地形」，与「荒地值实测为外海」的结论对不上，此矛盾未解决，未做猜测。",
+      "timestamp": "2026-08-16 03:10",
+      "source": [
+        "S18993/T249#assistant"
+      ]
+    },
+    {
+      "id": 35,
+      "category": "observation",
+      "actor": "agent",
+      "text": "低处（高度=水位）的 raw9 格中 1989/1993 个在运行时变为 terrain 8（海）；高处的 raw9 格共 488 个，其中 380 个运行时仍为 terrain 9（丘陵），其余主要转为 13/14/8。",
+      "timestamp": "2026-08-20 10:50",
+      "source": [
+        "S21682/T28#tools",
+        "S21682/T28#assistant"
+      ]
+    },
+    {
+      "id": 81,
+      "category": "observation",
+      "actor": "agent",
+      "text": "血色衣冠地形 9 号在运行时表里被命名为「丘陵」，原版对应地形叫「荒地」，与 mod 说明文档「荒地地形改为丘陵地形」的说法一致。",
+      "timestamp": "2026-08-23 09:12",
+      "source": [
+        "S18993/T351#assistant"
+      ],
+      "negate": [
+        [
+          8,
+          "strong"
+        ]
+      ]
+    }
+  ]
+}
