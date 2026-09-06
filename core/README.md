@@ -296,3 +296,16 @@ new session-owned projects must use `createSession({ …, projectDeclaration:
 named project moves the declaring session and its session entries, not peers.
 `status(sessionId)` reports session/project fact counts, visible active entry
 count, all branch watermarks, latest attempts by run id, and pending run count.
+
+
+## Branch summary read (ticket 07)
+
+`branchSummary(sessionId, branch, headTurnId)` renders committed facts on the
+branch's noted ancestry, then raw between its current note watermark and the
+explicit head. It uses the existing core fact/turn renderer and omission
+receipts, without a fact budget, entries, or delivery consumption. A host awaits
+its frozen pending note before reading; later unnoted turns remain raw. Unlike
+`compact`, this read excludes sibling facts and never budgets away committed
+branch facts. This missing read is the only core implementation change in 07;
+project declaration, transactional merge, watermarks and delivery writes reuse
+the ticket 04 store contract.

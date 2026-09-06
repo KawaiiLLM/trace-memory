@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
 import { buildRequest, verifyRequest, hash, snapshot, type Body } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteResult, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -126,10 +126,21 @@ export default function (pi: ExtensionAPI) {
     }
   }, core);
   const contextNotice = (reason: string) => ctx.ui.notify(`Trace Memory: note fell back to subagent mode. ${reason}`, "warning");
-  type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean };
+  type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
   let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
   const pending = new Set<Promise<unknown>>();
+  const notes = new Map<string, Promise<NoteResult>>();
+  const modelName = (kind: "note" | "settle") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
+    ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
+  const note = (input: Parameters<typeof memory.note>[0]) => {
+    const key = `${input.sessionId}/${input.branch}`;
+    const existing = notes.get(key);
+    if (existing) return existing;
+    const promise = memory.note(input).finally(() => { notes.delete(key); pending.delete(promise); });
+    notes.set(key, promise); pending.add(promise);
+    return promise;
+  };
   const save = () => pi.appendEntry(tag, { ...state, dbPath });
   const restore = (context: ExtensionContext, fork = false) => {
     ctx = context;
@@ -153,6 +164,8 @@ export default function (pi: ExtensionAPI) {
     if (state.sessionId) {
       const name = marker(ctx.cwd);
       if (name) memory.mark({ sessionId: state.sessionId, project: name, source: "marker" });
+      state.projectId = memory.store.getSession(state.sessionId)!.projectId;
+      if (memory.store.projectDeclaration(state.sessionId) === "mark") state.project = memory.store.getProject(state.projectId)!.name;
     }
   };
   const ensure = (context: ExtensionContext) => { ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
@@ -194,12 +207,17 @@ export default function (pi: ExtensionAPI) {
   });
   const assistant = (message: { content?: unknown }, context: ExtensionContext, ended: boolean) => {
     ensure(context);
-    if (!current || (!text(message) && (!Array.isArray(message.content) || !message.content.length))) return;
+    if (!current || (!text(message) && (!Array.isArray(message.content) ||
+      !message.content.some(c => c.type === "toolCall" || (c.type === "thinking" && c.thinking))))) return;
     current.replied = true;
     if (!state.sessionId) {
-      state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: current.started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: "undeclared" }).id;
       const name = marker(ctx.cwd);
+      // A marker may disappear between the initial injection and the first reply.
+      if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
+        ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
+      state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: current.started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared" }).id;
       if (name) memory.mark({ sessionId: state.sessionId, project: name, source: "marker" });
+      state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       append();
     }
     current.partial = text(message);
@@ -224,24 +242,30 @@ export default function (pi: ExtensionAPI) {
     }
     const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
     const tokens = turns.reduce((n, t) => n + estimate((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
-    const model = (kind: "note" | "settle") => {
-      const selected = flat[`${kind}Model`];
-      return String(selected && selected !== "session" ? selected : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-    };
     const background = (promise: Promise<unknown>) => {
       pending.add(promise);
       void promise.catch(error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
     };
     if (answered >= memory.config.note.triggerAnsweredTurns || tokens >= memory.config.note.triggerTokens)
-      background(memory.note({ sessionId, branch, headTurnId: head,
+      background(note({ sessionId, branch, headTurnId: head,
         mode: memory.config.note.branchModeDefault ? "branch" : "subagent",
-        model: memory.config.note.branchModeDefault ? ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session" : model("note") }));
+        model: memory.config.note.branchModeDefault ? ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session" : modelName("note") }));
     const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastSettledFact ?? 0)).length;
     if (count >= memory.config.settle.triggerUnsettledFacts)
-      background(memory.settle({ sessionId, branch, mode: "subagent", model: model("settle") }).then(result => {
+      background(memory.settle({ sessionId, branch, mode: "subagent", model: modelName("settle") }).then(result => {
         if (result.outcome !== "dropped") for (const [key, value] of continuations) if (value.owner === `${sessionId}/${branch}`) continuations.delete(key);
         return result;
       }));
+  });
+  pi.on("session_before_tree", async (_event, context) => {
+    ensure(context); flush(true);
+    const { sessionId, branch, head } = state;
+    if (!sessionId || !head) return { summary: { summary: "" } };
+    try {
+      // A pending run owns its frozen range. Later raw stays in the summary.
+      await note({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("note") });
+    } catch (error) { context.ui.notify(String(error), "error"); }
+    return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
   pi.on("session_before_compact", (event, context) => {
     ensure(context); flush();
@@ -271,7 +295,14 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, raw) {
       const args = raw as { input: { project: string } | Exclude<MarkInput, { project: string }> };
       if ("project" in args.input && !state.sessionId) throw new Error("A session requires an assistant reply");
-      return result(memory.mark("project" in args.input ? { project: args.input.project, sessionId: state.sessionId!, source: "mark" } : args.input as MarkInput));
+      const marked = memory.mark("project" in args.input ? { project: args.input.project, sessionId: state.sessionId!, source: "mark" } : args.input as MarkInput);
+      if ("project" in args.input) {
+        state.projectId = memory.store.getSession(state.sessionId!)!.projectId;
+        state.project = memory.store.getProject(state.projectId)!.name;
+        save();
+        return result(`${marked}\n\n${memory.inject(state.sessionId!)}`);
+      }
+      return result(marked);
     } });
   pi.registerCommand("trace", { description: "Read Trace Memory status without running extraction.",
     async handler(_args, context) { context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });

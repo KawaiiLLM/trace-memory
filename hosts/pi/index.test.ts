@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, noteFact, usage, type Reply } from "./test-host.ts";
 
@@ -14,7 +14,7 @@ function host(...args: Parameters<typeof createHost>) {
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
   expect([...h.tools.keys()]).toEqual(["trace", "search", "mark"]);
-  for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
+  for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("no session id");
@@ -216,4 +216,173 @@ test("entries are injected once per session; later prompts carry only deliveries
   await h.answer();
   const second = await h.prompt("again");
   expect(second?.message?.content ?? "").not.toContain("<entries>");
+});
+
+
+test("marker walk uses the nearest hit and shares an ancestor marker across worktree directories", async () => {
+  const h = host({}, "shared");
+  const main = join(h.dir, "main", "src", "nested"), worktree = join(h.dir, "worktrees", "feature", "src");
+  mkdirSync(main, { recursive: true }); mkdirSync(worktree, { recursive: true });
+  h.ctx.cwd = main;
+  await h.turn();
+  const shared = h.memory.store.getSession(1)!.projectId;
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = worktree;
+  await h.emit("session_start"); await h.turn();
+  expect(h.memory.store.getSession(2)!.projectId).toBe(shared);
+  writeFileSync(join(h.dir, "worktrees", ".trace-memory"), "nearest");
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "nested-session";
+  await h.emit("session_start"); await h.turn();
+  expect(h.memory.status(3)).toContain("nearest (marker)");
+  expect(h.memory.status(1)).toContain("shared (marker)");
+});
+
+test("mark persists in host state across tree restoration without merging marker peers", async () => {
+  const h = host({}, "shared");
+  await h.turn(); const first = [...h.entries];
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "peer";
+  await h.emit("session_start"); await h.turn();
+  const shared = h.memory.store.getSession(2)!.projectId;
+  await h.tools.get("mark").execute("id", { input: { project: "override" } });
+  expect(h.entries.at(-1).data.project).toBe("override");
+  expect(h.entries.at(-1).data.projectId).toBe(h.memory.store.getSession(2)!.projectId);
+  await h.emit("session_tree");
+  expect(h.memory.status(2)).toContain("override (mark)");
+  expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
+  h.entries.splice(0, h.entries.length, ...first); h.ctx.sessionManager.getSessionId = () => "pi-test";
+  await h.emit("session_start");
+  expect(h.memory.status(1)).toContain("shared (marker)");
+});
+
+test("declaring an own project moves facts and project entries, preserves session scope, and injects immediately", async () => {
+  const h = host({ "note.triggerAnsweredTurns": 1 });
+  h.provider(async c => noteFact(c)); await h.turn();
+  const store = h.memory.store, own = store.getSession(1)!.projectId;
+  const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
+    const commit = store.commitSettleRun({ run: { kind: "settle", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
+      op: "new" as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
+      createdAt: "now", category: "constraint" as const, scope,
+    })) });
+    expect(commit.ok && commit.rejected.length === 0).toBe(true);
+  };
+  seed(1, 1, ["project", "session"]);
+  const sessionRevision = store.getEntryRevision(2, 1);
+  const target = store.createProject({ name: "named", declaredBy: "mark" });
+  const peer = store.createSession({ host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
+  const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
+  const noted = store.commitNoteRun({ run: { kind: "note", sessionId: peer.id, createdAt: "now" }, facts: [
+    { turnId: turn.id, category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
+  ] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  seed(peer.id, noted.facts[0]!.id, ["project"]);
+  const marked = await h.tools.get("mark").execute("id", { input: { project: "named" } });
+  expect(store.getProject(own)!.mergedInto).toBe(target.id);
+  expect(store.listProjectFacts(own)).toEqual([]);
+  expect(store.listProjectFacts(target.id)).toHaveLength(2);
+  // Both duplicate project entries are now in the next settlement's NEAR pool.
+  expect(store.getEntry(1)!.projectId).toBe(target.id);
+  expect(store.getEntry(3)!.projectId).toBe(target.id);
+  expect(store.listVisibleEntries(1, target.id).map(v => v.entry.id)).toEqual([1, 2, 3]);
+  expect(store.getEntryRevision(2, 1)).toEqual(sessionRevision);
+  expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
+  expect(marked.content[0].text).toContain(h.memory.inject(1));
+  expect(h.memory.inject(1)).toContain("仅当前会话");
+});
+
+test("before-tree waits for a frozen pending note and summarizes its facts plus later raw without delivering", async () => {
+  const h = host({ "note.triggerAnsweredTurns": 1 });
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.turn(); const forkPoint = [...h.entries];
+  await h.prompt("later unnoted raw"); await h.answer("later reply");
+  const tip = [...h.entries];
+  let finished = false;
+  const switching = h.emit("session_before_tree", { preparation: { userWantsSummary: true } }).then(r => { finished = true; return r; });
+  await h.drain(); expect(finished).toBe(false); expect(h.requests).toHaveLength(1);
+  release(noteFact(h.conversations[0]!));
+  const result = await switching;
+  expect(result.summary.summary).toContain("[F1]");
+  expect(result.summary.summary).toContain("later unnoted raw");
+  expect(result.summary.summary).toContain("later reply");
+  expect(result.summary.summary).toBe(h.memory.branchSummary(1, "main", 2));
+  expect(h.conversations[0]!.messages[0]!.content).not.toContain("later unnoted raw");
+  expect(h.memory.store.getWatermark(1, "main")!.lastNotedTurn).toBe(1);
+  expect(h.memory.store.listRuns(1)[0]!.branch).toBe("main");
+  h.entries.splice(0, h.entries.length, ...forkPoint); await h.emit("session_tree");
+  const branch = h.entries.at(-1).data.branch;
+  expect(branch).not.toBe("main");
+  expect(h.memory.store.listPendingDeliveries(1, branch)).toEqual([]);
+  expect((await h.prompt())?.message?.content ?? "").not.toContain("pending_notes");
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  h.entries.splice(0, h.entries.length, ...tip); await h.emit("session_tree");
+  expect((await h.prompt())?.message?.content).toContain("pending_notes");
+});
+
+test.each(["success", "failure", "unavailable"])("before-tree attempts subagent note below threshold: %s", async outcome => {
+  const h = host();
+  h.provider(async c => { if (outcome === "failure") throw new Error("offline"); return noteFact(c); });
+  await h.turn();
+  if (outcome === "unavailable") h.ctx.model = undefined;
+  const result = await h.emit("session_before_tree");
+  expect(result.summary.summary).toContain("用 pnpm，不要 npm");
+  if (outcome === "success") {
+    expect(result.summary.summary).toContain("[F1]");
+    expect(h.memory.store.listRuns(1)[0]!.mode).toBe("subagent");
+    expect(h.notices).toEqual([]); // No attempted branch request or fallback.
+  } else {
+    expect(result.summary.summary).toContain("好的。");
+    expect(result.summary.summary).not.toContain("[F1]");
+    expect(h.memory.store.getWatermark(1, "main")).toBeNull();
+  }
+});
+
+test("an empty session allocates neither session nor turns through prompt, compact, and tree hooks", async () => {
+  const h = host();
+  await h.emit("session_start"); await h.prompt("unanswered");
+  await h.emit("message_end", { message: reply("") });
+  await h.emit("agent_settled");
+  await h.emit("session_before_compact", { preparation: { tokensBefore: 0 } });
+  await h.emit("session_compact", { compactionEntry: { summary: "empty" } });
+  await h.emit("session_before_tree"); await h.emit("session_tree");
+  expect(h.memory.store.getSession(1)).toBeNull();
+  expect(h.memory.store.listTurns(1)).toEqual([]);
+  expect(h.requests).toEqual([]);
+});
+
+
+test("branch summaries retain earlier committed facts and exclude sibling facts", async () => {
+  const h = host({ "note.triggerAnsweredTurns": 1 });
+  h.provider(async c => noteFact(c)); await h.turn();
+  const point = [...h.entries];
+  await h.prompt("abandoned tail"); await h.answer("tail reply");
+  const summary = await h.emit("session_before_tree");
+  expect(summary.summary.summary).toContain("[F1]");
+  expect(summary.summary.summary).toContain("[F2]");
+  h.entries.splice(0, h.entries.length, ...point); await h.emit("session_tree");
+  h.provider(async () => { throw new Error("offline"); });
+  await h.prompt("sibling raw"); await h.answer();
+  const sibling = await h.emit("session_before_tree");
+  expect(sibling.summary.summary).not.toContain("[F2]");
+  expect(sibling.summary.summary).not.toContain("abandoned tail");
+  expect(sibling.summary.summary).toContain("sibling raw");
+});
+
+test("a tool-call-only first assistant reply allocates the session before mark executes", async () => {
+  const h = host(); await h.prompt();
+  await h.emit("message_end", { message: { role: "assistant", content: [{ type: "toolCall", id: "m", name: "mark", arguments: { input: { project: "named" } } }] } });
+  expect(h.memory.store.getSession(1)).not.toBeNull();
+  await h.tools.get("mark").execute("m", { input: { project: "named" } });
+  expect(h.memory.status(1)).toContain("named (mark)");
+});
+
+
+test("removing a marker before first reply cannot turn its shared project into an undeclared merge source", async () => {
+  const h = host({}, "shared"); await h.turn();
+  const shared = h.memory.store.getSession(1)!.projectId;
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "new-session";
+  await h.emit("session_start"); await h.prompt();
+  unlinkSync(join(h.dir, ".trace-memory")); await h.answer();
+  expect(h.memory.store.getSession(2)!.projectId).not.toBe(shared);
+  await h.tools.get("mark").execute("m", { input: { project: "override" } });
+  expect(h.memory.store.getSession(1)!.projectId).toBe(shared);
+  expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });

@@ -84,6 +84,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       return finish({ content: `${block.content}\n\n${xmlBlock("episodic", ["Raw:", rawText, "Recent facts (newest first):", episodic.recent.join("\n")].join("\n\n"))}`,
         receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
     },
+    branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
+      const tail = freezeNote(store, { sessionId, branch, headTurnId }, config).turns;
+      const raw = tail.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
+      const facts = store.listBranchFacts(sessionId, branch).map((f) => factLine(f.id));
+      return finish({ content: [...facts, ...raw.map((r) => r.content)].join("\n\n"),
+        receipts: raw.flatMap((r) => r.receipts) });
+    },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (options.cursor) return page([], options);
       if (!["facts", "entries", "all", "raw"].includes(scope)) throw new Error("invalid search scope");

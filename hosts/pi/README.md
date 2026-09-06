@@ -1,9 +1,10 @@
-# Pi host (tickets 05–06)
+# Pi host (tickets 05–07)
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
 its exposed store. Notes use verified branch mode by default; settle uses
-subagent mode. Both run only at turn stop (`agent_settled`).
+subagent mode. Threshold-triggered runs start at turn stop (`agent_settled`); tree navigation
+also finishes the abandoned branch note.
 
 Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
@@ -31,7 +32,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","note.triggerAn
   notes. Branch notes always use the session model, including on fallback;
   `noteModel` applies only when subagent mode is explicitly configured.
 - Settle remains subagent-only, including its candidate/final continuation.
-  Abandoned-branch summaries are outside this ticket.
+  Tree navigation explicitly uses subagent mode with `noteModel` for a new note.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
@@ -72,7 +73,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   branch tip reuses its name; selecting an earlier point creates a new branch.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
-  session on its first reply. No branch-switch extraction runs in this ticket.
+  session on its first reply. The before-tree hook finishes notes as described below.
 - Compaction flushes partial assistant text and returns `memory.compact(...)` as
   `compaction.summary`. `firstKeptEntryId: ""` retains no old Pi messages: the
   facade block replaces the context. Pi 0.85.0's context builder searches for
@@ -318,3 +319,60 @@ This is a human-run check, not an automated claim of live cache hits.
    subagent mode, a fallback reason and one notice, rather than invented hashes.
    Compare with a separate database using `note.branchModeDefault: false` to
    evaluate extraction quality and cost before choosing the operational default.
+
+
+## Attribution and tree navigation (ticket 07)
+
+`session_before_tree` flushes recorded assistant text and awaits the abandoned
+session/branch's pending note, if any. It does not retry that run or extend its
+frozen range. With no pending note it attempts one subagent note through the
+captured head, regardless of normal thresholds. Failure or an unavailable model
+leaves the watermark unchanged. No settlement is triggered by this hook.
+
+The only new core capability is the read `branchSummary(sessionId, branch,
+headTurnId)`. `compact` is unsuitable because it includes session-wide recent
+facts and applies a fact budget. The summary instead uses core `renderFact`,
+`renderTurn`, and `finish`: committed lineage facts through the note watermark,
+followed by all raw after it, with standard tool cuts and omission receipts.
+There is no summary fact budget. This resolves "since its watermark" as raw
+coverage: previously committed branch facts remain represented, rather than
+being lost when a pending note advances the watermark. Sibling facts are
+excluded. Reading a summary never consumes a pending delivery. A pending run's
+later, unfrozen raw remains raw in the summary, without a second extraction.
+When no facts committed, failed extraction produces rendered raw alone.
+
+The hook returns `{ summary: { summary: text } }`. Installed Pi **0.85.0**
+`dist/core/extensions/types.d.ts:481–510` declares `TreePreparation`,
+`SessionBeforeTreeEvent`, and `SessionTreeEvent`; lines **861–874** declare the
+result and **917–918** register both hooks. `dist/core/agent-session.js:2520`
+accepts the supplied summary only when navigation requested summarization
+(`options.summarize`). The public result cannot force insertion for a user's
+no-summary navigation. The host returns its summary in either case and never
+calls Pi's summarizer itself. The hook's abort signal does not cancel a frozen
+note. Existing `session_tree` restoration gives an earlier branch point a fresh
+identity and preserves the identity when returning to a saved branch tip.
+
+Marker discovery is a plain ancestor walk; the first file wins and an empty
+file is an error. Worktrees share a marker only when their directories share
+its ancestor; no Git lookup is performed. Marker-attributed sessions are
+created with declaration `marker`, so they cannot accidentally merge a shared
+named space as if it were private. An explicit `mark` saves the project name
+and current project ID in the Pi custom state and returns the updated injection
+immediately in its tool result. The database declaration remains authoritative
+when restoring older tree state, so a session's mark wins on every branch.
+Peers remain in the marker project. Only an undeclared own space is merged.
+Facts change project membership through their session join; session entries
+retain scope, ownership and revisions while their project ID follows the
+session. Duplicate project entries now share the next settlement's NEAR pool;
+merge itself neither settles nor deletes duplicates.
+
+An empty text content block is not an assistant reply. Nonempty text, thinking,
+or a tool call permits allocation; the tool-call case permits `mark` as the
+first assistant action. A prompt, compaction or tree event without such a reply
+creates neither a session row nor a turn row. Project records may precede replies.
+
+Ticket 07's stub-host tests cover ancestor/nearest/worktree markers, session-only
+mark precedence and persisted host state, retroactive merge and immediate
+injection, session-entry isolation, shared duplicate visibility, deferred note
+completion with later raw and branch-only delivery, fresh subagent notes,
+failure/unavailable models, sibling exclusion, and empty/tool-only replies.

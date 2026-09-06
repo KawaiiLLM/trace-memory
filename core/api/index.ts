@@ -95,6 +95,8 @@ export interface TraceMemory {
   close(): void;
   note(input: NoteInput): Promise<NoteResult>;
   settle(input: SettleInput): Promise<SettleResult>;
+  /** Committed lineage facts and unnoted raw, without consuming deliveries or dropping facts. */
+  branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   compact(sessionId: number, branch?: string, headTurnId?: number): string;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project entries, no deliveries. */
   inject(target: number | { projectId: number }): string;
