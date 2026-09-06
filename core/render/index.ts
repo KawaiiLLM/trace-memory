@@ -1,4 +1,5 @@
-import type { EntryLink, EntryRevision, Fact, FactRelation, ToolCall, Turn } from "../model/index";
+import { ENTRY_CATEGORIES } from "../model/index";
+import type { EntryLink, EntryRevision, Mark, Fact, FactRelation, ToolCall, Turn } from "../model/index";
 import type { EntryWithRevision } from "../store/index";
 import type { TraceMemoryConfig } from "../api/index";
 
@@ -95,8 +96,8 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
     `  source: ${fact.source.join(", ")}`].join("\n");
 }
 
-export function renderEntry({ entry, revision: r }: EntryWithRevision): string {
-  return `[E${entry.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
+export function renderEntry({ entry, revision: r }: EntryWithRevision, marks: Mark[] = []): string {
+  return `[E${entry.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
@@ -105,8 +106,8 @@ const revisionLine = (r: EntryRevision): string =>
 const revisionSummary = (revisions: EntryRevision[]): string =>
   revisions.length ? `Revisions:\n${revisions.map(revisionLine).join("\n")}` : "Revisions: none";
 
-export function renderEntryTrace(value: EntryWithRevision, revisions?: EntryRevision[], links: EntryLink[] = []): string {
-  return [renderEntry(value), ...(revisions ? [
+export function renderEntryTrace(value: EntryWithRevision, revisions?: EntryRevision[], links: EntryLink[] = [], marks: Mark[] = []): string {
+  return [renderEntry(value, marks.filter((m) => m.rev === value.revision.rev)), ...(revisions ? [
     `  status: ${value.entry.status}`,
     ...links.map((l) => `  ${l.kind}: E${l.toEntry}@${l.toRev} (from E${l.fromEntry}@${l.fromRev})`),
     revisionSummary(revisions),
@@ -158,3 +159,37 @@ export function renderNegationWalk(steps: NegationStep[]): string {
     ...(terminal ? ["  ".repeat(depth + 1) + "no later strong negation recorded"] : []),
   ]).join("\n");
 }
+
+export function budgetEntries(entries: EntryWithRevision[], cap: number, line: (entry: EntryWithRevision) => string = renderEntry) {
+  let used = 0, omitted = false;
+  const groups: { category: string; text: string }[] = [], receipts: string[] = [];
+  for (const category of ENTRY_CATEGORIES) {
+    const group = entries.filter((e) => e.revision.category === category)
+      .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.entry.id - b.entry.id);
+    const text = group.map((e) => line(e)).join("\n");
+    if (ENTRY_CATEGORIES.indexOf(category) >= 3 && (omitted || used + tokens(text) > cap)) {
+      omitted = true;
+      if (group.length) receipts.push(`omitted ${group.length} ${category} entries; expand: ${group.map((e) => `E${e.entry.id}`).join(", ")}`);
+    } else { groups.push({ category, text }); used += tokens(text); }
+  }
+  return { groups, receipts };
+}
+
+export function budgetFacts(base: string, facts: Fact[], line: (fact: Fact) => string, cap: number, label = "raw") {
+  let used = tokens(base), dropped = 0;
+  const recent: string[] = [], receipts: string[] = [];
+  for (const fact of facts) {
+    const text = line(fact);
+    if (dropped || used + tokens(text) > cap) { dropped++; continue; }
+    recent.push(text); used += tokens(text);
+  }
+  if (tokens(base) > cap) receipts.push(`${label} overage: ${tokens(base) - cap} tokens; all ${label === "raw" ? "unnoted raw" : "range facts"} kept`);
+  if (dropped) receipts.push(`omitted ${dropped} older facts; expand: ${facts.slice(-dropped).map((f) => `F${f.id}`).join(", ")}`);
+  return { recent, receipts };
+}
+
+// Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.
+export const xmlBlock = (tag: string, text: string): string => `<${tag}>\n${text}\n</${tag}>`;
+export const renderEntriesBlock = (groups: { category: string; text: string }[]): string =>
+  `<entries>\n${groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text)).join("\n")}\n</entries>`;
+export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");

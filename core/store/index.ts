@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   started_at TEXT NOT NULL,
   first_reply_at TEXT NOT NULL,
   project_id INTEGER NOT NULL REFERENCES projects(id),
-  parent_session_id INTEGER REFERENCES sessions(id)
+  parent_session_id INTEGER REFERENCES sessions(id),
+  project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark'))
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -185,6 +186,7 @@ export interface CreateSessionInput {
   firstReplyAt: string; // required: a session row only exists once the first reply exists
   projectId: number;
   parentSessionId?: number | null;
+  projectDeclaration?: "undeclared" | "marker" | "mark";
 }
 
 export interface AppendTurnInput {
@@ -459,8 +461,8 @@ export class Store {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
     const info = this.db.run(
-      "INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id) VALUES (?, ?, ?, ?, ?)",
-      [input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null],
+      "INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration) VALUES (?, ?, ?, ?, ?, ?)",
+      [input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker"],
     );
     return this.getSession(Number(info.lastInsertRowid))!;
   }
@@ -615,6 +617,10 @@ export class Store {
             ]);
           }
         });
+        let response: Record<string, unknown>;
+        try { const parsed = JSON.parse(input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
+        catch { response = { output: input.run.response }; }
+        this.db.run("UPDATE runs SET response = ? WHERE id = ?", [JSON.stringify({ ...response, factIds: batchIds }), runId]);
         if (input.watermark) {
           this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastNotedTurn, undefined);
         }
@@ -937,6 +943,85 @@ export class Store {
 
   clearPendingDelivery(runId: number, deliveredAt: string): void {
     this.db.run("UPDATE pending_deliveries SET delivered_at = ? WHERE run_id = ?", [deliveredAt, runId]);
+  }
+
+  listTurns(sessionId: number): Turn[] {
+    return this.db.query("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
+  }
+
+  listRuns(sessionId: number): Run[] {
+    return this.db.query("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
+  }
+
+  listWatermarks(sessionId: number): Watermark[] {
+    return (this.db.query("SELECT branch FROM watermarks WHERE session_id = ? ORDER BY branch").all(sessionId) as { branch: string }[])
+      .map((r) => this.getWatermark(sessionId, r.branch)!);
+  }
+
+  projectDeclaration(sessionId: number): string {
+    return (this.db.query("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
+  }
+
+  declareProject(sessionId: number, name: string, source: "marker" | "mark"): Project {
+    return this.db.transaction(() => {
+      const session = this.getSession(sessionId);
+      if (!session) throw new Error(`session S${sessionId} does not exist`);
+      if (!["marker", "mark"].includes(source)) throw new Error("invalid project declaration source");
+      if (!name.trim()) throw new Error("project name must not be empty");
+      const prior = this.projectDeclaration(sessionId);
+      if (source === "marker" && prior === "mark") return this.getProject(session.projectId)!;
+      let target = this.findProjectByName(name) ?? this.createProject({ name, declaredBy: source });
+      while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
+      if (prior === "undeclared" && session.projectId !== target.id) this.mergeProject(session.projectId, target.id);
+      this.db.run("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?", [target.id, source, sessionId]);
+      // Session entries travel with their creating session even when leaving a declared project.
+      this.db.run(`UPDATE entries SET project_id = ? WHERE id IN (
+        SELECT e.id FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.rev = e.current_revision
+        JOIN entry_revisions first ON first.entry_id = e.id AND first.rev = 1 JOIN runs run ON run.id = first.run_id
+        WHERE r.scope = 'session' AND run.session_id = ?)`, [target.id, sessionId]);
+      return target;
+    }).immediate();
+  }
+
+  setMark(entryId: number, kind: MarkKind | "clear", time: string): number {
+    return this.db.transaction(() => {
+      const entry = this.getEntry(entryId);
+      if (!entry) throw new Error(`entry E${entryId} does not exist`);
+      this.db.run("DELETE FROM marks WHERE entry_id = ? AND rev = ?", [entryId, entry.currentRevision]);
+      if (kind !== "clear") this.addMark(entryId, entry.currentRevision, kind, time);
+      return entry.currentRevision;
+    }).immediate();
+  }
+
+  deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): string {
+    return this.db.transaction(() => {
+      const pending = this.listPendingDeliveries(sessionId, branch);
+      const facts = pending.flatMap((p) => {
+        const ids = JSON.parse(this.getRun(p.runId)!.response ?? "{}").factIds;
+        if (!Array.isArray(ids)) throw new Error(`note run ${p.runId} lacks committed fact IDs; delivery preserved`);
+        return ids.map((id: number) => this.getFact(id)!);
+      });
+      const text = render(facts);
+      for (const p of pending) this.clearPendingDelivery(p.runId, new Date().toISOString());
+      return text;
+    }).immediate();
+  }
+
+  searchAddresses(query: string, scope: "facts" | "entries" | "all" | "raw", sessionId?: number): string[] {
+    if (scope === "raw") {
+      if (sessionId === undefined || !this.getSession(sessionId)) throw new Error("raw search requires an existing sessionId");
+      const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+      return (this.db.query(`SELECT t.id FROM turns t WHERE t.session_id = ? AND
+        (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
+        (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
+        (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
+        .all(sessionId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+    }
+    const facts = scope === "entries" ? [] : (this.db.query("SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rowid").all(query) as { id: number }[]).map((r) => `F${r.id}`);
+    const entries = scope === "facts" ? [] : (this.db.query(`SELECT r.entry_id, r.rev FROM entry_revisions_fts f
+      JOIN entry_revisions r ON r.id = f.rowid WHERE entry_revisions_fts MATCH ? ORDER BY r.entry_id, r.rev`)
+      .all(query) as { entry_id: number; rev: number }[]).map((r) => `E${r.entry_id}@${r.rev}`);
+    return [...facts, ...entries];
   }
 
   // -- watermarks --

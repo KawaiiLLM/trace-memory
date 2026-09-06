@@ -1,3 +1,5 @@
+import { readFacade, type ListingOptions, type SearchScope, type MarkInput } from "./read";
+export type { ListingOptions, SearchScope, MarkInput } from "./read";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
 import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index";
@@ -82,15 +84,6 @@ export interface RunAgentResult {
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 
-// ---- Methods assigned to later tickets ----
-
-export class NotImplementedError extends Error {
-  constructor(method: string) {
-    super(`TraceMemory.${method} is not implemented yet`);
-    this.name = "NotImplementedError";
-  }
-}
-
 // ---- Façade ----
 
 export interface TraceMemory {
@@ -99,12 +92,12 @@ export interface TraceMemory {
   close(): void;
   note(input: NoteInput): Promise<NoteResult>;
   settle(input: SettleInput): Promise<SettleResult>;
-  compact(input: unknown): unknown;
-  inject(input: unknown): unknown;
-  trace(address: string): string;
-  search(query: string): unknown;
-  mark(input: unknown): unknown;
-  status(sessionId: number): unknown;
+  compact(sessionId: number, branch?: string, headTurnId?: number): string;
+  inject(sessionId: number, branch?: string | null): string;
+  trace(address: string, options?: ListingOptions): string;
+  search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
+  mark(input: MarkInput): string;
+  status(sessionId: number): string;
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
@@ -129,9 +122,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       };
       if (to !== undefined) return renderEntryDiff(revision(from!), revision(to),
         store.listEntryRevisions(id!).filter((r) => r.rev > from! && r.rev <= to));
-      if (from !== undefined) return renderEntryTrace({ entry, revision: revision(from) });
+      if (from !== undefined) return renderEntryTrace({ entry, revision: revision(from) }, undefined, [], store.listMarks(id!));
       return renderEntryTrace({ entry, revision: revision(entry.currentRevision) },
-        store.listEntryRevisions(id!), store.listEntryLinks(id!));
+        store.listEntryRevisions(id!), store.listEntryLinks(id!), store.listMarks(id!));
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {
@@ -175,6 +168,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return finish(renderTurn(turn, calls, cfg.render, options));
   };
 
+  const read = readFacade(store, cfg, trace);
   return {
     store,
     config: cfg,
@@ -185,7 +179,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       inFlightNotes.add(key);
       try {
         const frozen = freezeNote(store, input, cfg);
-        return await runNote(store, frozen, runAgent, cfg, trace);
+        return await runNote(store, frozen, runAgent, cfg, read.trace);
       } finally { inFlightNotes.delete(key); }
     },
     settle: async (input) => {
@@ -199,21 +193,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return await runSettle(store, frozen, runAgent, cfg);
       } finally { inFlightSettles.delete(key); }
     },
-    compact: () => {
-      throw new NotImplementedError("compact");
-    },
-    inject: () => {
-      throw new NotImplementedError("inject");
-    },
-    trace,
-    search: () => {
-      throw new NotImplementedError("search");
-    },
-    mark: () => {
-      throw new NotImplementedError("mark");
-    },
-    status: () => {
-      throw new NotImplementedError("status");
-    },
+    ...read,
   };
 }

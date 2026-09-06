@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { ENTRY_CATEGORIES, validateSettleOutput, type Fact, type SettleOutput } from "../model/index";
+import { validateSettleOutput, type Fact, type SettleOutput } from "../model/index";
 import { commitFinal, type SettleDiagnostic } from "./commit";
 import type { CommittedEntryOp, RejectedEntryOp, Store, RunInput } from "../store/index";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index";
-import { finish, renderEntry, renderFact, tokens } from "../render/index";
+import { finish, renderEntry, renderFact, budgetEntries, budgetFacts } from "../render/index";
 
 const prompt = readFileSync(new URL("../prompts/settle.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -88,23 +88,10 @@ export async function runSettle(store: Store, frozen: ReturnType<typeof freezeSe
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   const readEntryRevisions = entries.map(({ entry, revision }) => ({ entryId: entry.id, rev: revision.rev }));
   const rangeText = rangeFacts.map((f) => lines.get(f.id)!).join("\n");
-  const receipts: string[] = [], recent: string[] = [], entryLines: string[] = [];
-  let used = tokens(rangeText), dropped = 0, entryTokens = 0, omitCategories = false;
-  for (const fact of context) {
-    const line = lines.get(fact.id)!;
-    if (dropped || used + tokens(line) > config.render.episodicBlockTokens) { dropped++; continue; }
-    recent.push(line); used += tokens(line);
-  }
-  if (tokens(rangeText) > config.render.episodicBlockTokens) receipts.push(`range overage: ${tokens(rangeText) - config.render.episodicBlockTokens} tokens; all range facts kept`);
-  if (dropped) receipts.push(`omitted ${dropped} older facts; expand: ${context.slice(-dropped).map((f) => `F${f.id}`).join(", ")}`);
-  for (const category of ENTRY_CATEGORIES) {
-    const group = entries.filter(({ revision }) => revision.category === category);
-    const text = group.map(renderEntry).join("\n");
-    if (ENTRY_CATEGORIES.indexOf(category) >= 3 && (omitCategories || entryTokens + tokens(text) > config.render.entriesBlockTokens)) {
-      omitCategories = true;
-      if (group.length) receipts.push(`omitted ${group.length} ${category} entries; expand: ${group.map(({ entry }) => `E${entry.id}`).join(", ")}`);
-    } else { entryLines.push(text); entryTokens += tokens(text); }
-  }
+  const episodic = budgetFacts(rangeText, context, (f) => lines.get(f.id)!, config.render.episodicBlockTokens, "range");
+  const active = budgetEntries(entries, config.render.entriesBlockTokens);
+  const recent = episodic.recent, entryLines = active.groups.map((g) => g.text);
+  const receipts = [...episodic.receipts, ...active.receipts];
   const initial = finish({ content: [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
     "Already-settled facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });

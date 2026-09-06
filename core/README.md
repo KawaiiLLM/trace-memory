@@ -233,3 +233,56 @@ only the entry category and candidate handle are adapted to the core contract.
 Tests remap fact addresses to allocated IDs. Existing 03b tests now expect
 application and session/branch ranges, explicitly decline unretained facts, and
 add fresh facts before repeat runs; committed entries participate in later NEAR.
+
+## Read facade contract (ticket 04)
+
+`inject(sessionId, branch = "main")` returns attribute-free `<entries>` XML,
+with nonempty category tags in glossary order. Within each category, current
+revision time ascends, with entry-id ties. XML text is never escaped (lines stay trace lines byte for byte); shared lines,
+including revision-bound marks, remain the display grammar. Budgets measure
+shared lines before XML escaping and exclude framing and receipts. Protected
+categories survive overage; optional categories form a retained prefix.
+`<pending_notes>` follows entries, without a budget, and is consumed atomically
+only after rendering succeeds. Pass `null` explicitly for legacy null branches.
+Successful note commits now record `factIds` in the existing response envelope;
+this identifies exact deliveries even when runs overlap in their source turns.
+Legacy pending runs without this metadata raise an error and remain pending;
+the core cannot safely reconstruct their ownership from turn ranges alone.
+
+`compact(sessionId, branch = "main", headTurnId?)` returns entries followed by
+`<episodic>`: standard-cut raw first, then session facts by descending timestamp
+and id. All unnoted raw survives budget overflow. It neither calls the model nor
+consumes pending deliveries. The schema does not record branch heads: provide
+`headTurnId` for precise ancestry, as for note. Without it, compaction retains
+all session turns allocated after that branch's watermark, conservatively
+including other branches. Receipts follow both XML blocks.
+
+`search(query, scope = "all", { sessionId?, cap?, cursor? })` uses FTS5 query
+syntax over fact text and all entry revisions, including historical revisions.
+Search is database-wide; the injection visibility rule does not restrict explicit
+address lookup. Raw scope requires a session and uses literal substring LIKE
+(including tool names, inputs and results); `%` and `_` are escaped. Each hit is
+one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
+Results order facts by id, then entry id/revision; raw orders turns by id.
+Every search page states that no hit does not mean absent.
+
+`trace` additionally accepts session addresses, exact project names, comma lists,
+and `{ cap?, cursor? }`. Projects list global/project entries and project facts;
+sessions list turns. Listing caps count output lines, default 100. `cap=n` in
+listing addresses is equivalent; on a single turn it retains its existing tool
+field budget meaning. Receipts carry `cursor=<opaque string>`; continue through
+`trace("cursor=…")` or a listing's cursor option. Cursors freeze rendered output,
+are single-use, and last only for this facade instance. User/assistant text is
+never shortened by pagination; further pages retain the remaining lines.
+
+`mark({ entryId, kind: "verified" | "flagged" | "clear" })` replaces or clears
+only the current revision's mark; historical marks remain on their revisions.
+`mark({ sessionId, project, source?: "marker" | "mark" })` declares attribution;
+source defaults to `mark`. Hosts report marker files through this same path.
+A persisted session mark wins over subsequent markers. The additive
+`sessions.project_declaration` column defaults existing sessions to `marker`;
+new session-owned projects must use `createSession({ …, projectDeclaration:
+"undeclared" })`. Only undeclared projects merge via `mergeProject`; leaving a
+named project moves the declaring session and its session entries, not peers.
+`status(sessionId)` reports session/project fact counts, visible active entry
+count, all branch watermarks, latest attempts by run id, and pending run count.

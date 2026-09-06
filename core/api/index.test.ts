@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, NotImplementedError, TraceMemory, type TraceMemory as TraceMemoryHandle } from "./index";
+import { DEFAULT_CONFIG, TraceMemory, type TraceMemory as TraceMemoryHandle } from "./index";
 
 let dir: string;
 let dbPath: string;
@@ -38,26 +38,10 @@ test("a partial config overrides only the sections given, keeping the rest defau
   rmSync(dir2, { recursive: true, force: true });
 });
 
-describe("methods not yet implemented in this ticket", () => {
-  test("settle rejects a missing session", async () => {
-    await expect(memory.settle({ sessionId: 1, branch: "main" })).rejects.toThrow("session S1 does not exist");
-  });
-  test("compact throws NotImplementedError", () => {
-    expect(() => memory.compact({})).toThrow(NotImplementedError);
-  });
-  test("inject throws NotImplementedError", () => {
-    expect(() => memory.inject({})).toThrow(NotImplementedError);
-  });
-  test("trace reports a missing entry", () => {
-    expect(() => memory.trace("E1")).toThrow("entry E1 does not exist");
-  });
-  test("search throws NotImplementedError", () => {
-    expect(() => memory.search("pnpm")).toThrow(NotImplementedError);
-  });
-  test("mark throws NotImplementedError", () => {
-    expect(() => memory.mark({})).toThrow(NotImplementedError);
-  });
-  test("status throws NotImplementedError", () => {
-    expect(() => memory.status(1)).toThrow(NotImplementedError);
-  });
+test("read methods reject missing sessions and search an empty store", () => {
+  expect(() => memory.compact(1)).toThrow("session S1 does not exist");
+  expect(() => memory.inject(1)).toThrow("session S1 does not exist");
+  expect(() => memory.trace("E1")).toThrow("entry E1 does not exist");
+  expect(() => memory.status(1)).toThrow("session S1 does not exist");
+  expect(memory.search("pnpm")).toContain("No hit does not mean absent");
 });

@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { ENTRY_CATEGORIES, validateNoteOutput, type Fact, type Turn } from "../model/index";
+import { validateNoteOutput, type Fact, type Turn } from "../model/index";
 import type { Store, FactCommitInput, RunInput } from "../store/index";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index";
-import { finish, renderEntry, renderFact, renderTurn, tokens } from "../render/index";
+import { finish, renderFact, renderTurn, budgetEntries, budgetFacts } from "../render/index";
 
 const prompt = readFileSync(new URL("../prompts/note.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -70,25 +70,10 @@ export async function runNote(
   const raw = turns.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
   const rawText = raw.map((r) => r.content).join("\n\n");
   const receipts = raw.flatMap((r) => r.receipts);
-  let used = tokens(rawText), dropped = 0;
-  const recent: string[] = [];
-  for (const fact of facts) {
-    const line = renderFact(fact, store.listFactRelations(fact.id));
-    if (dropped || used + tokens(line) > config.render.episodicBlockTokens) { dropped++; continue; }
-    recent.push(line); used += tokens(line);
-  }
-  if (tokens(rawText) > config.render.episodicBlockTokens) receipts.push(`raw overage: ${tokens(rawText) - config.render.episodicBlockTokens} tokens; all unnoted raw kept`);
-  if (dropped) receipts.push(`omitted ${dropped} older facts; expand: ${facts.slice(-dropped).map((f) => `F${f.id}`).join(", ")}`);
-  const entryLines: string[] = [];
-  let entryTokens = 0, omitCategories = false;
-  for (const category of ENTRY_CATEGORIES) {
-    const group = entries.filter(({ revision }) => revision.category === category);
-    const text = group.map(renderEntry).join("\n");
-    if (ENTRY_CATEGORIES.indexOf(category) >= 3 && (omitCategories || entryTokens + tokens(text) > config.render.entriesBlockTokens)) {
-      omitCategories = true;
-      if (group.length) receipts.push(`omitted ${group.length} ${category} entries; expand: ${group.map(({ entry }) => `E${entry.id}`).join(", ")}`);
-    } else { entryLines.push(text); entryTokens += tokens(text); }
-  }
+  const episodic = budgetFacts(rawText, facts, (f) => renderFact(f, store.listFactRelations(f.id)), config.render.episodicBlockTokens);
+  const active = budgetEntries(entries, config.render.entriesBlockTokens);
+  const recent = episodic.recent, entryLines = active.groups.map((g) => g.text);
+  receipts.push(...episodic.receipts, ...active.receipts);
   // Branch mode appends one message to the live conversation: the raw turns, the facts delivered
   // after earlier notes, and the injected entries are already in the model's context, so the
   // message carries only the range. Subagent mode must carry everything.

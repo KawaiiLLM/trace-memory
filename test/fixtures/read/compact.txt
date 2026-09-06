@@ -1,0 +1,19 @@
+<entries>
+<constraint>
+[E1@1] [constraint/project] 地形层和高度层一起读。
+  supports: F1
+</constraint>
+</entries>
+
+<episodic>
+Raw:
+
+[S1/T2] 2026-09-06T00:00:00Z [turn]
+[Source entry id: T2#user]
+能不能从贴图推断
+
+Recent facts (newest first):
+
+[F1] 2026-09-06T00:00:00Z [decision/user] 地形层和高度层需要一起读。
+  source: T1#user
+</episodic>
