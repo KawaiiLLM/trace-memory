@@ -190,6 +190,8 @@ export function budgetFacts(base: string, facts: Fact[], line: (fact: Fact) => s
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.
 export const xmlBlock = (tag: string, text: string): string => `<${tag}>\n${text}\n</${tag}>`;
-export const renderEntriesBlock = (groups: { category: string; text: string }[]): string =>
-  `<entries>\n${groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text)).join("\n")}\n</entries>`;
+export const renderEntriesBlock = (groups: { category: string; text: string }[]): string => {
+  const blocks = groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text));
+  return blocks.length ? `<entries>\n${blocks.join("\n")}\n</entries>` : ""; // nothing to inject: no block at all
+};
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");

@@ -8,15 +8,17 @@ export function serialize(value: unknown): string {
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 }
 export const hash = (value: unknown) => createHash("sha256").update(serialize(value)).digest("hex");
+// openai-codex-responses (Pi's ChatGPT-subscription Codex backend) sends the same body as openai-responses.
+const responsesApi = (api: string) => api === "openai-responses" || api === "openai-codex-responses";
 export function messageKey(api: string): "messages" | "input" {
-  if (api === "openai-responses") return "input";
+  if (responsesApi(api)) return "input";
   if (api === "anthropic-messages" || api === "openai-completions") return "messages";
   throw new Error(`Unsupported branch payload API: ${api}`);
 }
 export function buildRequest(payload: Body, api: string, instruction: string): Body {
   const key = messageKey(api);
   if (!Array.isArray(payload[key])) throw new Error(`Missing provider message array: ${key}`);
-  const appended = { role: "user", content: api === "openai-responses"
+  const appended = { role: "user", content: responsesApi(api)
     ? [{ type: "input_text", text: instruction }] : instruction };
   return { ...snapshot(payload), [key]: [...snapshot(payload[key]), appended] };
 }
@@ -36,7 +38,7 @@ export function verifyRequest(payload: Body, request: Body, api: string, instruc
   // the expected prefix with the builder being verified.
   const key = messageKey(api), messages = request[key];
   const appendedMessage = Array.isArray(messages) ? messages.at(-1) : undefined;
-  const expectedAppend = { role: "user", content: api === "openai-responses"
+  const expectedAppend = { role: "user", content: responsesApi(api)
     ? [{ type: "input_text", text: instruction }] : instruction };
   const differingPath = (!Array.isArray(messages) ? `$.${key}`
     : difference(payload, { ...request, [key]: messages.slice(0, -1) })

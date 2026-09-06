@@ -192,7 +192,10 @@ export default function (pi: ExtensionAPI) {
     append();
     // Entries once per session (the compaction block carries them afterwards); deliveries on every prompt.
     const parts: string[] = [];
-    if (!state.injected) { parts.push(memory.inject(state.sessionId ?? { projectId: state.projectId })); state.injected = true; save(); }
+    if (!state.injected) {
+      const block = memory.inject(state.sessionId ?? { projectId: state.projectId });
+      if (block) { parts.push(block); state.injected = true; save(); } // nothing yet: try again next prompt
+    }
     if (state.sessionId) { const delivery = memory.deliver(state.sessionId, state.branch); if (delivery) parts.push(delivery); }
     if (!parts.length) return;
     return { message: { customType: tag, content: parts.join("\n\n"), display: false } };

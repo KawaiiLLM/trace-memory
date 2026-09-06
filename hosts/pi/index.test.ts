@@ -209,13 +209,23 @@ test("settle in-flight duplicates cannot erase the candidate continuation", asyn
   expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success", "success"]);
 });
 
-test("entries are injected once per session; later prompts carry only deliveries", async () => {
+test("entries are injected once per session, only once something exists; later prompts carry only deliveries", async () => {
   const h = host();
-  const first = await h.prompt();
-  expect(first?.message?.content).toContain("<entries>");
+  expect((await h.prompt())?.message?.content ?? "").not.toContain("<entries>"); // empty store: no block at all
   await h.answer();
+  const p = h.memory.store.getSession(1)!.projectId;
+  const t = h.memory.store.appendTurn({ sessionId: 1, kind: "turn", startedAt: "2026-09-06T00:00:00Z" });
+  const noted = h.memory.store.commitNoteRun({ run: { kind: "note", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
+    facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
+  if (!noted.ok) throw new Error("setup");
+  h.memory.store.commitSettleRun({ run: { kind: "settle", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
+    { op: "new", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
+  void p;
   const second = await h.prompt("again");
-  expect(second?.message?.content ?? "").not.toContain("<entries>");
+  expect(second?.message?.content).toContain("<entries>");
+  await h.answer();
+  const third = await h.prompt("once more");
+  expect(third?.message?.content ?? "").not.toContain("<entries>");
 });
 
 
