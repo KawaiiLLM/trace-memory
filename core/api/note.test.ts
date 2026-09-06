@@ -1,8 +1,8 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NoteAgentInput, type RunAgentResult, type ConfigOverride } from "./index";
+import { TraceMemory, type NoteAgentInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
 import fixture from "../../test/fixtures/note/turns.json";
 import memories from "../../test/fixtures/note/facts.json";
 

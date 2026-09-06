@@ -1,15 +1,15 @@
-import { readFacade, type ListingOptions, type SearchScope, type MarkInput } from "./read";
-export type { ListingOptions, SearchScope, MarkInput } from "./read";
+import { readFacade, type ListingOptions, type SearchScope, type MarkInput } from "./read.ts";
+export type { ListingOptions, SearchScope, MarkInput } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
-import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index";
-import { finish, renderFact, renderTurn, renderEntryTrace, renderEntryDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index";
-export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index";
-import { openStore, type Store } from "../store/index";
-import type { RunOutcome } from "../model/index";
+import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index.ts";
+import { finish, renderFact, renderTurn, renderEntryTrace, renderEntryDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index.ts";
+import { openStore, type Store } from "../store/index.ts";
+import type { RunOutcome } from "../model/index.ts";
 
-import { freezeSettle, runSettle, type SettleInput, type SettleResult } from "../settle/index";
-export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair, SettleDiagnostic } from "../settle/index";
+import { freezeSettle, runSettle, type SettleInput, type SettleResult } from "../settle/index.ts";
+export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair, SettleDiagnostic } from "../settle/index.ts";
 
 const inFlightSettles = new Set<string>();
 const inFlightNotes = new Set<string>();

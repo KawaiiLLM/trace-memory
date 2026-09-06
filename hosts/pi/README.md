@@ -2,13 +2,14 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
-its exposed store. Both note and settle use subagent mode. No core files changed.
+its exposed store. Both note and settle use subagent mode.
 
-**Live verification is blocked on the installed runtime combination.** Node can
-launch Pi 0.85.0, but cannot import the core's `bun:sqlite`. Bun 1.3.11 fails while
-loading Pi's bundled Undici, before extension loading. The automated tests below
-load this extension under Bun with a stub ExtensionAPI and a fake provider; they
-are not a transcript of a real model conversation.
+Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
+`node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
+repository root, run `npm install`, `npm test`, `npm run typecheck`, and
+`npm run smoke:pi`. The smoke script loads the extension directly under Node
+using the host tests' stub ExtensionAPI and commits one note through a fake
+provider into a temporary database. See below for launching a real Pi session.
 
 ## Configuration
 
@@ -29,10 +30,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","note.triggerAn
   `subagent`, even if a configured mode default requests branch mode. Branch-mode
   calls and abandoned-branch summaries belong to ticket 06.
 
-The existing peer dependency supplies types. For this verification, the local
-`node_modules/@earendil-works/pi-coding-agent` was linked to the installed
-`/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent` (0.85.0), replacing
-local resolution of 0.85.1. No devDependency or lockfile change was needed.
+The peer dependency supplies Pi SDK types. Verification uses the installed
+`@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
+smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
 
@@ -114,13 +114,13 @@ installed `dist/core/session-manager.js` context builder.
 ## Automated verification
 
 ```sh
-bun test hosts/pi/index.test.ts --test-name-pattern smoke
-bun test hosts/pi/index.test.ts
-bun run test
-bun run typecheck
+npm run smoke:pi
+npm test -- hosts/pi/index.test.ts
+npm test
+npm run typecheck
 ```
 
-The smoke test imports the default extension with a stub ExtensionAPI, checks
+The registration test imports the default extension with a stub ExtensionAPI, checks
 registration, runs `/trace`, and asserts that it created no session or model
 request. The host suite also checks trigger boundaries, request-body capture,
 settle continuation, incremental raw, compaction, marker precedence, deliveries
@@ -129,13 +129,13 @@ failures, and absence of Pi imports in core.
 
 ## Manual verification in a real Pi session
 
-Run this after resolving the runtime blocker below. Use an isolated database and
-a directory with a `.trace-memory` marker so the observations are easy to inspect.
-Launch a Bun-compatible Pi runtime with the extension explicitly selected:
+Use an isolated database and a directory with a `.trace-memory` marker so the
+observations are easy to inspect. Launch Pi under Node with the extension
+explicitly selected:
 
 ```sh
 export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/trace.db"}'
-bun /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
+node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
   --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
 ```
 
@@ -162,19 +162,5 @@ bun /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/c
    separate settlement exercise set `settle.triggerUnsettledFacts` to 1 and wait
    for another turn stop after the note commits.
 
-Observed preflight on 2026-09-07 (not a completed manual conversation):
-
-```text
-node <installed Pi>/dist/bundle/cli.js --version
-0.85.0
-node import("bun:sqlite")
-ERR_UNSUPPORTED_ESM_URL_SCHEME: Received protocol 'bun:'
-bun <installed Pi>/dist/bundle/cli.js --version
-TypeError: webidl.util.markAsUncloneable is not a function
-Bun v1.3.11 (macOS arm64)
-```
-
-The last failure is in bundled Undici's cache initialization, before this
-extension loads. No real six-turn transcript or live provider request was
-produced. Resolving Pi/Bun compatibility, or adding a Node-compatible core store,
-is necessary for the live acceptance check; neither was patched silently here.
+Automated verification uses a fake provider; it does not establish live provider
+credentials or replace the manual conversation above.

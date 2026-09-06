@@ -1,8 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, Store } from "./index";
+import { openStore, Store } from "./index.ts";
 
 let dir: string;
 let dbPath: string;
@@ -29,7 +31,7 @@ describe("schema", () => {
     // (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / CREATE VIRTUAL TABLE IF NOT EXISTS).
     const again = openStore(dbPath);
     const tables = again.db
-      .query("SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name")
+      .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name")
       .all() as { name: string }[];
     const names = tables.map((t) => t.name);
     for (const expected of [
@@ -131,7 +133,7 @@ describe("commitNoteRun: local handle resolution", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.facts).toHaveLength(2);
-    const rel = store.db.query("SELECT * FROM fact_relations WHERE from_fact = ?").get(result.facts[1]!.id) as any;
+    const rel = store.db.prepare("SELECT * FROM fact_relations WHERE from_fact = ?").get(result.facts[1]!.id) as any;
     expect(rel.to_fact).toBe(result.facts[0]!.id);
     expect(rel.kind).toBe("support");
   });
@@ -186,7 +188,7 @@ describe("commitNoteRun: local handle resolution", () => {
     expect(result.problems[0]).toMatch(/invalid local handle/);
 
     // no fact was committed...
-    const facts = store.db.query("SELECT * FROM facts").all();
+    const facts = store.db.prepare("SELECT * FROM facts").all();
     expect(facts).toHaveLength(0);
 
     // ...but the run record was, with outcome "failure" (run record written on failure)
@@ -442,11 +444,11 @@ describe("full-text index", () => {
     expect(settled.ok).toBe(true);
     if (!settled.ok) return;
 
-    const factHits = store.db.query("SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?").all("watermark") as { rowid: number }[];
+    const factHits = store.db.prepare("SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?").all("watermark") as { rowid: number }[];
     expect(factHits.map((h) => h.rowid)).toEqual([factId]);
 
     const entryHits = store.db
-      .query("SELECT rowid FROM entry_revisions_fts WHERE entry_revisions_fts MATCH ?")
+      .prepare("SELECT rowid FROM entry_revisions_fts WHERE entry_revisions_fts MATCH ?")
       .all("watermark") as { rowid: number }[];
     expect(entryHits).toHaveLength(1);
   });
@@ -511,7 +513,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(merged.rejected[0]!.reason).toContain("cannot absorb itself");
     expect(store.getEntry(aId)!.status).toBe("active");
     expect(store.getEntry(bId)!.status).toBe("merged");
-    expect(store.db.query("SELECT COUNT(*) AS n FROM entry_links WHERE from_entry = ?").get(bId)).toEqual({ n: 1 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM entry_links WHERE from_entry = ?").get(bId)).toEqual({ n: 1 });
   });
 
   test("a note commit rejects turns, watermarks, and deliveries outside its own session and branch", () => {
@@ -534,8 +536,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       pendingDelivery: { sessionId: s.id, branch: "other" },
     });
     expect(foreignDelivery.ok).toBe(false);
-    expect(store.db.query("SELECT COUNT(*) AS n FROM facts").get()).toEqual({ n: 1 });
-    expect(store.db.query("SELECT COUNT(*) AS n FROM runs WHERE outcome = 'failure'").get()).toEqual({ n: 3 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM facts").get()).toEqual({ n: 1 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome = 'failure'").get()).toEqual({ n: 3 });
   });
 
   test("a local handle may only point at an earlier fact of the batch", () => {
@@ -555,7 +557,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       facts: [{ ...fact, text: "loop", support: [{ target: "$1", strength: "weak" }] }],
     });
     expect(self.ok).toBe(false);
-    expect(store.db.query("SELECT COUNT(*) AS n FROM fact_relations").get()).toEqual({ n: 0 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM fact_relations").get()).toEqual({ n: 0 });
   });
 
   test("cited facts must exist and supports must not be empty; marks bind to an existing revision", () => {
@@ -603,18 +605,27 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("a short write lock held by another process delays the commit instead of losing it", async () => {
     const { s, t } = seed();
-    const holder = Bun.spawn(
-      ["bun", "-e", `const {Database}=require("bun:sqlite");const d=new Database(${JSON.stringify(dbPath)});d.exec("BEGIN IMMEDIATE");await Bun.sleep(180);d.exec("COMMIT");d.close();`],
-      { stdout: "ignore", stderr: "pipe" },
-    );
-    await Bun.sleep(40); // let the other process take the lock
+    const holder = spawn(process.execPath, ["--input-type=module", "-e", `
+      import { DatabaseSync } from "node:sqlite";
+      import { setTimeout } from "node:timers/promises";
+      const d = new DatabaseSync(${JSON.stringify(dbPath)});
+      d.exec("BEGIN IMMEDIATE");
+      process.stdout.write("locked\\n");
+      await setTimeout(180);
+      d.exec("COMMIT");
+      d.close();
+    `], { stdio: ["ignore", "pipe", "inherit"] });
+    const exited = once(holder, "exit");
+    await once(holder.stdout, "data"); // the other process now holds the lock
+    const started = performance.now();
     const r = store.commitNoteRun({
       run: { kind: "note", sessionId: s.id, createdAt: settleAt },
       facts: [{ turnId: t.id, category: "observation", actor: "user", text: "written under contention", source: ["T1#user"], createdAt: settleAt }],
     });
-    await holder.exited;
+    expect(performance.now() - started).toBeGreaterThanOrEqual(100);
+    expect((await exited)[0]).toBe(0);
     expect(r.ok).toBe(true);
-    expect(store.db.query("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 2 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 2 });
   });
 });
 

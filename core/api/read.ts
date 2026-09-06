@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { TraceMemoryConfig } from "./index";
-import type { Store, EntryWithRevision } from "../store/index";
-import { freezeNote } from "../note/index";
-import { budgetEntries, budgetFacts, finish, listingLine, renderEntriesBlock, renderEntry, renderFact, renderTurn, xmlBlock } from "../render/index";
+import type { TraceMemoryConfig } from "./index.ts";
+import type { Store, EntryWithRevision } from "../store/index.ts";
+import { freezeNote } from "../note/index.ts";
+import { budgetEntries, budgetFacts, finish, listingLine, renderEntriesBlock, renderEntry, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string }
 export type SearchScope = "facts" | "entries" | "all" | "raw";

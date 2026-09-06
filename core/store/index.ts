@@ -1,9 +1,9 @@
-// core/store — bun:sqlite behind one plain interface. No abstraction over SQLite;
+// core/store — node:sqlite behind one plain interface. No abstraction over SQLite;
 // this is the only place that knows a database exists. Schema: .scratch/v1/spec.md (Schema).
 // Global ids: turns, facts, and entries use SQLite's per-table AUTOINCREMENT, which never
 // reuses an id and is not reset per session or project — that is the "global id" the spec asks for.
 
-import { Database } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import type {
   Actor,
   Entry,
@@ -26,7 +26,7 @@ import type {
   ToolCall,
   Turn,
   Watermark,
-} from "../model/index";
+} from "../model/index.ts";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS projects (
@@ -409,10 +409,10 @@ function toRun(row: any): Run {
 // ---- Store ----
 
 export class Store {
-  readonly db: Database;
+  readonly db: DatabaseSync;
 
   constructor(path: string) {
-    this.db = new Database(path, { create: true });
+    this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA foreign_keys = ON;");
     // Another process may hold a short write lock (its own note or settle commit); wait instead of failing.
     // Commits run as immediate transactions: a deferred one that reads first and then writes gets
@@ -425,32 +425,48 @@ export class Store {
     this.db.close();
   }
 
+  // Preserve nested transactions with savepoints: project declaration nests a merge.
+  private transaction<T>(fn: () => T): T {
+    const nested = this.db.isTransaction;
+    this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      this.db.exec(nested ? "RELEASE trace_memory_transaction" : "COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec(nested
+          ? "ROLLBACK TO trace_memory_transaction; RELEASE trace_memory_transaction"
+          : "ROLLBACK");
+      } catch { /* Preserve the original error if rollback fails. */ }
+      throw error;
+    }
+  }
+
   // -- projects --
 
   createProject(input: CreateProjectInput): Project {
-    const info = this.db.run("INSERT INTO projects (name, declared_by) VALUES (?, ?)", [input.name, input.declaredBy]);
+    const info = this.db.prepare("INSERT INTO projects (name, declared_by) VALUES (?, ?)").run(input.name, input.declaredBy);
     return this.getProject(Number(info.lastInsertRowid))!;
   }
 
   getProject(id: number): Project | null {
-    const row = this.db.query("SELECT * FROM projects WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM projects WHERE id = ?").get(id);
     return row ? toProject(row) : null;
   }
 
   findProjectByName(name: string): Project | null {
-    const row = this.db.query("SELECT * FROM projects WHERE name = ?").get(name);
+    const row = this.db.prepare("SELECT * FROM projects WHERE name = ?").get(name);
     return row ? toProject(row) : null;
   }
 
   /** Relabel a merged project's sessions and project-scoped entries onto the survivor. */
   mergeProject(fromProjectId: number, intoProjectId: number): void {
-    this.db
-      .transaction(() => {
-        this.db.run("UPDATE projects SET merged_into = ? WHERE id = ?", [intoProjectId, fromProjectId]);
-        this.db.run("UPDATE sessions SET project_id = ? WHERE project_id = ?", [intoProjectId, fromProjectId]);
-        this.db.run("UPDATE entries SET project_id = ? WHERE project_id = ?", [intoProjectId, fromProjectId]);
-      })
-      .immediate();
+    this.transaction(() => {
+      this.db.prepare("UPDATE projects SET merged_into = ? WHERE id = ?").run(intoProjectId, fromProjectId);
+      this.db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+      this.db.prepare("UPDATE entries SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+    });
   }
 
   // -- sessions --
@@ -460,15 +476,12 @@ export class Store {
     if (!input.firstReplyAt) {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
-    const info = this.db.run(
-      "INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration) VALUES (?, ?, ?, ?, ?, ?)",
-      [input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker"],
-    );
+    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration) VALUES (?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker");
     return this.getSession(Number(info.lastInsertRowid))!;
   }
 
   getSession(id: number): Session | null {
-    const row = this.db.query("SELECT * FROM sessions WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
     return row ? toSession(row) : null;
   }
 
@@ -476,12 +489,10 @@ export class Store {
 
   appendTurn(input: AppendTurnInput): Turn {
     const ordinalRow = this.db
-      .query("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM turns WHERE session_id = ?")
+      .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM turns WHERE session_id = ?")
       .get(input.sessionId) as { next: number };
-    const info = this.db.run(
-      `INSERT INTO turns (session_id, ordinal, parent_turn_id, kind, user_prompt, assistant_text, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const info = this.db.prepare(`INSERT INTO turns (session_id, ordinal, parent_turn_id, kind, user_prompt, assistant_text, started_at, ended_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
         input.sessionId,
         ordinalRow.next,
         input.parentTurnId ?? null,
@@ -490,8 +501,7 @@ export class Store {
         input.assistantText ?? null,
         input.startedAt,
         input.endedAt ?? null,
-      ],
-    );
+      );
     return this.getTurn(Number(info.lastInsertRowid))!;
   }
 
@@ -499,50 +509,47 @@ export class Store {
   updateTurn(id: number, patch: { assistantText?: string | null; endedAt?: string | null }): Turn {
     const turn = this.getTurn(id);
     if (!turn) throw new Error(`turn T${id} does not exist`);
-    this.db.run("UPDATE turns SET assistant_text = ?, ended_at = ? WHERE id = ?", [
+    this.db.prepare("UPDATE turns SET assistant_text = ?, ended_at = ? WHERE id = ?").run(
       patch.assistantText === undefined ? turn.assistantText : patch.assistantText,
       patch.endedAt === undefined ? turn.endedAt : patch.endedAt,
       id,
-    ]);
+    );
     return this.getTurn(id)!;
   }
 
   getTurn(id: number): Turn | null {
-    const row = this.db.query("SELECT * FROM turns WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM turns WHERE id = ?").get(id);
     return row ? toTurn(row) : null;
   }
 
   appendToolCall(input: AppendToolCallInput): ToolCall {
     const ordinalRow = this.db
-      .query("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM tool_calls WHERE turn_id = ?")
+      .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM tool_calls WHERE turn_id = ?")
       .get(input.turnId) as { next: number };
-    const info = this.db.run(
-      "INSERT INTO tool_calls (turn_id, ordinal, name, input, result, status) VALUES (?, ?, ?, ?, ?, ?)",
-      [input.turnId, ordinalRow.next, input.name, input.input ?? null, input.result ?? null, input.status],
-    );
-    const row = this.db.query("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
+    const info = this.db.prepare("INSERT INTO tool_calls (turn_id, ordinal, name, input, result, status) VALUES (?, ?, ?, ?, ?, ?)").run(input.turnId, ordinalRow.next, input.name, input.input ?? null, input.result ?? null, input.status);
+    const row = this.db.prepare("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
     return toToolCall(row);
   }
 
   listToolCalls(turnId: number): ToolCall[] {
-    return this.db.query("SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY ordinal").all(turnId).map(toToolCall);
+    return this.db.prepare("SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY ordinal").all(turnId).map(toToolCall);
   }
 
   listSessionFacts(sessionId: number): Fact[] {
-    return this.db.query(
+    return this.db.prepare(
       "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.created_at DESC, f.id DESC",
     ).all(sessionId).map(toFact);
   }
 
   listProjectFacts(projectId: number): Fact[] {
-    return this.db.query(
+    return this.db.prepare(
       `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
        JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.created_at DESC, f.id DESC`,
     ).all(projectId).map(toFact);
   }
 
   listFactRelations(factId: number): FactRelation[] {
-    return (this.db.query(
+    return (this.db.prepare(
       "SELECT * FROM fact_relations WHERE from_fact = ? OR to_fact = ? ORDER BY from_fact, to_fact, kind, strength",
     ).all(factId, factId) as any[]).map((r) => ({
       fromFact: r.from_fact, toFact: r.to_fact, kind: r.kind, strength: r.strength,
@@ -556,14 +563,14 @@ export class Store {
   }
 
   getRun(id: number): Run | null {
-    const row = this.db.query("SELECT * FROM runs WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(id);
     return row ? toRun(row) : null;
   }
 
   // -- facts --
 
   getFact(id: number): Fact | null {
-    const row = this.db.query("SELECT * FROM facts WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM facts WHERE id = ?").get(id);
     return row ? toFact(row) : null;
   }
 
@@ -576,7 +583,7 @@ export class Store {
    */
   commitNoteRun(input: CommitNoteRunInput): CommitNoteResult {
     try {
-      const result = this.db.transaction(() => {
+      const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         const branch = input.run.branch ?? null;
         if (input.watermark && (input.watermark.sessionId !== sessionId || input.watermark.branch !== branch)) {
@@ -592,10 +599,7 @@ export class Store {
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
           }
-          const info = this.db.run(
-            "INSERT INTO facts (turn_id, category, actor, text, quote, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [f.turnId, f.category, f.actor, f.text, f.quote ?? null, JSON.stringify(f.source), f.createdAt],
-          );
+          const info = this.db.prepare("INSERT INTO facts (turn_id, category, actor, text, quote, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(f.turnId, f.category, f.actor, f.text, f.quote ?? null, JSON.stringify(f.source), f.createdAt);
           batchIds.push(Number(info.lastInsertRowid));
         }
         const resolve = (target: string, batchIndex: number): number => {
@@ -615,24 +619,24 @@ export class Store {
         input.facts.forEach((f, i) => {
           const fromFact = batchIds[i]!;
           for (const rel of f.support ?? []) {
-            this.db.run("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'support', ?)", [
+            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'support', ?)").run(
               fromFact,
               resolve(rel.target, i),
               rel.strength,
-            ]);
+            );
           }
           for (const rel of f.negate ?? []) {
-            this.db.run("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'negate', ?)", [
+            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'negate', ?)").run(
               fromFact,
               resolve(rel.target, i),
               rel.strength,
-            ]);
+            );
           }
         });
         let response: Record<string, unknown>;
         try { const parsed = JSON.parse(input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
         catch { response = { output: input.run.response }; }
-        this.db.run("UPDATE runs SET response = ? WHERE id = ?", [JSON.stringify({ ...response, factIds: batchIds }), runId]);
+        this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, factIds: batchIds }), runId);
         if (input.watermark) {
           this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastNotedTurn, undefined);
         }
@@ -640,7 +644,7 @@ export class Store {
           this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
         }
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
-      }).immediate();
+      });
       return { ok: true, runId: result.runId, facts: result.facts };
     } catch (err) {
       return { ok: false, ...this.recordFailure(input.run, err) };
@@ -666,10 +670,8 @@ export class Store {
   }
 
   private insertRun(input: RunInput & { outcome: RunOutcome }): number {
-    const info = this.db.run(
-      `INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, outcome, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, outcome, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         input.kind,
         input.sessionId ?? null,
         input.branch ?? null,
@@ -682,15 +684,14 @@ export class Store {
         input.response ?? null,
         input.outcome,
         input.createdAt,
-      ],
-    );
+      );
     return Number(info.lastInsertRowid);
   }
 
   // -- entries & revisions --
 
   getEntry(id: number): Entry | null {
-    const row = this.db.query("SELECT * FROM entries WHERE id = ?").get(id);
+    const row = this.db.prepare("SELECT * FROM entries WHERE id = ?").get(id);
     return row ? toEntry(row) : null;
   }
 
@@ -702,12 +703,12 @@ export class Store {
   }
 
   getEntryRevision(entryId: number, rev: number): EntryRevision | null {
-    const row = this.db.query("SELECT * FROM entry_revisions WHERE entry_id = ? AND rev = ?").get(entryId, rev);
+    const row = this.db.prepare("SELECT * FROM entry_revisions WHERE entry_id = ? AND rev = ?").get(entryId, rev);
     return row ? toEntryRevision(row) : null;
   }
 
   listEntryLinks(entryId: number): EntryLink[] {
-    return (this.db.query(
+    return (this.db.prepare(
       "SELECT * FROM entry_links WHERE from_entry = ? ORDER BY from_rev, kind, to_entry, to_rev",
     ).all(entryId) as any[]).map((r) => ({
       fromEntry: r.from_entry, fromRev: r.from_rev, kind: r.kind, toEntry: r.to_entry, toRev: r.to_rev,
@@ -716,7 +717,7 @@ export class Store {
 
   listEntryRevisions(entryId: number): EntryRevision[] {
     return this.db
-      .query("SELECT * FROM entry_revisions WHERE entry_id = ? ORDER BY rev ASC")
+      .prepare("SELECT * FROM entry_revisions WHERE entry_id = ? ORDER BY rev ASC")
       .all(entryId)
       .map(toEntryRevision);
   }
@@ -729,7 +730,7 @@ export class Store {
    */
   listVisibleEntries(sessionId: number, projectId: number): EntryWithRevision[] {
     const rows = this.db
-      .query(
+      .prepare(
         `SELECT e.*, r.id AS rev_id, r.rev AS rev_rev, r.text AS rev_text, r.category AS rev_category,
                 r.scope AS rev_scope, r.supports AS rev_supports, r.op AS rev_op, r.because AS rev_because,
                 r.run_id AS rev_run_id, r.created_at AS rev_created_at
@@ -772,7 +773,7 @@ export class Store {
    */
   commitSettleRun(input: CommitSettleRunInput): CommitSettleResult {
     try {
-      const result = this.db.transaction(() => {
+      const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         const projectId = this.getSession(sessionId)!.projectId;
         if (input.watermark && (input.watermark.sessionId !== sessionId || input.watermark.branch !== (input.run.branch ?? null))) {
@@ -792,10 +793,10 @@ export class Store {
           this.setWatermark(sessionId, input.watermark.branch, undefined, input.watermark.lastSettledFact);
         }
         if (input.finalizeResponse) {
-          this.db.run("UPDATE runs SET response = ? WHERE id = ?", [input.finalizeResponse({ committed, rejected }), runId]);
+          this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed, rejected }), runId);
         }
         return { runId, committed, rejected };
-      }).immediate();
+      });
       return { ok: true, ...result };
     } catch (err) {
       const run = { ...input.run };
@@ -827,10 +828,10 @@ export class Store {
     if (op.op === "new") {
       const bad = this.checkCitedFacts("new", op.supports, []);
       if (bad) return { ok: false, reason: bad };
-      const info = this.db.run("INSERT INTO entries (project_id, status, author, current_revision) VALUES (?, 'active', ?, 1)", [
+      const info = this.db.prepare("INSERT INTO entries (project_id, status, author, current_revision) VALUES (?, 'active', ?, 1)").run(
         owner(op.scope),
         op.author,
-      ]);
+      );
       const entryId = Number(info.lastInsertRowid);
       this.insertRevision(entryId, 1, op.text, op.category, op.scope, op.supports, "new", null, runId, op.createdAt);
       return { ok: true, value: { op: "new", handle: op.handle, entryId, rev: 1 } };
@@ -845,7 +846,7 @@ export class Store {
       if (bad) return { ok: false, reason: bad };
       const nextRev = entry.currentRevision + 1;
       this.insertRevision(op.entryId, nextRev, op.text, op.category, op.scope, op.supports, "edit", op.because, runId, op.createdAt);
-      this.db.run("UPDATE entries SET current_revision = ?, project_id = ? WHERE id = ?", [nextRev, owner(op.scope), op.entryId]);
+      this.db.prepare("UPDATE entries SET current_revision = ?, project_id = ? WHERE id = ?").run(nextRev, owner(op.scope), op.entryId);
       return { ok: true, value: { op: "edit", entryId: op.entryId, rev: nextRev } };
     }
 
@@ -869,15 +870,15 @@ export class Store {
       if (bad) return { ok: false, reason: bad };
       const nextRev = into.currentRevision + 1;
       this.insertRevision(op.intoEntryId, nextRev, op.text, op.category, op.scope, op.supports, "merge", op.because, runId, op.createdAt);
-      this.db.run("UPDATE entries SET current_revision = ?, project_id = ? WHERE id = ?", [nextRev, owner(op.scope), op.intoEntryId]);
+      this.db.prepare("UPDATE entries SET current_revision = ?, project_id = ? WHERE id = ?").run(nextRev, owner(op.scope), op.intoEntryId);
       for (const a of absorb) {
-        this.db.run("UPDATE entries SET status = 'merged' WHERE id = ?", [a.entryId]);
-        this.db.run("INSERT INTO entry_links (from_entry, from_rev, kind, to_entry, to_rev) VALUES (?, ?, 'merged_into', ?, ?)", [
+        this.db.prepare("UPDATE entries SET status = 'merged' WHERE id = ?").run(a.entryId);
+        this.db.prepare("INSERT INTO entry_links (from_entry, from_rev, kind, to_entry, to_rev) VALUES (?, ?, 'merged_into', ?, ?)").run(
           a.entryId,
           a.expectedRevision,
           op.intoEntryId,
           nextRev,
-        ]);
+        );
       }
       return { ok: true, value: { op: "merge", entryId: op.intoEntryId, rev: nextRev } };
     }
@@ -892,7 +893,7 @@ export class Store {
     const prior = this.getEntryRevision(op.entryId, entry.currentRevision)!;
     const nextRev = entry.currentRevision + 1;
     this.insertRevision(op.entryId, nextRev, prior.text, prior.category, prior.scope, prior.supports, "archive", op.because, runId, op.createdAt);
-    this.db.run("UPDATE entries SET current_revision = ?, status = 'archived' WHERE id = ?", [nextRev, op.entryId]);
+    this.db.prepare("UPDATE entries SET current_revision = ?, status = 'archived' WHERE id = ?").run(nextRev, op.entryId);
     return { ok: true, value: { op: "archive", entryId: op.entryId, rev: nextRev } };
   }
 
@@ -914,24 +915,21 @@ export class Store {
     runId: number,
     createdAt: string,
   ): void {
-    this.db.run(
-      `INSERT INTO entry_revisions (entry_id, rev, text, category, scope, supports, op, because, run_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [entryId, rev, text, category, scope, JSON.stringify(supports), op, because ? JSON.stringify(because) : null, runId, createdAt],
-    );
+    this.db.prepare(`INSERT INTO entry_revisions (entry_id, rev, text, category, scope, supports, op, because, run_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(entryId, rev, text, category, scope, JSON.stringify(supports), op, because ? JSON.stringify(because) : null, runId, createdAt);
   }
 
   // -- marks --
 
   addMark(entryId: number, rev: number, kind: MarkKind, createdAt: string): Mark {
     if (!this.getEntryRevision(entryId, rev)) throw new Error(`entry E${entryId} has no revision ${rev}`);
-    this.db.run("INSERT INTO marks (entry_id, rev, kind, created_at) VALUES (?, ?, ?, ?)", [entryId, rev, kind, createdAt]);
+    this.db.prepare("INSERT INTO marks (entry_id, rev, kind, created_at) VALUES (?, ?, ?, ?)").run(entryId, rev, kind, createdAt);
     return { entryId, rev, kind, createdAt };
   }
 
   listMarks(entryId: number): Mark[] {
     return this.db
-      .query("SELECT * FROM marks WHERE entry_id = ? ORDER BY created_at ASC")
+      .prepare("SELECT * FROM marks WHERE entry_id = ? ORDER BY created_at ASC")
       .all(entryId)
       .map((row: any) => ({ entryId: row.entry_id, rev: row.rev, kind: row.kind, createdAt: row.created_at }));
   }
@@ -939,43 +937,43 @@ export class Store {
   // -- pending deliveries --
 
   addPendingDelivery(runId: number, sessionId: number, branch: string | null): void {
-    this.db.run("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, ?, NULL)", [
+    this.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, ?, NULL)").run(
       runId,
       sessionId,
       branch,
-    ]);
+    );
   }
 
   listPendingDeliveries(sessionId: number, branch: string | null): PendingDelivery[] {
     return this.db
-      .query("SELECT * FROM pending_deliveries WHERE session_id = ? AND branch IS ? AND delivered_at IS NULL")
+      .prepare("SELECT * FROM pending_deliveries WHERE session_id = ? AND branch IS ? AND delivered_at IS NULL")
       .all(sessionId, branch)
       .map((row: any) => ({ runId: row.run_id, sessionId: row.session_id, branch: row.branch, deliveredAt: row.delivered_at }));
   }
 
   clearPendingDelivery(runId: number, deliveredAt: string): void {
-    this.db.run("UPDATE pending_deliveries SET delivered_at = ? WHERE run_id = ?", [deliveredAt, runId]);
+    this.db.prepare("UPDATE pending_deliveries SET delivered_at = ? WHERE run_id = ?").run(deliveredAt, runId);
   }
 
   listTurns(sessionId: number): Turn[] {
-    return this.db.query("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
+    return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
 
   listRuns(sessionId: number): Run[] {
-    return this.db.query("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
+    return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
 
   listWatermarks(sessionId: number): Watermark[] {
-    return (this.db.query("SELECT branch FROM watermarks WHERE session_id = ? ORDER BY branch").all(sessionId) as { branch: string }[])
+    return (this.db.prepare("SELECT branch FROM watermarks WHERE session_id = ? ORDER BY branch").all(sessionId) as { branch: string }[])
       .map((r) => this.getWatermark(sessionId, r.branch)!);
   }
 
   projectDeclaration(sessionId: number): string {
-    return (this.db.query("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
+    return (this.db.prepare("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
   }
 
   declareProject(sessionId: number, name: string, source: "marker" | "mark"): Project {
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const session = this.getSession(sessionId);
       if (!session) throw new Error(`session S${sessionId} does not exist`);
       if (!["marker", "mark"].includes(source)) throw new Error("invalid project declaration source");
@@ -985,28 +983,28 @@ export class Store {
       let target = this.findProjectByName(name) ?? this.createProject({ name, declaredBy: source });
       while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
       if (prior === "undeclared" && session.projectId !== target.id) this.mergeProject(session.projectId, target.id);
-      this.db.run("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?", [target.id, source, sessionId]);
+      this.db.prepare("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?").run(target.id, source, sessionId);
       // Session entries travel with their creating session even when leaving a declared project.
-      this.db.run(`UPDATE entries SET project_id = ? WHERE id IN (
+      this.db.prepare(`UPDATE entries SET project_id = ? WHERE id IN (
         SELECT e.id FROM entries e JOIN entry_revisions r ON r.entry_id = e.id AND r.rev = e.current_revision
         JOIN entry_revisions first ON first.entry_id = e.id AND first.rev = 1 JOIN runs run ON run.id = first.run_id
-        WHERE r.scope = 'session' AND run.session_id = ?)`, [target.id, sessionId]);
+        WHERE r.scope = 'session' AND run.session_id = ?)`).run(target.id, sessionId);
       return target;
-    }).immediate();
+    });
   }
 
   setMark(entryId: number, kind: MarkKind | "clear", time: string): number {
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const entry = this.getEntry(entryId);
       if (!entry) throw new Error(`entry E${entryId} does not exist`);
-      this.db.run("DELETE FROM marks WHERE entry_id = ? AND rev = ?", [entryId, entry.currentRevision]);
+      this.db.prepare("DELETE FROM marks WHERE entry_id = ? AND rev = ?").run(entryId, entry.currentRevision);
       if (kind !== "clear") this.addMark(entryId, entry.currentRevision, kind, time);
       return entry.currentRevision;
-    }).immediate();
+    });
   }
 
   deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): string {
-    return this.db.transaction(() => {
+    return this.transaction(() => {
       const pending = this.listPendingDeliveries(sessionId, branch);
       const facts = pending.flatMap((p) => {
         const ids = JSON.parse(this.getRun(p.runId)!.response ?? "{}").factIds;
@@ -1016,21 +1014,21 @@ export class Store {
       const text = render(facts);
       for (const p of pending) this.clearPendingDelivery(p.runId, new Date().toISOString());
       return text;
-    }).immediate();
+    });
   }
 
   searchAddresses(query: string, scope: "facts" | "entries" | "all" | "raw", sessionId?: number): string[] {
     if (scope === "raw") {
       if (sessionId === undefined || !this.getSession(sessionId)) throw new Error("raw search requires an existing sessionId");
       const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-      return (this.db.query(`SELECT t.id FROM turns t WHERE t.session_id = ? AND
+      return (this.db.prepare(`SELECT t.id FROM turns t WHERE t.session_id = ? AND
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
         .all(sessionId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     }
-    const facts = scope === "entries" ? [] : (this.db.query("SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rowid").all(query) as { id: number }[]).map((r) => `F${r.id}`);
-    const entries = scope === "facts" ? [] : (this.db.query(`SELECT r.entry_id, r.rev FROM entry_revisions_fts f
+    const facts = scope === "entries" ? [] : (this.db.prepare("SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rowid").all(query) as { id: number }[]).map((r) => `F${r.id}`);
+    const entries = scope === "facts" ? [] : (this.db.prepare(`SELECT r.entry_id, r.rev FROM entry_revisions_fts f
       JOIN entry_revisions r ON r.id = f.rowid WHERE entry_revisions_fts MATCH ? ORDER BY r.entry_id, r.rev`)
       .all(query) as { entry_id: number; rev: number }[]).map((r) => `E${r.entry_id}@${r.rev}`);
     return [...facts, ...entries];
@@ -1040,7 +1038,7 @@ export class Store {
 
   /** Branch facts follow the ancestry frozen by the latest successful note. */
   listBranchFacts(sessionId: number, branch: string): Fact[] {
-    return this.db.query(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
+    return this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
       SELECT t.id, t.parent_turn_id FROM turns t JOIN watermarks w ON t.id = w.last_noted_turn
       WHERE w.session_id = ? AND w.branch = ? AND t.session_id = w.session_id
       UNION
@@ -1051,7 +1049,7 @@ export class Store {
   }
 
   listSettledProjectFacts(projectId: number): Fact[] {
-    const watermarks = this.db.query(`SELECT w.* FROM watermarks w JOIN sessions s ON s.id = w.session_id
+    const watermarks = this.db.prepare(`SELECT w.* FROM watermarks w JOIN sessions s ON s.id = w.session_id
       WHERE s.project_id = ? AND w.last_settled_fact IS NOT NULL`).all(projectId) as any[];
     const ids = new Set(watermarks.flatMap((w) => this.listBranchFacts(w.session_id, w.branch)
       .filter((f) => f.id <= w.last_settled_fact).map((f) => f.id)));
@@ -1059,17 +1057,14 @@ export class Store {
   }
 
   getWatermark(sessionId: number, branch: string): Watermark | null {
-    const row = this.db.query("SELECT * FROM watermarks WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const row = this.db.prepare("SELECT * FROM watermarks WHERE session_id = ? AND branch = ?").get(sessionId, branch);
     return row ? { sessionId: (row as any).session_id, branch: (row as any).branch, lastNotedTurn: (row as any).last_noted_turn, lastSettledFact: (row as any).last_settled_fact } : null;
   }
 
   setWatermark(sessionId: number, branch: string, lastNotedTurn: number | undefined, lastSettledFact: number | undefined): void {
     const existing = this.getWatermark(sessionId, branch);
-    this.db.run(
-      `INSERT INTO watermarks (session_id, branch, last_noted_turn, last_settled_fact) VALUES (?, ?, ?, ?)
-       ON CONFLICT (session_id, branch) DO UPDATE SET last_noted_turn = excluded.last_noted_turn, last_settled_fact = excluded.last_settled_fact`,
-      [sessionId, branch, lastNotedTurn ?? existing?.lastNotedTurn ?? null, lastSettledFact ?? existing?.lastSettledFact ?? null],
-    );
+    this.db.prepare(`INSERT INTO watermarks (session_id, branch, last_noted_turn, last_settled_fact) VALUES (?, ?, ?, ?)
+       ON CONFLICT (session_id, branch) DO UPDATE SET last_noted_turn = excluded.last_noted_turn, last_settled_fact = excluded.last_settled_fact`).run(sessionId, branch, lastNotedTurn ?? existing?.lastNotedTurn ?? null, lastSettledFact ?? existing?.lastSettledFact ?? null);
   }
 }
 

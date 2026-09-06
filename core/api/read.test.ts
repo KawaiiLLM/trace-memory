@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory } from "./index";
+import { TraceMemory } from "./index.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/note/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../test/fixtures/note/turns.json", import.meta.url), "utf8"));

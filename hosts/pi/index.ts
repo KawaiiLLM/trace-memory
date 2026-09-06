@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index";
+import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];

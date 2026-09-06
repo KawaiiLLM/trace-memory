@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type SettleAgentInput, type RunAgentResult, type ConfigOverride } from "./index";
+import { TraceMemory, type SettleAgentInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
 import memories from "../../test/fixtures/note/facts.json";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;

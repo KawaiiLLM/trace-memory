@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { validateNoteOutput, type Fact, type Turn } from "../model/index";
-import type { Store, FactCommitInput, RunInput } from "../store/index";
-import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index";
-import { finish, renderFact, renderTurn, budgetEntries, budgetFacts } from "../render/index";
+import { validateNoteOutput, type Fact, type Turn } from "../model/index.ts";
+import type { Store, FactCommitInput, RunInput } from "../store/index.ts";
+import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
+import { finish, renderFact, renderTurn, budgetEntries, budgetFacts } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/note.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");

@@ -6,9 +6,12 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "skipLibCheck": true,
-    "types": ["bun-types"],
+    "types": ["node"],
     "rootDir": ".",
-    "noEmit": true
+    "noEmit": true,
+    "lib": ["ES2022"],
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true
   },
   "include": ["core", "hosts"]
 }

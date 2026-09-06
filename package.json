@@ -6,15 +6,17 @@
   "license": "MIT",
   "keywords": ["memory", "agent", "claude-code", "pi", "pi-package"],
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "smoke:pi": "node hosts/pi/smoke.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
-    "@types/bun": "latest"
+    "@types/node": "^24.10.9",
+    "vitest": "4.1.11"
   },
   "files": ["core", "hosts", "README.md", "LICENSE"]
 }

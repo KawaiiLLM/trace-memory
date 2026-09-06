@@ -1,7 +1,7 @@
-import { ENTRY_CATEGORIES } from "../model/index";
-import type { EntryLink, EntryRevision, Mark, Fact, FactRelation, ToolCall, Turn } from "../model/index";
-import type { EntryWithRevision } from "../store/index";
-import type { TraceMemoryConfig } from "../api/index";
+import { ENTRY_CATEGORIES } from "../model/index.ts";
+import type { EntryLink, EntryRevision, Mark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import type { EntryWithRevision } from "../store/index.ts";
+import type { TraceMemoryConfig } from "../api/index.ts";
 
 type Budgets = TraceMemoryConfig["render"];
 export interface TurnOptions { tool?: number; full?: boolean; cap?: number }

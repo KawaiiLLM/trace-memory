@@ -9,6 +9,16 @@ core/ is host-agnostic: it must not import any host SDK.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call).
 
+## Runtime and verification
+
+Use Node 24.6.0 and install dependencies with `npm install` at the repository
+root. The store uses built-in `node:sqlite` (`DatabaseSync`), prepared statements,
+and immediate transactions with a five-second busy timeout. Nested transactions
+use savepoints. No external SQLite dependency is needed.
+
+Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
+`npm run smoke:pi` for a direct Node extension import and fake-provider note run.
+
 ## Note and trace host contract (ticket 02)
 
 Call `note({ sessionId, branch, headTurnId, model?, mode? })` after recording raw

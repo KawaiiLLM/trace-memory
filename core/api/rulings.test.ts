@@ -1,11 +1,11 @@
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names quote the ruling; dates are the conversation the ruling was made in (2026-09-06).
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NoteAgentInput, type RunAgentResult } from "./index";
-import { tokens } from "../render/index";
+import { TraceMemory, type NoteAgentInput, type RunAgentResult } from "./index.ts";
+import { tokens } from "../render/index.ts";
 
 let directory: string;
 let memory: TraceMemory;

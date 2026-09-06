@@ -1,7 +1,7 @@
-import type { SettleOutput } from "../model/index";
-import type { EntryOperationInput, RunInput, Store } from "../store/index";
-import { tokens } from "../render/index";
-import type { freezeSettle, NearPair } from "./index";
+import type { SettleOutput } from "../model/index.ts";
+import type { EntryOperationInput, RunInput, Store } from "../store/index.ts";
+import { tokens } from "../render/index.ts";
+import type { freezeSettle, NearPair } from "./index.ts";
 
 export type SettleDiagnostic =
   | { kind: "unsupported_numbers"; entry: string; numbers: string[] }

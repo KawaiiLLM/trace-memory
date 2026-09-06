@@ -1,5 +1,5 @@
-import { describe, expect, test } from "bun:test";
-import { validateNoteOutput, validateSettleOutput } from "./index";
+import { describe, expect, test } from "vitest";
+import { validateNoteOutput, validateSettleOutput } from "./index.ts";
 
 describe("validateNoteOutput", () => {
   const validFact = {

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { TraceMemory } from "./index";
+import { afterEach, beforeEach, expect, test } from "vitest";
+import { TraceMemory } from "./index.ts";
 import fixture from "../../test/fixtures/trace.json";
 
 let memory: ReturnType<typeof TraceMemory>;

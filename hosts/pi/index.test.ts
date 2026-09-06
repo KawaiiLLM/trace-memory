@@ -1,60 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { afterEach, expect, test } from "vitest";
+import { readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import extension from "./index";
-import { TraceMemory } from "../../core/api/index";
+import { host as createHost, reply, noteFact, usage, type Reply } from "./test-host.ts";
 
-type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1];
-type Reply = Awaited<ReturnType<ExtensionContext["modelRegistry"]["complete"]>>;
-const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const reply = (output: string): Reply => ({ role: "assistant", content: [{ type: "text", text: output }], api: "openai-completions", provider: "fake", model: "test", stopReason: "stop", timestamp: 1, usage });
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
-function host(config: Record<string, unknown> = {}, marker?: string) {
-  const dir = mkdtempSync("/private/tmp/trace-memory-host-");
-  if (marker) writeFileSync(join(dir, ".trace-memory"), marker);
-  const dbPath = join(dir, "trace.db");
-  const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
-  const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];
-  const requests: unknown[] = [], conversations: Conversation[] = [];
-  let provider = async (_conversation: Conversation) => reply("[]");
-  const model = { provider: "fake", id: "test" };
-  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s) },
-    sessionManager: { getSessionId: () => "pi-test", getBranch: () => entries, getEntries: () => allEntries },
-    modelRegistry: { find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
-      complete: async (selected: unknown, conversation: Conversation, options: any) => {
-        conversations.push(structuredClone(conversation));
-        const payload = { providerSpecific: true, model: selected, system: conversation.systemPrompt, messages: structuredClone(conversation.messages), tools: [] };
-        await options.onPayload(payload);
-        requests.push(structuredClone(payload));
-        payload.providerSpecific = false; // The saved request must not alias provider state.
-        return provider(conversation);
-      } },
-  } as unknown as ExtensionContext;
-  const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
-    registerCommand: (name: string, command: any) => commands.set(name, command),
-    appendEntry: (customType: string, data: unknown) => { const entry = { id: `e${allEntries.length}`, type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
-  } as unknown as ExtensionAPI;
-  const previous = process.env.TRACE_MEMORY_CONFIG;
-  process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...config });
-  try { extension(pi); } finally { if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
-  const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); });
-  const emit = async (name: string, event: object = {}) => hooks.get(name)?.({ type: name, ...event }, ctx);
-  const drain = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r)); };
-  const prompt = (prompt = "用 pnpm，不要 npm") => emit("before_agent_start", { prompt, systemPrompt: "host" });
-  const answer = (value = "好的。") => emit("message_end", { message: reply(value) });
-  const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
-  disposers.push(async () => { await emit("session_shutdown", { reason: "quit" }); memory.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { dir, ctx, entries, hooks, tools, commands, notices, memory, emit, prompt, answer, turn, drain, requests, conversations,
-    provider: (fn: typeof provider) => { provider = fn; } };
-}
-function noteFact(conversation: Conversation) {
-  const input = String(conversation.messages[0]!.content);
-  const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  return reply(JSON.stringify([{ turn: address[0], title: "Package manager", topic: "tooling", facts: [
-    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", timestamp: "2026-09-07T00:00:00Z", source: [`T${address[2]}#user`] },
-  ] }]));
+function host(...args: Parameters<typeof createHost>) {
+  const h = createHost(...args);
+  disposers.push(h.dispose);
+  return h;
 }
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
@@ -220,7 +174,7 @@ test("session replacement does not close the facade or launch extraction", async
 test("core contains no Pi imports and host imports core only through the facade", () => {
   const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]);
   for (const file of files("core").filter(f => f.endsWith(".ts"))) expect(readFileSync(file, "utf8")).not.toMatch(/(?:from\s*|import\s*\(|require\s*\()["'][^"']*(?:pi-coding-agent|pi-ai|pi-agent-core|hosts\/pi)/);
-  expect(readFileSync("hosts/pi/index.ts", "utf8").match(/from "\.\.\/\.\.\/core\/[^\"]+"/g)).toEqual(['from "../../core/api/index"']);
+  expect(readFileSync("hosts/pi/index.ts", "utf8").match(/from "\.\.\/\.\.\/core\/[^\"]+"/g)).toEqual(['from "../../core/api/index.ts"']);
 });
 
 test("token threshold uses growth since watermark, including the CJK heuristic", async () => {

@@ -1,17 +1,17 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { validateSettleOutput, type Fact, type SettleOutput } from "../model/index";
-import { commitFinal, type SettleDiagnostic } from "./commit";
-import type { CommittedEntryOp, RejectedEntryOp, Store, RunInput } from "../store/index";
-import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index";
-import { finish, renderEntry, renderFact, budgetEntries, budgetFacts } from "../render/index";
+import { validateSettleOutput, type Fact, type SettleOutput } from "../model/index.ts";
+import { commitFinal, type SettleDiagnostic } from "./commit.ts";
+import type { CommittedEntryOp, RejectedEntryOp, Store, RunInput } from "../store/index.ts";
+import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
+import { finish, renderEntry, renderFact, budgetEntries, budgetFacts } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/settle.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
 
-export type { SettleDiagnostic } from "./commit";
+export type { SettleDiagnostic } from "./commit.ts";
 
 export interface SettleInput { sessionId: number; branch: string; model?: string; mode?: "branch" | "subagent" }
 export interface SettleRange { from: string; to: string; facts: Fact[] }
