@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ENTRY_CATEGORIES, validateSettleOutput, type Fact, type SettleOutput } from "../model/index";
-import type { Store, RunInput } from "../store/index";
+import { commitFinal, type SettleDiagnostic } from "./commit";
+import type { CommittedEntryOp, RejectedEntryOp, Store, RunInput } from "../store/index";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index";
 import { finish, renderEntry, renderFact, tokens } from "../render/index";
 
@@ -9,6 +10,8 @@ const prompt = readFileSync(new URL("../prompts/settle.md", import.meta.url), "u
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
+
+export type { SettleDiagnostic } from "./commit";
 
 export interface SettleInput { sessionId: number; branch: string; model?: string; mode?: "branch" | "subagent" }
 export interface SettleRange { from: string; to: string; facts: Fact[] }
@@ -31,6 +34,7 @@ export type SettleResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; candidateRunId: number; output: SettleOutput;
+      committed: CommittedEntryOp[]; rejected: RejectedEntryOp[]; diagnostics: SettleDiagnostic[];
       range: SettleRange; readEntryRevisions: { entryId: number; rev: number }[]; unansweredNear: NearPair[] };
 
 export function freezeSettle(store: Store, input: SettleInput, config: TraceMemoryConfig) {
@@ -39,7 +43,7 @@ export function freezeSettle(store: Store, input: SettleInput, config: TraceMemo
   if (typeof input.branch !== "string" || !input.branch) throw new Error("settle requires a non-empty branch");
   const after = store.getWatermark(session.id, input.branch)?.lastSettledFact ?? 0;
   const facts = store.listProjectFacts(session.projectId);
-  const rangeFacts = facts.filter((f) => f.id > after).sort((a, b) => a.id - b.id);
+  const rangeFacts = store.listBranchFacts(session.id, input.branch).filter((f) => f.id > after).sort((a, b) => a.id - b.id);
   const entries = store.listVisibleEntries(session.id, session.projectId);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
@@ -55,7 +59,7 @@ export function freezeSettle(store: Store, input: SettleInput, config: TraceMemo
         "Cited fact:", lines.get(edge.toFact)!, "Negating fact:", lines.get(fact.id)!].join("\n"));
     }
   }
-  return { sessionId: session.id, branch: input.branch, rangeFacts, context: facts.filter((f) => f.id <= after),
+  return { projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listSettledProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
     entries, lines, reminders, model: input.model ?? "session",
     mode: input.mode ?? (config.settle.subagentModeDefault ? "subagent" : "branch"), threshold: config.settle.nearThreshold };
 }
@@ -125,8 +129,9 @@ export async function runSettle(store: Store, frozen: ReturnType<typeof freezeSe
       if (problems.length || !output) outcome = "bounced";
     }
     run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, problems, round });
-    const runId = store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id;
-    return { outcome, runId, problems, output, result };
+    const runId = round === "final" && outcome === "success" ? 0
+      : store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id;
+    return { outcome, runId, problems, output, result, run };
   }
   const candidate = await attempt("candidate", initial);
   if (candidate.outcome !== "success") return { outcome: candidate.outcome, runId: candidate.runId, problems: candidate.problems };
@@ -148,5 +153,7 @@ export async function runSettle(store: Store, frozen: ReturnType<typeof freezeSe
   const unansweredNear = near.filter((p) => surviving.has(p.candidate) &&
     !output.edit.some((e) => e.id === p.entry) && !output.merge.some((e) => e.into === p.entry) &&
     !output.near_ack.some((ack) => ack.candidate === p.candidate && ack.entry === p.entry));
-  return { outcome: "success", runId: final.runId, candidateRunId: candidate.runId, output, range, readEntryRevisions, unansweredNear };
+  const applied = commitFinal(store, frozen, output, final.run, unansweredNear);
+  if (applied.outcome !== "success") return applied;
+  return { ...applied, candidateRunId: candidate.runId, output, range, readEntryRevisions, unansweredNear };
 }

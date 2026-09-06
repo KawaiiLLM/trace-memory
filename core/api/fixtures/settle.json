@@ -1,0 +1,38 @@
+{
+  "source": "/tmp/mnemo-sim/v7m: settle_1.json E2; facts.jsonl F2, F35",
+  "facts": [
+    {
+      "id": 2,
+      "category": "observation",
+      "actor": "agent",
+      "text": "mapC 编辑器整表导出（40000 格，UTF-8，2,175,557 字节，取自 Windows 机 Downloads 目录）中，编辑器标注为「海」的地形值全图 2200 格里只有 551 格处于水位高度，编辑器标注为「荒地」的地形值 2481 格里有 1993 格处于水位高度。",
+      "quote": "全图 2200 格里只有 551 格在水位上……2481 格里有 1993 格恰好在水位上",
+      "timestamp": "2026-08-16 03:05",
+      "source": [
+        "S18993/T249#tools",
+        "S18993/T249#assistant"
+      ]
+    },
+    {
+      "id": 35,
+      "category": "observation",
+      "actor": "agent",
+      "text": "低处（高度=水位）的 raw9 格中 1989/1993 个在运行时变为 terrain 8（海）；高处的 raw9 格共 488 个，其中 380 个运行时仍为 terrain 9（丘陵），其余主要转为 13/14/8。",
+      "timestamp": "2026-08-20 10:50",
+      "source": [
+        "S21682/T28#tools",
+        "S21682/T28#assistant"
+      ]
+    }
+  ],
+  "entry": {
+    "text": "mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。",
+    "scope": "project",
+    "category": "reference",
+    "supports": [
+      "F2",
+      "F35"
+    ],
+    "handle": "$e1"
+  }
+}

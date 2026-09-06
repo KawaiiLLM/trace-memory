@@ -129,10 +129,14 @@ Four checked-in goldens cover current entry, snapshot, diff, and negation walk.
 ## Settle feedback host contract (ticket 03b)
 
 `settle({ sessionId, branch, model?, mode? })` returns `empty` without a call
-when there are no project facts after that branch's `lastSettledFact`.
-Otherwise it freezes all such facts in allocation-id order, visible active
-entry revisions (including budget omissions), relation lines, and reminders
-before the candidate call. Context is project facts at or before the watermark,
+when there are no facts of this session on this branch after its own
+`lastSettledFact`. Branch membership follows turn ancestry ending at the branch's
+`lastNotedTurn`; hosts must record notes with their branch watermark. A branch
+without a noted head has no settle range. Shared ancestors belong to both branches.
+The range freezes these facts in allocation-id order, visible active entry
+revisions (including budget omissions), relation lines, and reminders before the
+candidate call. Context remains project-wide: facts covered by their own
+session/branch settlement watermarks, excluding the current range,
 ordered by descending timestamp then id. All range facts are retained; their
 rendered size consumes the episodic budget before context. Entries follow the
 note category budget policy. Reminders and feedback are unbudgeted so every
@@ -171,8 +175,56 @@ Every model attempt records the exact provider request, raw output, usage,
 read revisions, problems, and round. Bounces return problems and record failure;
 there is no automatic retry. Missing requests and thrown errors follow note's
 failure/cancellation policy. Successful candidate records survive final failure.
-No entries, watermarks, or deliveries change; accounting, reference/revision
-checks, application, and other diagnostics belong to 03c. `success` here means
-validated model output, not applied settlement. Deduplication follows this
-ticket's session/branch requirement across facades on the same database, rather
-than the broader spec's project-wide wording; `dropped` creates no record.
+Final success applies settlement (ticket 03c). Deduplication is per database,
+session and branch across facades in this process. Other sessions and branches
+remain independent while either round is pending. `dropped` creates no record.
+
+## Settle commit contract (ticket 03c)
+
+The final output resolves entry targets against frozen visible active revisions.
+Supports, because, and not-admitted addresses must be project facts present at
+freeze time with IDs no greater than the frozen range end (including facts from
+other sessions and budget-omitted context). The same rule applies to not_admitted;
+valid earlier facts may be declined without changing the range. Missing,
+foreign, or later facts and unread entries bounce. Duplicate new handles,
+repeated operation targets (including absorbed entries), self-merges and empty
+merges bounce rather than depending on array order. Operations apply in
+new/edit/merge/delete order; delete maps to the store's archive operation.
+New entries use the selected model identifier as their author.
+
+Accounting projects the complete final operations onto the frozen visible entry
+set, removing archived and absorbed entries and replacing edited supports.
+Resulting session scope retains the entry's original creating session, matching
+the store's visibility contract. Every user fact and every question in range
+must remain cited or have a not_admitted reason. Because is change rationale,
+not a support citation. Accounting failures list uncited fact addresses and
+write only the final failure record; there is no third model call.
+
+Success adds `committed`, `rejected`, and `diagnostics` to the 03b result fields.
+Committed operations carry `op`, `entryId`, `rev`, and `handle` for new entries;
+rejections carry the resolved operation and its reason. The final record's
+response includes these same arrays. Revision conflicts reject only their
+operation, including the whole merge if any participant moved. The run record,
+revisions, merge links, diagnostics and this session/branch's lastSettledFact
+advance to the frozen range end in one transaction, preserving lastNotedTurn.
+No pending delivery is created. Candidate records survive transaction failure.
+
+Diagnostics are structured objects: `unsupported_numbers` (entry identity and
+numbers), `over_200_tokens` (entry identity and estimated tokens),
+`unanswered_near` (03b pairs), and `lost_citations` (fact addresses). Number and
+length checks cover all proposed new/edit/merge texts, even rejected operations;
+new entry identities use their local handles. Numeric matching compares exact
+ASCII digit lexemes with internal decimal/grouping separators against supports'
+text and quote, without numeric normalization; because does not count as evidence.
+The length threshold is strictly greater than 200 using render.tokens, resolving
+the stale 200-character wording in Further Notes. Lost citations include any
+fact supported in the proposed resulting set by a rejected operation but absent
+from all actual resulting visible entries, including earlier and agent facts.
+They do not bounce or undo the watermark. These checks derive no entry status.
+
+The fixture `api/fixtures/settle.json` copies E2 from v7m's settle_1.json and its
+supporting facts F2/F35 from facts.jsonl. Chinese memory content is preserved;
+only the entry category and candidate handle are adapted to the core contract.
+Tests remap fact addresses to allocated IDs. Existing 03b tests now expect
+application and session/branch ranges, explicitly decline unretained facts, and
+add fresh facts before repeat runs; committed entries participate in later NEAR.

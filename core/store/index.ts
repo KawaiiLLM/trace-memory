@@ -292,6 +292,8 @@ export type EntryOperationInput =
 export interface CommitSettleRunInput {
   run: RunInput; // sessionId required: entry ownership is derived from the run's session
   operations: EntryOperationInput[];
+  // Runs inside the transaction after application, so diagnostics observe the committed entry set.
+  finalizeResponse?: (result: { committed: CommittedEntryOp[]; rejected: RejectedEntryOp[] }) => string;
   watermark?: { sessionId: number; branch: string; lastSettledFact: number };
 }
 
@@ -771,11 +773,19 @@ export class Store {
         if (input.watermark) {
           this.setWatermark(sessionId, input.watermark.branch, undefined, input.watermark.lastSettledFact);
         }
+        if (input.finalizeResponse) {
+          this.db.run("UPDATE runs SET response = ? WHERE id = ?", [input.finalizeResponse({ committed, rejected }), runId]);
+        }
         return { runId, committed, rejected };
       }).immediate();
       return { ok: true, ...result };
     } catch (err) {
-      return { ok: false, ...this.recordFailure(input.run, err) };
+      const run = { ...input.run };
+      if (input.finalizeResponse && run.response) {
+        try { run.response = JSON.stringify({ ...JSON.parse(run.response), problems: [err instanceof Error ? err.message : String(err)] }); }
+        catch { /* Preserve non-JSON responses supplied by direct store callers. */ }
+      }
+      return { ok: false, ...this.recordFailure(run, err) };
     }
   }
 
@@ -930,6 +940,26 @@ export class Store {
   }
 
   // -- watermarks --
+
+  /** Branch facts follow the ancestry frozen by the latest successful note. */
+  listBranchFacts(sessionId: number, branch: string): Fact[] {
+    return this.db.query(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
+      SELECT t.id, t.parent_turn_id FROM turns t JOIN watermarks w ON t.id = w.last_noted_turn
+      WHERE w.session_id = ? AND w.branch = ? AND t.session_id = w.session_id
+      UNION
+      SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
+      WHERE t.session_id = ?
+    ) SELECT f.* FROM facts f JOIN lineage l ON f.turn_id = l.id ORDER BY f.id`)
+      .all(sessionId, branch, sessionId).map(toFact);
+  }
+
+  listSettledProjectFacts(projectId: number): Fact[] {
+    const watermarks = this.db.query(`SELECT w.* FROM watermarks w JOIN sessions s ON s.id = w.session_id
+      WHERE s.project_id = ? AND w.last_settled_fact IS NOT NULL`).all(projectId) as any[];
+    const ids = new Set(watermarks.flatMap((w) => this.listBranchFacts(w.session_id, w.branch)
+      .filter((f) => f.id <= w.last_settled_fact).map((f) => f.id)));
+    return this.listProjectFacts(projectId).filter((f) => ids.has(f.id));
+  }
 
   getWatermark(sessionId: number, branch: string): Watermark | null {
     const row = this.db.query("SELECT * FROM watermarks WHERE session_id = ? AND branch = ?").get(sessionId, branch);

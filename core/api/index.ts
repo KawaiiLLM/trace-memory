@@ -7,7 +7,7 @@ import { openStore, type Store } from "../store/index";
 import type { RunOutcome } from "../model/index";
 
 import { freezeSettle, runSettle, type SettleInput, type SettleResult } from "../settle/index";
-export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair } from "../settle/index";
+export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair, SettleDiagnostic } from "../settle/index";
 
 const inFlightSettles = new Set<string>();
 const inFlightNotes = new Set<string>();
@@ -187,6 +187,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       } finally { inFlightNotes.delete(key); }
     },
     settle: async (input) => {
+      const session = store.getSession(input.sessionId);
+      if (!session) throw new Error(`session S${input.sessionId} does not exist`);
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
       if (inFlightSettles.has(key)) return { outcome: "dropped" };
       inFlightSettles.add(key);
