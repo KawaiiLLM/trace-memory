@@ -125,3 +125,54 @@ to English; Chinese text, quotes, and source addresses are preserved. Tests rema
 entry/fact IDs to allocated IDs. Simulation revision `at` values are retained as
 stored times because the source has settle-boundary labels, not wall-clock times.
 Four checked-in goldens cover current entry, snapshot, diff, and negation walk.
+
+## Settle feedback host contract (ticket 03b)
+
+`settle({ sessionId, branch, model?, mode? })` returns `empty` without a call
+when there are no project facts after that branch's `lastSettledFact`.
+Otherwise it freezes all such facts in allocation-id order, visible active
+entry revisions (including budget omissions), relation lines, and reminders
+before the candidate call. Context is project facts at or before the watermark,
+ordered by descending timestamp then id. All range facts are retained; their
+rendered size consumes the episodic budget before context. Entries follow the
+note category budget policy. Reminders and feedback are unbudgeted so every
+matching visible entry and both relation strengths remain available.
+
+The host receives `SettleAgentInput` with `round: candidate|final`. Candidate
+`input` contains the frozen context. Final `input` is the feedback text; its
+`continuation` carries the prior exact provider `request`, full `response`
+(`RunAgentResult`), and one `{ role: "user", content }` message with that same
+text. Continue the candidate conversation and append this message once; do not
+append `input` again. The host chooses the provider-specific continuation form.
+The checklist is the exact body between the prompt's second-round heading and
+the next heading, preserving Markdown quote markers and boundary whitespace.
+The prompt itself mentions NEAR/CLOSER in both calls; computed hints appear only
+in the final call. Default model is the host-resolved `session` alias; default
+mode is `subagent`, controlled by `settle.subagentModeDefault` or the call.
+
+Lexical matching uses sets of adjacent Unicode characters after lowercasing
+and removing everything except letters and numbers. Empty bigram sets score
+zero. NEAR includes every visible active entry at or above
+`settle.nearThreshold` (default `0.28`), sorted by descending Jaccard score with
+entry-id ties; there is no top-k cap. Edit/merge targets exclude themselves.
+CLOSER applies the same threshold to range facts for every visible open/goal,
+with fact-id ties. Both searches include entries omitted by the initial budget.
+
+Success returns the validated `output`, final `runId`, `candidateRunId`, frozen
+`range` (inclusive `from`/`to` addresses and exact `facts`), read revisions, and
+`unansweredNear`. These are the original feedback pairs whose candidate identity
+remains in the final output and whose neighbour is neither edited, merged into,
+nor acknowledged by that exact candidate/entry pair. Withdrawn candidates have
+no remaining pair; archiving a neighbour is not one of the prompt's answers.
+Changed text under the same identity retains its review obligation. No new
+neighbour search or third round follows the final output.
+
+Every model attempt records the exact provider request, raw output, usage,
+read revisions, problems, and round. Bounces return problems and record failure;
+there is no automatic retry. Missing requests and thrown errors follow note's
+failure/cancellation policy. Successful candidate records survive final failure.
+No entries, watermarks, or deliveries change; accounting, reference/revision
+checks, application, and other diagnostics belong to 03c. `success` here means
+validated model output, not applied settlement. Deduplication follows this
+ticket's session/branch requirement across facades on the same database, rather
+than the broader spec's project-wide wording; `dropped` creates no record.

@@ -31,7 +31,7 @@ test("opens a store at the given path and applies default config", () => {
 test("a partial config overrides only the sections given, keeping the rest default", () => {
   const dir2 = mkdtempSync(join(tmpdir(), "trace-memory-api-"));
   const other = TraceMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { settle: { subagentModeDefault: false, triggerUnsettledFacts: 10 } });
-  expect(other.config.settle).toEqual({ subagentModeDefault: false, triggerUnsettledFacts: 10 });
+  expect(other.config.settle).toEqual({ subagentModeDefault: false, triggerUnsettledFacts: 10, nearThreshold: 0.28 });
   expect(other.config.render).toEqual(DEFAULT_CONFIG.render);
   expect(other.config.note).toEqual(DEFAULT_CONFIG.note);
   other.close();
@@ -39,8 +39,8 @@ test("a partial config overrides only the sections given, keeping the rest defau
 });
 
 describe("methods not yet implemented in this ticket", () => {
-  test("settle throws NotImplementedError", async () => {
-    await expect(memory.settle({})).rejects.toBeInstanceOf(NotImplementedError);
+  test("settle rejects a missing session", async () => {
+    await expect(memory.settle({ sessionId: 1, branch: "main" })).rejects.toThrow("session S1 does not exist");
   });
   test("compact throws NotImplementedError", () => {
     expect(() => memory.compact({})).toThrow(NotImplementedError);

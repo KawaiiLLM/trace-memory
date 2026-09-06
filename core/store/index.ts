@@ -518,6 +518,13 @@ export class Store {
     ).all(sessionId).map(toFact);
   }
 
+  listProjectFacts(projectId: number): Fact[] {
+    return this.db.query(
+      `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
+       JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.created_at DESC, f.id DESC`,
+    ).all(projectId).map(toFact);
+  }
+
   listFactRelations(factId: number): FactRelation[] {
     return (this.db.query(
       "SELECT * FROM fact_relations WHERE from_fact = ? OR to_fact = ? ORDER BY from_fact, to_fact, kind, strength",

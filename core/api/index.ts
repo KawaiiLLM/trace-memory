@@ -6,6 +6,10 @@ export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index";
 import { openStore, type Store } from "../store/index";
 import type { RunOutcome } from "../model/index";
 
+import { freezeSettle, runSettle, type SettleInput, type SettleResult } from "../settle/index";
+export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair } from "../settle/index";
+
+const inFlightSettles = new Set<string>();
 const inFlightNotes = new Set<string>();
 let memoryDatabaseId = 0;
 
@@ -30,6 +34,7 @@ export interface TraceMemoryConfig {
   settle: {
     subagentModeDefault: boolean;
     triggerUnsettledFacts: number;
+    nearThreshold: number;
   };
 }
 
@@ -52,6 +57,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   settle: {
     subagentModeDefault: true,
     triggerUnsettledFacts: 50,
+    nearThreshold: 0.28,
   },
 };
 
@@ -92,7 +98,7 @@ export interface TraceMemory {
   readonly config: TraceMemoryConfig;
   close(): void;
   note(input: NoteInput): Promise<NoteResult>;
-  settle(input: unknown): Promise<unknown>;
+  settle(input: SettleInput): Promise<SettleResult>;
   compact(input: unknown): unknown;
   inject(input: unknown): unknown;
   trace(address: string): string;
@@ -180,8 +186,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return await runNote(store, frozen, runAgent, cfg, trace);
       } finally { inFlightNotes.delete(key); }
     },
-    settle: async () => {
-      throw new NotImplementedError("settle");
+    settle: async (input) => {
+      const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
+      if (inFlightSettles.has(key)) return { outcome: "dropped" };
+      inFlightSettles.add(key);
+      try {
+        const frozen = freezeSettle(store, input, cfg);
+        return await runSettle(store, frozen, runAgent, cfg);
+      } finally { inFlightSettles.delete(key); }
     },
     compact: () => {
       throw new NotImplementedError("compact");
