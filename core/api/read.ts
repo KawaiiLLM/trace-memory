@@ -58,16 +58,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   };
   return {
     trace,
-    inject: (target: number | { projectId: number }, branch: string | null = "main"): string => {
+    // Entries are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
+    // prompt (ruling 08:53: note results are injected with the next user message). Two reads, one job each.
+    inject: (target: number | { projectId: number }): string => {
       if (typeof target === "object") {
-        // First prompt: no session id yet (allocated at the first reply), so no session entries and no deliveries.
+        // First prompt: no session id yet (allocated at the first reply), so no session entries.
         if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
         return finish(entriesFor(target.projectId));
       }
-      const sessionId = target;
-      const block = entries(sessionId);
-      const delivery = store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("pending_notes", facts.map((f) => factLine(f.id)).join("\n")) : "");
-      return finish({ content: block.content + (delivery ? `\n\n${delivery}` : ""), receipts: block.receipts });
+      return finish(entries(target));
+    },
+    deliver: (sessionId: number, branch: string | null = "main"): string => {
+      session(sessionId);
+      return store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("pending_notes", facts.map((f) => factLine(f.id)).join("\n")) : "");
     },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
       const block = entries(sessionId);

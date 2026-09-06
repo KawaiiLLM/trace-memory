@@ -51,7 +51,9 @@ test("injection stays byte-identical across a no-op note and has no XML attribut
   const before = memory.inject(s.id), next = turn(s.id, fixture.observation, t.id);
   expect((await memory.note({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
   expect(memory.inject(s.id)).toBe(before);
+  expect(memory.deliver(s.id, "main")).toBe(""); // the no-op note wrote no facts; its delivery is consumed anyway
   expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+  expect(memory.inject(s.id)).toBe(before);
   for (const tag of before.match(/<[^>]+>/g)!) expect(tag).toMatch(/^<\/?[a-z_]+>$/);
 });
 
@@ -119,12 +121,13 @@ test("pending delivery is exact to its run and branch, consumed once, including 
   const s = session(), t = turn(s.id);
   const first = note(s.id, t.id, "first delivery", "main", true);
   const second = note(s.id, t.id, "second delivery", "other", true);
-  expect(memory.inject(s.id, "unrelated")).not.toContain("pending_notes");
-  const delivery = memory.inject(s.id, "main");
+  expect(memory.deliver(s.id, "unrelated")).toBe("");
+  const delivery = memory.deliver(s.id, "main");
   expect(delivery).toContain("first delivery"); expect(delivery).not.toContain("second delivery");
-  expect(memory.inject(s.id, "main")).not.toContain("pending_notes");
+  expect(memory.deliver(s.id, "main")).toBe("");
+  expect(memory.inject(s.id)).not.toContain("pending_notes");
   expect(memory.store.listPendingDeliveries(s.id, "other").map((p) => p.runId)).toEqual([second.runId]);
-  expect(memory.inject(s.id, "other")).toContain("second delivery");
+  expect(memory.deliver(s.id, "other")).toContain("second delivery");
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
 });
 
@@ -232,7 +235,7 @@ test("a legacy delivery without fact ownership is preserved on render failure", 
   const s = session();
   const run = memory.store.recordRun({ sessionId: s.id, branch: "main", kind: "note", outcome: "success", createdAt: time, response: "{}" });
   memory.store.addPendingDelivery(run.id, s.id, "main");
-  expect(() => memory.inject(s.id)).toThrow("lacks committed fact IDs");
+  expect(() => memory.deliver(s.id)).toThrow("lacks committed fact IDs");
   expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
 });
 
