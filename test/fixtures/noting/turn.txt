@@ -19,7 +19,7 @@ It's UTF-8, not GBK. Building the full value→name mapping over all 40000 cells
 
 Confirmed — and it's a clean answer to what you spotted. Checking one thing before I report:
 
-That's it — you spotted a real swap. Recording it:
+That's it — you spotted a real swap. Noting it:
 
 **你看对了，而且这是这张图上第一个真正确定下来的地形。**
 

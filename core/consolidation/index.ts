@@ -2,26 +2,26 @@ import type { bindTools } from "../api/tools.ts";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { type Fact, type MemoryBatch } from "../model/index.ts";
-import { type IntegrationDiagnostic } from "./commit.ts";
+import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { finish, renderKnowledge, renderFact, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
-const prompt = readFileSync(new URL("../prompts/integration.md", import.meta.url), "utf8");
+const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
 
-export type { IntegrationDiagnostic } from "./commit.ts";
+export type { ConsolidationDiagnostic } from "./commit.ts";
 
-export interface IntegrateInput { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
-export interface IntegrationRange { from: string; to: string; facts: Fact[] }
+export interface ConsolidateInput { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
+export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
-export interface IntegrationAgentInput {
-  kind: "integration";
+export interface ConsolidationAgentInput {
+  kind: "consolidation";
   sessionId: number;
   branch: string;
-  range: IntegrationRange;
+  range: ConsolidationRange;
   readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   mode: "branch" | "subagent";
@@ -33,19 +33,19 @@ export interface IntegrationAgentInput {
   tools: import("../api/tools.ts").ToolDefinition[];
   reportRequest(request: unknown): void;
 }
-export type IntegrateResult =
+export type ConsolidateResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
-      committed: CommittedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
-      range: IntegrationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[]; unansweredNear: NearPair[] };
+      committed: CommittedKnowledgeOp[]; diagnostics: ConsolidationDiagnostic[];
+      range: ConsolidationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[]; unansweredNear: NearPair[] };
 
-export function freezeIntegration(store: Store, input: IntegrateInput, config: TraceMemoryConfig) {
+export function freezeConsolidation(store: Store, input: ConsolidateInput, config: TraceMemoryConfig) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
-  if (typeof input.branch !== "string" || !input.branch) throw new Error("integration requires a non-empty branch");
+  if (typeof input.branch !== "string" || !input.branch) throw new Error("consolidation requires a non-empty branch");
   const facts = store.listProjectFacts(session.projectId);
-  const rangeFacts = store.integrationBatch(session.id, input.branch, input.headTurnId);
+  const rangeFacts = store.consolidationBatch(session.id, input.branch, input.headTurnId);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -62,9 +62,9 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
         "Cited fact:", lines.get(edge.toFact)!, "Negating fact:", lines.get(fact.id)!].join("\n"));
     }
   }
-  return { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listIntegratedProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
+  return { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listConsolidatedProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
     knowledge, lines, reminders, model: input.model ?? "session",
-    mode: input.mode ?? (config.integration.subagentModeDefault ? "subagent" : "branch"), threshold: config.integration.nearThreshold };
+    mode: input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "branch"), threshold: config.consolidation.nearThreshold };
 }
 
 // Unicode character bigrams retain CJK text; punctuation and whitespace are ignored.
@@ -80,8 +80,8 @@ function similarity(a: string, b: string): number {
 }
 const candidates = (output: MemoryBatch) => output.operations.flatMap((op, i) => op.op === "archive" ? [] : [{ id: op.op === "create" ? `$e${i + 1}` : op.id!, text: op.text! }]);
 
-export async function runIntegration(store: Store, frozen: ReturnType<typeof freezeIntegration>, runAgent: RunAgent,
-  config: TraceMemoryConfig, bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review: import("./memory.ts").MemoryReview) => ReturnType<typeof bindTools>): Promise<IntegrateResult> {
+export async function runConsolidation(store: Store, frozen: ReturnType<typeof freezeConsolidation>, runAgent: RunAgent,
+  config: TraceMemoryConfig, bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review: import("./memory.ts").MemoryReview) => ReturnType<typeof bindTools>): Promise<ConsolidateResult> {
   const { sessionId, branch, rangeFacts, context, knowledge, lines, reminders, model, mode, threshold } = frozen;
   if (!rangeFacts.length) return { outcome: "empty" };
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
@@ -92,19 +92,19 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const recent = episodic.recent, knowledgeLines = active.groups.map((g) => g.text);
   const receipts = [...episodic.receipts, ...active.receipts];
   const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
-    "Already-integrated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
+    "Already-consolidated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
   // In branch mode the fact lines and the active knowledge are already in the conversation, delivered
-  // after the runs that wrote them. Exact membership excludes other paths and already-integrated facts.
+  // after the runs that wrote them. Exact membership excludes other paths and already-consolidated facts.
   const branchInput = [`Range: ${range.from}..${range.to}`,
     `Facts to integrate: ${rangeFacts.map((f) => `F${f.id}`).join(", ")}`,
     `Negated-evidence reminder (review cues only; no status derived):\n${reminders.join("\n\n") || "none"}`].join("\n\n");
   const initial = mode === "branch" ? branchInput : subagentInput;
-  const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
-  const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
+  const base = { kind: "consolidation" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
+  const run: RunInput = { kind: "consolidation", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
   const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}` +
     (knowledge.filter(k => k.knowledge.id === item.knowledge.id).length > 1 ? `@${item.revision.id}` : "");
-  const binding = bind({ kind: "integration", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeCommits }, run, { frozen, feedback: (batch) => {
+  const binding = bind({ kind: "consolidation", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeCommits }, run, { frozen, feedback: (batch) => {
   const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
     .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
@@ -141,7 +141,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     if (binding.memory.failure) store.updateRun(runId, { ...run, outcome });
     return { outcome, runId, problems };
   }
-  const empty = store.commitIntegrationRun({ run, operations: [], integrated: rangeFacts.map((f) => f.id) });
+  const empty = store.commitConsolidationRun({ run, operations: [], consolidated: rangeFacts.map((f) => f.id) });
   return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], unansweredNear: [], range, readKnowledgeCommits }
     : { outcome: "failure", runId: empty.runId, problems: empty.problems };
 }

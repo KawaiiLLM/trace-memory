@@ -53,7 +53,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
   const spend = (sessionId: number) => {
     session(sessionId);
-    const totals = { runs: { recording: 0, integration: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const totals = { runs: { noting: 0, consolidation: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     for (const run of store.listRuns(sessionId)) {
       totals.runs[run.kind]++;
       let usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
@@ -68,7 +68,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     spend,
     trace,
     // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
-    // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
+    // prompt (ruling 08:53: noting results are injected with the next user message). Two reads, one job each.
     inject: (target: number | { projectId: number } | KnowledgePath): string => {
       const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
       if (id !== undefined && !store.enabled(id)) return "";
@@ -83,8 +83,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
       return store.deliver(sessionId, branch, (facts, commits) => [
-        facts.length ? xmlBlock("recorded", facts.map((f) => factLine(f.id)).join("\n")) : "",
-        commits.length ? xmlBlock("integrated", commits.map((r) => knowledgeLine({ knowledge: store.getKnowledge(r.knowledgeId)!, revision: r })).join("\n")) : "",
+        facts.length ? xmlBlock("noted", facts.map((f) => factLine(f.id)).join("\n")) : "",
+        commits.length ? xmlBlock("consolidated", commits.map((r) => knowledgeLine({ knowledge: store.getKnowledge(r.knowledgeId)!, revision: r })).join("\n")) : "",
       ].filter(Boolean).join("\n\n"));
     },
     // Ruling 2026-09-07: a delivery is confirmed only after the host persisted it (at the turn's stop);
@@ -103,7 +103,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
-      // Every pending entry, not Recording's next batch (review 2026-09-08: the batch cap silently cut the tail).
+      // Every pending entry, not Noting's next batch (review 2026-09-08: the batch cap silently cut the tail).
       // Newest kept whole within the episodic budget; older ones are named in a receipt, never dropped silently.
       const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render));
       let kept = pending.length, used = 0;
@@ -120,9 +120,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path) &&
         [...r.supports, ...(r.because ?? [])].some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
-      const content = ["this is knowledge from another branch; it must not be written as facts; the Recorder's facts come only from the current branch's conversation, never from messages this plugin injected.",
+      const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
         "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map(knowledgeLine),
-        "Unrecorded raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
+        "Pending raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
       // Escape payload markup so injected content cannot close or nest the carry boundary.
       return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
     },
@@ -169,10 +169,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const totals = spend(sessionId);
       const branches = [...new Set(runs.map((r) => r.branch))];
       return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
-        `Spend: ${totals.runs.recording} recording, ${totals.runs.integration} integration, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
+        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
-        ...(["recording", "integration"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
+        ...(["noting", "consolidation"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
         `Pending deliveries: ${branches.reduce((n, b) => n + store.listPendingDeliveries(sessionId, b).length, 0)}`].join("\n");
     },
   };

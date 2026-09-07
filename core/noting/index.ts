@@ -7,10 +7,10 @@ import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/t
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
 
-const prompt = readFileSync(new URL("../prompts/recording.md", import.meta.url), "utf8");
+const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 
-export interface RecordInput {
+export interface NotingInput {
   sessionId: number;
   branch: string;
   headTurnId: number;
@@ -19,8 +19,8 @@ export interface RecordInput {
   model?: string;
   mode?: "branch" | "subagent";
 }
-export interface RecordingAgentInput {
-  kind: "recording";
+export interface NotingAgentInput {
+  kind: "noting";
   entryIds: number[];
   sessionId: number;
   branch: string;
@@ -36,15 +36,15 @@ export interface RecordingAgentInput {
   tools: ToolDefinition[];
   reportRequest: (request: unknown) => void;
 }
-export type RecordResult =
+export type NotingResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] };
 
-export function freezeRecording(store: Store, input: RecordInput, config: TraceMemoryConfig) {
+export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
-  if (typeof input.branch !== "string" || !input.branch) throw new Error("recording requires a non-empty branch");
+  if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
   const ancestry: Turn[] = [];
   const seen = new Set<number>();
   let id: number | null = input.headTurnId;
@@ -57,19 +57,19 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
     id = turn.parentTurnId;
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
-    !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Recording capacity: expected nonnegative safe integers");
+    !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
   const pending = store.pendingEntries(session.id, input.branch, input.headTurnId);
   const entries: typeof pending = [];
   const views: string[] = [];
   for (const entry of pending) {
     const view = renderEntry(entry, config.render).content;
-    if (tokens([...views, view].join("\n\n")) > config.recording.batchTokens) break;
+    if (tokens([...views, view].join("\n\n")) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view);
   }
-  if (pending.length && !entries.length) throw new Error("Recording capacity: oldest entry exceeds recording.batchTokens; left pending");
+  if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
-  const mode = input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent");
+  const mode = input.mode ?? (config.noting.branchModeDefault ? "branch" : "subagent");
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -81,19 +81,19 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = recordingMaterial(store, frozen, config);
+    const prepared = notingMaterial(store, frozen, config);
     const capacity = input.capacity;
     const subagentTokens = tokens(prompt + "\n\n" + prepared.subagentInput) + tokens(JSON.stringify(toolDefinitions));
     const branchTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt + "\n\n" + prepared.input);
     if (!capacity || Math.max(subagentTokens, mode === "branch" ? branchTokens : 0) <= capacity.inputTokens) return frozen;
     entries.pop();
   }
-  if (pending.length) throw new Error("Recording capacity: oldest entry cannot fit model context with instructions, knowledge, tools and output reserved; left pending");
+  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit model context with instructions, knowledge, tools and output reserved; left pending");
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode };
 
 }
 
-function recordingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[]; mode: "branch" | "subagent" }, config: TraceMemoryConfig) {
+function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[]; mode: "branch" | "subagent" }, config: TraceMemoryConfig) {
   const { sessionId, entries, turns, knowledge, facts, mode } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -115,19 +115,19 @@ function recordingMaterial(store: Store, frozen: { sessionId: number; entries: R
   return { range, readKnowledgeCommits, raw, subagentInput, input };
 }
 
-export async function runRecording(
-  store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
+export async function runNoting(
+  store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
-): Promise<RecordResult> {
+): Promise<NotingResult> {
   const { sessionId, branch, entries, turns, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
-  const { range, readKnowledgeCommits, raw, subagentInput, input } = recordingMaterial(store, frozen, config);
+  const { range, readKnowledgeCommits, raw, subagentInput, input } = notingMaterial(store, frozen, config);
   const entryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
-  const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
+  const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
-  const binding = tools({ kind: "recording", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
-  const agentInput: RecordingAgentInput = { kind: "recording", entryIds: entries.map(e => e.id), sessionId, branch, range,
+  const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
+  const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
     subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
@@ -159,7 +159,7 @@ export async function runRecording(
       : result.request === undefined || result.request === null ? "failure" : "bounced";
     return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
   }
-  const committed = store.commitRecordingRun({ run, facts: [],
+  const committed = store.commitNotingRun({ run, facts: [],
     entryIds: entries.map(e => e.id) });
   return committed.ok ? { outcome: "success", runId: committed.runId, facts: [] }
     : { outcome: "failure", runId: committed.runId, problems: committed.problems };

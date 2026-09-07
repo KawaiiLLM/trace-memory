@@ -1,19 +1,19 @@
 import { describe, expect, test } from "vitest";
-import { TraceMemory, type IntegrationAgentInput } from "../../test/source-fixture.ts";
+import { TraceMemory, type ConsolidationAgentInput } from "../../test/source-fixture.ts";
 
-// These former model-unit cases now drive the host's actual Integration seam.
+// These former model-unit cases now drive the host's actual Consolidation seam.
 async function checkMemoryBatch(output: unknown) {
-  const memory = TraceMemory(":memory:", async raw => { const input = raw as IntegrationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { integration: { nearThreshold: 1 } });
+  const memory = TraceMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { consolidation: { nearThreshold: 1 } });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
-    memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: "now" },
+    memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: "now" },
       facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),
       entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) });
-    memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: "now" },
+    memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: "now" },
       operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", category: "term" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
-    const result = await memory.integrate({ sessionId: s.id, branch: "main" });
+    const result = await memory.consolidate({ sessionId: s.id, branch: "main" });
     const run = memory.store.listRuns(s.id).at(-1)!;
     const audit = JSON.parse(run.response!);
     return { problems: "problems" in result ? result.problems : [], value: result.outcome === "success" ? audit.toolCalls.at(-1).input : null };
@@ -56,7 +56,7 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects an unknown category", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "recording", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "noting", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 

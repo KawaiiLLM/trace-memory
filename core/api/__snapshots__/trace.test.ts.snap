@@ -6,11 +6,11 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
   supports: F7, F9, F10
   parents: K1@1
   children: none
-  K1@2 update integration@F86 because: F10
+  K1@2 update consolidation@F86 because: F10
 Commit history:
 Commits:
-  K1@1 create integration@F50 because: none
-  K1@2 update integration@F86 because: F10"
+  K1@1 create consolidation@F50 because: none
+  K1@2 update consolidation@F86 because: F10"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 2`] = `
@@ -18,7 +18,7 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
   supports: F7, F9
   parents: none
   children: K1@2
-  K1@1 create integration@F50 because: none"
+  K1@1 create consolidation@F50 because: none"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 3`] = `
@@ -27,7 +27,7 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
   supports added: F10
   supports removed: none
 Commits:
-  K1@2 update integration@F86 because: F10"
+  K1@2 update consolidation@F86 because: F10"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 4`] = `

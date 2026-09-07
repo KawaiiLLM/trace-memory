@@ -5,18 +5,18 @@ The historical records below do not satisfy ticket 11 live acceptance.
 
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
-Set `recording.branchModeDefault: true`, `recording.triggerTokens: 100`,
-`integration.triggerUnintegratedFacts: 1`; choose Integration mode explicitly
-(`integration.subagentModeDefault: false` exercises branch mode as well).
+Set `noting.branchModeDefault: true`, `noting.triggerTokens: 100`,
+`consolidation.triggerUnconsolidatedFacts: 1`; choose Consolidation mode explicitly
+(`consolidation.subagentModeDefault: false` exercises branch mode as well).
 
 1. Start Pi with all four tools active. Save the captured main-agent body and
    verify its tool schemas are `trace`, `search`, `note`, `memory` (alongside any
    other main-agent tools), with no `mark` tool.
-2. Produce a turn containing a cut tool result. Obtain a branch Recording that
+2. Produce a turn containing a cut tool result. Obtain a branch Noting that
    actually fetches full evidence through `trace` and submits through `note`.
    If the model elects not to fetch, that attempt does not satisfy this check.
 3. After committed facts have been delivered on the next prompt, let a turn stop
-   trigger Integration. Obtain two valid `memory` submissions in one run: review
+   trigger Consolidation. Obtain two valid `memory` submissions in one run: review
    guidance after the first, commit after the second, then a normal stop.
 4. Save the run records and actual request bodies. For each branch run, apply
    the README script: strip suffixes backwards and verify each previous/new
@@ -28,7 +28,7 @@ Set `recording.branchModeDefault: true`, `recording.triggerTokens: 100`,
    neither stored runs nor watermarks.
 
 Record Pi/pi-ai versions, model/provider, config, capture and database paths,
-Recording/Integration run IDs, tool sequences, all verification hashes and outcomes.
+Noting/Consolidation run IDs, tool sequences, all verification hashes and outcomes.
 Report cache-read counters separately as observations. **No ticket 11 live run
 has been performed by the worker.**
 
@@ -125,35 +125,35 @@ and report the count and last line.
 
 ## Session 5 (`tmtools1`, after tickets 08–11): the four tools end to end
 
-Fresh database `/tmp/tm-live4/trace.db`, defaults (Recording branch, Integration
-subagent), `recording.triggerAnsweredTurns=1`, `integration.triggerUnintegratedFacts=2`;
+Fresh database `/tmp/tm-live4/trace.db`, defaults (Noting branch, Consolidation
+subagent), `noting.triggerAnsweredTurns=1`, `consolidation.triggerUnconsolidatedFacts=2`;
 three prompts, the first also running a 2,500-line command.
 
 | Run | Kind | Mode | Verified | Tool rounds | Result |
 |---|---|---|---|---|---|
-| 1 | recording | branch | yes, round 1 verified | `note` → F1, F2 | two decision facts |
-| 2 | recording | branch | yes, cacheRead 10752 | `note` → F3 | one decision fact |
-| 3 | integration | subagent | — | `memory` ×2: feedback, then commit | K1 constraint/project, K2 goal/session |
-| 4 | recording | branch | yes | `note` → F4 | one decision fact |
+| 1 | noting | branch | yes, round 1 verified | `note` → F1, F2 | two decision facts |
+| 2 | noting | branch | yes, cacheRead 10752 | `note` → F3 | one decision fact |
+| 3 | consolidation | subagent | — | `memory` ×2: feedback, then commit | K1 constraint/project, K2 goal/session |
+| 4 | noting | branch | yes | `note` → F4 | one decision fact |
 
 - Branch runs inherited the main agent's tool set unchanged (read, bash, edit,
   write, trace, search, note, memory): the four are in the captured prefix, so
   nothing was added per run; every appended round was verified against the
   previous request.
-- The first Integration submission returned the NEAR/CLOSER/checklist feedback
+- The first Consolidation submission returned the NEAR/CLOSER/checklist feedback
   without committing; the second committed with empty diagnostics; the watermark
   moved to F2 while F3 waited for the next trigger.
-- The recorder did not call `trace` in branch mode: the main agent's own bash
+- The noter did not call `trace` in branch mode: the main agent's own bash
   result was already in the conversation, so there was nothing to fetch. It
   recorded no event fact for the command, a content judgment, not a defect.
 - Facts carry system-derived times and no `status` (none were events).
 
-## Session 6 (`tmtail2`, after ticket 14): the final reply reaches the branch Recorder
+## Session 6 (`tmtail2`, after ticket 14): the final reply reaches the branch Noter
 
 One prompt asking for a codename with no tools, so the only recordable content is
 the assistant's final reply. The branch message carried the range line, the reply
 under `[Source entry id: T1#assistant]`, and a `Sources:` index for T1; the
-Recorder wrote one fact citing `T1#assistant` (decision/agent, "codename Indigo
+Noter wrote one fact citing `T1#assistant` (decision/agent, "codename Indigo
 Fox"). Before ticket 14 this reply was absent from the branch request (verified
 on the session-5 database: run 1's request did not contain the assistant's final
 sentence).
@@ -167,19 +167,19 @@ inside the extension's hooks (no turn had been recorded when it hung).
 
 `pi --fork tmfork-main --session-id tmfork-side` copies the main session's path; the
 host restores the same Trace Memory session on a new branch id. Main recorded
-"store data in SQLite" (F1) and integrated K1@1; the fork recorded "changed to
-Redis" (F3) and integrated K1@2 with parent K1@1. One turn later each side asked
+"store data in SQLite" (F1) and consolidated K1@1; the fork recorded "changed to
+Redis" (F3) and consolidated K1@2 with parent K1@1. One turn later each side asked
 the model to `trace K1`:
 
 - main: `K1 path current: K1@1`, children K1@2, and `Other branches' tips:` listing
   K1@2 (Redis) with its parent.
 - fork: `K1 path current: K1@2`, applicable history K1@1 then K1@2, no other tips.
 
-Timing: Integration runs at turn stop, so a trace issued in the same turn as the
+Timing: Consolidation runs at turn stop, so a trace issued in the same turn as the
 rule sees the previous state; the first attempt of this scenario traced one turn
 too early (main saw "K1 does not exist", the fork saw only K1@1).
 
 Defect found and fixed after this run: the forked branch started with no
 watermark and recorded the shared T1 a second time (F2 duplicated F1). A new
-branch now inherits the source branch's recording and integration watermarks
+branch now inherits the source branch's noting and consolidation watermarks
 when they lie on its own ancestry.

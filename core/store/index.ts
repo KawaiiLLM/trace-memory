@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
 
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('recording','integration','manual')),
+  kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','manual')),
   session_id INTEGER REFERENCES sessions(id),
   branch TEXT,
   range_from TEXT,
@@ -181,16 +181,16 @@ CREATE TABLE IF NOT EXISTS source_paths (
   entry_ids TEXT NOT NULL,
   PRIMARY KEY (session_id, branch)
 );
-CREATE TABLE IF NOT EXISTS recorded_entries (
+CREATE TABLE IF NOT EXISTS noted_entries (
   entry_id INTEGER NOT NULL REFERENCES source_entries(id),
   run_id INTEGER NOT NULL REFERENCES runs(id),
   PRIMARY KEY (entry_id, run_id)
 );
 
--- Integration progress is a set, not a scalar: which facts which Integration run took (facts arrive out of
--- id order on a path, so no watermark can stand for the set). A fact counts as integrated on a path when
+-- Consolidation progress is a set, not a scalar: which facts which Consolidation run took (facts arrive out of
+-- id order on a path, so no watermark can stand for the set). A fact counts as consolidated on a path when
 -- one of its runs took only facts on that path.
-CREATE TABLE IF NOT EXISTS integrated_facts (
+CREATE TABLE IF NOT EXISTS consolidated_facts (
   fact_id INTEGER NOT NULL REFERENCES facts(id),
   run_id INTEGER NOT NULL REFERENCES runs(id),
   PRIMARY KEY (fact_id, run_id)
@@ -271,7 +271,7 @@ export interface RunInput {
   createdAt: string;
 }
 
-export interface RecordingRelationTarget {
+export interface NotingRelationTarget {
   target: string; // "F<id>" or "$n" (1-based index within this commit's facts array)
   strength: "strong" | "weak";
 }
@@ -285,13 +285,13 @@ export interface FactCommitInput {
   status?: EventStatus | null;
   source: string[];
   createdAt: string;
-  support?: RecordingRelationTarget[];
-  negate?: RecordingRelationTarget[];
+  support?: NotingRelationTarget[];
+  negate?: NotingRelationTarget[];
   /** The source entries the cited addresses resolved to in the writer's frozen set; empty when the path has no native ancestry. */
   entryIds?: number[];
 }
 
-export interface CommitRecordingRunInput {
+export interface CommitNotingRunInput {
   run: RunInput; // sessionId required: every turn, watermark, and delivery must belong to it
   facts: FactCommitInput[];
   responseForFacts?: (ids: number[]) => string;
@@ -299,7 +299,7 @@ export interface CommitRecordingRunInput {
   pendingDelivery?: { sessionId: number; branch: string | null };
 }
 
-export type CommitRecordingResult =
+export type CommitNotingResult =
   | { ok: true; runId: number; facts: Fact[] }
   | { ok: false; runId: number; problems: string[] };
 
@@ -357,13 +357,13 @@ export const sourceAddresses = (entry: SourceEntry): string[] => [
 ];
 export interface KnowledgeFilter { scope?: KnowledgeScope; projectId?: number }
 
-export interface CommitIntegrationRunInput {
+export interface CommitConsolidationRunInput {
   path?: KnowledgePath | null;
   run: RunInput; // sessionId required: knowledge ownership is derived from the run's session
   operations: KnowledgeOperationInput[];
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
-  integrated?: number[]; // the batch's fact ids, marked as taken by this run
+  consolidated?: number[]; // the batch's fact ids, marked as taken by this run
   pendingDelivery?: { sessionId: number; branch: string | null }; // knowledge changes awaiting injection
 }
 
@@ -374,7 +374,7 @@ export interface CommittedKnowledgeOp {
   commit: number;
 }
 
-export type CommitIntegrationResult =
+export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
   | { ok: false; runId: number; problems: string[] };
 
@@ -478,7 +478,7 @@ export class Store {
   constructor(path: string) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA foreign_keys = ON;");
-    // Another process may hold a short write lock (its own recording or integration commit); wait instead of failing.
+    // Another process may hold a short write lock (its own noting or consolidation commit); wait instead of failing.
     // Commits run as immediate transactions: a deferred one that reads first and then writes gets
     // SQLITE_BUSY at once, without the busy handler, when a writer is already active.
     this.db.exec("PRAGMA busy_timeout = 5000;");
@@ -669,7 +669,7 @@ export class Store {
     const factIds = (this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id) as { id: number }[]).map((f) => f.id);
     const response = JSON.parse(input.response ?? "{}");
     this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
-      .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "recording" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+      .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "noting" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
   }
 
   getRun(id: number): Run | null {
@@ -685,13 +685,13 @@ export class Store {
   }
 
   /**
-   * Commit one recording run: the run record and its facts (with relations) as one transaction.
+   * Commit one noting run: the run record and its facts (with relations) as one transaction.
    * A relation target is either "F<id>" (an existing fact) or "$n" (the n-th fact of this
    * same batch, 1-based, resolved to its freshly assigned id inside this transaction).
    * On any failure (e.g. an out-of-range local handle) nothing but the run record is written,
    * with outcome "failure" — the run record is always written, business writes are not.
    */
-  commitRecordingRun(input: CommitRecordingRunInput): CommitRecordingResult {
+  commitNotingRun(input: CommitNotingRunInput): CommitNotingResult {
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
@@ -742,7 +742,7 @@ export class Store {
         this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), factIds: batchIds }), runId);
         for (const id of input.entryIds ?? []) {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
-          this.db.prepare("INSERT INTO recorded_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
+          this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         if (input.pendingDelivery && batchIds.length) {
           this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
@@ -763,7 +763,7 @@ export class Store {
       return { runId, problems: [reason] };
     } catch (second) {
       const why = second instanceof Error ? second.message : String(second);
-      throw new Error(`store unavailable: ${why} (while recording failure: ${reason})`);
+      throw new Error(`store unavailable: ${why} (while noting failure: ${reason})`);
     }
   }
 
@@ -834,8 +834,8 @@ export class Store {
     if (branch === undefined) return { sessionId, headTurnId: this.listTurns(sessionId).at(-1)?.id ?? null };
     const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
     if (native) return { sessionId, headTurnId: this.getSourceEntry((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0)?.turnId ?? null, branch };
-    const member = this.db.prepare("SELECT s.turn_id FROM recorded_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
-    const recorded = Math.max(member?.turn_id ?? 0, ...this.listRuns(sessionId).filter(r => r.kind === "recording" && r.outcome === "success" && r.branch === branch)
+    const member = this.db.prepare("SELECT s.turn_id FROM noted_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
+    const recorded = Math.max(member?.turn_id ?? 0, ...this.listRuns(sessionId).filter(r => r.kind === "noting" && r.outcome === "success" && r.branch === branch)
       .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0)));
     const manual = this.listRuns(sessionId).filter(r => r.kind === "manual" && r.branch === branch)
       .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0));
@@ -963,11 +963,11 @@ export class Store {
   }
 
   /**
-   * Commit one integration run: the run record and its knowledge operations as one transaction.
+   * Commit one consolidation run: the run record and its knowledge operations as one transaction.
    * An operation whose base commit has an applicable successor on the writer's path
-   * (someone else moved it since the Integrator read it) rolls back the batch and records failure.
+   * (someone else moved it since the Consolidator read it) rolls back the batch and records failure.
    */
-  commitIntegrationRun(input: CommitIntegrationRunInput): CommitIntegrationResult {
+  commitConsolidationRun(input: CommitConsolidationRunInput): CommitConsolidationResult {
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
@@ -980,7 +980,7 @@ export class Store {
           if (outcome.ok) committed.push(outcome.value);
           else throw new Error(outcome.reason);
         }
-        for (const factId of input.integrated ?? []) this.markIntegrated(factId, runId, projectId);
+        for (const factId of input.consolidated ?? []) this.markConsolidated(factId, runId, projectId);
         if (input.pendingDelivery && committed.length) {
           if (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== (input.run.branch ?? null)) {
             throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${input.run.branch ?? null})`);
@@ -1119,7 +1119,7 @@ export class Store {
   }
 
   /** Renders the pending deliveries without consuming them; the host confirms the run ids it persisted. */
-  /** A Recording run delivers its facts, an Integration run its knowledge commits: what each branch-mode consumer reads out of the conversation. */
+  /** A Noting run delivers its facts, an Consolidation run its knowledge commits: what each branch-mode consumer reads out of the conversation. */
   deliver(sessionId: number, branch: string | null, render: (facts: Fact[], commits: KnowledgeRevision[]) => string): { text: string; runIds: number[] } {
     return this.transaction(() => {
       if (!this.enabled(sessionId)) return { text: "", runIds: [] };
@@ -1165,30 +1165,30 @@ export class Store {
   }
 
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */
-  integrationBatch(sessionId: number, branch: string, headTurnId?: number): Fact[] {
+  consolidationBatch(sessionId: number, branch: string, headTurnId?: number): Fact[] {
     const path = this.knowledgePath(sessionId, branch, headTurnId);
     const runs = new Map<number, boolean>();
-    return this.listBranchFacts(sessionId, branch, path.headTurnId).filter(f => !this.integratedOnPath(f.id, path, runs));
+    return this.listBranchFacts(sessionId, branch, path.headTurnId).filter(f => !this.consolidatedOnPath(f.id, path, runs));
   }
 
-  markIntegrated(factId: number, runId: number, projectId: number): void {
+  markConsolidated(factId: number, runId: number, projectId: number): void {
     const fact = this.getFact(factId);
     if (!fact || this.getSession(this.getTurn(fact.turnId)!.sessionId)!.projectId !== projectId) throw new Error(`F${factId} is not a fact of this run's project`);
-    this.db.prepare("INSERT INTO integrated_facts (fact_id, run_id) VALUES (?, ?)").run(factId, runId);
+    this.db.prepare("INSERT INTO consolidated_facts (fact_id, run_id) VALUES (?, ?)").run(factId, runId);
   }
-  /** A fact is integrated on a path when one of the runs that took it took only facts on that path (the same rule a fork applies when it inherits progress). */
-  integratedOnPath(factId: number, path: KnowledgePath, runs = new Map<number, boolean>()): boolean {
+  /** A fact is consolidated on a path when one of the runs that took it took only facts on that path (the same rule a fork applies when it inherits progress). */
+  consolidatedOnPath(factId: number, path: KnowledgePath, runs = new Map<number, boolean>()): boolean {
     const turns = this.pathTurns(path);
-    return (this.db.prepare("SELECT run_id FROM integrated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
-      if (!runs.has(run_id)) runs.set(run_id, this.listIntegratedFacts(run_id).every((f) => this.factOnPath(f, path, turns)));
+    return (this.db.prepare("SELECT run_id FROM consolidated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
+      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, turns)));
       return runs.get(run_id)!;
     });
   }
-  listIntegratedFacts(runId: number): Fact[] {
-    return this.db.prepare("SELECT f.* FROM facts f JOIN integrated_facts i ON i.fact_id = f.id WHERE i.run_id = ? ORDER BY f.id").all(runId).map(toFact);
+  listConsolidatedFacts(runId: number): Fact[] {
+    return this.db.prepare("SELECT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id WHERE i.run_id = ? ORDER BY f.id").all(runId).map(toFact);
   }
-  listIntegratedProjectFacts(projectId: number): Fact[] {
-    return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN integrated_facts i ON i.fact_id = f.id
+  listConsolidatedProjectFacts(projectId: number): Fact[] {
+    return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id
       JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.id`).all(projectId).map(toFact);
   }
 
@@ -1238,10 +1238,10 @@ export class Store {
     const entries = row ? (JSON.parse(row.entry_ids) as number[]).map(id => this.getSourceEntry(id)!) : this.listSourceEntries(sessionId);
     return entries.filter(e => turns.has(e.turnId));
   }
-  entryRecorded(id: number): boolean {
-    return !!this.db.prepare("SELECT 1 FROM recorded_entries WHERE entry_id = ? LIMIT 1").get(id);
+  entryNoted(id: number): boolean {
+    return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
-    return this.sourcePath(sessionId, branch, headTurnId).filter(e => !this.entryRecorded(e.id));
+    return this.sourcePath(sessionId, branch, headTurnId).filter(e => !this.entryNoted(e.id));
   }
 }

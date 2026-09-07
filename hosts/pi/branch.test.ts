@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { complete } from "@earendil-works/pi-ai/compat";
 import * as branch from "./branch.ts";
-import { host as createHost, reply, usage, recordingFact, integrationReply } from "./test-host.ts";
+import { host as createHost, reply, usage, notingFact, consolidationReply } from "./test-host.ts";
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ complete: vi.fn() }));
 const disposers: (() => Promise<void>)[] = [];
@@ -13,7 +13,7 @@ const payload = () => ({ model: "test", stream: true, temperature: 0.3, system: 
   messages: [{ role: "user", content: "Raw  \ncontext" }, { role: "assistant", content: "Previous reply" }],
   tools: [{ type: "function", function: { name: "trace", parameters: { type: "object", properties: {} } } }] });
 async function setup(triggerTokens = 60) {
-  const h = createHost({ "recording.triggerTokens": triggerTokens, recordingModel: "fake/ignored" });
+  const h = createHost({ "noting.triggerTokens": triggerTokens, notingModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
   const sent: branch.Body[] = [];
@@ -29,7 +29,7 @@ async function setup(triggerTokens = 60) {
   return { ...h, uncapturedTurn: h.turn, prompt, turn, sent, capture, run: () => h.memory.store.listRuns(1).at(-1)! };
 }
 
-test("branch recording preserves prefix bytes, options and tools; record contains independent body hashes", async () => {
+test("branch noting preserves prefix bytes, options and tools; record contains independent body hashes", async () => {
   const h = await setup(), captured = payload();
   await h.capture(captured);
   captured.system = "mutation of hook owner after capture";
@@ -39,7 +39,7 @@ test("branch recording preserves prefix bytes, options and tools; record contain
   const messages = request.messages as unknown[];
   expect(Buffer.from(branch.serialize(messages.slice(0, -1)))).toEqual(Buffer.from(branch.serialize(original.messages)));
   expect(request).toEqual({ ...original, messages: [...original.messages, expect.objectContaining({ role: "user" })] });
-  const prompt = readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8");
+  const prompt = readFileSync(new URL("../../core/prompts/noting.md", import.meta.url), "utf8");
   expect((messages.at(-1) as { content: string }).content).toBe(prompt + "\n\nRange: S1/T1..S1/T1\n\n[Source entry id: T1#assistant]\n好的。\n\nSources:\nT1#user 用 pnpm，不要 npm | T1#assistant 好的。");
   const run = h.run(), response = JSON.parse(run.response!);
   expect(run.mode).toBe("branch"); expect(run.model).toBe("fake/test");
@@ -121,19 +121,19 @@ test("model change without a fresh capture falls back; explicit subagent never u
   await h.capture(); h.ctx.model = { ...h.ctx.model!, id: "next" }; await h.uncapturedTurn();
   expect(JSON.parse(h.run().response!).fallbackReason).toContain("model changed");
   expect(complete).not.toHaveBeenCalled();
-  const subagent = createHost({ "recording.branchModeDefault": false, "recording.triggerTokens": 60, recordingModel: "fake/recorder" });
+  const subagent = createHost({ "noting.branchModeDefault": false, "noting.triggerTokens": 60, notingModel: "fake/noter" });
   disposers.push(subagent.dispose);
   await subagent.emit("before_provider_request", { payload: payload() }); await subagent.turn();
-  expect(subagent.memory.store.listRuns(1)[0]).toMatchObject({ mode: "subagent", model: "fake/recorder" });
+  expect(subagent.memory.store.listRuns(1)[0]).toMatchObject({ mode: "subagent", model: "fake/noter" });
 });
 
 test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s uses its native append without changing any prefix character", api => {
   const body: branch.Body = api === "openai-responses" ? { instructions: "system", input: payload().messages, tools: [] }
     : { system: [{ type: "text", text: "system", cache_control: { type: "ephemeral" } }], messages: payload().messages, tools: [] };
-  const request = branch.buildRequest(body, api, "recording\n\nrange");
-  expect(branch.verifyRequest(body, request, api, "recording\n\nrange").passed).toBe(true);
+  const request = branch.buildRequest(body, api, "noting\n\nrange");
+  expect(branch.verifyRequest(body, request, api, "noting\n\nrange").passed).toBe(true);
   (request[branch.messageKey(api)] as branch.Body[])[0]!.content = "Raw \ncontext";
-  expect(branch.verifyRequest(body, request, api, "recording\n\nrange").differingPath).toContain(".0.content");
+  expect(branch.verifyRequest(body, request, api, "noting\n\nrange").differingPath).toContain(".0.content");
 });
 
 test("an in-flight branch request keeps its captured body across a tree switch and a later capture", async () => {
@@ -152,27 +152,27 @@ test("an in-flight branch request keeps its captured body across a tree switch a
   expect(h.run()).toMatchObject({ mode: "branch", branch: "main", outcome: "success" });
 });
 
-test("a model switch during the integration candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false });
+test("a model switch during the consolidation candidate round does not redirect or break the final round", async () => {
+  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.branchModeDefault": false });
   disposers.push(h.dispose);
   await h.emit("session_start");
-  h.provider(async c => recordingFact(c));
+  h.provider(async c => notingFact(c));
   let release!: () => void;
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
     const body = await options!.onPayload!({ messages: convertMessages({ ...model, input: ["text"] } as never, _conversation, {} as never) }, model) as branch.Body;
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
     if (/Range: F/.test(last)) await new Promise<void>(resolve => { release = resolve; });
     if ((body.messages as { role: string }[]).filter(m => m.role === "tool").length >= 2) return reply("Done.");
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
-    return recordingFact({ messages: [{ role: "user", content: last }] } as never);
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return consolidationOutput;
+    return notingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.prompt(); await h.emit("before_provider_request", { payload: payload() });
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  await h.prompt(); // the recording's facts reach the conversation; only then may a branch Integrator read them
+  await h.prompt(); // the noting's facts reach the conversation; only then may a branch Consolidator read them
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-integration.
+  h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-consolidation.
   release(); await h.drain();
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"]]);
   expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test", "test"]);
   expect((h.requests[0] as { model: { id: string } }).model.id).toBe("test");
@@ -188,38 +188,38 @@ test("the verifier independently rejects extra appends and provider option chang
   expect(branch.verifyRequest(original, request, "openai-completions", "instruction").passed).toBe(false);
 });
 
-const integrationOutput = integrationReply();
+const consolidationOutput = consolidationReply();
 test("17:01 settle is branch-capable: candidate appends to the captured prefix, final replays the candidate reply plus the feedback on that request", async () => {
-  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, integrationModel: "fake/ignored" });
+  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.branchModeDefault": false, consolidationModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
-  h.provider(async c => recordingFact(c));
+  h.provider(async c => notingFact(c));
   const sent: branch.Body[] = [];
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
     const body = await options!.onPayload!({ messages: convertMessages({ ...model, input: ["text"] } as never, _conversation, {} as never) }, model) as branch.Body;
     sent.push(structuredClone(body));
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
     if ((body.messages as { role: string }[]).filter(m => m.role === "tool").length >= 2) return reply("Done.");
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
-    return recordingFact({ messages: [{ role: "user", content: last }] } as never);
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return consolidationOutput;
+    return notingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.prompt(); await h.emit("before_provider_request", { payload: payload() });
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  await h.prompt(); // the recording's facts reach the conversation first
+  await h.prompt(); // the noting's facts reach the conversation first
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(4); expect(complete).toHaveBeenCalledTimes(3); // the new entry independently admits Recording too
+  expect(h.requests).toHaveLength(4); expect(complete).toHaveBeenCalledTimes(3); // the new entry independently admits Noting too
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
-  const prompt = readFileSync(new URL("../../core/prompts/integration.md", import.meta.url), "utf8");
+  const prompt = readFileSync(new URL("../../core/prompts/consolidation.md", import.meta.url), "utf8");
   const [candidate, final] = sent as { messages: { role: string; content: string }[] }[];
   expect(candidate!.messages.slice(0, -1)).toEqual(payload().messages);
   expect(candidate!.messages.at(-1)!.content.startsWith(prompt + "\n\nRange: F1..F1")).toBe(true);
   expect(final!.messages.slice(0, -3)).toEqual(candidate!.messages);
-  expect(final!.messages.at(-3)).toMatchObject({ role: "assistant", tool_calls: [{ type: "function", function: { name: "memory", arguments: JSON.stringify(integrationOutput.content[0]!.type === "toolCall" ? integrationOutput.content[0]!.arguments : {}) } }] });
+  expect(final!.messages.at(-3)).toMatchObject({ role: "assistant", tool_calls: [{ type: "function", function: { name: "memory", arguments: JSON.stringify(consolidationOutput.content[0]!.type === "toolCall" ? consolidationOutput.content[0]!.arguments : {}) } }] });
   expect(final!.messages.at(-2)).toMatchObject({ role: "tool", tool_call_id: "memory-1" });
   expect(final!.messages.at(-1)!.role).toBe("user");
   expect(final!.messages.at(-1)!.content).toContain("NEAR:");
   expect(final!.messages.at(-1)!.content).toContain("This is the final round.");
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.request!)).toEqual(sent[2]);
   expect((sent[2]!.messages as unknown[]).slice(0, -2)).toEqual(final!.messages);
@@ -227,19 +227,19 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(0);
 });
 
-test("integration branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
-  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, recordingModel: "fake/recorder", integrationModel: "fake/Integrator" });
+test("consolidation branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
+  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.branchModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
   disposers.push(h.dispose);
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? integrationOutput : recordingFact(c));
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationOutput : notingFact(c));
   await h.turn();
-  await h.prompt(); // the recording's facts reach the conversation first
+  await h.prompt(); // the noting's facts reach the conversation first
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(7);
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");
   expect(JSON.parse(runs[0]!.response!).toolCalls).toHaveLength(2);
-  expect(h.notices.filter(n => n.includes("integration fell back"))).toHaveLength(1);
+  expect(h.notices.filter(n => n.includes("consolidation fell back"))).toHaveLength(1);
 });
 
 test("capture with the four tools, run, verification passed, tools unchanged", async () => {
@@ -259,7 +259,7 @@ test("capture with the four tools, run, verification passed, tools unchanged", a
   expect(h.sent[0]).toEqual({ ...captured, messages: [...captured.messages, expect.any(Object)] });
 });
 
-test("branch Recording verifies every trace and note round against the previous request and stores the last request", async () => {
+test("branch Noting verifies every trace and note round against the previous request and stores the last request", async () => {
   const h = await setup(1000);
   vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
     const native = { messages: convertMessages({ ...model, input: ["text"] } as never, conversation, {} as never) };
@@ -299,7 +299,7 @@ test("a mutated branch tool round is rejected before sending and retains the las
   expect(h.run().outcome).toBe("failure");
   expect(JSON.parse(h.run().request!)).toEqual(h.sent[0]);
   expect(JSON.parse(h.run().response!).verification.rounds).toEqual([expect.objectContaining({ passed: false, differingPath: "$.tools.0" })]);
-  expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryRecorded(e.id))).toBe(false);
+  expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
 });
 
 

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 export type Body = Record<string, unknown>;
-/** A message appended after the verified prefix: the recording or integration instruction. */
+/** A message appended after the verified prefix: the noting or consolidation instruction. */
 export type Appended = { role: "user"; text: string };
 export const snapshot = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 // Sort object keys only. Array order, strings, whitespace and Unicode stay exact.

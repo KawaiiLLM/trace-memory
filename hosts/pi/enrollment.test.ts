@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { afterEach, expect, test } from "vitest";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { host, reply, recordingFact } from "./test-host.ts";
+import { host, reply, notingFact } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../core/api/index.ts";
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
@@ -53,7 +53,7 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
 });
 
 test("18a 2026-09-08: historical import and pause resume use native identities without a model call", async () => {
-  const h = setup({ "recording.triggerTokens": 1, "recording.branchModeDefault": false });
+  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false });
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   for (let i = 0; i < 3; i++) { h.persist({ role: "user", content: "same", timestamp: i }); h.persist(reply("same answer")); }
   await h.emit("session_start"); expect(h.memory.store.getSession(1)).toBeNull();
@@ -103,43 +103,43 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
     other.store.setEnrollment(1, false);
     expect(binding.find(t => t.name === "note")!.execute({ facts: [] })).toContain("/trace enable");
     expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace enable");
-    expect(await h.memory.record({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
-    expect(await h.memory.integrate({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
+    expect(await h.memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
+    expect(await h.memory.consolidate({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(() => h.memory.appendEntry({ ...h.memory.pendingEntries(1, "main", 1)[0]!, nativeId: "blocked" })).toThrow("/trace enable");
-    const run = { kind: "recording" as const, sessionId: 1, branch: "main", createdAt: "now" };
+    const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
     const entries = h.memory.pendingEntries(1, "main", 1);
-    expect(h.memory.store.commitRecordingRun({ run, facts: [], entryIds: entries.map(e => e.id) }).ok).toBe(false);
-    expect(h.memory.store.commitIntegrationRun({ run: { ...run, kind: "integration" }, operations: [], integrated: [] }).ok).toBe(false);
+    expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: entries.map(e => e.id) }).ok).toBe(false);
+    expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [] }).ok).toBe(false);
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(entries);
     expect(h.memory.inject(1)).toBe("");
     other.store.setEnrollment(1, true);
   } finally { other.close(); }
 });
 
-test.each([true, false])("18a 2026-09-08: disable during Recording provider call rejects late %s submission and retains pending batch", async submit => {
-  const h = setup({ "recording.triggerTokens": 1, "recording.branchModeDefault": false, "recording.maxToolRounds": 1 });
+test.each([true, false])("18a 2026-09-08: disable during Noting provider call rejects late %s submission and retains pending batch", async submit => {
+  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false, "noting.maxToolRounds": 1 });
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
   await command(h, "disable");
-  release(submit ? recordingFact(h.conversations[0]!) : reply("No facts"));
+  release(submit ? notingFact(h.conversations[0]!) : reply("No facts"));
   await h.drain();
   expect(h.memory.store.listSessionFacts(1)).toEqual([]);
   expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
-test.each([[true, true], [true, false], [false, true], [false, false]])("18a 2026-09-08: enabled delivery ignores worker modes (%s, %s) and disable preserves unseen deliveries", async (recording, integration) => {
-  const h = setup({ "recording.branchModeDefault": recording, "integration.subagentModeDefault": integration });
+test.each([[true, true], [true, false], [false, true], [false, false]])("18a 2026-09-08: enabled delivery ignores worker modes (%s, %s) and disable preserves unseen deliveries", async (noting, consolidation) => {
+  const h = setup({ "noting.branchModeDefault": noting, "consolidation.subagentModeDefault": consolidation });
   await h.turn();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
-    operations: [{ op: "create", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"], because: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : recordingFact(c));
+    operations: [{ op: "create", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"], because: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
   // The public facade shares this host's durable queues; normal completions drive both workers.
-  writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "recording.triggerTokens": 1, "integration.triggerUnintegratedFacts": 1 } }));
+  writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerUnconsolidatedFacts": 1 } }));
   await h.emit("session_start");
   await h.answer("tick"); await h.drain();
-  const delivered = await h.prompt("deliver facts"); expect(delivered.message.content).toContain("<recorded>");
-  await h.answer(); await h.emit("agent_settled"); await h.answer("integration opportunity"); await h.drain();
+  const delivered = await h.prompt("deliver facts"); expect(delivered.message.content).toContain("<noted>");
+  await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
   const pending = h.memory.store.listPendingDeliveries(1, "main");
   expect(pending.length).toBeGreaterThan(0);
@@ -149,23 +149,23 @@ test.each([[true, true], [true, false], [false, true], [false, false]])("18a 202
   expect(h.memory.store.listPendingDeliveries(1, "main")).toEqual(pending);
   expect(h.memory.store.listVisibleKnowledge(0, 1).some(k => k.revision.text === "Retained shared knowledge")).toBe(true);
   await command(h, "enable");
-  expect((await h.prompt("resume delivery")).message.content).toContain("<integrated>");
+  expect((await h.prompt("resume delivery")).message.content).toContain("<consolidated>");
 });
 
 test("18a 2026-09-08: read-only settings show precedence, effective defaults and masked values", async () => {
-  const h = setup({ "recording.triggerTokens": 33 });
+  const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "recording.triggerTokens": 11, "render.entryTokens": 222, "integration.triggerUnintegratedFacts": 7 } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "recording.triggerTokens": 22, "render.entryTokens": 333 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 11, "render.entryTokens": 222, "consolidation.triggerUnconsolidatedFacts": 7 } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 22, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings (Global, read-only)"); await command(h, "");
   const shown = h.notices.at(-1)!;
-  expect(shown).toContain("recording.triggerTokens: 33 (Environment); Global=11 masked; Project=22 masked");
+  expect(shown).toContain("noting.triggerTokens: 33 (Environment); Global=11 masked; Project=22 masked");
   expect(shown).toContain("render.entryTokens: 333 (Project)");
-  expect(shown).toContain("integration.triggerUnintegratedFacts: 7 (Global)");
-  expect(shown).toContain(`recording.batchTokens: ${DEFAULT_CONFIG.recording.batchTokens} (Default)`);
+  expect(shown).toContain("consolidation.triggerUnconsolidatedFacts: 7 (Global)");
+  expect(shown).toContain(`noting.batchTokens: ${DEFAULT_CONFIG.noting.batchTokens} (Default)`);
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
 });
 
@@ -205,14 +205,14 @@ test("18a 2026-09-08: all count/token keys and masked layers validate by key", a
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
     }
   }
-  for (const [key, invalid] of [["recording.branchModeDefault", "branch"], ["recording.maxToolRounds", -1], ["integration.nearThreshold", 2], ["recording.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
+  for (const [key, invalid] of [["noting.branchModeDefault", "branch"], ["noting.maxToolRounds", -1], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
     writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { [key as string]: invalid } }));
     await expect(h.emit("session_start")).rejects.toThrow(key as string);
   }
   // An invalid Global value cannot disappear behind a valid environment override.
-  const masked = setup({ "recording.triggerTokens": 5 });
-  writeFileSync(join(masked.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "recording.triggerTokens": 0 } }));
-  await expect(masked.emit("session_start")).rejects.toThrow("recording.triggerTokens");
+  const masked = setup({ "noting.triggerTokens": 5 });
+  writeFileSync(join(masked.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 0 } }));
+  await expect(masked.emit("session_start")).rejects.toThrow("noting.triggerTokens");
   writeFileSync(join(masked.dir, "agent", "settings.json"), "{}");
   writeFileSync(join(h.dir, "agent", "settings.json"), "{}");
 });
@@ -253,10 +253,10 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
     memory.store.setEnrollment(1, false); memory.close();
   `], { stdio: ["ignore", "ignore", "inherit"] });
   expect((await once(child, "exit"))[0]).toBe(0);
-  const run = { kind: "recording" as const, sessionId: 1, branch: "main", createdAt: "now" };
-  expect(h.memory.store.commitRecordingRun({ run, facts: [], entryIds: h.memory.pendingEntries(1, "main", 1).map(e => e.id) }).ok).toBe(false);
-  expect(h.memory.store.commitIntegrationRun({ run: { ...run, kind: "integration" }, operations: [], integrated: [1] }).ok).toBe(false);
-  expect(h.memory.store.integrationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
+  const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
+  expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: h.memory.pendingEntries(1, "main", 1).map(e => e.id) }).ok).toBe(false);
+  expect(h.memory.store.commitConsolidationRun({ run: { ...run, kind: "consolidation" }, operations: [], consolidated: [1] }).ok).toBe(false);
+  expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
   expect(h.memory.store.listRuns(1).slice(0, before.length)).toEqual(before);
   expect(h.memory.trace("F1")).toContain("Already committed");
   expect(() => h.memory.store.updateTurn(1, { assistantText: "blocked" })).toThrow("/trace enable");
@@ -264,20 +264,20 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace enable");
 });
 
-test.each([true, false])("18a 2026-09-08: disable during Integration rejects late %s submission and leaves facts pending", async submit => {
-  const h = setup({ "integration.triggerUnintegratedFacts": 1, "integration.maxToolRounds": 1 }); await h.turn();
+test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects late %s submission and leaves facts pending", async submit => {
+  const h = setup({ "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.maxToolRounds": 1 }); await h.turn();
   const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
   note.execute({ facts: [{ category: "observation", actor: "user", text: "Pending knowledge", source: ["T1#user"] }] });
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.answer("integration opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
+  await h.answer("consolidation opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
   await command(h, "disable");
   h.provider(async () => reply("Stopped"));
   release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: { operations: [], skipped: [] } }] } : reply("No knowledge"));
   await h.drain();
-  expect(h.memory.store.integrationBatch(1, "main", 1)).toHaveLength(1);
+  expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1);
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toEqual([]);
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
   expect(runs).toHaveLength(1);
   expect(runs[0]!.outcome).not.toBe("success");
 });

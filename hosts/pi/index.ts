@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type RecordingAgentInput, type IntegrationAgentInput, type Enrollment } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -36,7 +36,7 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
 
   const parse = (flat: FlatConfig) => {
     const core: ConfigOverride = {};
-    for (const section of ["render", "recording", "integration"] as const) {
+    for (const section of ["render", "noting", "consolidation"] as const) {
       const values: Record<string, number | boolean> = {};
       for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
         const override = flat[`${section}.${key}`];
@@ -46,9 +46,9 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
       }
       Object.assign(core, { [section]: values });
     }
-    for (const key of Object.keys(flat)) if (!["dbPath", "recordingModel", "integrationModel"].includes(key) &&
-      !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
-    for (const key of ["dbPath", "recordingModel", "integrationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+    for (const key of Object.keys(flat)) if (!["dbPath", "notingModel", "consolidationModel"].includes(key) &&
+      !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
+    for (const key of ["dbPath", "notingModel", "consolidationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
     validateConfig(core);
     return core;
   };
@@ -119,13 +119,13 @@ export default function (pi: ExtensionAPI) {
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; verified?: string; notified?: boolean } = {};
   const memory = TraceMemory(dbPath, async raw => {
-    const input = raw as RecordingAgentInput | IntegrationAgentInput;
+    const input = raw as NotingAgentInput | ConsolidationAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
     // The model is frozen with the run (a branch run freezes the session model at launch), so a
-    // model switch during a two-round integration cannot redirect its final round.
+    // model switch during a two-round consolidation cannot redirect its final round.
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
@@ -136,15 +136,15 @@ export default function (pi: ExtensionAPI) {
     try {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
       const checkCapacity = (payload: unknown) => {
-        if (input.kind !== "recording") return;
+        if (input.kind !== "noting") return;
         const body = payload as Record<string, unknown>;
         const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
           .map(key => typeof body[key] === "number" ? body[key] as number : 0));
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
-          throw new Error("Recording capacity: provider request exceeds model context with output reserved");
+          throw new Error("Noting capacity: provider request exceeds model context with output reserved");
       };
       // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
-      // append the Integration feedback, call the model again until it stops. Only sending differs.
+      // append the Consolidation feedback, call the model again until it stops. Only sending differs.
       // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
       // own compaction and branch-summary calls): transient provider errors back off and retry;
       // tool execution and commits happen only after a reply, so a retry never repeats a write.
@@ -172,7 +172,7 @@ export default function (pi: ExtensionAPI) {
             catch (error) { content = `rejected: ${String(error)}`; }
             return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: rejected(call.name, content), timestamp: Date.now() };
           });
-          const feedback = input.kind === "integration" ? results.flatMap(r => { const f = reviewMessage(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
+          const feedback = input.kind === "consolidation" ? results.flatMap(r => { const f = reviewMessage(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
           suffix = [reply, ...results, ...feedback];
         }
         return { reply, usage, retries };
@@ -190,7 +190,7 @@ export default function (pi: ExtensionAPI) {
             const captured = session.capture;
             if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
             if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
-            if (input.kind === "recording" && input.entryIds.some(id => {
+            if (input.kind === "noting" && input.entryIds.some(id => {
               const entry = memory.store.getSourceEntry(id)!;
               if (captured.entries.some(e => e.id === entry.nativeId && e.raw === entry.raw)) return false;
               // The unchanged branch suffix carries the head's natural-language reply in full.
@@ -286,27 +286,27 @@ export default function (pi: ExtensionAPI) {
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
-  const modelName = (kind: "recording" | "integration") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
+  const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01: recording and integration each configure their mode (recording defaults to branch, integration to
+  // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to branch, consolidation to
   // subagent); branch mode always runs on the session model, subagent mode on the configured one.
-  const launch = (kind: "recording" | "integration") => {
-    const branch = kind === "recording" ? memory.config.recording.branchModeDefault : !memory.config.integration.subagentModeDefault;
+  const launch = (kind: "noting" | "consolidation") => {
+    const branch = kind === "noting" ? memory.config.noting.branchModeDefault : !memory.config.consolidation.subagentModeDefault;
     return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
   // Footer status item (user ruling 2026-09-07): one indicator in Pi theme colours — dim ○ idle,
-  // accent ● recording running, success ● integration running, warning ● paused or committed with
+  // accent ● noting running, success ● consolidation running, warning ● paused or committed with
   // problems, error ● the last run failed — then today's plugin spend as ☉ $x.xx, reset daily.
-  const activity = { running: new Map<"recording" | "integration", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
-  const runningKind = (kind: "recording" | "integration") => (activity.running.get(kind) ?? 0) > 0;
+  const activity = { running: new Map<"noting" | "consolidation", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
+  const runningKind = (kind: "noting" | "consolidation") => (activity.running.get(kind) ?? 0) > 0;
   const showSpend = (context: ExtensionContext) => {
     if (!context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const indicator = !enabled() ? paint("dim", "○") : activity.retrying ? paint("warning", "●") : runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
+    const indicator = !enabled() ? paint("dim", "○") : activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
     // Fixed reading (user ruling 2026-09-07): applicable current knowledge / facts on this branch;
     // $ = this session's cumulative spend.
@@ -545,37 +545,37 @@ export default function (pi: ExtensionAPI) {
     if (!state.sessionId || !state.head) return;
     const context = ctx;
     const { sessionId, branch, head } = state;
-    const background = (kind: "recording" | "integration", promise: Promise<unknown>) => {
+    const background = (kind: "noting" | "consolidation", promise: Promise<unknown>) => {
       pending.add(promise); activity.running.set(kind, (activity.running.get(kind) ?? 0) + 1); showSpend(context);
       void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })
         .finally(() => { pending.delete(promise); activity.running.set(kind, (activity.running.get(kind) ?? 1) - 1); showSpend(context); });
     };
-    const count = memory.store.integrationBatch(sessionId, branch, head).length;
-    const recordingLaunch = launch("recording");
+    const count = memory.store.consolidationBatch(sessionId, branch, head).length;
+    const notingLaunch = launch("noting");
     // A branch run carries only its instruction (ruling 08:53): it presumes every earlier result is already
     // in the conversation. A result committed after this prompt started is not delivered until the next
     // prompt, so a branch run waits for that prompt's turn stop.
-    // A branch Recorder reads earlier facts, so a pending fact delivery holds it; a branch Integrator reads
+    // A branch Noter reads earlier facts, so a pending fact delivery holds it; a branch Consolidator reads
     // facts and current knowledge, so either pending kind holds it (user ruling 2026-09-07).
     const undelivered = new Set(memory.store.listPendingDeliveries(sessionId, branch).map(p => memory.store.getRun(p.runId)?.kind));
-    const paused = (kind: "recording" | "integration", mode: string | undefined) =>
-      mode === "branch" && (kind === "recording" ? undelivered.has("recording") : undelivered.size > 0);
+    const paused = (kind: "noting" | "consolidation", mode: string | undefined) =>
+      mode === "branch" && (kind === "noting" ? undelivered.has("noting") : undelivered.size > 0);
     let due = false;
-    try { due = tokens(memory.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, memory.config.render).content).join("\n\n")) >= memory.config.recording.triggerTokens; }
+    try { due = tokens(memory.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, memory.config.render).content).join("\n\n")) >= memory.config.noting.triggerTokens; }
     catch (error) { context.ui.notify(String(error), "error"); }
-    if (due && paused("recording", recordingLaunch.mode)) { activity.last = "warning"; showSpend(context); }
-    if (due && !paused("recording", recordingLaunch.mode)) {
-      const [provider, ...id] = recordingLaunch.model.split("/");
-      const model = recordingLaunch.model === "session" || recordingLaunch.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-      if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) context.ui.notify("Recording capacity: unavailable model context/output limits; left pending", "error");
-      else background("recording", memory.record({ sessionId, branch, headTurnId: head, ...recordingLaunch,
+    if (due && paused("noting", notingLaunch.mode)) { activity.last = "warning"; showSpend(context); }
+    if (due && !paused("noting", notingLaunch.mode)) {
+      const [provider, ...id] = notingLaunch.model.split("/");
+      const model = notingLaunch.model === "session" || notingLaunch.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
+      if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) context.ui.notify("Noting capacity: unavailable model context/output limits; left pending", "error");
+      else background("noting", memory.noting({ sessionId, branch, headTurnId: head, ...notingLaunch,
         capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
-          prefixTokens: recordingLaunch.mode === "branch" && session.capture?.branch === branch ? tokens(JSON.stringify(session.capture.payload)) : 0 } }));
+          prefixTokens: notingLaunch.mode === "branch" && session.capture?.branch === branch ? tokens(JSON.stringify(session.capture.payload)) : 0 } }));
     }
-    const integrationLaunch = launch("integration");
-    if (count >= memory.config.integration.triggerUnintegratedFacts && paused("integration", integrationLaunch.mode)) { activity.last = "warning"; showSpend(context); }
-    if (count >= memory.config.integration.triggerUnintegratedFacts && !paused("integration", integrationLaunch.mode))
-      background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...integrationLaunch }));
+    const consolidationLaunch = launch("consolidation");
+    if (count >= memory.config.consolidation.triggerUnconsolidatedFacts && paused("consolidation", consolidationLaunch.mode)) { activity.last = "warning"; showSpend(context); }
+    if (count >= memory.config.consolidation.triggerUnconsolidatedFacts && !paused("consolidation", consolidationLaunch.mode))
+      background("consolidation", memory.consolidate({ sessionId, branch, headTurnId: head, ...consolidationLaunch }));
   };
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); if (!enabled()) return; flush(true);
@@ -654,7 +654,7 @@ export default function (pi: ExtensionAPI) {
         ? " Processing and future injection stop; stored memory and already-injected text remain."
         : " Available history, including the paused interval, will be queued without a model call."))) toggle(action === "Enable");
     } else if (selected === "Settings (Global, read-only)") {
-      const defaults = { dbPath: "~/.trace-memory/trace.db", recordingModel: "session", integrationModel: "session",
+      const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
         ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
       ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
         const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);

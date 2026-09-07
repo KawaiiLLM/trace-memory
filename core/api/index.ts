@@ -5,23 +5,23 @@ import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";
 export type { ListingOptions, SearchScope } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
-import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
+import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens, renderEntry, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
-export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
+export type { NotingInput, NotingResult, NotingAgentInput } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath } from "../store/index.ts";
 
-import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
-export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
+import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
+export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
 
-const inFlightIntegrations = new Set<string>();
-const inFlightRecordings = new Set<string>();
+const inFlightConsolidations = new Set<string>();
+const inFlightNotings = new Set<string>();
 let memoryDatabaseId = 0;
 
-// ---- Flat config, defaults in one place (spec.md: render budgets, recording/integration triggers and modes) ----
+// ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
 
 export interface TraceMemoryConfig {
   render: {
@@ -36,16 +36,16 @@ export interface TraceMemoryConfig {
     knowledgeBlockTokens: number;
     episodicBlockTokens: number;
   };
-  recording: {
+  noting: {
     branchModeDefault: boolean;
     batchTokens: number;
     triggerTokens: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
-  integration: {
+  consolidation: {
     subagentModeDefault: boolean;
-    triggerUnintegratedFacts: number;
+    triggerUnconsolidatedFacts: number;
     nearThreshold: number;
     maxToolRounds: number;
   };
@@ -64,15 +64,15 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     knowledgeBlockTokens: 10_000,
     episodicBlockTokens: 20_000,
   },
-  recording: {
+  noting: {
     branchModeDefault: true,
     batchTokens: 50_000,
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
-  integration: {
+  consolidation: {
     subagentModeDefault: true,
-    triggerUnintegratedFacts: 50,
+    triggerUnconsolidatedFacts: 50,
     nearThreshold: 0.28,
     maxToolRounds: 0,
   },
@@ -90,8 +90,8 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
   }
   return {
     render: { ...base.render, ...override.render },
-    recording: { ...base.recording, ...override.recording },
-    integration: { ...base.integration, ...override.integration },
+    noting: { ...base.noting, ...override.noting },
+    consolidation: { ...base.consolidation, ...override.consolidation },
   };
 }
 
@@ -137,15 +137,15 @@ export interface TraceMemory {
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
   tools(context: ToolContext): ToolDefinition[];
-  record(input: RecordInput): Promise<RecordResult>;
-  integrate(input: IntegrateInput): Promise<IntegrateResult>;
+  noting(input: NotingInput): Promise<NotingResult>;
+  consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
   /** Committed lineage facts and unrecorded raw, without consuming deliveries or dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   compact(sessionId: number, branch?: string, headTurnId?: number): string;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
-  /** Pending recording results for this session and branch, rendered once and marked delivered; "" when none. */
-  /** Pending recording results for this session and branch, rendered but not consumed; "" when none. */
+  /** Pending noting results for this session and branch, rendered once and marked delivered; "" when none. */
+  /** Pending noting results for this session and branch, rendered but not consumed; "" when none. */
   deliver(sessionId: number, branch?: string | null): { text: string; runIds: number[] };
   /** Marks the given deliveries consumed once the host has persisted them. */
   confirmDelivery(runIds: number[]): void;
@@ -155,7 +155,7 @@ export interface TraceMemory {
   declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
   status(sessionId: number): string;
   /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
-  spend(sessionId: number): { runs: { recording: number; integration: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  spend(sessionId: number): { runs: { noting: number; consolidation: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
@@ -268,27 +268,27 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     tools: (context) => bindTools(store, read, context).tools,
-    record: async (input) => {
+    noting: async (input) => {
       if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightRecordings.has(key)) return { outcome: "dropped" };
-      inFlightRecordings.add(key);
+      if (inFlightNotings.has(key)) return { outcome: "dropped" };
+      inFlightNotings.add(key);
       try {
-        const frozen = freezeRecording(store, input, cfg);
-        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
-      } finally { inFlightRecordings.delete(key); }
+        const frozen = freezeNoting(store, input, cfg);
+        return await runNoting(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
+      } finally { inFlightNotings.delete(key); }
     },
-    integrate: async (input) => {
+    consolidate: async (input) => {
       if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
       const session = store.getSession(input.sessionId);
       if (!session) throw new Error(`session S${input.sessionId} does not exist`);
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightIntegrations.has(key)) return { outcome: "dropped" };
-      inFlightIntegrations.add(key);
+      if (inFlightConsolidations.has(key)) return { outcome: "dropped" };
+      inFlightConsolidations.add(key);
       try {
-        const frozen = freezeIntegration(store, input, cfg);
-        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
-      } finally { inFlightIntegrations.delete(key); }
+        const frozen = freezeConsolidation(store, input, cfg);
+        return await runConsolidation(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
+      } finally { inFlightConsolidations.delete(key); }
     },
     ...read,
   };

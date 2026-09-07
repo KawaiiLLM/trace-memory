@@ -5,7 +5,7 @@ import { host } from "./test-host.ts";
 
 // Exercise the installed pi-ai adapter, replacing only HTTP, not complete/onPayload.
 test("real pi-ai serialization sends the preserved body and reports cache reads", async () => {
-  const h = host({ "recording.triggerTokens": 60 });
+  const h = host({ "noting.triggerTokens": 60 });
   const sent: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
     sent.push(JSON.parse(String(init.body)));
@@ -35,8 +35,8 @@ test("real pi-ai serialization sends the preserved body and reports cache reads"
   } finally { await h.dispose(); vi.unstubAllGlobals(); }
 });
 
-test("real Anthropic Integration tool continuation preserves signed thinking and the captured prefix", async () => {
-  const h = host({ "recording.triggerTokens": 1000000000, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false });
+test("real Anthropic Consolidation tool continuation preserves signed thinking and the captured prefix", async () => {
+  const h = host({ "noting.triggerTokens": 1000000000, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false });
   const sent: Record<string, any>[] = [];
   const batch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
   vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
@@ -68,12 +68,12 @@ test("real Anthropic Integration tool continuation preserves signed thinking and
     await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
-    recorded(h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Integration batch
+    recorded(h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
     const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: [{ type: "text", text: "Exact signed-thinking prefix", cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: [{ type: "text", text: "Original", cache_control: { type: "ephemeral" } }] }],
       tools: tools.map((t, i) => ({ name: t.name, description: t.description, input_schema: t.parameters, ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) })) };
     await h.emit("before_provider_request", { payload: captured });
     await h.answer("tick"); await h.emit("agent_settled"); await h.emit("session_shutdown");
-    const run = h.memory.store.listRuns(1).find(r => r.kind === "integration")!;
+    const run = h.memory.store.listRuns(1).find(r => r.kind === "consolidation")!;
     expect(run.outcome, run.response ?? "").toBe("success");
     expect(sent).toHaveLength(3);
     for (const body of sent) {

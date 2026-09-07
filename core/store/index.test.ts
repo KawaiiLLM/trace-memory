@@ -47,7 +47,7 @@ describe("schema", () => {
       "runs",
       "knowledge_marks",
       "pending_deliveries",
-      "source_entries", "source_paths", "recorded_entries",
+      "source_entries", "source_paths", "noted_entries",
       "idx_knowledge_project",
       "idx_runs_session",
     ]) {
@@ -76,15 +76,15 @@ describe("global ids", () => {
     expect(p2.id).toBeGreaterThan(p1.id);
     const s1 = makeSession(p1.id);
     const t1 = store.appendTurn({ sessionId: s1.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const r1 = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
+    const r1 = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "fact one", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(r1.ok).toBe(true);
     const s2 = makeSession(p2.id);
     const t2 = store.appendTurn({ sessionId: s2.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const r2 = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s2.id, createdAt: "2026-01-01T00:00:01Z" },
+    const r2 = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s2.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t2.id, category: "observation", actor: "user", text: "fact two", source: ["T2#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(r2.ok).toBe(true);
@@ -110,13 +110,13 @@ describe("session id allocation", () => {
   });
 });
 
-describe("commitRecordingRun: local handle resolution", () => {
+describe("commitNotingRun: local handle resolution", () => {
   test("resolves $n to the batch's own freshly assigned fact ids", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const result = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const result = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [
         { turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" },
         {
@@ -143,14 +143,14 @@ describe("commitRecordingRun: local handle resolution", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const first = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const first = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(first.ok).toBe(true);
     if (!first.ok) return;
-    const second = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+    const second = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       facts: [
         {
           turnId: t.id,
@@ -170,8 +170,8 @@ describe("commitRecordingRun: local handle resolution", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const result = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const result = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [
         {
           turnId: t.id,
@@ -199,26 +199,26 @@ describe("commitRecordingRun: local handle resolution", () => {
   });
 });
 
-describe("commitIntegrationRun: revision conflicts", () => {
+describe("commitConsolidationRun: revision conflicts", () => {
   test("a stale expected revision rolls back the whole batch and records failure", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const recordingResult = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const notingResult = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
-    expect(recordingResult.ok).toBe(true);
-    if (!recordingResult.ok) return;
-    const factId = recordingResult.facts[0]!.id;
+    expect(notingResult.ok).toBe(true);
+    if (!notingResult.ok) return;
+    const factId = notingResult.facts[0]!.id;
 
-    const created = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+    const created = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
           op: "create",
           handle: "$e1",
-          author: "integration",
+          author: "consolidation",
           text: "The project uses pnpm.",
           category: "constraint",
           scope: "project",
@@ -232,8 +232,8 @@ describe("commitIntegrationRun: revision conflicts", () => {
     const knowledgeId = created.committed[0]!.knowledgeId;
 
     // a first edit against revision 1 succeeds and moves the knowledge to revision 2...
-    const round2 = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z" },
+    const round2 = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z" },
       operations: [
         {
           op: "update",
@@ -253,13 +253,13 @@ describe("commitIntegrationRun: revision conflicts", () => {
     expect(round2.committed).toHaveLength(1);
 
     // A stale update rejects the whole batch, including earlier writes.
-    const round3 = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:03:00Z" },
+    const round3 = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:03:00Z" },
       operations: [
         {
           op: "create",
           handle: "$e2",
-          author: "integration",
+          author: "consolidation",
           text: "A second, unrelated knowledge.",
           category: "reference",
           scope: "project",
@@ -298,19 +298,19 @@ describe("project merge", () => {
     const into = store.createProject({ name: "the-real-project", declaredBy: "mark" });
     const s = makeSession(from.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const recorded = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const recorded = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
-    const integrated = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+    const consolidated = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
           op: "create",
           handle: "$e1",
-          author: "integration",
+          author: "consolidation",
           text: "The project uses pnpm.",
           category: "constraint",
           scope: "project",
@@ -319,9 +319,9 @@ describe("project merge", () => {
         },
       ],
     });
-    expect(integrated.ok).toBe(true);
-    if (!integrated.ok) return;
-    const knowledgeId = integrated.committed[0]!.knowledgeId;
+    expect(consolidated.ok).toBe(true);
+    if (!consolidated.ok) return;
+    const knowledgeId = consolidated.committed[0]!.knowledgeId;
 
     store.mergeProject(from.id, into.id);
 
@@ -339,24 +339,24 @@ describe("visibility rule", () => {
     const s2 = makeSession(p.id);
     const t1 = store.appendTurn({ sessionId: s1.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
 
-    const recorded = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
+    const recorded = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s1.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t1.id, category: "observation", actor: "user", text: "context fact", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     expect(recorded.ok).toBe(true);
     if (!recorded.ok) return;
     const factId = recorded.facts[0]!.id;
 
-    // A knowledge item's project is the project of the session that integrated it; only global knowledge have none.
+    // A knowledge item's project is the project of the session that consolidated it; only global knowledge have none.
     function newKnowledge(scope: "session" | "project" | "global", sessionId: number, text: string) {
       const turn = store.appendTurn({ sessionId, kind: "turn", startedAt: "2026-01-01T00:01:00Z" });
-      const evidence = store.commitRecordingRun({ run: { kind: "recording", sessionId, createdAt: "2026-01-01T00:01:00Z" }, facts: [
+      const evidence = store.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: "2026-01-01T00:01:00Z" }, facts: [
         { turnId: turn.id, category: "observation", actor: "user", text: "context fact", source: [`T${turn.id}#user`], createdAt: "2026-01-01T00:01:00Z" } ] });
       if (!evidence.ok) throw new Error("fixture evidence failed");
-      const r = store.commitIntegrationRun({
-        run: { kind: "integration", sessionId, createdAt: "2026-01-01T00:01:00Z" },
+      const r = store.commitConsolidationRun({
+        run: { kind: "consolidation", sessionId, createdAt: "2026-01-01T00:01:00Z" },
         operations: [
-          { op: "create", handle: "$e1", author: "integration", text, category: "term", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
+          { op: "create", handle: "$e1", author: "consolidation", text, category: "term", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
         ],
       });
       if (!r.ok) throw new Error("setup failed");
@@ -364,7 +364,7 @@ describe("visibility rule", () => {
     }
 
     const s3 = makeSession(otherProject.id);
-    const globalKnowledge = newKnowledge("global", s1.id, "A global working-method recording.");
+    const globalKnowledge = newKnowledge("global", s1.id, "A global working-method noting.");
     const projectKnowledge = newKnowledge("project", s1.id, "A project-wide term.");
     const session1Knowledge = newKnowledge("session", s1.id, "A session-only detail for s1.");
     const otherProjectKnowledge = newKnowledge("project", s3.id, "Belongs to a different project.");
@@ -385,19 +385,19 @@ describe("marks and pending deliveries", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const recorded = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const recorded = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     if (!recorded.ok) throw new Error("setup failed");
-    const integrated = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+    const consolidated = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
-        { op: "create", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
+        { op: "create", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
       ],
     });
-    if (!integrated.ok) throw new Error("setup failed");
-    const knowledgeId = integrated.committed[0]!.knowledgeId;
+    if (!consolidated.ok) throw new Error("setup failed");
+    const knowledgeId = consolidated.committed[0]!.knowledgeId;
     store.addKnowledgeMark(knowledgeId, 1, "verified", "2026-01-01T00:02:00Z");
     expect(store.listKnowledgeMarks(knowledgeId)).toHaveLength(1);
     expect(store.listKnowledgeMarks(knowledgeId)[0]!.kind).toBe("verified");
@@ -406,7 +406,7 @@ describe("marks and pending deliveries", () => {
   test("queues and clears a pending delivery bound to a branch", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
-    const run = store.recordRun({ kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z", outcome: "success" });
+    const run = store.recordRun({ kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z", outcome: "success" });
     store.addPendingDelivery(run.id, s.id, "main");
     expect(store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
     store.clearPendingDelivery(run.id, "2026-01-01T00:03:00Z");
@@ -419,14 +419,14 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const recorded = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
+    const recorded = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
     });
     if (!recorded.ok) throw new Error("seed failed");
     return { p, s, t, factId: recorded.facts[0]!.id };
   }
-  const integrationAt = "2026-01-01T00:01:00Z";
+  const consolidationAt = "2026-01-01T00:01:00Z";
 
   test.each([
     ["revision", "knowledge_revisions", "id, knowledge_id, parent_id, text, category, scope, supports, op, created_at"],
@@ -435,11 +435,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     ["revision mark", "knowledge_marks", "knowledge_id, commit_id, kind, created_at"],
   ])("database rejects a duplicate %s", (_name, table, columns) => {
     const { s, t, factId } = seed();
-    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: integrationAt }] });
+    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     store.appendToolCall({ turnId: t.id, name: "bash", status: "success" });
-    store.addKnowledgeMark(made.committed[0]!.knowledgeId, 1, "verified", integrationAt);
+    store.addKnowledgeMark(made.committed[0]!.knowledgeId, 1, "verified", consolidationAt);
     expect(() => store.db.exec(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${table} LIMIT 1`)).toThrow(/UNIQUE constraint failed/);
   });
 
@@ -450,8 +450,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("database enforces fact ownership, knowledge origin, link revisions and watermark references", () => {
     const { s, factId } = seed();
-    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: integrationAt }] });
+    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(() => store.db.exec("UPDATE facts SET run_id = NULL")).toThrow(/NOT NULL constraint failed/);
@@ -461,26 +461,26 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       `INSERT INTO knowledge_links VALUES (${id}, 999, 'merged_into', ${id}, 1)`,
       `INSERT INTO knowledge_links VALUES (${id}, 1, 'merged_into', ${id}, 999)`,
       "INSERT INTO source_paths VALUES (999999, 'main', '[]')",
-      `INSERT INTO recorded_entries VALUES (999999, 999999)`,
-      "INSERT INTO integrated_facts VALUES (999999, 1)",
-      "INSERT INTO integrated_facts VALUES (1, 999999)",
+      `INSERT INTO noted_entries VALUES (999999, 999999)`,
+      "INSERT INTO consolidated_facts VALUES (999999, 1)",
+      "INSERT INTO consolidated_facts VALUES (1, 999999)",
     ]) expect(() => store.db.exec(sql)).toThrow(/FOREIGN KEY constraint failed/);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
   test("knowledge origin survives another session's edit and project moves without revision-one ownership", () => {
     const { p, s, factId } = seed(), peer = makeSession(p.id);
-    const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: integrationAt });
-    const recorded = store.commitRecordingRun({ run: { kind: "recording", sessionId: peer.id, createdAt: integrationAt },
-      facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "private term", source: [`T${turn.id}#user`], createdAt: integrationAt }] });
+    const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: consolidationAt });
+    const recorded = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: consolidationAt },
+      facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "private term", source: [`T${turn.id}#user`], createdAt: consolidationAt }] });
     if (!recorded.ok) throw new Error("setup failed");
     const peerFact = recorded.facts[0]!.id;
-    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: integrationAt }] });
+    const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
-    expect(store.commitIntegrationRun({ run: { kind: "integration", sessionId: peer.id, createdAt: integrationAt },
-      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: integrationAt }] }).ok).toBe(true);
+    expect(store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: peer.id, createdAt: consolidationAt },
+      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: consolidationAt }] }).ok).toBe(true);
     const target = store.declareProject(peer.id, "destination", "mark");
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
     store.mergeProject(target.id, survivor.id);
@@ -492,16 +492,16 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("a scope change moves the knowledge's ownership, so it stays visible after reopening", () => {
     const { p, s, factId } = seed();
-    const made = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "create", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: integrationAt }],
+    const made = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: consolidationAt }],
     });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
-    const edited = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
+    const edited = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt }],
     });
     expect(edited.ok).toBe(true);
     store.close();
@@ -513,24 +513,24 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   test("a knowledge item cannot absorb itself; duplicate absorb targets collapse to one", () => {
     const { s, factId } = seed();
     const mk = (text: string) =>
-      store.commitIntegrationRun({
-        run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-        operations: [{ op: "create", handle: "$e1", author: "integration", text, category: "term", scope: "project", supports: [factId], createdAt: integrationAt }],
+      store.commitConsolidationRun({
+        run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+        operations: [{ op: "create", handle: "$e1", author: "consolidation", text, category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
       });
     const a = mk("A");
     const b = mk("B");
     if (!a.ok || !b.ok) throw new Error("setup failed");
     const aId = a.committed[0]!.knowledgeId;
     const bId = b.committed[0]!.knowledgeId;
-    const run = { kind: "integration" as const, sessionId: s.id, createdAt: integrationAt };
-    const rejected = store.commitIntegrationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+    const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
+    const rejected = store.commitConsolidationRun({ run, operations: [
+      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
     ] });
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
-    const merged = store.commitIntegrationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+    const merged = store.commitConsolidationRun({ run, operations: [
+      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
     ] });
     expect(merged.ok).toBe(true);
     expect(store.currentCommit(aId)[0]?.op).toBe("merge");
@@ -538,23 +538,23 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 1 });
   });
 
-  test("a recording commit rejects turns, watermarks, and deliveries outside its own session and branch", () => {
+  test("a noting commit rejects turns, watermarks, and deliveries outside its own session and branch", () => {
     const { s, t } = seed();
     const p2 = store.createProject({ name: "other", declaredBy: "mark" });
     const s2 = makeSession(p2.id);
     const t2 = store.appendTurn({ sessionId: s2.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const fact = { category: "observation" as const, actor: "user" as const, text: "x", source: ["T1#user"], createdAt: integrationAt };
-    const foreignTurn = store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt }, facts: [{ ...fact, turnId: t2.id }] });
+    const fact = { category: "observation" as const, actor: "user" as const, text: "x", source: ["T1#user"], createdAt: consolidationAt };
+    const foreignTurn = store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt }, facts: [{ ...fact, turnId: t2.id }] });
     expect(foreignTurn.ok).toBe(false);
     // 17a supersedes Turn watermark writes with exact entry membership.
-    const foreignEntry = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt },
+    const foreignEntry = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt },
       facts: [{ ...fact, turnId: t.id }],
       entryIds: [999999],
     });
     expect(foreignEntry.ok).toBe(false);
-    const foreignDelivery = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt },
+    const foreignDelivery = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt },
       facts: [{ ...fact, turnId: t.id }],
       pendingDelivery: { sessionId: s.id, branch: "other" },
     });
@@ -565,9 +565,9 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("a local handle may only point at an earlier fact of the batch", () => {
     const { s, t } = seed();
-    const fact = { turnId: t.id, category: "observation" as const, actor: "agent" as const, source: ["T1#assistant"], createdAt: integrationAt };
-    const forward = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: integrationAt },
+    const fact = { turnId: t.id, category: "observation" as const, actor: "agent" as const, source: ["T1#assistant"], createdAt: consolidationAt };
+    const forward = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: consolidationAt },
       facts: [
         { ...fact, text: "first" },
         { ...fact, text: "second", support: [{ target: "$3", strength: "weak" }] },
@@ -575,8 +575,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       ],
     });
     expect(forward.ok).toBe(false);
-    const self = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: integrationAt },
+    const self = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: consolidationAt },
       facts: [{ ...fact, text: "loop", support: [{ target: "$1", strength: "weak" }] }],
     });
     expect(self.ok).toBe(false);
@@ -585,48 +585,48 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("cited facts must exist and supports must not be empty; marks bind to an existing revision", () => {
     const { s, factId } = seed();
-    const run = { kind: "integration" as const, sessionId: s.id, createdAt: integrationAt };
+    const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
     for (const [supports, problem] of [[ [999999], "F999999 does not exist" ], [ [], "must not be empty" ]] as const) {
-      const r = store.commitIntegrationRun({ run, operations: [
-        { op: "create", handle: "$e1", author: "integration", text: "invalid", category: "term", scope: "project", supports: [...supports], createdAt: integrationAt },
+      const r = store.commitConsolidationRun({ run, operations: [
+        { op: "create", handle: "$e1", author: "consolidation", text: "invalid", category: "term", scope: "project", supports: [...supports], createdAt: consolidationAt },
       ] });
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.problems.join(" ")).toContain(problem);
     }
-    const r = store.commitIntegrationRun({ run, operations: [
-      { op: "create", handle: "$e3", author: "integration", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
+    const r = store.commitConsolidationRun({ run, operations: [
+      { op: "create", handle: "$e3", author: "consolidation", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const id = r.committed[0]!.knowledgeId;
-    const archive = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "archive", knowledgeId: id, baseCommit: 1, because: [999998], createdAt: integrationAt }],
+    const archive = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "archive", knowledgeId: id, baseCommit: 1, because: [999998], createdAt: consolidationAt }],
     });
     expect(archive.ok).toBe(false);
     expect(store.currentCommit(id)[0]?.op).toBe("create");
-    expect(() => store.addKnowledgeMark(id, 999, "verified", integrationAt)).toThrow("no commit 999");
-    expect(store.addKnowledgeMark(id, 1, "verified", integrationAt).commitId).toBe(1);
+    expect(() => store.addKnowledgeMark(id, 999, "verified", consolidationAt)).toThrow("no commit 999");
+    expect(store.addKnowledgeMark(id, 1, "verified", consolidationAt).commitId).toBe(1);
   });
 
-  test("an integration rejection rolls back knowledge and progress marks; a fact outside the project cannot be marked", () => {
+  test("an consolidation rejection rolls back knowledge and progress marks; a fact outside the project cannot be marked", () => {
     const { s, factId } = seed();
-    const r = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
+    const r = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
       operations: [
-        { op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
-        { op: "update", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+        { op: "create", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
+        { op: "update", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
       ],
-      integrated: [factId],
+      consolidated: [factId],
     });
     expect(r.ok).toBe(false);
     expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
-    expect(store.listIntegratedProjectFacts(store.getSession(s.id)!.projectId)).toEqual([]);
-    const foreign = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
-      operations: [{ op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt }],
-      integrated: [424242],
+    expect(store.listConsolidatedProjectFacts(store.getSession(s.id)!.projectId)).toEqual([]);
+    const foreign = store.commitConsolidationRun({
+      run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
+      consolidated: [424242],
     });
     expect(foreign.ok).toBe(false);
     expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
@@ -647,9 +647,9 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const exited = once(holder, "exit");
     await once(holder.stdout, "data"); // the other process now holds the lock
     const started = performance.now();
-    const r = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: integrationAt },
-      facts: [{ turnId: t.id, category: "observation", actor: "user", text: "written under contention", source: ["T1#user"], createdAt: integrationAt }],
+    const r = store.commitNotingRun({
+      run: { kind: "noting", sessionId: s.id, createdAt: consolidationAt },
+      facts: [{ turnId: t.id, category: "observation", actor: "user", text: "written under contention", source: ["T1#user"], createdAt: consolidationAt }],
     });
     expect(performance.now() - started).toBeGreaterThanOrEqual(100);
     expect((await exited)[0]).toBe(0);
@@ -658,7 +658,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   });
 });
 
-describe("incremental raw recording", () => {
+describe("incremental raw noting", () => {
   test("a turn is appended at the prompt and completed later with its assistant text and end time", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);

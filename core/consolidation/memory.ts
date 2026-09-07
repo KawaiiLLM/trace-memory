@@ -1,9 +1,9 @@
 import { prepareMemory, accounting } from "./commit.ts";
 import type { MemoryBatch } from "../model/index.ts";
 import type { Store, RunInput, KnowledgePath } from "../store/index.ts";
-import type { freezeIntegration, NearPair } from "./index.ts";
+import type { freezeConsolidation, NearPair } from "./index.ts";
 export interface MemoryReview {
-  frozen: ReturnType<typeof freezeIntegration>;
+  frozen: ReturnType<typeof freezeConsolidation>;
   feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId)) {
@@ -24,7 +24,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
   let requests = 0, candidateRequest = -1;
-  let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").IntegrationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
+  let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
   const execute = (input: unknown) => {
@@ -45,8 +45,8 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     const diagnostics = prepared.diagnostics;
     if (unansweredNear.length) diagnostics.push({ kind: "unanswered_near", pairs: unansweredNear });
     const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results, committed: items, diagnostics });
-    const result = store.commitIntegrationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
-      ...(review ? { integrated: review.frozen.rangeFacts.map(f => f.id),
+    const result = store.commitConsolidationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
+      ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id),
         pendingDelivery: { sessionId, branch: run.branch ?? null } } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path));

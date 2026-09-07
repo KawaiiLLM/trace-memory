@@ -2,8 +2,8 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
 import { TraceMemory } from "../../test/source-fixture.ts";
 
-const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/recording/facts.json", import.meta.url), "utf8"));
-const rawFixture = JSON.parse(readFileSync(new URL("../../test/fixtures/recording/turns.json", import.meta.url), "utf8"));
+const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/noting/facts.json", import.meta.url), "utf8"));
+const rawFixture = JSON.parse(readFileSync(new URL("../../test/fixtures/noting/turns.json", import.meta.url), "utf8"));
 const time = "2026-09-06T00:00:00Z";
 let memory: TraceMemory, calls: number;
 beforeEach(() => { calls = 0; memory = TraceMemory(":memory:", async () => { calls++; return { outcome: "success", output: [], request: {} }; }); });
@@ -15,8 +15,8 @@ function session(projectId?: number, declaration: "marker" | "undeclared" = "mar
 function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
   return memory.store.appendTurn({ sessionId, userPrompt: text, assistantText: null, parentTurnId, kind: "turn", startedAt: time });
 }
-function recording(sessionId: number, turnId: number, text = fixture.base, branch = "main", pending = false) {
-  const result = memory.store.commitRecordingRun({ run: { sessionId, branch, kind: "recording", createdAt: time },
+function noting(sessionId: number, turnId: number, text = fixture.base, branch = "main", pending = false) {
+  const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
     facts: [{ turnId, text, category: "decision", actor: "user", source: [`T${turnId}#user`], createdAt: time }],
     entryIds: memory.store.sourcePath(sessionId, branch, turnId).map(e => e.id),
     ...(pending ? { pendingDelivery: { sessionId, branch } } : {}) });
@@ -25,14 +25,14 @@ function recording(sessionId: number, turnId: number, text = fixture.base, branc
 }
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time) {
-  const result = memory.store.commitIntegrationRun({ run: { sessionId, branch: "main", kind: "integration", createdAt: time },
+  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "consolidation", createdAt: time },
     operations: [{ op: "create", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
-    integrated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
+    consolidated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
 }
 function populated() {
-  const s = session(), t = turn(s.id), n = recording(s.id, t.id), f = n.facts[0]!;
+  const s = session(), t = turn(s.id), n = noting(s.id, t.id), f = n.facts[0]!;
   const e = knowledge(s.id, f.id);
   return { s, t, f, e };
 }
@@ -46,12 +46,12 @@ test("injection and compaction match Chinese fixture goldens without a model cal
   expect(calls).toBe(0);
 });
 
-test("injection stays byte-identical across a no-op recording and has no XML attributes", async () => {
+test("injection stays byte-identical across a no-op noting and has no XML attributes", async () => {
   const { s, t } = populated();
   const before = memory.inject(s.id), next = turn(s.id, fixture.observation, t.id);
-  expect((await memory.record({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
   expect(memory.inject(s.id)).toBe(before);
-  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the no-op recording wrote no facts
+  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the no-op noting wrote no facts
   memory.confirmDelivery(empty.runIds); expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
   expect(memory.inject(s.id)).toBe(before);
   for (const tag of before.match(/<[^>]+>/g)!) expect(tag).toMatch(/^<\/?[a-z_]+>$/);
@@ -59,10 +59,10 @@ test("injection stays byte-identical across a no-op recording and has no XML att
 
 test("visibility includes global, own project and own session only, excluding inactive knowledge", () => {
   const { s, f } = populated(), peer = session(s.projectId), foreign = session();
-  const own = knowledge(s.id, f.id, "open", "session"), other = knowledge(peer.id, recording(peer.id, turn(peer.id).id).facts[0]!.id, "open", "session");
-  const outside = knowledge(foreign.id, recording(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
+  const own = knowledge(s.id, f.id, "open", "session"), other = knowledge(peer.id, noting(peer.id, turn(peer.id).id).facts[0]!.id, "open", "session");
+  const outside = knowledge(foreign.id, noting(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
-  memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time },
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time },
     operations: [{ op: "archive", knowledgeId: archived, baseCommit: archived, because: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), memory.compact(s.id)]) {
     expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
@@ -111,7 +111,7 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   expect(precise).toContain("selected raw"); expect(precise).not.toContain("abandoned raw");
   // 17a: an omitted head resolves one path, never a union of sibling queues.
   expect(memory.compact(s.id)).not.toContain("abandoned raw");
-  const n = recording(s.id, selected.id, fixture.interpretation);
+  const n = noting(s.id, selected.id, fixture.interpretation);
   const full = memory.compact(s.id, "main", selected.id);
   expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));
   memory.config.render.episodicBlockTokens = 70;
@@ -122,15 +122,15 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
 
 test("pending delivery is exact to its run and branch, consumed once, including after later commits", () => {
   const s = session(), t = turn(s.id);
-  const first = recording(s.id, t.id, "first delivery", "main", true);
-  const second = recording(s.id, t.id, "second delivery", "other", true);
+  const first = noting(s.id, t.id, "first delivery", "main", true);
+  const second = noting(s.id, t.id, "second delivery", "other", true);
   expect(memory.deliver(s.id, "unrelated").text).toBe("");
   const delivery = memory.deliver(s.id, "main");
   expect(delivery.text).toContain("first delivery"); expect(delivery.text).not.toContain("second delivery");
   expect(memory.deliver(s.id, "main").text).toContain("first delivery"); // unconfirmed: delivered again, never silently lost
   memory.confirmDelivery(delivery.runIds);
   expect(memory.deliver(s.id, "main").text).toBe("");
-  expect(memory.inject(s.id)).not.toContain("recorded");
+  expect(memory.inject(s.id)).not.toContain("noted");
   expect(memory.store.listPendingDeliveries(s.id, "other").map((p) => p.runId)).toEqual([second.runId]);
   expect(memory.deliver(s.id, "other").text).toContain("second delivery");
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
@@ -138,14 +138,14 @@ test("pending delivery is exact to its run and branch, consumed once, including 
 
 test("delivery and branch facts use run ownership independently of audit JSON", () => {
   const s = session(), t = turn(s.id);
-  const first = recording(s.id, t.id, "recorded", "main", true);
+  const first = noting(s.id, t.id, "noted", "main", true);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
     facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
   const manual = memory.store.listRuns(s.id).at(-1)!;
   memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
-  expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["recorded", "manual"]); // facts belong to their turn, whichever branch wrote them
-  expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["recorded", "manual"]); // same turn, same path
-  expect(memory.deliver(s.id).text).toContain("recorded");
+  expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["noted", "manual"]); // facts belong to their turn, whichever branch wrote them
+  expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["noted", "manual"]); // same turn, same path
+  expect(memory.deliver(s.id).text).toContain("noted");
   for (const run of [memory.store.getRun(first.runId)!, manual]) {
     memory.store.updateRun(run.id, { ...run, response: "{}" });
     const ids = (memory.store.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(run.id) as { id: number }[]).map(f => f.id);
@@ -161,7 +161,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.mark(e, "verified")).toBe(`K${e}@1: verified`);
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
-  const edit = memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
+  const edit = memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
     op: "update", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
@@ -173,13 +173,13 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
 });
 
 test("literal search finds facts, historical knowledge and raw across projects", () => {
-  const s = session(), t = turn(s.id, "needle raw"), n = recording(s.id, t.id, "needle fact");
+  const s = session(), t = turn(s.id, "needle raw"), n = noting(s.id, t.id, "needle fact");
   const e = knowledge(s.id, n.facts[0]!.id, "goal", "project", "needle knowledge");
   expect(memory.search("needle", "facts")).toContain("[F1]"); expect(memory.search("needle", "facts")).not.toContain("[K");
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
   const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
-  memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
     op: "update", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
@@ -213,7 +213,7 @@ test.each([
     for (const content of [text, "无关内容 core/api/read.ts snakeXcase 100X coreapi", text]) {
       const t = turn(owner.id, "raw prompt");
       memory.store.appendToolCall({ turnId: t.id, name: "Bash", result: content, status: "success" });
-      const f = recording(owner.id, t.id, content).facts[0]!;
+      const f = noting(owner.id, t.id, content).facts[0]!;
       const k = knowledge(owner.id, f.id, "reference", "project", content);
       if (content.includes(query)) { // both projects: reads are unrestricted (ruling 2026-09-07)
         expected.facts.push(`[F${f.id}]`);
@@ -244,7 +244,7 @@ test.each([
 test("opaque cursors continue search snapshots and trace session, comma, revision and negation listings", () => {
   const { s, t, f, e } = populated();
   turn(s.id, "second turn", t.id);
-  recording(s.id, t.id, fixture.base);
+  noting(s.id, t.id, fixture.base);
   const first = memory.search(fixture.base, "facts", { cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   expect(cursor).not.toContain("{"); expect(first).toContain("[F1]");
@@ -266,14 +266,14 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
 });
 
 test("status reports attribution, counts, every watermark, last runs and pending deliveries", () => {
-  const { s, t } = populated(); recording(s.id, t.id, fixture.observation, "side", true);
+  const { s, t } = populated(); noting(s.id, t.id, fixture.observation, "side", true);
   const status = memory.status(s.id);
   expect(status).not.toContain("Watermark");
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last recording: run 3 success", "Last integration: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last consolidation: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
-  const s = session(undefined, "undeclared"), t = turn(s.id), n = recording(s.id, t.id), f = n.facts[0]!;
+  const s = session(undefined, "undeclared"), t = turn(s.id), n = noting(s.id, t.id), f = n.facts[0]!;
   const e = knowledge(s.id, f.id), own = knowledge(s.id, f.id, "open", "session");
   expect(memory.declareProject(s.id, "declared")).toContain("declared (mark)");
   const project = memory.store.findProjectByName("declared")!;
@@ -293,14 +293,14 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
 
 test("default listing caps continue all hits and freeze the remaining search results", () => {
   const s = session(), t = turn(s.id);
-  const result = memory.store.commitRecordingRun({ run: { sessionId: s.id, kind: "recording", createdAt: time },
+  const result = memory.store.commitNotingRun({ run: { sessionId: s.id, kind: "noting", createdAt: time },
     facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
       actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
   expect(result.ok).toBe(true);
   const first = memory.search("needle");
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
-  recording(s.id, t.id, "needle added later");
+  noting(s.id, t.id, "needle added later");
   const last = memory.search("", "all", { cursor });
   expect(last).toContain("[F101]"); expect(last).not.toContain("[F102]");
   expect(last).not.toContain("cursor=");
@@ -308,7 +308,7 @@ test("default listing caps continue all hits and freeze the remaining search res
 
 test("a delivery is preserved on render failure", () => {
   const s = session(), t = turn(s.id);
-  recording(s.id, t.id, "pending fact", "main", true);
+  noting(s.id, t.id, "pending fact", "main", true);
   expect(() => memory.store.deliver(s.id, "main", () => { throw new Error("render failed"); })).toThrow("render failed");
   expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
   expect(memory.deliver(s.id).text).toContain("pending fact");
@@ -327,14 +327,14 @@ test("first-prompt injection by project needs no session: global and project kno
 });
 
 test("search marks historical, merged and archived knowledge hits so they do not read like current rules", () => {
-  const s = session(), t = turn(s.id, "rule raw"), n = recording(s.id, t.id, "pnpm rule fact");
+  const s = session(), t = turn(s.id, "rule raw"), n = noting(s.id, t.id, "pnpm rule fact");
   const a = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "Use pnpm for installs");
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
-  const run = { sessionId: s.id, kind: "integration" as const, createdAt: time };
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "update", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "archive", knowledgeId: b, baseCommit: 5, because: [1], createdAt: time }] });
+  const run = { sessionId: s.id, kind: "consolidation" as const, createdAt: time };
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", knowledgeId: b, baseCommit: 5, because: [1], createdAt: time }] });
   const hits = memory.search("pnpm", "knowledge");
   expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
   expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("note: archived");
@@ -344,9 +344,9 @@ test("search marks historical, merged and archived knowledge hits so they do not
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
-  const s = session(), t = turn(s.id, "scope raw"), n = recording(s.id, t.id, "scoped fact");
+  const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{ op: "update", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], because: [1], createdAt: time }] });
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;

@@ -1,10 +1,10 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
-import { TraceMemory, renderEntry, tokens, type RecordingAgentInput } from "../../core/api/index.ts";
+import { TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../core/api/index.ts";
 import { host, reply } from "./test-host.ts";
 
-const quiet = { "recording.triggerTokens": 1_000_000_000 };
+const quiet = { "noting.triggerTokens": 1_000_000_000 };
 const rawOf = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nRecent facts")[0]!.split("\n\nReceipts:")[0]!;
 
 test("17a 2026-09-08: completion alone has no native identity; next safe boundary reconciles persisted entries", async () => {
@@ -67,9 +67,9 @@ test("17a 2026-09-08: attach surfaces missing native ancestry without manufactur
 test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and reject their citations despite unrestricted reads", async () => {
   const h = host(quiet);
   let release!: () => void;
-  let input!: RecordingAgentInput;
-  const recorder = TraceMemory(join(h.dir, "trace.db"), async raw => {
-    input = raw as RecordingAgentInput;
+  let input!: NotingAgentInput;
+  const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
+    input = raw as NotingAgentInput;
     await new Promise<void>(resolve => { release = resolve; });
     return { outcome: "success", output: "zero facts", request: {} };
   });
@@ -78,7 +78,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     await h.emit("message_end", { message: { ...reply("first"), content: [{ type: "text", text: "first" }, { type: "toolCall", id: "call", name: "bash", arguments: { command: "check" } }] } });
     await h.emit("message_start", { message: reply("") });
     const before = h.memory.pendingEntries(1, "main", 1);
-    const pending = recorder.record({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" });
+    const pending = noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" });
     const oldView = renderEntry(before[1]!, h.memory.config.render).content;
     await h.emit("tool_result", { toolCallId: "call", toolName: "bash", input: { command: "check" }, content: [{ type: "text", text: "late result" }], isError: false });
     await h.answer("late assistant");
@@ -103,17 +103,17 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      const branchInput = raw as RecordingAgentInput;
+      const branchInput = raw as NotingAgentInput;
       expect(branchInput.input).not.toContain("T1#user");
       expect(branchInput.input).toContain("late assistant");
       return { outcome: "success", output: "", request: {} };
     });
-    try { expect((await next.record({ sessionId: 1, branch: "main", headTurnId: 1, mode: "branch" })).outcome).toBe("success"); }
+    try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "branch" })).outcome).toBe("success"); }
     finally { next.close(); }
-  } finally { release?.(); recorder.close(); await h.dispose(); }
+  } finally { release?.(); noter.close(); await h.dispose(); }
 });
 
-test("17a 2026-09-08: Recording, fallback, compaction and carry supply identical bounded entry bytes", async () => {
+test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bounded entry bytes", async () => {
   const h = host(quiet);
   try {
     await h.prompt("HEAD " + "word ".repeat(30000) + " TAIL");
@@ -122,17 +122,17 @@ test("17a 2026-09-08: Recording, fallback, compaction and carry supply identical
     const compact = (await h.emit("session_before_compact", { preparation: { tokensBefore: 100000 } })).compaction.summary;
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(rawOf(compact)).toBe(expected.join("\n\n"));
-    expect(carry.split("Unrecorded raw:\n")[1]!.slice(0, -"\n</branch_carry>".length)).toBe(expected.join("\n"));
+    expect(carry.split("Pending raw:\n")[1]!.slice(0, -"\n</branch_carry>".length)).toBe(expected.join("\n"));
     expect(h.requests).toEqual([]); // summary preparation itself is a read; the tree-switch trigger belongs to 17b.
     let subagent!: string;
-    const recorder = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      subagent = (raw as RecordingAgentInput).input;
+    const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
+      subagent = (raw as NotingAgentInput).input;
       return { outcome: "failure", output: "leave entries pending", request: {} };
     });
-    await recorder.record({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); recorder.close();
+    await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); noter.close();
     expect(rawOf(subagent)).toBe(expected.join("\n\n"));
     // A separate host with the normal trigger reattaches the same native fixture; attach itself is quiet.
-    const runner = host({ "recording.triggerTokens": 10000 });
+    const runner = host({ "noting.triggerTokens": 10000 });
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");
@@ -158,26 +158,26 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     const block = h.memory.compact(1, "main", 1);
     expect(block.split("Recent facts (newest first):\n\n")[1]).toBe("[F1] " + h.memory.store.getTurn(1)!.startedAt + " [observation/user] A useful fact\n  source: T1#user\n</episodic>");
     let sent = "";
-    const recording = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      sent = (raw as RecordingAgentInput).input;
+    const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
+      sent = (raw as NotingAgentInput).input;
       return { outcome: "failure", output: "leave pending", request: {} };
     });
-    try { await recording.record({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
-    finally { recording.close(); }
+    try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
+    finally { noting.close(); }
     expect(sent.split("Recent facts (newest first):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(h.memory.trace("F1"));
   } finally { await h.dispose(); }
 });
 
 test("17a 2026-09-08: forks reuse shared identities and ordinals but native short ids in different lineages never collide", async () => {
   const h = host(quiet);
-  const recorder = TraceMemory(join(h.dir, "trace.db"), async () => ({ outcome: "success", output: "", request: {} }));
+  const noter = TraceMemory(join(h.dir, "trace.db"), async () => ({ outcome: "success", output: "", request: {} }));
   try {
     await h.prompt("same Turn");
     await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "one", name: "bash", arguments: { command: "first" } }] } });
     await h.emit("agent_end");
     const shared = [...h.entries];
     const initial = h.memory.pendingEntries(1, "main", 1);
-    expect((await recorder.record({ sessionId: 1, branch: "main", headTurnId: 1 })).outcome).toBe("success");
+    expect((await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).outcome).toBe("success");
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "two", name: "bash", arguments: { command: "original tail" } }] }, "collision");
     await h.emit("message_start", { message: reply("") });
     const original = h.memory.pendingEntries(1, "main", 1)[0]!;
@@ -201,7 +201,7 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
       expect(reopened.trace("T1#t2", { full: true })).toContain('{"command":"original tail"}');
       expect(reopened.trace("T1#t3", { full: true })).toContain('{"command":"fork tail"}');
     } finally { reopened.close(); }
-  } finally { recorder.close(); await h.dispose(); }
+  } finally { noter.close(); await h.dispose(); }
 });
 
 test("17a 2026-09-08: shared-call fork results retain both originals through unrestricted full trace", async () => {
@@ -355,7 +355,7 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
   } finally { await h.dispose(); }
 });
 
-test("review 2026-09-08 P3: the Recorder's active knowledge follows the branch path, like injection", async () => {
+test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path, like injection", async () => {
   const h = host(quiet);
   let runner: ReturnType<typeof TraceMemory> | undefined;
   try {
@@ -369,7 +369,7 @@ test("review 2026-09-08 P3: the Recorder's active knowledge follows the branch p
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
     let sent = "";
     runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as { input: string }).input; return { outcome: "failure", output: "inspection only", request: {} }; });
-    await runner.record({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
+    await runner.noting({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
     expect(sent.split("Active knowledge:")[1]!.split("Recent facts")[0]).not.toContain("SIBLING_POLICY_ALPHA");
   } finally { runner?.close(); await h.dispose(); }
 });

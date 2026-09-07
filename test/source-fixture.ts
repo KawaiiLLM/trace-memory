@@ -36,7 +36,7 @@ export const TraceMemory: typeof createMemory = (...args) => {
 /** Seed completed entry coverage explicitly; never translate a production watermark. */
 export function recorded(memory: ReturnType<typeof createMemory>, sessionId: number, branch: string, head: number) {
   const entries = memory.store.sourcePath(sessionId, branch, head);
-  const result = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, branch,
+  const result = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, branch,
     rangeFrom: `S${sessionId}/T${entries[0]?.turnId ?? head}`, rangeTo: `S${sessionId}/T${head}`, createdAt: "fixture" }, facts: [], entryIds: entries.map(e => e.id) });
   if (!result.ok) throw new Error(result.problems.join("; "));
 }

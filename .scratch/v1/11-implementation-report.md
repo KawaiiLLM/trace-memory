@@ -1,6 +1,6 @@
 # Ticket 11 implementation report
 
-Implemented against baseline `cd4719dbdd489c128e3bd19196ad26532d41f4ec`. The starting working tree was clean. Ticket 10's Integration loops, command routing and removed continuation state were retained and extended. Nothing was staged or committed.
+Implemented against baseline `cd4719dbdd489c128e3bd19196ad26532d41f4ec`. The starting working tree was clean. Ticket 10's Consolidation loops, command routing and removed continuation state were retained and extended. Nothing was staged or committed.
 
 ## Verification
 
@@ -18,14 +18,14 @@ Nine expanded test cases were added. Existing test names remain, including histo
 | Ticket item | Implementation and tests |
 | --- | --- |
 | Same four definitions, nothing added per branch run | Core exports the existing façade metadata once. Each host instance creates four Pi-compatible objects using those exact schemas and descriptions, registers them, and passes those same outer objects to subagent conversations. Pi execution fields are non-enumerable, so serialized definitions contain only façade metadata. `capture with the four tools, run, verification passed, tools unchanged` checks captured-prefix preservation; `subagent runs receive the exact four definition objects registered for the main agent` checks reference identity. |
-| Branch Recording and Integration tools | Recording now enters ticket 10's existing branch loop. The installed adapter serializes each new assistant/tool suffix; `branch.ts` appends it to the immediately preceding request. `branch Recording verifies every trace and note round against the previous request and stores the last request` executes trace/full followed by note, checks fetched evidence, every hash and the final stored request. The existing real Anthropic Integration test checks memory's two submissions, signed thinking, results, review feedback and every round. Responses and Codex parameterized tests check native function-call IDs/results. |
+| Branch Noting and Consolidation tools | Noting now enters ticket 10's existing branch loop. The installed adapter serializes each new assistant/tool suffix; `branch.ts` appends it to the immediately preceding request. `branch Noting verifies every trace and note round against the previous request and stores the last request` executes trace/full followed by note, checks fetched evidence, every hash and the final stored request. The existing real Anthropic Consolidation test checks memory's two submissions, signed thinking, results, review feedback and every round. Responses and Codex parameterized tests check native function-call IDs/results. |
 | Verify every appended round | `verification.rounds` records each comparison's `capturedHash` (previous request), `requestHash` (new request), `appendedMessages`, `passed` and `differingPath`. Initial hashes retain their original meanings. A later failure sets overall passed false, rejects before send, preserves the last sent request and does not fall back. `a mutated branch tool round is rejected before sending and retains the last sent request` checks this behavior and the unchanged watermark. |
-| Subagent loop and Integration review | Both run kinds continue through `modelRegistry.complete`, dispatching through the run-bound façade executors. The first valid memory receipt adds one user feedback message in the same conversation; the second commits. Existing Integration tests preserve this coverage. The inherited 16-round cutoff was removed to implement the spec's until-stop contract. No continuation state was reintroduced. |
+| Subagent loop and Consolidation review | Both run kinds continue through `modelRegistry.complete`, dispatching through the run-bound façade executors. The first valid memory receipt adds one user feedback message in the same conversation; the second commits. Existing Consolidation tests preserve this coverage. The inherited 16-round cutoff was removed to implement the spec's until-stop contract. No continuation state was reintroduced. |
 | Manual immediate commit and raw calls | Every Pi execute binds `tools({kind: "manual", sessionId, branch, currentTurnId})` at call time. `main facade tools bind each call to the current turn, commit immediately and record raw only at tool_result` checks first tool-only reply allocation, two turns, immediate facts/knowledge, manual request metadata and exactly one raw row per call. Host execution adds no raw row itself. |
 | Commands and no mark tool | Retained ticket 10's project/mark commands; command context is refreshed and mark kinds are explicitly validated. Existing project attribution tests cover persistence, declaration precedence and immediate refreshed injection. The new manual test exercises all three mark kinds and read-only status; registration tests exclude mark. |
 | Documentation and live run | README documents four tools, both loops, exact-object sharing, native suffix verification, removed mark/continuation state and both commands. Its live script now reconstructs the complete hash chain backwards. LIVE-VERIFICATION has a ticket 11 procedure and explicitly marks live evidence pending the acceptor. |
 
-Recording remains branch mode by default and uses the captured session model. The main agent receives no additional instruction to maintain memory. Project declarations and marks remain user commands. Main-agent note/memory receipts commit once through the façade and are separately captured once as raw tool results by the existing hook; background run calls never enter that raw hook.
+Noting remains branch mode by default and uses the captured session model. The main agent receives no additional instruction to maintain memory. Project declarations and marks remain user commands. Main-agent note/memory receipts commit once through the façade and are separately captured once as raw tool results by the existing hook; background run calls never enter that raw hook.
 
 ## Design and review
 
@@ -43,7 +43,7 @@ Each listed probe was actually run, observed red, then restored byte-for-byte. F
 
 | Ticket probe | Mutation | Test turned red | Observed assertion |
 | --- | --- | --- | --- |
-| A branch tool round not verified | Remove the appended-round verification/audit block | `branch Recording verifies every trace and note round against the previous request and stores the last request` | Expected verification rounds length 2, received 0 |
+| A branch tool round not verified | Remove the appended-round verification/audit block | `branch Noting verifies every trace and note round against the previous request and stores the last request` | Expected verification rounds length 2, received 0 |
 | A tool added per run | Append an extra tool to the initial branch candidate | `capture with the four tools, run, verification passed, tools unchanged` | Expected branch mode, received subagent after prefix rejection |
 | The mark tool still registered | Register an additional mark tool | `smoke: the default extension loads and registers the Pi hooks, tools, and read-only command` | Expected exactly trace/search/note/memory; received an additional mark |
 
@@ -64,6 +64,6 @@ All changed files under `hosts/pi`, including tests, README, live procedure and 
 ## 验收自查
 
 - All worker-owned ticket 11 acceptance items are satisfied; typecheck, 294 tests, smoke and whitespace checks pass.
-- Live Recording through trace and Integration through memory remain unperformed because the user explicitly assigns live acceptance to the acceptor. Historical live records and stub HTTP tests are not presented as ticket 11 live evidence.
-- Both requested commands remain user acts; four tools are registered; Recording defaults to branch; every appended branch round is verified; the final sent request is stored.
+- Live Noting through trace and Consolidation through memory remain unperformed because the user explicitly assigns live acceptance to the acceptor. Historical live records and stub HTTP tests are not presented as ticket 11 live evidence.
+- Both requested commands remain user acts; four tools are registered; Noting defaults to branch; every appended branch round is verified; the final sent request is stored.
 - Changes remain unstaged and uncommitted for review.

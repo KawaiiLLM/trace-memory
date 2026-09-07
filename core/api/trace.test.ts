@@ -5,25 +5,25 @@ import fixture from "../../test/fixtures/trace.json";
 let memory: ReturnType<typeof TraceMemory>;
 let sessionId: number;
 const time = "2026-09-07T00:00:00Z";
-type Operation = Parameters<ReturnType<typeof TraceMemory>["store"]["commitIntegrationRun"]>[0]["operations"][number];
-function integration(...operations: Operation[]) {
-  const result = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations });
+type Operation = Parameters<ReturnType<typeof TraceMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
+function consolidation(...operations: Operation[]) {
+  const result = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.problems.join(", "));
   return result.committed;
 }
 function create(text = "use red tiles now") {
-  return integration({ op: "create", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
+  return consolidation({ op: "create", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
 }
 function edit(knowledgeId: number, baseCommit: number, text: string, extra: Partial<Extract<Operation, { op: "update" }>> = {}) {
-  integration({ op: "update", knowledgeId, baseCommit, text, category: "reference", scope: "project", supports: [1], because: [2], createdAt: time, ...extra });
+  consolidation({ op: "update", knowledgeId, baseCommit, text, category: "reference", scope: "project", supports: [1], because: [2], createdAt: time, ...extra });
 }
 beforeEach(() => {
   memory = TraceMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
   const project = memory.store.createProject({ name: "trace", declaredBy: "mark" });
   sessionId = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: time, firstReplyAt: time }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", startedAt: time });
-  const facts = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, createdAt: time }, facts: [
+  const facts = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time }, facts: [
     { text: "original claim" },
     { text: "first correction", negate: [{ target: "$1", strength: "strong" as const }] },
     { text: "second correction", negate: [{ target: "$1", strength: "strong" as const }] },
@@ -75,12 +75,12 @@ test("Chinese token edits preserve surrounding characters from the simulation fi
 
 test("merged knowledge retain their snapshot and frozen survivor revision; archives show the archive revision", () => {
   const absorbed = create("absorbed"), survivor = create("survivor");
-  integration({ op: "merge", intoKnowledgeId: survivor, intoBaseCommit: 2, absorb: [{ knowledgeId: absorbed, baseCommit: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], because: [3], createdAt: time });
+  consolidation({ op: "merge", intoKnowledgeId: survivor, intoBaseCommit: 2, absorb: [{ knowledgeId: absorbed, baseCommit: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], because: [3], createdAt: time });
   edit(survivor, 3, "later survivor");
   expect(memory.trace(`K${absorbed}`)).toContain("merged_into: K2@3 (from K1@1)");
   expect(memory.trace(`K${absorbed}`)).toContain("children: K2@3");
   expect(memory.trace(`K${absorbed}@1`)).not.toContain("later survivor");
-  integration({ op: "archive", knowledgeId: survivor, baseCommit: 4, because: [4], createdAt: time });
+  consolidation({ op: "archive", knowledgeId: survivor, baseCommit: 4, because: [4], createdAt: time });
   expect(memory.trace(`K${survivor}`)).toContain("[K2@5] [reference/project] \n  supports: ");
   expect(memory.trace(`K${survivor}@5`)).toContain(`K2@5 archive ${time} because: F4`);
 });
@@ -103,7 +103,7 @@ test("simulation knowledge and strong negation goldens preserve Chinese memory c
   // Remap fixture fact and raw-source IDs into this database; preserve the original fixture on disk.
   const ids = new Map(fixture.facts.map((f, i) => [f.id, i + 7]));
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", assistantText: fixture.facts.map(f => f.text).join("\n"), startedAt: time });
-  const committed = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, createdAt: time }, facts: fixture.facts.map((f) => ({
+  const committed = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, createdAt: time }, facts: fixture.facts.map((f) => ({
     turnId: turn.id, category: f.category as "observation", actor: f.actor as "agent", text: f.text, quote: f.quote,
     source: [`T${turn.id}#assistant`], createdAt: f.timestamp,
     negate: f.negate?.map(([id]) => ({ target: `F${ids.get(Number(id))}`, strength: "strong" as const })),
@@ -111,8 +111,8 @@ test("simulation knowledge and strong negation goldens preserve Chinese memory c
   expect(committed.ok).toBe(true);
   fixture.knowledge.log.forEach((r, i) => {
     const fields = { text: r.text, category: "reference" as const, scope: "project" as const, supports: r.supports.map((id) => ids.get(id)!), createdAt: r.at };
-    if (!i) integration({ ...fields, op: "create", handle: "$e1", author: "integration" });
-    else integration({ ...fields, op: "update", knowledgeId: 1, baseCommit: i, because: r.because.map((id) => ids.get(Number(id.slice(1)))!) });
+    if (!i) consolidation({ ...fields, op: "create", handle: "$e1", author: "consolidation" });
+    else consolidation({ ...fields, op: "update", knowledgeId: 1, baseCommit: i, because: r.because.map((id) => ids.get(Number(id.slice(1)))!) });
   });
   expect(memory.trace("K1")).toMatchSnapshot();
   expect(memory.trace("K1@1")).toMatchSnapshot();

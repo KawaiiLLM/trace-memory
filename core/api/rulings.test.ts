@@ -5,19 +5,19 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type RecordingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
 let memory: TraceMemory;
-let calls: RecordingAgentInput[];
+let calls: NotingAgentInput[];
 const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
   calls = [];
-  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as RecordingAgentInput); return ok([]); });
+  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NotingAgentInput); return ok([]); });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -60,8 +60,8 @@ test("08:53 with 2026-09-07 premise repair: branch uses conversation context; su
   const { s, t } = session();
   // 17a: shared entry coverage is inherited. Compare independently frozen concurrent runs.
   await Promise.all([
-    memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }),
-    memory.record({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" }),
+    memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }),
+    memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" }),
   ]);
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
@@ -80,7 +80,7 @@ test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does no
   expect(() => memory.trace(`S${s.id + 1}/T${t.id}`)).toThrow("does not exist");
 });
 
-// 09:43 "sessions of one project integrate separately": pinned in core/api/integration.test.ts,
+// 09:43 "sessions of one project integrate separately": pinned in core/api/consolidation.test.ts,
 // "each session settles only its own branch facts and shares already-settled context".
 
 // User, 2026-09-07: four tools: trace, search, facts and knowledge writers; main agents may use them but have no memory duty.
@@ -107,11 +107,11 @@ test("2026-09-07: a rejected item writes nothing", () => {
   expect(memory.trace("F2")).toContain("support F1 strong");
 });
 
-// “A Recording run commits at most one batch.”
+// “A Noting run commits at most one batch.”
 test("2026-09-07: one batch per run", async () => {
   const { s, t } = session(); memory.close();
   memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as RecordingAgentInput;
+    const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     const note = input.tools[2]!;
     const batch = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] };
@@ -119,12 +119,12 @@ test("2026-09-07: one batch per run", async () => {
     expect(memory.store.getRun(1)?.outcome).toBe("success");
     expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
     expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
-    expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
+    expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
     expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
     expect(note.execute(batch)).toContain("already committed");
     return { outcome: "success", output: "Done", request: { round: 2 } };
   });
-  expect((await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
   const run = memory.store.getRun(1)!;
   expect(JSON.parse(run.request!)).toEqual({ round: 2 });
@@ -136,18 +136,18 @@ test("2026-09-07: bounced is not empty", async () => {
   const { s, t } = session(); memory.close();
   let reject = true;
   memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
-    if (reject) (raw as RecordingAgentInput).tools[2]!.execute({ facts: [{ category: "invalid" }] });
+    if (reject) (raw as NotingAgentInput).tools[2]!.execute({ facts: [{ category: "invalid" }] });
     return { outcome: "success", output: "No more text", request: {} };
   });
   const input = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  expect((await memory.record(input)).outcome).toBe("bounced");
+  expect((await memory.noting(input)).outcome).toBe("bounced");
   expect(memory.store.getRun(1)?.outcome).toBe("bounced");
   expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls[0].input).toEqual({ facts: [{ category: "invalid" }] });
-  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryRecorded(e.id))).toBe(false);
+  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
   reject = false;
-  expect(await memory.record(input)).toMatchObject({ outcome: "success", facts: [] });
+  expect(await memory.noting(input)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
+  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
 });
 
@@ -155,7 +155,7 @@ function memoryWriter() {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
-  recorded(memory, s.id, "main", t.id); // recorded: the facts may enter an Integration batch
+  recorded(memory, s.id, "main", t.id); // recorded: the facts may enter an Consolidation batch
   const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F2"] };
   return { s, t, write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
 }
@@ -214,7 +214,7 @@ test("2026-09-07: merge atomic", () => {
 test("2026-09-07: second submission commits, first does not", async () => {
   const { create, s } = memoryWriter(); memory.close();
   memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as import("./index.ts").IntegrationAgentInput;
+    const input = raw as import("./index.ts").ConsolidationAgentInput;
     const batch = { operations: [create], skipped: [{ fact: "F2", because: "Already expressed." }] };
     input.reportRequest({ messages: ["first"] });
     const tool = input.tools[3]!;
@@ -224,15 +224,15 @@ test("2026-09-07: second submission commits, first does not", async () => {
     expect(first.feedback.content).toContain("NEAR:"); expect(first.feedback.content).toContain("CLOSER:");
     expect(first.feedback.content).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
     expect(memory.store.getKnowledge(1)).toBeNull();
-    expect(memory.store.listIntegratedFacts(1)).toEqual([]);
+    expect(memory.store.listConsolidatedFacts(1)).toEqual([]);
     input.reportRequest({ messages: ["first", first.feedback] });
     expect(JSON.parse(tool.execute(batch)).committed).toHaveLength(1);
     expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-    expect(memory.store.integratedOnPath(2, memory.store.knowledgePath(s.id, "main"))).toBe(true);
+    expect(memory.store.consolidatedOnPath(2, memory.store.knowledgePath(s.id, "main"))).toBe(true);
     expect(tool.execute(batch)).toContain("already committed");
     return { outcome: "failure", output: "provider failed after commit", request: { messages: ["last"] } };
   });
-  const result = await memory.integrate({ sessionId: s.id, branch: "main" });
+  const result = await memory.consolidate({ sessionId: s.id, branch: "main" });
   if (result.outcome !== "success") throw new Error("committed run must stay successful");
   const run = memory.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
@@ -248,7 +248,7 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   const head = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn",
     userPrompt: "Check it", assistantText: "Final-only finding: " + "result ".repeat(10) + "verified.", startedAt: time });
   memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
-  await memory.record({ sessionId: s.id, branch: "main", headTurnId: head.id });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id });
   const input = calls[0]!;
   expect(input.mode).toBe("branch");
   expect(input.input).toContain(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
@@ -271,7 +271,7 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
   const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
-  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
   expect(calls[0]!.input).toBe(`Range: S1/T2..S1/T2\n\nSources:\nT2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`);
 });
 
@@ -456,7 +456,7 @@ test("2026-09-07 B: two tips surface as alternatives to a third session and merg
 test("2026-09-07 B: store rechecks every base inside the transaction and rolls back an earlier create", () => {
   const { root, content } = commitPaths();
   root.write([{ op: "update", id: "K1", ...content(root.fact) }]);
-  const result = memory.store.commitIntegrationRun({ path: root, run: { kind: "manual", sessionId: root.sessionId, createdAt: time }, operations: [
+  const result = memory.store.commitConsolidationRun({ path: root, run: { kind: "manual", sessionId: root.sessionId, createdAt: time }, operations: [
     { op: "create", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time },
     { op: "archive", knowledgeId: 1, baseCommit: 1, because: [1], createdAt: time },
   ] });
@@ -509,14 +509,14 @@ test("2026-09-07: commit schema removes mutable heads and binds parents, links a
   expect(memory.store.listKnowledgeMarks(2)).toMatchObject([{ commitId: 2 }]);
 });
 
-test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on the frozen path", async () => {
+test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip on the frozen path", async () => {
   const { root, c, d, peer, content, edit } = commitPaths();
   edit(c, "Use blue tiles on C"); edit(d, "Use blue tiles on D");
   const third = peer();
   const integrate = async (path: typeof third, expected: number[]) => {
     memory.close();
     memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
-      const input = raw as import("./index.ts").IntegrationAgentInput;
+      const input = raw as import("./index.ts").ConsolidationAgentInput;
       expect(input.readKnowledgeCommits.map(r => r.commit)).toEqual(expected);
       for (const id of expected) expect(input.input).toContain(`[K1@${id}]`);
       const batch = { operations: [{ op: "create", ...content(path.fact, "Use blue tiles") }], skipped: [] };
@@ -530,7 +530,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
       return { outcome: "success", request: { round: 2 }, output: "done" };
     });
     recorded(memory, path.sessionId, path.branch, path.headTurnId); // recorded up to the head: its facts may enter the batch
-    return memory.integrate({ sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId });
+    return memory.consolidate({ sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId });
   };
   const result = await integrate(third, [2, 3]);
   if (result.outcome !== "success") throw new Error("expected success");
@@ -538,7 +538,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
   // A sibling's support cannot cover this branch's user fact during accounting.
   memory.close();
   memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
-    const input = raw as import("./index.ts").IntegrationAgentInput;
+    const input = raw as import("./index.ts").ConsolidationAgentInput;
     const own = input.readKnowledgeCommits.filter(r => r.knowledgeId === 1);
     expect(own.map(r => r.commit)).toEqual([2]);
     const batch = { operations: [{ op: "update", id: "K1", ...content(root.fact) }], skipped: [] };
@@ -547,7 +547,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
     return { outcome: "success", request: { round: 2 }, output: "done" };
   });
   recorded(memory, c.sessionId, c.branch, c.headTurnId);
-  const cResult = await memory.integrate({ sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId });
+  const cResult = await memory.consolidate({ sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId });
   if (cResult.outcome !== "success") throw new Error("expected success");
   expect(cResult.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [c.fact] });
 });
@@ -669,10 +669,10 @@ test("16b: every raw source of a multi-source fact constrains carry, current and
 test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw previews, a missing run is rejected", async () => {
   const { s, t } = session();
   calls.length = 0;
-  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const run = memory.store.listRuns(s.id).at(-1)!;
   const summary = memory.trace(`R${run.id}`);
-  expect(summary.split("\n")[0]).toBe(`R${run.id} recording ${run.outcome} ${run.createdAt}`);
+  expect(summary.split("\n")[0]).toBe(`R${run.id} noting ${run.outcome} ${run.createdAt}`);
   expect(summary).toContain(`S${s.id} / branch main`); expect(summary).toContain("usage:"); expect(summary).toContain("problems:");
   expect(summary).not.toContain("request (preview");
   const full = memory.trace(`R${run.id}`, { full: true });
@@ -691,17 +691,17 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
   expect(summary).toMatch(/problems: .*(invalid source|rejected)/);
 });
 
-test("2026-09-07 superseded 2026-09-08 (17b): the Integration threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {
+test("2026-09-07 superseded 2026-09-08 (17b): the Consolidation threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {
   const project = memory.store.createProject({ name: "batches", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const turns = [1, 2, 3, 4].map((i, _, arr) => memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: `t${i}`, assistantText: "ok", startedAt: time, parentTurnId: undefined }));
   for (let i = 1; i < turns.length; i++) memory.store.db.prepare("UPDATE turns SET parent_turn_id = ? WHERE id = ?").run(turns[i - 1]!.id, turns[i]!.id);
-  const seed = (turn: number, n: number, kind: "recording" | "manual" = "recording") => memory.store.commitRecordingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
+  const seed = (turn: number, n: number, kind: "noting" | "manual" = "noting") => memory.store.commitNotingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
     facts: Array.from({ length: n }, (_, k) => ({ turnId: turn, category: "observation", actor: "user", text: `fact ${turn}.${k}`, source: [`T${turn}#user`], createdAt: time })) });
   seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
   recorded(memory, s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
   seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
-  const batch = memory.store.integrationBatch(s.id, "main", turns[3]!.id);
+  const batch = memory.store.consolidationBatch(s.id, "main", turns[3]!.id);
   expect(batch.map(f => f.id)).toEqual(Array.from({ length: 11 }, (_, i) => i + 1));
   expect(batch.filter(f => f.turnId === turns[3]!.id)).toHaveLength(2);
 
@@ -712,14 +712,14 @@ test("2026-09-07 review: a late fact on an early turn does not make the batch sk
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", assistantText: "ok", startedAt: time, parentTurnId: undefined });
   const t2 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "two", assistantText: "ok", startedAt: time, parentTurnId: t1.id });
-  const seed = (turn: number, text: string) => memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
+  const seed = (turn: number, text: string) => memory.store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
     facts: [{ turnId: turn, category: "decision", actor: "user", text, source: [`T${turn}#user`], createdAt: time }] });
   seed(t1.id, "early decision"); seed(t2.id, "later decision"); seed(t1.id, "late supplement to the early decision"); // F3 lands on T1 after F2 on T2
-  // "Nothing before the first Recording" was superseded on 2026-09-08 by 17b.
-  expect(memory.store.integrationBatch(s.id, "main", t2.id).map(f => f.id)).toEqual([1, 2, 3]);
+  // "Nothing before the first Noting" was superseded on 2026-09-08 by 17b.
+  expect(memory.store.consolidationBatch(s.id, "main", t2.id).map(f => f.id)).toEqual([1, 2, 3]);
   recorded(memory, s.id, "main", t2.id);
-  const first = memory.store.integrationBatch(s.id, "main", t2.id);
+  const first = memory.store.consolidationBatch(s.id, "main", t2.id);
   expect(first.map((f) => f.id)).toEqual([1, 2, 3]); // no Turn grouping
-  expect(memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: time }, operations: [], integrated: [1, 3] }).ok).toBe(true);
-  expect(memory.store.integrationBatch(s.id, "main", t2.id).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
+  expect(memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: time }, operations: [], consolidated: [1, 3] }).ok).toBe(true);
+  expect(memory.store.consolidationBatch(s.id, "main", t2.id).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
 });

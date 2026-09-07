@@ -88,7 +88,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; } };
 }
-export function recordingFact(conversation: Conversation) {
+export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
   const source = /\[Source entry id: (T\d+#user)\]/.exec(input)?.[1] ?? `T${address[2]}#user`;
@@ -98,5 +98,5 @@ export function recordingFact(conversation: Conversation) {
   ] } }] };
 }
 
-export const integrationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
-export const integrationReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory", arguments: integrationBatch }] });
+export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+export const consolidationReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory", arguments: consolidationBatch }] });

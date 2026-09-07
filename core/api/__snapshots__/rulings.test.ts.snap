@@ -2,7 +2,7 @@
 
 exports[`16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte 1`] = `
 "<branch_carry>
-this is knowledge from another branch; it must not be written as facts; the Recorder's facts come only from the current branch's conversation, never from messages this plugin injected.
+this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.
 Facts:
 [F1] 2026-09-06T00:00:00Z [decision/user] main
   source: T1#user
@@ -13,7 +13,7 @@ Commits (by evidence):
   supports: F1
 [K1@2] [constraint/project] C version
   supports: F2
-Unrecorded raw:
+Pending raw:
 [S1/T4] [entry ["fixture","message-7"]]
 [Source entry id: T4#user]
 Unrecorded <work> & more

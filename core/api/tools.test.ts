@@ -1,11 +1,11 @@
 import { recorded } from "../../test/source-fixture.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, type RecordingAgentInput, type RunAgent, type ToolContext } from "../../test/source-fixture.ts";
+import { TraceMemory, type NotingAgentInput, type RunAgent, type ToolContext } from "../../test/source-fixture.ts";
 
 let memory: TraceMemory, agent: RunAgent;
 const fact = (source = "T1#user", extra = {}) => ({ category: "observation", actor: "user", text: "project evidence", source: [source], ...extra });
 const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext => ({ kind: "manual", sessionId, currentTurnId, branch });
-const record = () => memory.record({ sessionId: 1, branch: "main", headTurnId: 1 });
+const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 beforeEach(() => {
   agent = async () => ({ outcome: "success", output: "", request: {} });
   memory = TraceMemory(":memory:", raw => agent(raw));
@@ -17,7 +17,7 @@ afterEach(() => memory.close());
 
 for (const outcome of ["failure", "cancelled"] as const) test(`2026-09-07 transaction ruling: ${outcome} after commit cannot undo the successful run`, async () => {
   agent = async raw => {
-    const input = raw as RecordingAgentInput;
+    const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     expect(input.tools[2]!.execute({ facts: [fact()] })).toContain("F1");
     expect(memory.store.getRun(1)).toMatchObject({ outcome: "success", request: JSON.stringify({ round: 1 }) });
@@ -29,12 +29,12 @@ for (const outcome of ["failure", "cancelled"] as const) test(`2026-09-07 transa
   expect(memory.store.getRun(1)?.outcome).toBe("success");
   expect(JSON.parse(memory.store.getRun(1)!.response!).problems[0]).toContain("after commit: connection stopped");
   expect(memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(1, "main", 1).every(e => memory.store.entryRecorded(e.id))).toBe(true);
+  expect(memory.store.sourcePath(1, "main", 1).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listRuns(1)).toHaveLength(1);
 });
 for (const kind of ["Error", "AbortError"]) test(`thrown ${kind} after commit retains facts and the known request`, async () => {
   agent = async raw => {
-    const input = raw as RecordingAgentInput; input.reportRequest({ actual: true });
+    const input = raw as NotingAgentInput; input.reportRequest({ actual: true });
     input.tools[2]!.execute({ facts: [fact()] });
     const error = new Error("stopped"); error.name = kind; throw error;
   };
@@ -43,9 +43,9 @@ for (const kind of ["Error", "AbortError"]) test(`thrown ${kind} after commit re
   expect(memory.store.listBranchFacts(1, "main")).toHaveLength(1);
 });
 
-test("a rejected Recording batch can be corrected in the same provider loop", async () => {
+test("a rejected Noting batch can be corrected in the same provider loop", async () => {
   agent = async raw => {
-    const input = raw as RecordingAgentInput, note = input.tools[2]!;
+    const input = raw as NotingAgentInput, note = input.tools[2]!;
     expect(JSON.parse(note.execute({ facts: [fact(), fact("T1#user", { support: [["$3", "strong"]] })] })).results).toEqual(["ok", expect.stringContaining("rejected:")]);
     expect(memory.store.listRuns(1)).toEqual([]);
     expect(memory.store.listSessionFacts(1)).toEqual([]);
@@ -57,21 +57,21 @@ test("a rejected Recording batch can be corrected in the same provider loop", as
   expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls).toHaveLength(2);
 });
 
-test("manual input and result are the run request and response; facts enter the branch at once and Integration ranges once their turn is recorded, without advancing Recording", async () => {
+test("manual input and result are the run request and response; facts enter the branch at once and Consolidation ranges once their turn is recorded, without advancing Noting", async () => {
   const input = { facts: [fact()] };
   const result = memory.tools(manual())[2]!.execute(input);
   const run = memory.store.listRuns(1)[0]!;
   expect(run).toMatchObject({ kind: "manual", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" });
   expect(JSON.parse(run.request!)).toEqual(input); expect(run.response).toBe(result);
-  expect(memory.store.listSourceEntries(1).some(e => memory.store.entryRecorded(e.id))).toBe(false);
+  expect(memory.store.listSourceEntries(1).some(e => memory.store.entryNoted(e.id))).toBe(false);
   expect(memory.store.listBranchFacts(1, "main").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "sibling")).toEqual([]);
   let range: unknown;
   agent = async raw => { range = (raw as { range: unknown }).range; return { outcome: "cancelled", output: "test", request: {} }; };
   // The unrecorded-Turn gate is superseded by 17b on 2026-09-08; committed facts are eligible.
-  expect((await memory.integrate({ sessionId: 1, branch: "main" })).outcome).toBe("cancelled");
+  expect((await memory.consolidate({ sessionId: 1, branch: "main" })).outcome).toBe("cancelled");
   recorded(memory, 1, "main", 1);
-  await memory.integrate({ sessionId: 1, branch: "main" });
+  await memory.consolidate({ sessionId: 1, branch: "main" });
   expect(range).toMatchObject({ facts: [{ id: 1 }] });
 });
 
@@ -97,13 +97,13 @@ test("malformed items still produce results for every item, and reject the entir
 
 test("tools freeze context, reject sibling and late sources, and preserve read revisions", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
-  const context: ToolContext = { kind: "recording", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeCommits: [{ knowledgeId: 9, commit: 2 }] };
+  const context: ToolContext = { kind: "noting", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeCommits: [{ knowledgeId: 9, commit: 2 }] };
   const note = memory.tools(context)[2]!;
   context.range.to = "S1/T2"; context.branch = "mutated"; context.readKnowledgeCommits[0]!.commit = 3;
   expect(note.execute({ facts: [fact("T2#assistant")] })).toContain("rejected:");
   expect(note.execute({ facts: [fact()] })).toContain("F1");
   expect(memory.store.sourcePath(1, "frozen", 1).length).toBeGreaterThan(0);
-  expect(memory.store.sourcePath(1, "frozen", 1).every(e => memory.store.entryRecorded(e.id))).toBe(true);
+  expect(memory.store.sourcePath(1, "frozen", 1).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(JSON.parse(memory.store.getRun(1)!.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 9, commit: 2 }]);
 });
 
@@ -135,13 +135,13 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
 });
 
 
-test("manual facts belong to their turn: a branch whose path includes that turn integrates them", async () => {
+test("manual facts belong to their turn: a branch whose path includes that turn consolidates them", async () => {
   memory.tools(manual(1, 1, "A"))[2]!.execute({ facts: [fact()] });
-  await memory.record({ sessionId: 1, branch: "B", headTurnId: 1 });
+  await memory.noting({ sessionId: 1, branch: "B", headTurnId: 1 });
   expect(memory.store.listBranchFacts(1, "A").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "B", 1).map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "C")).toEqual([]); // no path known for C
-  expect((await memory.integrate({ sessionId: 1, branch: "B", headTurnId: 1 })).outcome).not.toBe("empty");
+  expect((await memory.consolidate({ sessionId: 1, branch: "B", headTurnId: 1 })).outcome).not.toBe("empty");
 });
 
 test("reads return every knowledge item while injection still applies the scope rule", () => {
@@ -154,7 +154,7 @@ test("reads return every knowledge item while injection still applies the scope 
   for (const sessionId of [1, 2, 3]) {
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
     note.execute({ facts: [fact(`T${sessionId}#user`)] });
-    memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: "now" }, operations:
+    memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations:
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
@@ -163,7 +163,7 @@ test("reads return every knowledge item while injection still applies the scope 
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(hits).toContain(`[K${id}@`);
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
-  memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "later" }, operations: [
+  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "later" }, operations: [
     { op: "archive", knowledgeId: 3, baseCommit: 3, because: [1], createdAt: "later" },
   ] });
   expect(trace!.execute({ address: "K3@3" })).toContain("owner 1 scope session");

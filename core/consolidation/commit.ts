@@ -1,9 +1,9 @@
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
-import type { freezeIntegration, NearPair } from "./index.ts";
+import type { freezeConsolidation, NearPair } from "./index.ts";
 
-export type IntegrationDiagnostic =
+export type ConsolidationDiagnostic =
   | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
   | { kind: "over_200_tokens"; knowledge: string; tokens: number }
   | { kind: "unanswered_near"; pairs: NearPair[] }
@@ -12,14 +12,14 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
-  frozen?: ReturnType<typeof freezeIntegration>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[]) {
+  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[]) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
   const knowledge = reads ?? frozen?.knowledge ?? store.listCurrentKnowledge(path);
   const touched = new Set<number>();
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
-    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as IntegrationDiagnostic[] };
+    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as ConsolidationDiagnostic[] };
   }
   const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {
     if (!Array.isArray(raw) || (nonempty && !raw.length)) { errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : "")); return []; }
@@ -86,7 +86,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     }
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   }
-  const diagnostics: IntegrationDiagnostic[] = [];
+  const diagnostics: ConsolidationDiagnostic[] = [];
   for (const op of operations) {
     if (op.op === "archive") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
@@ -99,7 +99,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
 }
 
 /** Called after application inside the same immediate transaction. */
-export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): IntegrationDiagnostic[] {
+export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): ConsolidationDiagnostic[] {
   const projectId = store.getSession(sessionId)!.projectId;
   const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => k.revision.supports));
   const skipped = new Set(batch.skipped.map(s => s.fact));

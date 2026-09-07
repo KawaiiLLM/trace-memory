@@ -1,30 +1,30 @@
 import { recorded } from "../../test/source-fixture.ts";
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type IntegrationAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 let memory: TraceMemory;
 afterEach(() => memory?.close());
 const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] };
 const batch = { operations: [create], skipped: [] };
-function setup(agent: (input: IntegrationAgentInput) => Promise<RunAgentResult>) {
-  memory = TraceMemory(":memory:", raw => agent(raw as IntegrationAgentInput));
+function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult>) {
+  memory = TraceMemory(":memory:", raw => agent(raw as ConsolidationAgentInput));
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
-  recorded(memory, s.id, "main", t.id); // T1 recorded: its facts may enter an Integration batch
+  recorded(memory, s.id, "main", t.id); // T1 recorded: its facts may enter an Consolidation batch
   return tools[3]!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
-const integrate = () => memory.integrate({ sessionId: 1, branch: "main" });
+const integrate = () => memory.consolidate({ sessionId: 1, branch: "main" });
 
-test("Integration stopping after its first valid batch bounces and preserves the candidate and receipt", async () => {
+test("Consolidation stopping after its first valid batch bounces and preserves the candidate and receipt", async () => {
   setup(async input => { input.reportRequest({ first: true }); input.tools[3]!.execute(batch); return success(); });
   const result = await integrate();
   expect(result.outcome).toBe("bounced");
   if (result.outcome !== "bounced") throw new Error("expected bounce");
   expect(memory.store.getKnowledge(1)).toBeNull();
-  expect(memory.store.listIntegratedProjectFacts(1)).toEqual([]);
+  expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
   const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
   expect(audit.candidate).toEqual(batch); expect(audit.toolCalls[0].input).toEqual(batch);
   expect(JSON.parse(audit.toolCalls[0].result).feedback.role).toBe("user");
@@ -46,7 +46,7 @@ test("a rejected second submission can be corrected without another review round
   expect(memory.store.getKnowledge(2)).toBeNull();
 });
 
-for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`Integration ${mode} after commit only appends a problem`, async () => {
+for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`Consolidation ${mode} after commit only appends a problem`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
     input.tools[3]!.execute(batch); input.reportRequest({ second: true }); input.tools[3]!.execute(batch);
@@ -58,22 +58,22 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`In
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("commit is success");
   expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-  expect(memory.store.integratedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
+  expect(memory.store.consolidatedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
   const run = memory.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).problems).toEqual(["late provider error"]);
   expect(JSON.parse(run.request!)).toEqual(mode === "throw" || mode === "abort" ? { second: true } : { final: true });
 });
 
-for (const mode of ["failure", "cancelled"] as const) test(`Integration ${mode} before commit advances nothing`, async () => {
+for (const mode of ["failure", "cancelled"] as const) test(`Consolidation ${mode} before commit advances nothing`, async () => {
   setup(async input => { input.tools[3]!.execute(batch); return { outcome: mode, output: "stopped", request: {} }; });
   expect((await integrate()).outcome).toBe(mode);
-  expect(memory.store.getKnowledge(1)).toBeNull(); expect(memory.store.listIntegratedProjectFacts(1)).toEqual([]);
+  expect(memory.store.getKnowledge(1)).toBeNull(); expect(memory.store.listConsolidatedProjectFacts(1)).toEqual([]);
 });
 
-test("Integration normal stop without a submission succeeds with zero knowledge", async () => {
+test("Consolidation normal stop without a submission succeeds with zero knowledge", async () => {
   setup(async () => success()); const result = await integrate();
   expect(result.outcome).toBe("success"); expect(memory.store.getKnowledge(1)).toBeNull();
-  expect(memory.store.integratedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
+  expect(memory.store.consolidatedOnPath(1, memory.store.knowledgePath(1, "main"))).toBe(true);
 });
 
 test("memory rejects malformed items, obsolete fields and invisible evidence without losing ordered results", () => {

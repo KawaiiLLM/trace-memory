@@ -2,11 +2,11 @@ core/ is host-agnostic: it must not import any host SDK.
 
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
-- recording/    freeze input, provide tools, record the last provider request and final text.
+- noting/    freeze input, provide tools, record the last provider request and final text.
 - api/tools.ts  four bound model-facing tools; atomic note validation and commit.
-- integration/  build Integration input and NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
-- render/  one renderer for recording input, compaction tail, branch summary, trace; XML injection blocks.
-- prompts/ recording.md, integration.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Recorder descends from pi-observational-memory's observer prompt, the Integrator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
+- consolidation/  build Consolidation input and NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
+- render/  one renderer for noting input, compaction tail, branch summary, trace; XML injection blocks.
+- prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call).
 
@@ -18,9 +18,9 @@ and immediate transactions with a five-second busy timeout. Nested transactions
 use savepoints. No external SQLite dependency is needed.
 
 Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
-`npm run smoke:pi` for a direct Node extension import and fake-provider recording run.
+`npm run smoke:pi` for a direct Node extension import and fake-provider noting run.
 
-## Recording and trace host contract (ticket 02)
+## Noting and trace host contract (ticket 02)
 
 Hosts pass completed source identities/content through `appendEntry(SourceInput)`
 and select the persisted ancestry with `selectEntries(sessionId, branch, entryIds)`.
@@ -33,7 +33,7 @@ views, recent facts and applicable knowledge before calling the model. A fork
 uses a new branch identity even when its native source head changes inside the
 same Turn. Shared processed entries are inherited by identity.
 
-The recording result has `outcome`: `success` with `runId` and facts; `bounced`,
+The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per database/session/branch across façade
 instances in this process. No automatic retry or feedback call follows a bounce.
@@ -44,7 +44,7 @@ A committed batch keeps outcome `success` even if the provider subsequently
 fails or is cancelled; the trailing problem is recorded without undoing business
 writes (user ruling 2026-09-07).
 
-`runAgent` receives `RecordingAgentInput` with the four `tools` definitions:
+`runAgent` receives `NotingAgentInput` with the four `tools` definitions:
 `trace`, `search`, `note`, `memory`. Each has a name, description, JSON-schema
 parameters, and synchronous `execute(input): string`. Hosts execute calls and
 continue the provider conversation until it stops. `reportRequest(request)`
@@ -54,19 +54,19 @@ is the last request sent. Final text is audit content, never parsed for facts.
 trace evidence, the tool-call input/result sequence, problems and committed IDs.
 
 `tools(context)` also binds these definitions to a main agent with
-`{kind: "manual", sessionId, branch, currentTurnId}`, or to a Recording context
-with `{kind: "recording", sessionId, branch, range: {from, to},
+`{kind: "manual", sessionId, branch, currentTurnId}`, or to a Noting context
+with `{kind: "noting", sessionId, branch, range: {from, to},
 readKnowledgeCommits, entryIds}`. `note({facts})` validates every item and commits nothing
 on any rejection; a corrected whole batch may be resubmitted. Success returns
 `results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
-`rejected: <reason>`. A Recording binding commits at most one batch. The batch,
+`rejected: <reason>`. A Noting binding commits at most one batch. The batch,
 run record, frozen entry progress and applicable nonempty delivery commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
-as request/response and enter only that branch's Integration range. They do not
-advance Recording. `memory` writes knowledge with the uniform batch contract below.
+as request/response and enter only that branch's Consolidation range. They do not
+advance Noting. `memory` writes knowledge with the uniform batch contract below.
 
 Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen entry set
-(Recording) or current selected source path (manual). Time is the first source turn's
+(Noting) or current selected source path (manual). Time is the first source turn's
 `started_at`; timestamps from the model are rejected. Event facts require
 `status` (completed, reported, dispatched, attempted); other categories reject
 status. Text has no completion prefix; the shared renderer supplies it. Relations
@@ -74,7 +74,7 @@ retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
 The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
-The recording config chooses branch/subagent mode; provider prefix verification
+The noting config chooses branch/subagent mode; provider prefix verification
 remains the host's responsibility.
 
 ## Rendering decisions
@@ -110,13 +110,13 @@ in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
 
-In branch mode the recording `input` carries the range, head reply and frozen source index: the raw turns, the
-facts delivered after earlier recordings, and the injected knowledge are already in the
+In branch mode the noting `input` carries the range, head reply and frozen source index: the raw turns, the
+facts delivered after earlier notings, and the injected knowledge are already in the
 conversation the host appends to. The native prefix remains uncompressed; branch
-Recording gains nothing from the compressed view (accepted 2026-09-08). Subagent
-Recording and fallback carry the shared entry views below.
+Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
+Noting and fallback carry the shared entry views below.
 
-Recording context uses the episodic budget for all rendered raw plus recent facts
+Noting context uses the episodic budget for all rendered raw plus recent facts
 by descending timestamp, then id. Raw is never dropped; overage is receipted.
 Older facts are dropped first. Active knowledge items use the knowledge budget in glossary
 category order, dropping whole trailing categories; constraint/open/dispute
@@ -164,26 +164,26 @@ The trace fixture in `test/fixtures/trace.json` is cut from simulation v7m's
 Only required records/fields are copied. Category and strength enums are mapped
 to English; Chinese text and quotes are preserved. Tests remap knowledge/fact
 IDs and raw-source addresses into the fixture database. Simulation revision `at` values are retained as
-stored times because the source has integration-boundary labels, not wall-clock times.
+stored times because the source has consolidation-boundary labels, not wall-clock times.
 Four checked-in goldens cover current knowledge, snapshot, diff, and negation walk.
 
-## Integration feedback host contract (ticket 03b)
+## Consolidation feedback host contract (ticket 03b)
 
 `integrate({ sessionId, branch, headTurnId?, model?, mode? })` returns `empty`
-without a call when there are no applicable unintegrated committed facts on the
+without a call when there are no applicable unconsolidated committed facts on the
 selected path. Facts become eligible immediately, including on partly recorded
-Turns; there is no Turn grouping or first-Recording gate. Shared ancestors belong
-to both paths. Progress is the exact `integrated_facts` set with the existing path
+Turns; there is no Turn grouping or first-Noting gate. Shared ancestors belong
+to both paths. Progress is the exact `consolidated_facts` set with the existing path
 rule, never a maximum-id cursor. The fifty-fact threshold only triggers a run.
 The range freezes these facts in allocation-id order, visible active knowledge
 revisions (including budget omissions), relation lines and reminders before the
-candidate call. Context remains project-wide: already-integrated facts outside the range,
+candidate call. Context remains project-wide: already-consolidated facts outside the range,
 ordered by descending timestamp then id. All range facts are retained; their
 rendered size consumes the episodic budget before context. Knowledge follow the
-recording category budget policy. Reminders and feedback are unbudgeted so every
+noting category budget policy. Reminders and feedback are unbudgeted so every
 matching visible knowledge and both relation strengths remain available.
 
-The host receives one `IntegrationAgentInput` with frozen `input`, the four bound
+The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound
 `tools`, and `reportRequest`. It executes tool calls and extends the same conversation
 until the provider stops. `reportRequest` captures each exact provider request before
 execution; the final returned request is the last one sent.
@@ -207,7 +207,7 @@ stopping without any submission succeeds with zero knowledge and advances the ra
 
 Lexical matching uses Unicode character bigram Jaccard after removing punctuation
 and whitespace. NEAR includes all visible active neighbours at or above
-`integration.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
+`consolidation.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
 range facts near each open/goal item. Budget omissions do not limit either search.
 Update or merge answers NEAR; archiving a neighbour does not. Initial create review
 obligations remain conservatively while creates remain in the final batch, so
@@ -217,7 +217,7 @@ or third review round exists.
 Targets must match the visible active revisions frozen at run start; manual calls
 use current revisions. Every item is checked before writing and every participant
 is rechecked in the immediate transaction. Any rejection writes no operations.
-The survivor revision, merged status and links, run record and frozen Integration
+The survivor revision, merged status and links, run record and frozen Consolidation
 fact membership and a nonempty knowledge-change delivery commit together; absorbed
 items retain their own last revision. Enabled sessions receive both delivery kinds
 regardless of worker mode (2026-09-08 supersession). Supports and because cite project facts available at start.
@@ -236,7 +236,7 @@ only append problems. Before commit, failure/cancellation advances nothing; an
 uncorrected rejection or first-only submission ends bounced. Run deduplication is
 per database/session/branch across facades in this process.
 
-The fixture `test/fixtures/integration.json` copies K2 from v7m's first Integration output and its
+The fixture `test/fixtures/consolidation.json` copies K2 from v7m's first Consolidation output and its
 supporting facts F2/F35 from facts.jsonl. Chinese memory content is preserved;
 only the knowledge category and candidate handle are adapted to the core contract.
 Tests remap fact addresses to allocated IDs. Existing 03b tests now expect
@@ -251,9 +251,9 @@ revision time ascends, with knowledge-id ties. XML text is never escaped (lines 
 including revision-bound marks, remain the display grammar. Budgets measure
 shared lines before XML escaping and exclude framing and receipts. Protected
 categories survive overage; optional categories form a retained prefix.
-`<recorded>` follows knowledge, without a budget, and is consumed atomically
+`<noted>` follows knowledge, without a budget, and is consumed atomically
 only after rendering succeeds. Pass `null` explicitly for legacy null branches.
-Successful recording commits now record `factIds` in the existing response envelope;
+Successful noting commits now record `factIds` in the existing response envelope;
 this identifies exact deliveries even when runs overlap in their source turns.
 Legacy pending runs without this metadata raise an error and remain pending;
 the core cannot safely reconstruct their ownership from turn ranges alone.
@@ -308,7 +308,7 @@ block with the fixed other-branch reminder, facts whose raw evidence lies on the
 leaving path, commits selected by that evidence, and shared pending entry views.
 As in every block, tags delimit and content lines remain byte-identical. There is no fact budget or delivery
 consumption. The host passes the block immediately as Pi's summary, launching
-neither phase and awaiting no Recording; unprocessed entries remain Raw views. Injected messages
+neither phase and awaiting no Noting; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.
 
 

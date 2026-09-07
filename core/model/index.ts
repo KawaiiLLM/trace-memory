@@ -1,4 +1,4 @@
-// core/model — row types and write-time shape validation for recording and integration output.
+// core/model — row types and write-time shape validation for noting and consolidation output.
 // Terms: CONTEXT.md. Contract: .scratch/v1/spec.md (Modules, Schema).
 // Validation never throws on model output; it returns a list of problems instead.
 
@@ -41,7 +41,7 @@ export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 export const KNOWLEDGE_OPS = ["create", "update", "merge", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
 
-export const RUN_KINDS = ["recording", "integration", "manual"] as const;
+export const RUN_KINDS = ["noting", "consolidation", "manual"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
 export const RUN_OUTCOMES = ["success", "failure", "cancelled", "bounced"] as const;
@@ -175,7 +175,7 @@ export interface PendingDelivery {
 
 // ---- Shared validation plumbing ----
 
-const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, recording.md
+const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, noting.md
 const FACT_ID_RE = /^F\d+$/;
 // A bare fact or knowledge id embedded in prose text; ids belong only in relation/supports fields.
 const EMBEDDED_ID_RE = /\b[FK]\d+\b/;
@@ -188,35 +188,35 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
-// ---- Recording output (core/prompts/recording.md) ----
+// ---- Noting output (core/prompts/noting.md) ----
 
-export interface RecordingRelationInput {
+export interface NotingRelationInput {
   target: string; // "F<id>" or "$n"
   strength: RelationStrength;
 }
 
-export interface RecordingFactInput {
+export interface NotingFactInput {
   category: FactCategory;
   actor: Actor;
   text: string;
   quote?: string;
   status?: EventStatus;
   source: string[]; // raw addresses, e.g. "T812#user", "T812#t3"
-  support?: RecordingRelationInput[];
-  negate?: RecordingRelationInput[];
+  support?: NotingRelationInput[];
+  negate?: NotingRelationInput[];
 }
 
 function validateRelationList(
   path: string,
   value: unknown,
   problems: string[],
-): RecordingRelationInput[] | undefined {
+): NotingRelationInput[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     problems.push(`${path}: expected an array`);
     return [];
   }
-  const out: RecordingRelationInput[] = [];
+  const out: NotingRelationInput[] = [];
   value.forEach((pair, k) => {
     const p = `${path}[${k}]`;
     if (!Array.isArray(pair) || pair.length !== 2) {
@@ -235,7 +235,7 @@ function validateRelationList(
   return out;
 }
 
-export function validateRecordingFact(path: string, raw: unknown, problems: string[]): RecordingFactInput | null {
+export function validateNotingFact(path: string, raw: unknown, problems: string[]): NotingFactInput | null {
   if (typeof raw !== "object" || raw === null) {
     problems.push(`${path}: expected an object`);
     return null;

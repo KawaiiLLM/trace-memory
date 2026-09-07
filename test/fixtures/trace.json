@@ -3,7 +3,7 @@
     "originalId": 2,
     "log": [
       {
-        "at": "integration@F50",
+        "at": "consolidation@F50",
         "op": "create",
         "because": [],
         "text": "mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。",
@@ -15,7 +15,7 @@
         ]
       },
       {
-        "at": "integration@F86",
+        "at": "consolidation@F86",
         "op": "update",
         "because": [
           "F81"

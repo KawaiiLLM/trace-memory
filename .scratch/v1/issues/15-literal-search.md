@@ -2,7 +2,7 @@
 
 **What to build:** `search` finds content that contains the query text, literally, in all three layers. No tokenizer, no query syntax, no ranking. Chinese of any length, mixed Chinese and Latin, paths, and literal `%` or `_` all work the same way. The FTS5 tables and their triggers, which no longer serve any query, are deleted.
 
-**Blocked by:** 14 — Branch Recording input.
+**Blocked by:** 14 — Branch Noting input.
 
 **Status:** ready-for-agent
 
