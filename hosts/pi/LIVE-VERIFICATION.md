@@ -69,3 +69,18 @@ Fresh database `/tmp/tm-live2/trace.db`, marker `tm-live2`, config
   stays unsettled for the next trigger, as designed.
 - This provider reported non-zero `cacheRead` on both settle calls, unlike the
   earlier sessions; still recorded as an observation only.
+
+## Session 4 (`tmtrace1`, after the second review in 4a7c191): subagent note fetches cut evidence
+
+Fresh database `/tmp/tm-live3/trace.db`, config `note.triggerAnsweredTurns=1`,
+`note.branchModeDefault=false`; one prompt asking Pi to run a 2,500-line command
+and report the count and last line.
+
+- The raw turn rendered the 43.5K-character bash result with the standard
+  head/tail cut. The note run called the `trace` tool once with
+  `T1 tool=1 full` (43,926 characters returned), then wrote one event fact
+  `completed: … printed exactly 2,500 lines, ending with "2500 item"` with
+  source `T1#t1` and the command as quote.
+- The run record lists the fetch under `fetched` and stores the last request
+  sent: four input items (user, reasoning, function_call, function_call_output)
+  and the single `trace` tool definition.
