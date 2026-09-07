@@ -102,7 +102,8 @@ Knowledge is git-like: `K<n>` is a stable identity; every change is an immutable
 - **Archive and merge** are commits: an archive commit has no text and retires its parent on the paths where it applies; a merge commit has several parents. Other paths keep using the old commits.
 - **Marks** attach to commits (`/trace mark K1@57 verified`); a bare `K1` resolves to the caller's path current, and a write with a bare `K1` is rejected when several tips exist.
 - **Addresses**: `K1` (path current; without a path context: the single tip, or the list of tips labelled newest-created), `K1@57` (one commit), `K1@57..K1@61` (diff between two commits of the same identity), `K1..` (the commit tree, all branches). Commit ids are global integers like every other id (ruling 09:43); no hashes.
-- **Tree switch**: the summary carried to the new position lists the leaving branch's facts, its commits, and unrecorded raw, computed by evidence, labelled as from another branch for reference; nothing in it becomes a constraint of the current path until adopted.
+- **Tree switch** (user ruling 2026-09-07): the summary carried to the new position is one XML block (`<branch_carry>`) listing the leaving branch's facts, its commits, and unrecorded raw, computed by evidence. It opens with a fixed reminder: this is knowledge from another branch; it must not be written as facts; the Recorder's facts come only from the current branch's conversation, never from messages this plugin injected. Nothing in it becomes a constraint of the current path until adopted through a fact recorded on this path.
+- **Injected messages are not sources** (same ruling): the knowledge block, deliveries, the compaction block and the branch carry are the plugin's own messages; a fact may cite only `T<id>#user`, `T<id>#assistant` and `T<id>#t<n>` of the current branch, and the Recorder prompt says so.
 
 ### Schema note (from the simulation driver)
 
