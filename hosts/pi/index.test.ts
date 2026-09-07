@@ -62,7 +62,9 @@ test("recording through runAgent commits the exact provider request, prompt, mod
   expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
-  expect(JSON.parse(run.response!).usage).toEqual(usage);
+  // Usage is summed over every model call of the run, not the last reply's alone.
+  const calls = h.conversations.length;
+  expect(JSON.parse(run.response!).usage).toEqual({ ...usage, input: usage.input * calls, output: usage.output * calls, totalTokens: usage.totalTokens * calls });
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
 
@@ -292,7 +294,6 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
   await h.commands.get("trace").handler("project named", h.ctx);
-  const marked = { content: [{ text: h.notices.at(-1)! }] };
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
   expect(store.listProjectFacts(own)).toEqual([]);
   expect(store.listProjectFacts(target.id)).toHaveLength(2);
@@ -302,8 +303,9 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.listVisibleKnowledge(1, target.id).map(v => v.knowledge.id)).toEqual([1, 2, 3]);
   expect(store.getKnowledgeRevision(2, 1)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
-  expect(marked.content[0]!.text).toContain(h.memory.inject(1));
   expect(h.memory.inject(1)).toContain("仅当前会话");
+  // The declaration re-injects at the next prompt through the usual path, so the model sees the new project's knowledge.
+  expect((await h.prompt("next"))?.message?.content).toContain(h.memory.inject(1));
 });
 
 test("before-tree waits for a frozen pending recording and summarizes its facts plus later raw without delivering", async () => {
@@ -489,12 +491,16 @@ test("main facade tools bind each call to the current turn, commit immediately a
 });
 
 
-test("subagent runs receive the exact four definition objects registered for the main agent", async () => {
+test("subagent runs receive the same four definitions registered for the main agent: name, description, schema", async () => {
   const h = host({ "recording.branchModeDefault": false, "recording.triggerAnsweredTurns": 1 });
   const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
   vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
     expect(conversation.tools).toHaveLength(4);
-    for (const definition of conversation.tools!) expect(definition).toBe(h.tools.get(definition.name));
+    for (const definition of conversation.tools!) {
+      const registered = h.tools.get(definition.name);
+      expect([definition.description, definition.parameters]).toEqual([registered.description, registered.parameters]);
+      expect("execute" in definition).toBe(false); // the model sees metadata only
+    }
     return original(model, conversation, options);
   });
   h.provider(async c => recordingFact(c));
@@ -525,4 +531,23 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
   expect(result.content[0].text).toContain("rejected: previous operation");
   await h.emit("tool_result", { toolName: "trace", input, ...result, isError: false });
   expect(h.memory.store.listToolCalls(1).map(c => c.status)).toEqual(["failure", "success"]);
+});
+
+test("18:39: two memory submissions in one reply cannot skip the checklist; the second commits only after the feedback was sent", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
+  h.provider(async c => recordingFact(c)); await h.turn();
+  const double = { ...integrationReply(), content: [integrationReply().content[0]!, { ...integrationReply().content[0]!, id: "memory-2" }] } as Reply;
+  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? integrationReply() : double);
+  await h.emit("agent_settled"); await h.drain();
+  // The request after the double reply: user, assistant (two calls), two results, then the checklist.
+  const second = h.conversations.find(c => c.messages.length === 5)!.messages;
+  expect(second.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "user"]);
+  const results = second.filter(m => m.role === "toolResult") as { content: { text: string }[] }[];
+  expect(results[0]!.content[0]!.text).toContain("feedback");
+  expect(results[1]!.content[0]!.text).toContain("rejected: the review feedback has not been read yet");
+  const run = h.memory.store.listRuns(1).filter(r => r.kind === "integration")[0]!;
+  expect(run.outcome).toBe("success");
+  const calls = JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result.slice(0, 40));
+  expect(calls).toHaveLength(3); // feedback, rejected, committed: the commit came from the request after the checklist
+  expect(calls[2]).toContain("committed");
 });

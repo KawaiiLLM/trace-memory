@@ -8,16 +8,20 @@ export interface MemoryReview {
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview) {
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
+  // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
+  // host on every provider request, tells whether the model has seen the feedback since the candidate.
+  let requests = 0, candidateRequest = -1;
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; rejected: import("../store/index.ts").RejectedKnowledgeOp[]; diagnostics: import("./commit.ts").IntegrationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
   const execute = (input: unknown) => {
     if (committed && review) return "rejected: already committed";
+    if (review && candidate && requests === candidateRequest) return "rejected: the review feedback has not been read yet; resubmit after the feedback message";
     const prepared = prepareMemory(store, sessionId, input, run, review?.frozen);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
     if (problems.length) return JSON.stringify({ results: prepared.results });
     if (review && !candidate) {
-      candidate = structuredClone(prepared.batch);
+      candidate = structuredClone(prepared.batch); candidateRequest = requests;
       const feedback = review.feedback(candidate); near = feedback.near;
       problems = ["first batch requires a second submission"];
       return JSON.stringify({ results: prepared.results, feedback: { role: "user", content: feedback.text } });
@@ -38,5 +42,5 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, sequence, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, sequence, requestSeen: () => { requests++; }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }

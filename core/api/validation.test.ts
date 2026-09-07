@@ -4,7 +4,7 @@ import { TraceMemory, type IntegrationAgentInput } from "./index.ts";
 
 // These former model-unit cases now drive the host's actual Integration seam.
 async function checkMemoryBatch(output: unknown) {
-  const memory = TraceMemory(":memory:", async raw => { const input = raw as IntegrationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(memoryBatch(output)); tool.execute(memoryBatch(output)); return { outcome: "success", output: "done", request: { fake: true } }; }, { integration: { nearThreshold: 1 } });
+  const memory = TraceMemory(":memory:", async raw => { const input = raw as IntegrationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(memoryBatch(output)); input.reportRequest({ fake: true }); tool.execute(memoryBatch(output)); return { outcome: "success", output: "done", request: { fake: true } }; }, { integration: { nearThreshold: 1 } });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });

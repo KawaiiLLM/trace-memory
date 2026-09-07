@@ -164,5 +164,5 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     definition("memory", input => context.kind === "recording" ? "rejected: memory is not the writer for a recording run" : memory.execute(input)),
   ];
   return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
-    reportRequest: (request: unknown) => { if (closed) throw new Error("recording run has finished"); run.request = JSON.stringify(request); } };
+    reportRequest: (request: unknown) => { if (closed) throw new Error("recording run has finished"); memory.requestSeen(); run.request = JSON.stringify(request); } };
 }

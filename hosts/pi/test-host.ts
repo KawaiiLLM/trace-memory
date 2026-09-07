@@ -29,7 +29,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
         requests.push(structuredClone(payload));
         payload.providerSpecific = false; // The saved request must not alias provider state.
         if (conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
-        if (conversation.messages.filter(m => m.role === "toolResult" && m.toolName === "memory").length >= 2) return reply("Done.");
+        if (conversation.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.includes('"committed"'))) return reply("Done.");
         return provider(conversation);
       } },
   } as unknown as ExtensionContext;

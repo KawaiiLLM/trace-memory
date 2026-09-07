@@ -32,8 +32,10 @@ test("a rejected second submission can be corrected without another review round
   setup(async input => {
     const write = input.tools[3]!; input.reportRequest({ first: true });
     expect(write.execute(batch)).toContain("feedback");
+    input.reportRequest({ second: true });
     expect(write.execute({ operations: [{ ...create, supports: [] }], skipped: [] })).toContain("rejected:");
     expect(memory.store.getKnowledge(1)).toBeNull();
+    input.reportRequest({ third: true });
     const corrected = JSON.parse(write.execute(batch));
     expect(corrected.feedback).toBeUndefined(); expect(corrected.committed).toHaveLength(1);
     return success();
@@ -45,7 +47,7 @@ test("a rejected second submission can be corrected without another review round
 for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`Integration ${mode} after commit only appends a problem`, async () => {
   setup(async input => {
     input.reportRequest({ provider: "captured" });
-    input.tools[3]!.execute(batch); input.tools[3]!.execute(batch);
+    input.tools[3]!.execute(batch); input.reportRequest({ second: true }); input.tools[3]!.execute(batch);
     const run = memory.store.listRuns(1).at(-1)!;
     expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).toolCalls).toHaveLength(2);
     if (mode === "throw" || mode === "abort") { const error = new Error("late provider error"); if (mode === "abort") error.name = "AbortError"; throw error; }
@@ -57,7 +59,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`In
   expect(memory.store.getWatermark(1, "main")?.lastIntegratedFact).toBe(1);
   const run = memory.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).problems).toEqual(["late provider error"]);
-  expect(JSON.parse(run.request!)).toEqual(mode === "throw" || mode === "abort" ? { provider: "captured" } : { final: true });
+  expect(JSON.parse(run.request!)).toEqual(mode === "throw" || mode === "abort" ? { second: true } : { final: true });
 });
 
 for (const mode of ["failure", "cancelled"] as const) test(`Integration ${mode} before commit advances nothing`, async () => {
@@ -92,7 +94,7 @@ test("skipped validates its range, reason and shape atomically", async () => {
       expect(input.tools[3]!.execute({ operations: [create], skipped: [skipped] })).toContain("rejected:");
       expect(memory.store.getKnowledge(1)).toBeNull();
     }
-    input.tools[3]!.execute(batch); input.tools[3]!.execute(batch); return success();
+    input.tools[3]!.execute(batch); input.reportRequest({ second: true }); input.tools[3]!.execute(batch); return success();
   });
   expect((await integrate()).outcome).toBe("success");
 });
@@ -119,7 +121,7 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
     const final = { operations: [{ ...create, supports: ["F2"] }], skipped: [] };
     input.tools[3]!.execute(final);
     manual.execute({ operations: [{ op: "archive", id: "K1", because: ["F2"] }], skipped: [] });
-    input.tools[3]!.execute(final); return success();
+    input.reportRequest({ second: true }); input.tools[3]!.execute(final); return success();
   });
   manual.execute(batch);
   memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use another tool", source: ["T1#user"] }] });
@@ -132,7 +134,7 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
 
 test("inserting an archive before a retained create cannot erase its unanswered NEAR", async () => {
   const manual = setup(async input => {
-    input.tools[3]!.execute(batch);
+    input.tools[3]!.execute(batch); input.reportRequest({ second: true });
     input.tools[3]!.execute({ operations: [{ op: "archive", id: "K2", because: [] }, create], skipped: [] });
     return success();
   });
