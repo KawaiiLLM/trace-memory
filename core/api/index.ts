@@ -1,3 +1,4 @@
+export { toolDefinitions } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";

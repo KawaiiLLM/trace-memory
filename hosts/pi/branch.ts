@@ -45,11 +45,22 @@ function difference(a: unknown, b: unknown, path = "$"): string | undefined {
 export function verifyRequest(payload: Body, request: Body, api: string, appended: string | Appended[]) {
   // Independently strip the appends and compare to the capture; never rebuild
   // the expected prefix with the builder being verified.
-  const key = messageKey(api), messages = request[key], expected = list(appended);
-  const appendedMessages = Array.isArray(messages) ? messages.slice(-expected.length) : [];
+  return verifyNativeRequest(payload, request, api, list(appended).map(m => providerMessage(api, m)));
+}
+
+/** Append adapter-serialized assistant/tool items without reserializing earlier rounds. */
+export function appendNativeRequest(payload: Body, api: string, appended: unknown[]): Body {
+  const key = messageKey(api);
+  if (!Array.isArray(payload[key])) throw new Error(`Missing provider message array: ${key}`);
+  return { ...snapshot(payload), [key]: [...snapshot(payload[key]), ...snapshot(appended)] };
+}
+
+export function verifyNativeRequest(payload: Body, request: Body, api: string, expected: unknown[]) {
+  const key = messageKey(api), messages = request[key];
+  const appendedMessages = Array.isArray(messages) ? messages.slice(messages.length - expected.length) : [];
   const differingPath = (!Array.isArray(messages) || messages.length < expected.length ? `$.${key}`
-    : difference(payload, { ...request, [key]: messages.slice(0, -expected.length) })
-      ?? difference(expected.map(m => providerMessage(api, m)), appendedMessages, `$.${key}.append`)) ?? null;
+    : difference(payload, { ...request, [key]: messages.slice(0, messages.length - expected.length) })
+      ?? difference(expected, appendedMessages, `$.${key}.append`)) ?? null;
   return { passed: differingPath === null, capturedHash: hash(payload), requestHash: hash(request),
     appendedMessages, differingPath };
 }

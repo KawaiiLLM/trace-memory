@@ -1,4 +1,4 @@
-# Pi host (tickets 05–07)
+# Pi host (tickets 05–11)
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
@@ -52,7 +52,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   project. A project may exist before any assistant reply; a Trace Memory session
   cannot. The first prompt is buffered until that reply permits its turn row to
   be appended. Later prompts append immediately. Marker declarations go through
-  `mark(..., source: "marker")`; a persisted in-session mark wins on resume.
+  `declareProject(..., "marker")`; a persisted `/trace project` declaration wins on resume.
 - `before_agent_start` injects the knowledge block once per session (by project
   before allocation, by session afterward; after compaction the compaction block
   already carries the knowledge) and, on every prompt, the pending recording deliveries
@@ -87,9 +87,18 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   that id, finds none, and keeps the compaction plus later messages. Successful
   compaction is then recorded as a `compaction` turn; it receives no facts.
   Pre-reply compaction returns project injection without allocating a session.
-- Tools return the facade string in Pi text content. `mark({input: ...})` supplies
-  the current session id for project declarations. `/trace` only displays
-  `memory.status` (or an empty-session notice); it does not extract or inject.
+- Main-agent registration and subagent requests use the exact same four definition
+  objects, with façade descriptions and schema objects. Pi execution fields are
+  non-enumerable so provider serialization includes only the shared metadata. `trace({address,
+  tool, full, cursor, cap})` and `search({query, layer, cursor, cap})` read session-visible
+  evidence; `note({facts})` writes facts and `memory({operations, skipped})` writes
+  knowledge. Main-agent executions call `tools(context)` with kind `manual` and
+  the current session, branch and turn. Writes commit immediately; `tool_result`
+  records each raw call once. No prompt asks the main agent to maintain memory.
+- `/trace` alone reads status without extraction or injection. `/trace project <name>`
+  declares the project, saves host state and displays refreshed injection.
+  `/trace mark K<n> verified|flagged|clear` marks a knowledge revision. These are
+  user commands; the former model-facing `mark` tool is removed.
 
 ## SDK signatures and request auditing
 
@@ -103,26 +112,25 @@ older vendored implementation:
 | Read-only `getSessionId`, `getBranch`, `getEntries` | `dist/core/session-manager.d.ts` |
 | `Context`, `AssistantMessage`, `ProviderRequestOptions.onPayload` | `node_modules/@earendil-works/pi-ai/dist/types.d.ts` |
 
-`modelRegistry.complete` supplies Pi's configured provider/model/auth access. A
-fresh call has exactly the input prompt as system prompt and one user message
-with the input text. A recording call also carries one tool, `trace`, through which
-the model fetches a cut tool call's full text by its expansion address (spec,
-overflow policy); the host executes it through the core's read path and calls
-the model again, up to eight rounds, the way pi-om's observer loop executes its
-tool. An Integration call carries no tools. `options.onPayload` snapshots the
-provider-native JSON body without modifying it; the last body sent (which
-embeds any earlier tool rounds) is returned as `request`; the facade records it
-along with output and usage, including provider failures.
-No authorization headers are included in this request-body audit.
+`modelRegistry.complete` supplies Pi's configured provider/model/auth access.
+Subagent Recording and Integration start with the run prompt, one rendered input
+message and the four shared façade definitions. Both modes execute model tool
+calls through run-bound façade tools and continue until the model stops. Each
+round appends the assistant call and its tool results. Integration's first valid
+`memory` submission returns review guidance, appended as one user-role message;
+the second valid submission commits in the same conversation and run. Rejected
+batches can be corrected through further tool rounds. The former continuation
+state and separate candidate/final invocations are gone.
 
-For integration's final round in subagent mode, the candidate call returns its SDK
-conversation and complete assistant message as `state` on the run result; the
-core hands that back inside `continuation.response`, so the host keeps nothing
-between rounds. The final call replays that conversation and appends
-`continuation.message` exactly once; the SDK serializes the request and
-`onPayload` captures that body independently. The model is resolved from the
-run's frozen model name, so switching the session model mid-integration does not
-redirect the final round.
+`onPayload` snapshots the provider-native body; the last request sent embeds all
+earlier rounds and is stored with tool results, output and usage. In branch
+mode the installed adapter serializes only the new assistant/tool suffix,
+preserving native IDs and thinking signatures. Suffix serialization uses
+`cacheRetention: "none"` so Anthropic does not accumulate cache markers on every
+round; all captured cache controls remain untouched. `branch.ts` appends those native
+items to the previous request and independently verifies its preserved prefix
+before sending. Session model/auth remain frozen for the whole run. No auth
+headers are included in the request-body audit.
 
 The vendored 0.84.4 `types.ts`, extension/SDK/session/compaction docs, and
 `custom-compaction.ts`/`handoff.ts` were used for implementation patterns only.
@@ -187,12 +195,12 @@ credentials or replace the manual conversation above.
 ## Branch request and verification contract
 
 Branch mode inherits the latest captured provider request: system instructions,
-messages, tools, and all body options (including cache controls, sampling and
-reasoning settings). It appends exactly one user message containing the recording
-prompt, two newlines, and the core's range-only input. Subagent mode has the recording
-prompt as system instructions, one full rendered input message, and the `trace`
-tool. Inherited tools in branch mode are definitions only: this one-call path
-does not execute model tool calls.
+messages, the four tools already registered for the main agent, and all body
+options (cache controls, sampling and reasoning settings). Nothing is added to
+the tool list per run. The first request appends one user instruction: Recording
+uses the prompt and range-only input; Integration uses its prompt and full input.
+Subsequent requests append native assistant/tool items and any Integration review
+message to the immediately preceding verified request.
 
 `before_provider_request` captures a detached JSON snapshot for this extension instance (one per Pi session) in
 memory. It is never appended to the Pi session file. Session/tree restoration
@@ -203,11 +211,11 @@ single range-only append does not add that response. Live extraction quality
 for the final reply therefore needs human evaluation separately from identity.
 
 `branch.ts` supports `anthropic-messages`, `openai-completions`, and
-`openai-responses` payloads. Other APIs fall back with an explicit reason.
+`openai-responses` (including `openai-codex-responses`) payloads. Other APIs fall back with an explicit reason.
 Anthropic system content blocks and OpenAI system/developer messages retain all
 fields byte for byte under deterministic serialization; Responses uses `input`
 and `instructions`. No provider-native messages are converted back into Pi
-messages. `complete` receives an empty serialization context and `onPayload`
+messages. `complete` receives the new suffix as its serialization context and `onPayload`
 replaces the generated body with the built branch body. The request record is a
 snapshot of **that replacement object**, not the discarded callback argument.
 The supported installed adapters send this replacement (Anthropic enforces
@@ -230,13 +238,18 @@ The key is `(model id, provider, SHA-256 of tool definitions)`; `firstForKey` ma
 initial verification and any change from the previous successful key. Comparison
 sorts JSON object keys recursively, preserves array order and every string
 character (including whitespace and Unicode), and compares the complete bodies
-allowing only the appended message. It therefore covers each message prefix,
+allowing only the appended items. It therefore covers each message prefix,
 tools, system instructions and other body options. `differingPath` identifies the
 first unequal path. Hashes cover the two complete deterministically serialized
 UTF-8 bodies, so the captured hash and request hash normally **differ**.
 
 `runs.response.verification` contains `passed`, `capturedHash`, `requestHash`,
-`appendedMessage`, `differingPath`, `key`, and `firstForKey`. Reply
+`appendedMessages`, `differingPath`, `key`, `firstForKey`, and `rounds`.
+The top-level hashes identify the capture and first request. Each `rounds` entry
+records `capturedHash` (the previous request), `requestHash` (the new request),
+`appendedMessages`, `passed`, and `differingPath`. The final passing round's
+request hash identifies `runs.request`. Top-level `passed` becomes false if any
+round fails. Reply
 `usage.cacheRead` is also copied to `verification.cache_read` when numeric;
 it never affects `passed`. Missing usage leaves the observation absent. Pi-ai
 normalizes some absent provider counters to zero: zero is not proof of an
@@ -245,12 +258,14 @@ explicit provider measurement. Its Anthropic adapter maps
 `dist/api/anthropic-messages.js:411`, `openai-completions.js:1180`, and
 `openai-responses-shared.js:441`). `response.usage` preserves the full SDK usage.
 
-A mismatch prevents the branch provider call. The same recording run uses the full
+An initial mismatch prevents the branch provider call. The same recording run uses the full
 frozen subagent input, records `mode: subagent`, `response.fallbackReason`, and
 the failed verification with both hashes. `runs.request` is the actual fallback
 request, while the failed branch hash describes the rejected candidate. Missing
 or unsupported captures have a reason but no fabricated comparison/hashes.
-Notification happens once per Pi session. Provider/auth failures after a passed
+Notification happens once per Pi session. A later round mismatch rejects that
+round with no fallback; the record retains the last request actually sent and
+the failed comparison. A prior committed batch remains committed. Provider/auth failures after a passed
 comparison remain branch failures; they do not trigger another billable call.
 
 The small core contract correction for this ticket exposes the already-frozen
@@ -310,14 +325,23 @@ This is a human-run check, not an automated claim of live cache hits.
    const captured = JSON.parse(readFileSync('/private/tmp/trace-memory-manual/captured.json', 'utf8'));
    const sent = JSON.parse(run.request);
    const key = Array.isArray(captured.messages) ? 'messages' : 'input';
-   assert.equal(sent[key].length, captured[key].length + 1);
-   assert.deepEqual(Buffer.from(serialize(sent[key].slice(0, -1))), Buffer.from(serialize(captured[key])));
-   assert.deepEqual({ ...sent, [key]: sent[key].slice(0, -1) }, captured);
-   assert.equal(hash(captured), response.verification.capturedHash);
-   assert.equal(hash(sent), response.verification.requestHash);
-   assert.deepEqual(sent[key].at(-1), response.verification.appendedMessage);
-   assert.equal(response.verification.passed, true);
-   assert.equal(response.verification.differingPath, null);
+   const verification = response.verification;
+   assert.equal(verification.passed, true);
+   let body = sent;
+   for (const round of [...verification.rounds].reverse()) {
+     assert.equal(round.passed, true);
+     assert.equal(hash(body), round.requestHash);
+     const count = round.appendedMessages.length;
+     assert.deepEqual(body[key].slice(-count), round.appendedMessages);
+     body = { ...body, [key]: body[key].slice(0, -count) };
+     assert.equal(hash(body), round.capturedHash);
+   }
+   assert.equal(hash(body), verification.requestHash);
+   assert.deepEqual(body[key].slice(-1), verification.appendedMessages);
+   const prefix = { ...body, [key]: body[key].slice(0, -1) };
+   assert.deepEqual(Buffer.from(serialize(prefix)), Buffer.from(serialize(captured)));
+   assert.equal(hash(captured), verification.capturedHash);
+   assert.deepEqual(sent.tools, captured.tools);
    db.close();
    JS
    ```
@@ -370,10 +394,10 @@ Marker discovery is a plain ancestor walk; the first file wins and an empty
 file is an error. Worktrees share a marker only when their directories share
 its ancestor; no Git lookup is performed. Marker-attributed sessions are
 created with declaration `marker`, so they cannot accidentally merge a shared
-named space as if it were private. An explicit `mark` saves the project name
+named space as if it were private. An explicit `/trace project <name>` saves the project name
 and current project ID in the Pi custom state and returns the updated injection
-immediately in its tool result. The database declaration remains authoritative
-when restoring older tree state, so a session's mark wins on every branch.
+immediately in the command notification. The database declaration remains authoritative
+when restoring older tree state, so a session's command declaration wins on every branch.
 Peers remain in the marker project. Only an undeclared own space is merged.
 Facts change project membership through their session join; session knowledge
 retain scope, ownership and revisions while their project ID follows the
@@ -381,7 +405,7 @@ session. Duplicate project knowledge now share the next integration's NEAR pool;
 merge itself neither integrates nor deletes duplicates.
 
 An empty text content block is not an assistant reply. Nonempty text, thinking,
-or a tool call permits allocation; the tool-call case permits `mark` as the
+or a tool call permits allocation; the tool-call case permits `note` or `memory` as the
 first assistant action. A prompt, compaction or tree event without such a reply
 creates neither a session row nor a turn row. Project records may precede replies.
 

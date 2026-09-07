@@ -5,8 +5,8 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { Tool, ToolCall } from "@earendil-works/pi-ai";
-import { buildRequest, verifyRequest, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
+import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
+import { DEFAULT_CONFIG, TraceMemory, tokens, toolDefinitions, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -47,6 +47,15 @@ function marker(cwd: string): string | undefined {
   }
 }
 
+function rejected(name: string, content: string): boolean {
+  if (content.startsWith("rejected:")) return true;
+  if (name !== "note" && name !== "memory") return false;
+  try {
+    const { results } = JSON.parse(content);
+    return Array.isArray(results) && results.some(r => typeof r === "string" && r.startsWith("rejected:"));
+  } catch { return false; }
+}
+
 function reviewMessage(result: string): string | undefined {
   try { const value = JSON.parse(result); return value.feedback?.role === "user" ? value.feedback.content : undefined; }
   catch { return undefined; }
@@ -73,7 +82,7 @@ export default function (pi: ExtensionAPI) {
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
     let request: unknown = null;
-    let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
+    let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] }) | undefined;
     let fallbackReason: string | undefined;
     let mode: "branch" | "subagent" = "subagent";
     try {
@@ -81,9 +90,7 @@ export default function (pi: ExtensionAPI) {
       if (input.mode === "branch") {
         let candidate: Body | undefined;
         try {
-          // Recording and integration candidate: the captured prefix plus one instruction. Integration final: the
-          // verified candidate request plus the candidate reply replayed and the feedback message;
-          // it depends on nothing the main session changes after the candidate was sent.
+          // Both run kinds start with the captured prefix plus one instruction.
           let prefix: Body, appended: Appended[];
           {
             const captured = session.capture;
@@ -96,7 +103,7 @@ export default function (pi: ExtensionAPI) {
           // The Anthropic adapter enforces this after onPayload; audit that exact body.
           if (model.api === "anthropic-messages") candidate.stream = true;
           const key = JSON.stringify([model.id, model.provider, hash(prefix.tools ?? null)]);
-          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key };
+          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key, rounds: [] };
           if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
           session.verified = key;
         } catch (error) {
@@ -109,29 +116,38 @@ export default function (pi: ExtensionAPI) {
           const auth = await registry.getApiKeyAndHeaders(model);
           if (!auth.ok) throw new Error(auth.error);
           let reply: Reply;
-          const prefix = candidate;
-          const key = model.api === "openai-responses" || model.api === "openai-codex-responses" ? "input" : "messages";
+          const key = messageKey(model.api);
           let suffix: Conversation["messages"] = [];
-          for (let round = 0; ; round++) {
+          let rounds = 0;
+          for (;;) {
             reply = await complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-              { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId,
+              { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, cacheRetention: "none",
                 onPayload(native) {
                   // Let the installed adapter preserve thinking signatures and native tool IDs.
                   // Only its serialized suffix is appended; captured settings and tools stay exact.
                   const append = suffix.length ? (native as Body)[key] : [];
                   if (!Array.isArray(append)) throw new Error("Missing native branch continuation messages");
-                  candidate = { ...prefix, [key]: [...prefix[key] as unknown[], ...append] };
+                  if (suffix.length) {
+                    const previous = candidate!;
+                    candidate = appendNativeRequest(previous, model.api, append);
+                    const checked = verifyNativeRequest(previous, candidate, model.api, append);
+                    verification!.rounds.push(checked);
+                    if (!checked.passed) {
+                      verification!.passed = false;
+                      throw new Error(`Prefix mismatch at ${checked.differingPath}`);
+                    }
+                  }
                   request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
                 } });
             if (verification && typeof reply.usage?.cacheRead === "number") verification.cache_read = reply.usage.cacheRead;
             const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
-            if (input.kind !== "integration" || reply.stopReason !== "toolUse" || !calls.length) break;
-            if (round >= 16) throw new Error("tool rounds exceeded");
+            if (reply.stopReason !== "toolUse" || !calls.length) break;
+            if (++rounds > 16) throw new Error("tool rounds exceeded"); // a run that never stops is a failure, not an empty batch
             const results = calls.map(call => {
               const content = input.tools.find(t => t.name === call.name)?.execute(call.arguments) ?? `rejected: unknown tool ${call.name}`;
-              return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: content.includes("rejected:"), timestamp: Date.now() };
+              return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: rejected(call.name, content), timestamp: Date.now() };
             });
-            suffix = [...suffix, reply, ...results, ...results.flatMap(r => {
+            suffix = [reply, ...results, ...results.flatMap(r => {
               const feedback = reviewMessage(r.content[0]!.text);
               return feedback ? [{ role: "user" as const, content: feedback, timestamp: Date.now() }] : [];
             })];
@@ -143,17 +159,18 @@ export default function (pi: ExtensionAPI) {
       // Subagent mode: a fresh call. A recording may fetch cut evidence through the trace tool (spec,
       // overflow policy); like pi-om's observer, the host executes the call and continues.
       let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
-        tools: input.tools.map(({ execute: _execute, ...definition }) => definition as unknown as Tool) };
+        tools: definitions as unknown as Tool[] };
       let reply: Reply;
-      for (let round = 0; ; round++) {
+      let subagentRounds = 0;
+      for (;;) {
         reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
         const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
         if (reply.stopReason !== "toolUse" || !calls.length) break;
-        if (round >= 16) throw new Error("tool rounds exceeded"); // a run that never stops is a failure, not an empty batch
+        if (++subagentRounds > 16) throw new Error("tool rounds exceeded");
         const results = calls.map(call => {
           let content: string, isError = false;
           try { const tool = input.tools.find((t) => t.name === call.name);
-            content = tool ? tool.execute(call.arguments) : `rejected: unknown tool ${call.name}`; isError = content.includes("rejected:"); } catch (error) { content = String(error); isError = true; }
+            content = tool ? tool.execute(call.arguments) : `rejected: unknown tool ${call.name}`; isError = rejected(call.name, content); } catch (error) { content = String(error); isError = true; }
           return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError, timestamp: Date.now() };
         });
         conversation = { ...conversation, messages: [...conversation.messages, reply, ...results, ...results.flatMap(r => { const feedback = input.kind === "integration" ? reviewMessage(r.content[0]!.text) : undefined; return feedback ? [{ role: "user" as const, content: feedback, timestamp: Date.now() }] : []; })] };
@@ -336,15 +353,23 @@ export default function (pi: ExtensionAPI) {
     memory.close();
   });
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-  const schema = (properties: object, required: string[]) => ({ type: "object", properties, required, additionalProperties: false }) as ToolDefinition["parameters"];
-  pi.registerTool({ name: "trace", label: "Trace", description: "Read memory evidence by address or project name.",
-    parameters: schema({ address: { type: "string" }, options: { type: "object", properties: { cap: { type: "integer", minimum: 1 }, cursor: { type: "string" } } } }, ["address"]),
-    async execute(_id, raw) { const args = raw as { address: string; options?: ListingOptions }; return result(memory.trace(args.address, args.options)); } });
-  pi.registerTool({ name: "search", label: "Search", description: "Search stored memory. No hit does not mean absent.",
-    parameters: schema({ query: { type: "string" }, scope: { enum: ["facts", "knowledge", "all", "raw"] } }, ["query"]),
-    async execute(_id, raw) { const args = raw as { query: string; scope?: SearchScope }; return result(memory.search(args.query, args.scope, { sessionId: state.sessionId })); } });
+  // Pi execution fields are non-enumerable: both consumers receive these exact
+  // definition objects, while provider serialization sees only façade metadata.
+  const definitions = toolDefinitions.map(definition => Object.defineProperties({ ...definition }, {
+    label: { value: definition.name },
+    execute: { value: async (_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) => {
+      ensure(context);
+      if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
+      const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
+      const content = bound.find(t => t.name === definition.name)!.execute(raw);
+      if (rejected(definition.name, content)) throw new Error(content);
+      return result(content);
+    } },
+  }) as unknown as ToolDefinition);
+  for (const definition of definitions) pi.registerTool(definition);
   pi.registerCommand("trace", { description: "Read Trace Memory status without running extraction.",
     async handler(args, context) {
+      ensure(context);
       const parts = args.trim().split(/\s+/);
       if (parts[0] === "project") {
         if (!state.sessionId) throw new Error("A session requires an assistant reply");
@@ -354,7 +379,7 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(`${marked}\n\n${memory.inject(state.sessionId)}`, "info"); return;
       }
       if (parts[0] === "mark") {
-        if (!/^K[1-9]\d*$/.test(parts[1] ?? "") || parts.length !== 3) throw new Error("Use /trace mark K<n> verified|flagged|clear");
+        if (!/^K[1-9]\d*$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n> verified|flagged|clear");
         context.ui.notify(memory.mark(Number(parts[1]!.slice(1)), parts[2] as "verified" | "flagged" | "clear"), "info"); return;
       }
       context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });

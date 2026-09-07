@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, recordingFact, integrationReply, usage, type Reply } from "./test-host.ts";
@@ -13,7 +13,7 @@ function host(...args: Parameters<typeof createHost>) {
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
-  expect([...h.tools.keys()]).toEqual(["trace", "search"]);
+  expect([...h.tools.keys()]).toEqual(["trace", "search", "note", "memory"]);
   for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
@@ -455,4 +455,74 @@ test("an integration call carries no tools; a recording tool call for a bad addr
   await h.emit("agent_settled"); await h.drain();
   expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 3 }, () => ["trace", "search", "note", "memory"]));
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"]]);
+});
+
+test("main facade tools bind each call to the current turn, commit immediately and record raw only at tool_result", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 99 });
+  await h.prompt();
+  await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "n1", name: "note", arguments: {} }] } });
+  const call = async (name: string, input: unknown) => {
+    const result = await h.tools.get(name).execute("call", input, undefined, undefined, h.ctx);
+    expect(h.memory.store.listToolCalls(h.memory.store.listTurns(1).at(-1)!.id)).toHaveLength(0);
+    await h.emit("tool_result", { toolName: name, input, ...result, isError: false });
+    return result.content[0].text as string;
+  };
+  const note = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] };
+  expect(await call("note", note)).toContain("ok: F1");
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
+  expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
+  await h.prompt("Make it durable"); await h.answer();
+  const batch = { operations: [{ op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] };
+  expect(await call("memory", batch)).not.toContain("rejected:");
+  expect(h.memory.store.getKnowledge(1)).not.toBeNull();
+  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ kind: "manual", rangeFrom: "S1/T2", request: JSON.stringify(batch) });
+  expect(h.memory.store.listToolCalls(2)).toHaveLength(1);
+  for (const kind of ["verified", "flagged", "clear"]) {
+    await h.commands.get("trace").handler(`mark K1 ${kind}`, h.ctx);
+    expect(h.notices.at(-1)).not.toContain("rejected:");
+  }
+  const before = h.memory.store.listRuns(1);
+  await h.commands.get("trace").handler("", h.ctx);
+  expect(h.memory.store.listRuns(1)).toEqual(before);
+  expect(h.requests).toHaveLength(0);
+});
+
+
+test("subagent runs receive the exact four definition objects registered for the main agent", async () => {
+  const h = host({ "recording.branchModeDefault": false, "recording.triggerAnsweredTurns": 1 });
+  const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
+  vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
+    expect(conversation.tools).toHaveLength(4);
+    for (const definition of conversation.tools!) expect(definition).toBe(h.tools.get(definition.name));
+    return original(model, conversation, options);
+  });
+  h.provider(async c => recordingFact(c));
+  await h.turn();
+  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");
+});
+
+test("rejected manual writes throw for Pi to record one failed raw tool call", async () => {
+  const h = host(); await h.prompt(); await h.answer();
+  const input = { facts: [{ invalid: true }] };
+  let error: Error | undefined;
+  try { await h.tools.get("note").execute("bad", input, undefined, undefined, h.ctx); }
+  catch (caught) { error = caught as Error; }
+  expect(error?.message).toContain("rejected:");
+  expect(h.memory.store.listToolCalls(1)).toHaveLength(0);
+  await h.emit("tool_result", { toolName: "note", input, content: [{ type: "text", text: error!.message }], isError: true });
+  expect(h.memory.store.listToolCalls(1)).toEqual([expect.objectContaining({ name: "note", status: "failure" })]);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
+  expect(h.memory.store.listRuns(1)).toEqual([expect.objectContaining({ kind: "manual", outcome: "bounced" })]);
+});
+
+
+test("main trace can fetch historical rejected tool evidence without becoming a failed call", async () => {
+  const h = host(); await h.prompt(); await h.answer();
+  await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "rejected: previous operation" }], isError: true });
+  const input = { address: "T1", tool: 1, full: true };
+  const result = await h.tools.get("trace").execute("read-old", input, undefined, undefined, h.ctx);
+  expect(result.content[0].text).toContain("rejected: previous operation");
+  await h.emit("tool_result", { toolName: "trace", input, ...result, isError: false });
+  expect(h.memory.store.listToolCalls(1).map(c => c.status)).toEqual(["failure", "success"]);
 });

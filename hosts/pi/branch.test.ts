@@ -1,3 +1,4 @@
+import { convertResponsesMessages } from "@earendil-works/pi-ai/api/openai-responses-shared";
 import { convertMessages } from "@earendil-works/pi-ai/api/openai-completions";
 import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -249,4 +250,87 @@ test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s 
   expect(branch.verifyRequest(body, request, api, [appended[1]!]).passed).toBe(false); // The replay is part of the audit.
   (messages.at(-2) as { content: unknown }).content = "tampered";
   expect(branch.verifyRequest(body, request, api, appended).differingPath).toContain(".append");
+});
+
+test("capture with the four tools, run, verification passed, tools unchanged", async () => {
+  const h = await setup();
+  const { toolDefinitions } = await import("../../core/api/index.ts");
+  for (const definition of toolDefinitions) {
+    expect(h.tools.get(definition.name).parameters).toBe(definition.parameters);
+    expect(h.tools.get(definition.name).description).toBe(definition.description);
+  }
+  const captured = { ...payload(), tools: [...h.tools.values()].map(({ name, description, parameters }) => ({ type: "function", function: { name, description, parameters } })) };
+  await h.capture(captured); await h.turn();
+  const bound = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+  for (const definition of bound) expect(definition.parameters).toBe(h.tools.get(definition.name).parameters);
+  expect(h.run().mode).toBe("branch");
+  expect(JSON.parse(h.run().response!).verification.passed).toBe(true);
+  expect(h.sent[0]!.tools).toEqual(captured.tools);
+  expect(h.sent[0]).toEqual({ ...captured, messages: [...captured.messages, expect.any(Object)] });
+});
+
+test("branch Recording verifies every trace and note round against the previous request and stores the last request", async () => {
+  const h = await setup();
+  vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
+    const native = { messages: convertMessages({ ...model, input: ["text"] } as never, conversation, {} as never) };
+    h.sent.push(structuredClone(await options!.onPayload!(native, model) as branch.Body));
+    const n = h.sent.length;
+    return n < 3 ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: `call-${n}`, name: n === 1 ? "trace" : "note", arguments: n === 1 ? { address: "T1", tool: 1, full: true } : { facts: [{ category: "event", status: "completed", actor: "agent", text: "Evidence fetched", source: ["T1#t1"] }] } }] } : reply("Done");
+  });
+  await h.capture(); await h.prompt(); await h.answer();
+  await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "full evidence".repeat(500) }], isError: false });
+  await h.emit("agent_settled"); await h.drain();
+  expect(h.sent).toHaveLength(3);
+  const run = h.run(), response = JSON.parse(run.response!);
+  expect(run.outcome, run.response!).toBe("success");
+  expect(response.toolCalls.map((c: any) => c.name)).toEqual(["trace", "note"]);
+  expect(response.fetched[0].content).toContain("full evidence".repeat(500));
+  expect(response.verification.rounds).toHaveLength(2);
+  for (let i = 1; i < h.sent.length; i++) {
+    const prev = h.sent[i - 1]!, next = h.sent[i]!;
+    expect(response.verification.rounds[i - 1]).toMatchObject({ passed: true, capturedHash: branch.hash(prev), requestHash: branch.hash(next) });
+    expect({ ...next, messages: (next.messages as unknown[]).slice(0, (prev.messages as unknown[]).length) }).toEqual(prev);
+  }
+  expect(JSON.parse(run.request!)).toEqual(h.sent.at(-1));
+  expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
+});
+
+test("a mutated branch tool round is rejected before sending and retains the last sent request", async () => {
+  const h = await setup();
+  const append = branch.appendNativeRequest;
+  vi.spyOn(branch, "appendNativeRequest").mockImplementation((...args) => ({ ...append(...args), tools: [] }));
+  vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
+    const body = await options!.onPayload!({ messages: convertMessages({ ...model, input: ["text"] } as never, conversation, {} as never) }, model);
+    h.sent.push(structuredClone(body as branch.Body));
+    return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "trace-1", name: "trace", arguments: { address: "T1" } }] };
+  });
+  await h.capture(); await h.turn();
+  expect(h.sent).toHaveLength(1); expect(h.requests).toHaveLength(0);
+  expect(h.run().outcome).toBe("failure");
+  expect(JSON.parse(h.run().request!)).toEqual(h.sent[0]);
+  expect(JSON.parse(h.run().response!).verification.rounds).toEqual([expect.objectContaining({ passed: false, differingPath: "$.tools.0" })]);
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn ?? null).toBeNull();
+});
+
+
+test.each(["openai-responses", "openai-codex-responses"] as const)("%s branch rounds preserve native function call IDs and results", async api => {
+  const h = await setup();
+  h.ctx.model = { ...h.ctx.model!, api };
+  const captured = { model: "test", stream: true, instructions: "Exact", input: [{ role: "user", content: "Original" }], tools: [] };
+  vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
+    const native = { input: convertResponsesMessages({ ...model, input: ["text"] } as never, conversation, new Set(["fake"])) };
+    h.sent.push(structuredClone(await options!.onPayload!(native, model) as branch.Body));
+    const n = h.sent.length;
+    return n <= 2 ? { ...reply(""), api, stopReason: "toolUse", content: [{ type: "toolCall", id: `call_${n}|fc_${n}`, name: "trace", arguments: { address: "T1" } }] } : { ...reply("Done"), api };
+  });
+  await h.emit("before_provider_request", { payload: captured }); await h.turn();
+  expect(h.sent).toHaveLength(3);
+  expect(h.run().outcome).toBe("success");
+  for (let i = 1; i < 3; i++) {
+    const items = h.sent[i]!.input as any[];
+    expect(items.at(-2)).toMatchObject({ type: "function_call", call_id: `call_${i}`, id: `fc_${i}`, name: "trace", arguments: JSON.stringify({ address: "T1" }) });
+    expect(items.at(-1)).toMatchObject({ type: "function_call_output", call_id: `call_${i}` });
+    expect(items.slice(0, -2)).toEqual(h.sent[i - 1]!.input);
+  }
+  expect(JSON.parse(h.run().response!).verification.rounds).toEqual(h.sent.slice(1).map((body, i) => expect.objectContaining({ passed: true, capturedHash: branch.hash(h.sent[i]), requestHash: branch.hash(body) })));
 });

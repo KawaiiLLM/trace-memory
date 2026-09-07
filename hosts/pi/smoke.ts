@@ -3,7 +3,7 @@ import { host, recordingFact } from "./test-host.ts";
 
 const h = host({ "recording.triggerAnsweredTurns": 1 });
 try {
-  assert.deepEqual([...h.tools.keys()], ["trace", "search", "mark"]);
+  assert.deepEqual([...h.tools.keys()], ["trace", "search", "note", "memory"]);
   h.provider(async conversation => recordingFact(conversation));
   await h.emit("session_start");
   await h.turn();
@@ -11,7 +11,7 @@ try {
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.kind, "recording");
   assert.equal(runs[0]!.outcome, "success");
-  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests[0]);
+  assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests.at(-1));
   const facts = h.memory.store.listSessionFacts(1);
   assert.equal(facts.length, 1);
   assert.equal(facts[0]!.text, "用 pnpm，不要 npm");

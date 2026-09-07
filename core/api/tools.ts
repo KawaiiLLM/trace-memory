@@ -34,6 +34,13 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
   { if: { properties: { op: { const: "archive" } } }, then: { not: { anyOf: ["text", "category", "scope", "supports"].map(key => ({ required: [key] })) } }, else: { required: ["text", "category", "scope", "supports"] } },
 ] };
 
+export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
+  { name: "trace", description: "Read evidence visible to this session: facts/raw in its project; global, project and own-session knowledge. F<n>.. navigates later strong negations, never a current conclusion.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
+  { name: "search", description: "Search facts/raw in this session's project and global, project and own-session knowledge. layer selects facts, knowledge, raw or all; no hit does not mean absent.", parameters: object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
+  { name: "note", description: "Write one atomic facts batch. Recording runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
+  { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
+];
+
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
@@ -122,7 +129,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (context.kind === "recording") committed = committedRun;
     return result;
   };
-  const definition = (name: ToolDefinition["name"], description: string, parameters: Record<string, unknown>, execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ name, description, parameters,
+  const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...toolDefinitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
       let result: string;
@@ -131,7 +138,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         else if (name === "memory") result = execute(raw && typeof raw === "object" ? raw as Record<string, unknown> : {});
         else {
           if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
-          if (name !== "note" && Object.keys(raw).some((k) => !(k in (parameters.properties as object)))) throw new Error("unexpected parameter");
+          if (name !== "note" && Object.keys(raw).some((k) => !(k in (toolDefinitions.find(t => t.name === name)!.parameters.properties as object)))) throw new Error("unexpected parameter");
           result = execute(raw as Record<string, unknown>);
         }
       } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
@@ -141,7 +148,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       return result;
     } });
   const tools = [
-    definition("trace", "Read evidence visible to this session: facts/raw in its project; global, project and own-session knowledge. F<n>.. navigates later strong negations, never a current conclusion.", object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]), (input) => {
+    definition("trace", (input) => {
       if (typeof input.address !== "string") throw new Error("address must be a string");
       checkAddress(input.address);
       if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
@@ -149,12 +156,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       const content = read.trace(input.address, { ...input as ListingOptions, sessionId: session.id });
       fetched.push({ address: input.address, input: structuredClone(input), content }); return content;
     }),
-    definition("search", "Search facts/raw in this session's project and global, project and own-session knowledge. layer selects facts, knowledge, raw or all; no hit does not mean absent.", object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]), (input) => {
+    definition("search", (input) => {
       if (typeof input.query !== "string") throw new Error("query must be a string");
       return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id });
     }),
-    definition("note", "Write one atomic facts batch. Recording runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", object({ facts: { type: "array", items: factSchema } }, ["facts"]), note),
-    definition("memory", "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately.", object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]), input => context.kind === "recording" ? "rejected: memory is not the writer for a recording run" : memory.execute(input)),
+    definition("note", note),
+    definition("memory", input => context.kind === "recording" ? "rejected: memory is not the writer for a recording run" : memory.execute(input)),
   ];
   return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
     reportRequest: (request: unknown) => { if (closed) throw new Error("recording run has finished"); run.request = JSON.stringify(request); } };

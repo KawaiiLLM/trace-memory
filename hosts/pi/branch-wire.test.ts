@@ -1,3 +1,4 @@
+import { hash } from "./branch.ts";
 import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
 
@@ -66,14 +67,15 @@ test("real Anthropic Integration tool continuation preserves signed thinking and
     await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
-    const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: "Exact signed-thinking prefix", messages: [{ role: "user", content: "Original" }],
-      tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) };
+    const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: [{ type: "text", text: "Exact signed-thinking prefix", cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: [{ type: "text", text: "Original", cache_control: { type: "ephemeral" } }] }],
+      tools: tools.map((t, i) => ({ name: t.name, description: t.description, input_schema: t.parameters, ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) })) };
     await h.emit("before_provider_request", { payload: captured });
     await h.emit("agent_settled"); await h.emit("session_shutdown");
     const run = h.memory.store.listRuns(1).find(r => r.kind === "integration")!;
     expect(run.outcome, run.response ?? "").toBe("success");
     expect(sent).toHaveLength(3);
     for (const body of sent) {
+      expect(JSON.stringify(body).match(/"cache_control"/g)).toHaveLength(3);
       expect(body.system).toEqual(captured.system); expect(body.tools).toEqual(captured.tools); expect(body.thinking).toEqual(captured.thinking);
       expect(body.messages.slice(0, captured.messages.length)).toEqual(captured.messages);
     }
@@ -84,5 +86,7 @@ test("real Anthropic Integration tool continuation preserves signed thinking and
     expect(JSON.stringify(sent[1]!.messages.at(-1))).toContain("NEAR:");
     expect(JSON.parse(run.request!)).toEqual(sent[2]);
     expect(JSON.parse(run.response!).toolCalls).toHaveLength(2);
+    expect(JSON.parse(run.response!).verification.rounds).toEqual(sent.slice(1).map((body, i) => expect.objectContaining({ passed: true, capturedHash: hash(sent[i]), requestHash: hash(body) })));
+    expect(sent[2]!.messages.slice(0, sent[1]!.messages.length)).toEqual(sent[1]!.messages);
   } finally { await h.dispose(); vi.unstubAllGlobals(); }
 });

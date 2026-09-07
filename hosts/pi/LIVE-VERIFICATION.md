@@ -1,3 +1,39 @@
+# Ticket 11 acceptance — pending acceptor live run
+
+Worker verification uses fake providers and installed adapters with stub HTTP.
+The historical records below do not satisfy ticket 11 live acceptance.
+
+The acceptor should use an isolated database and the README's capture extension
+and reverse-chain verification script, loaded after payload-rewriting extensions.
+Set `recording.branchModeDefault: true`, `recording.triggerAnsweredTurns: 1`,
+`integration.triggerUnintegratedFacts: 1`; choose Integration mode explicitly
+(`integration.subagentModeDefault: false` exercises branch mode as well).
+
+1. Start Pi with all four tools active. Save the captured main-agent body and
+   verify its tool schemas are `trace`, `search`, `note`, `memory` (alongside any
+   other main-agent tools), with no `mark` tool.
+2. Produce a turn containing a cut tool result. Obtain a branch Recording that
+   actually fetches full evidence through `trace` and submits through `note`.
+   If the model elects not to fetch, that attempt does not satisfy this check.
+3. After committed facts have been delivered on the next prompt, let a turn stop
+   trigger Integration. Obtain two valid `memory` submissions in one run: review
+   guidance after the first, commit after the second, then a normal stop.
+4. Save the run records and actual request bodies. For each branch run, apply
+   the README script: strip suffixes backwards and verify each previous/new
+   hash, unchanged tools/settings and exact captured-prefix bytes. Check native
+   call IDs/results, the single review user message, and the final stored request.
+5. Exercise a manual `note` and `memory` call; check immediate kind `manual`
+   receipts and one raw `tool_result` row per call. Exercise `/trace project <name>`
+   and `/trace mark K<n> verified|flagged|clear`; verify `/trace` alone changes
+   neither stored runs nor watermarks.
+
+Record Pi/pi-ai versions, model/provider, config, capture and database paths,
+Recording/Integration run IDs, tool sequences, all verification hashes and outcomes.
+Report cache-read counters separately as observations. **No ticket 11 live run
+has been performed by the worker.**
+
+---
+
 Note: The history entries below predate the 2026-09-07 vocabulary rename.
 
 # Live verification record (2026-09-07)
@@ -86,3 +122,28 @@ and report the count and last line.
 - The run record lists the fetch under `fetched` and stores the last request
   sent: four input items (user, reasoning, function_call, function_call_output)
   and the single `trace` tool definition.
+
+## Session 5 (`tmtools1`, after tickets 08–11): the four tools end to end
+
+Fresh database `/tmp/tm-live4/trace.db`, defaults (Recording branch, Integration
+subagent), `recording.triggerAnsweredTurns=1`, `integration.triggerUnintegratedFacts=2`;
+three prompts, the first also running a 2,500-line command.
+
+| Run | Kind | Mode | Verified | Tool rounds | Result |
+|---|---|---|---|---|---|
+| 1 | recording | branch | yes, round 1 verified | `note` → F1, F2 | two decision facts |
+| 2 | recording | branch | yes, cacheRead 10752 | `note` → F3 | one decision fact |
+| 3 | integration | subagent | — | `memory` ×2: feedback, then commit | K1 constraint/project, K2 goal/session |
+| 4 | recording | branch | yes | `note` → F4 | one decision fact |
+
+- Branch runs inherited the main agent's tool set unchanged (read, bash, edit,
+  write, trace, search, note, memory): the four are in the captured prefix, so
+  nothing was added per run; every appended round was verified against the
+  previous request.
+- The first Integration submission returned the NEAR/CLOSER/checklist feedback
+  without committing; the second committed with empty diagnostics; the watermark
+  moved to F2 while F3 waited for the next trigger.
+- The recorder did not call `trace` in branch mode: the main agent's own bash
+  result was already in the conversation, so there was nothing to fetch. It
+  recorded no event fact for the command, a content judgment, not a defect.
+- Facts carry system-derived times and no `status` (none were events).
