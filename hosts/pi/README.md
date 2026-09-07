@@ -31,8 +31,12 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","note.triggerAn
 - `note.branchModeDefault` defaults to `true`. Set it to `false` for subagent
   notes. Branch notes always use the session model, including on fallback;
   `noteModel` applies only when subagent mode is explicitly configured.
-- Settle remains subagent-only, including its candidate/final continuation.
-  Tree navigation explicitly uses subagent mode with `noteModel` for a new note.
+- `settle.subagentModeDefault` defaults to `true`. Set it to `false` for branch
+  settlement: the candidate round appends the settle prompt and input to the
+  captured prefix, the final round appends the candidate reply (in the
+  provider's native assistant shape) and the feedback message to the candidate
+  request. Tree navigation explicitly uses subagent mode with `noteModel` for a
+  new note.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
@@ -97,18 +101,25 @@ older vendored implementation:
 | `Context`, `AssistantMessage`, `ProviderRequestOptions.onPayload` | `node_modules/@earendil-works/pi-ai/dist/types.d.ts` |
 
 `modelRegistry.complete` supplies Pi's configured provider/model/auth access. A
-fresh call has exactly the input prompt as system prompt, one user message with
-the input text, and no tools. `options.onPayload` snapshots the provider-native
-JSON body without modifying it. That body alone is returned as `request`; the
-facade records it along with output and usage, including provider failures.
+fresh call has exactly the input prompt as system prompt and one user message
+with the input text. A note call also carries one tool, `trace`, through which
+the model fetches a cut tool call's full text by its expansion address (spec,
+overflow policy); the host executes it through the core's read path and calls
+the model again, up to eight rounds, the way pi-om's observer loop executes its
+tool. A settle call carries no tools. `options.onPayload` snapshots the
+provider-native JSON body without modifying it; the last body sent (which
+embeds any earlier tool rounds) is returned as `request`; the facade records it
+along with output and usage, including provider failures.
 No authorization headers are included in this request-body audit.
 
-For settle's final round, the host locates the SDK conversation by the exact
-candidate request body supplied in `continuation.request`. It replays those
-original request messages and the complete assistant candidate message (including
-provider metadata), then appends `continuation.message` exactly once. The SDK
-serializes the final request and `onPayload` captures that body independently.
-Candidate conversations are discarded after settlement, including bounces.
+For settle's final round in subagent mode, the candidate call returns its SDK
+conversation and complete assistant message as `state` on the run result; the
+core hands that back inside `continuation.response`, so the host keeps nothing
+between rounds. The final call replays that conversation and appends
+`continuation.message` exactly once; the SDK serializes the request and
+`onPayload` captures that body independently. The model is resolved from the
+run's frozen model name, so switching the session model mid-settlement does not
+redirect the final round.
 
 The vendored 0.84.4 `types.ts`, extension/SDK/session/compaction docs, and
 `custom-compaction.ts`/`handoff.ts` were used for implementation patterns only.
@@ -176,11 +187,11 @@ Branch mode inherits the latest captured provider request: system instructions,
 messages, tools, and all body options (including cache controls, sampling and
 reasoning settings). It appends exactly one user message containing the note
 prompt, two newlines, and the core's range-only input. Subagent mode has the note
-prompt as system instructions, one full rendered input message, and no tools.
-Inherited tools are definitions only: this one-call note path does not execute
-model tool calls. Settle's two-call continuation is unchanged.
+prompt as system instructions, one full rendered input message, and the `trace`
+tool. Inherited tools in branch mode are definitions only: this one-call path
+does not execute model tool calls.
 
-`before_provider_request` captures a detached JSON snapshot per Pi session in
+`before_provider_request` captures a detached JSON snapshot for this extension instance (one per Pi session) in
 memory. It is never appended to the Pi session file. Session/tree restoration
 invalidates the capture; missing captures and model changes since capture fall
 back. Captures are the **last request**, not a reconstruction of the session:

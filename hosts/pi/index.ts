@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
+import type { Tool, ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, hash, snapshot, type Body, type Appended } from "./branch.ts";
 import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type NoteResult, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
@@ -52,15 +53,23 @@ export default function (pi: ExtensionAPI) {
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   let ctx: ExtensionContext;
   type Capture = { payload: Body; model: string; provider: string; branch: string };
-  const sessions = new Map<string, { capture?: Capture; verified?: string; notified?: boolean }>();
-  const continuations = new Map<string, { conversation: Conversation; reply: Reply; owner: string }>();
+  // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
+  // factory on new/resume/fork, so the capture state is a single object.
+  const session: { capture?: Capture; verified?: string; notified?: boolean } = {};
+  const traceTool: Tool = { name: "trace", description: "Fetch the full text of a cut tool call by its expansion address (for example `T12 tool=2 full`), or any memory address.",
+    parameters: { type: "object", properties: { address: { type: "string" } }, required: ["address"], additionalProperties: false } as unknown as Tool["parameters"] };
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NoteAgentInput | SettleAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
-    const model = (input.mode === "branch" || input.model === "session") ? callContext.model : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
+    // The model is frozen with the run (a branch run freezes the session model at launch), so a
+    // model switch during a two-round settle cannot redirect its final round.
+    const current = callContext.model;
+    const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
+      : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
+    const continuation = input.kind === "settle" ? input.continuation : undefined;
     let request: unknown = null;
     let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
     let fallbackReason: string | undefined;
@@ -68,24 +77,27 @@ export default function (pi: ExtensionAPI) {
     try {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
       if (input.mode === "branch") {
-        const session = sessions.get(callPiId)!;
-        const captured = session.capture;
         let candidate: Body | undefined;
         try {
           // Note and settle candidate: the captured prefix plus one instruction. Settle final: the
-          // verified candidate request plus the candidate reply replayed and the feedback message.
-          const continuation = input.kind === "settle" ? input.continuation : undefined;
-          if (continuation && (continuation.response.mode !== "branch" || !continuation.request)) throw new Error("Candidate round was not a branch request");
-          if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
-          if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
-          const prefix = continuation ? continuation.request as Body : captured.payload;
-          const appended: Appended[] = continuation
-            ? [{ role: "assistant", text: String(continuation.response.output) }, { role: "user", text: continuation.message.content }]
-            : [{ role: "user", text: `${input.prompt}\n\n${input.input}` }];
+          // verified candidate request plus the candidate reply replayed and the feedback message;
+          // it depends on nothing the main session changes after the candidate was sent.
+          let prefix: Body, appended: Appended[];
+          if (continuation) {
+            if (continuation.response.mode !== "branch" || !continuation.request) throw new Error("Candidate round was not a branch request");
+            prefix = continuation.request as Body;
+            appended = [{ role: "assistant", text: String(continuation.response.output) }, { role: "user", text: continuation.message.content }];
+          } else {
+            const captured = session.capture;
+            if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
+            if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
+            prefix = captured.payload;
+            appended = [{ role: "user", text: `${input.prompt}\n\n${input.input}` }];
+          }
           candidate = buildRequest(prefix, model.api, appended);
           // The Anthropic adapter enforces this after onPayload; audit that exact body.
           if (model.api === "anthropic-messages") candidate.stream = true;
-          const key = JSON.stringify([model.id, model.provider, hash(captured.payload.tools ?? null)]);
+          const key = JSON.stringify([model.id, model.provider, hash(prefix.tools ?? null)]);
           verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key };
           if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
           session.verified = key;
@@ -107,22 +119,32 @@ export default function (pi: ExtensionAPI) {
             output: text(reply), usage: reply.usage, request, mode, verification };
         }
       }
-      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "note" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }] };
-      if (input.kind === "settle" && input.continuation) {
-        const key = JSON.stringify(input.continuation.request);
-        const prior = continuations.get(key);
-        continuations.delete(key);
+      // Subagent mode: a fresh call. A note may fetch cut evidence through the trace tool (spec,
+      // overflow policy); like pi-om's observer, the host executes the call and continues.
+      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "note" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
+        ...(input.kind === "note" ? { tools: [traceTool] } : {}) };
+      if (continuation) {
+        // The candidate round handed its conversation back through the core; nothing is kept here.
+        const prior = continuation.response.state as { conversation: Conversation; reply: Reply } | undefined;
         if (!prior) throw new Error("Missing settle candidate conversation");
-        conversation = { ...prior.conversation, messages: [...prior.conversation.messages, prior.reply,
-          { ...input.continuation.message, timestamp: Date.now() }] };
+        conversation = { ...prior.conversation, messages: [...prior.conversation.messages, prior.reply, { ...continuation.message, timestamp: Date.now() }] };
       }
-      const reply = await registry.complete(model, conversation, {
-        onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); },
-      });
+      let reply: Reply;
+      for (let round = 0; ; round++) {
+        reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); } });
+        const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
+        if (input.kind !== "note" || reply.stopReason !== "toolUse" || !calls.length || round >= 8) break;
+        const results = calls.map(call => {
+          let content: string, isError = false;
+          try { content = input.trace(String(call.arguments.address ?? "")); } catch (error) { content = String(error); isError = true; }
+          return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError, timestamp: Date.now() };
+        });
+        conversation = { ...conversation, messages: [...conversation.messages, reply, ...results] };
+      }
       const outcome = reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success";
-      if (input.kind === "settle" && input.round === "candidate" && outcome === "success")
-        continuations.set(JSON.stringify(request), { conversation: structuredClone(conversation), reply: structuredClone(reply), owner: `${input.sessionId}/${input.branch}` });
-      return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason };
+      const state = input.kind === "settle" && input.round === "candidate" && outcome === "success"
+        ? { conversation: structuredClone(conversation), reply: structuredClone(reply) } : undefined;
+      return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason, ...(state ? { state } : {}) };
     } catch (error) {
       return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }
@@ -155,9 +177,8 @@ export default function (pi: ExtensionAPI) {
     const saved = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath).at(-1);
     const piId = ctx.sessionManager.getSessionId();
-    if (!sessions.has(piId)) sessions.set(piId, {});
     // A tree switch invalidates the old branch body, even when returning to a saved head.
-    sessions.get(piId)!.capture = undefined;
+    session.capture = undefined;
     if (saved) {
       const tip = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
         .map(e => (e as { data: State & { dbPath: string } }).data)
@@ -189,7 +210,7 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("before_provider_request", (event, context) => {
     ensure(context);
-    if (context.model) sessions.get(state.piId)!.capture = { payload: snapshot(event.payload) as Body,
+    if (context.model) session.capture = { payload: snapshot(event.payload) as Body,
       model: context.model.id, provider: context.model.provider, branch: state.branch };
   });
   pi.on("session_start", (_event, context) => restore(context));
@@ -266,10 +287,7 @@ export default function (pi: ExtensionAPI) {
       background(note({ sessionId, branch, headTurnId: head, ...noteLaunch }));
     const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastSettledFact ?? 0)).length;
     if (count >= memory.config.settle.triggerUnsettledFacts)
-      background(memory.settle({ sessionId, branch, ...launch("settle") }).then(result => {
-        if (result.outcome !== "dropped") for (const [key, value] of continuations) if (value.owner === `${sessionId}/${branch}`) continuations.delete(key);
-        return result;
-      }));
+      background(memory.settle({ sessionId, branch, ...launch("settle") }));
   });
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);

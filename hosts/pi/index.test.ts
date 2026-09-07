@@ -60,7 +60,7 @@ test("note through runAgent commits the exact provider request, prompt, model, u
   expect(JSON.parse(run.request!)).toEqual(h.requests[0]);
   expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../core/prompts/note.md", import.meta.url), "utf8"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
-  expect(h.conversations[0]!.tools).toBeUndefined();
+  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace"]);
   expect(JSON.parse(run.response!).usage).toEqual(usage);
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
@@ -418,4 +418,39 @@ test.each([true, false])("08:53 premise: a branch note (%s) waits until a note r
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 2 : 3);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
+});
+
+test("spec overflow policy: a subagent note fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
+  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": false, noteModel: "fake/noter" });
+  await h.prompt(); await h.answer();
+  await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
+  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1 tool=1 full" } };
+  h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : noteFact(c));
+  await h.emit("agent_settled"); await h.drain();
+  expect(h.conversations).toHaveLength(2);
+  expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
+  const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
+  expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
+  expect(result.content[0]!.text).toBe(h.memory.trace("T1 tool=1 full"));
+  expect(result.content[0]!.text).toContain("x".repeat(5000));
+  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace"]);
+  const run = h.memory.store.listRuns(1)[0]!;
+  expect(run.outcome).toBe("success");
+  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1 tool=1 full", content: h.memory.trace("T1 tool=1 full") }]);
+  expect(JSON.parse(run.request!)).toEqual(h.requests[1]);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
+});
+
+test("a settle call carries no tools; a note tool call for a bad address returns an error result and the note still completes", async () => {
+  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": false, "settle.triggerUnsettledFacts": 1 });
+  const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "E999" } };
+  const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output)
+    : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : noteFact(c));
+  await h.turn();
+  const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
+  expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
+  await h.emit("agent_settled"); await h.drain();
+  expect(h.conversations.slice(2).map(c => c.tools)).toEqual([undefined, undefined]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["note", "success"], ["settle", "success"], ["settle", "success"]]);
 });

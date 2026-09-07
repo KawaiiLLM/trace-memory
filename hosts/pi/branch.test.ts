@@ -131,7 +131,7 @@ test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s 
   expect(branch.verifyRequest(body, request, api, "note\n\nrange").differingPath).toContain(".0.content");
 });
 
-test("an in-flight branch request keeps its captured body and session routing across a switch", async () => {
+test("an in-flight branch request keeps its captured body across a tree switch and a later capture", async () => {
   const h = await setup();
   let release!: () => void;
   const auth = h.ctx.modelRegistry.getApiKeyAndHeaders.bind(h.ctx.modelRegistry);
@@ -140,12 +140,34 @@ test("an in-flight branch request keeps its captured body and session routing ac
     return auth(model);
   };
   await h.capture(); await h.prompt(); await h.answer(); await h.emit("agent_settled");
-  h.ctx.sessionManager.getSessionId = () => "switched";
-  await h.emit("session_start"); await h.capture({ ...payload(), system: "other branch" });
+  h.entries.splice(0, h.entries.length); await h.emit("session_tree"); await h.capture({ ...payload(), system: "other branch" });
   release(); await h.drain();
   expect(vi.mocked(complete).mock.calls[0]![2]!.sessionId).toBe("pi-test");
   expect(h.sent[0]!.system).toBe(payload().system);
   expect(h.run()).toMatchObject({ mode: "branch", branch: "main", outcome: "success" });
+});
+
+test("a model switch during the settle candidate round does not redirect or break the final round", async () => {
+  const h = createHost({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1, "settle.subagentModeDefault": false });
+  disposers.push(h.dispose);
+  await h.emit("session_start");
+  let release!: () => void;
+  vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
+    const body = await options!.onPayload!({}, model) as branch.Body;
+    const last = String((body.messages as { content: string }[]).at(-1)!.content);
+    if (/Range: F/.test(last)) await new Promise<void>(resolve => { release = resolve; });
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(settleOutput);
+    return noteFact({ messages: [{ role: "user", content: last }] } as never);
+  });
+  await h.emit("before_provider_request", { payload: payload() });
+  await h.turn();
+  await h.emit("agent_settled"); await h.drain();
+  h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-settlement.
+  release(); await h.drain();
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "settle");
+  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
+  expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test", "test"]);
+  expect(JSON.parse(runs[1]!.response!).verification.passed).toBe(true);
 });
 
 test("the verifier independently rejects extra appends and provider option changes", () => {

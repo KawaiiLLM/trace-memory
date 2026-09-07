@@ -84,6 +84,8 @@ export interface RunAgentResult {
   mode?: "branch" | "subagent";
   verification?: unknown;
   fallbackReason?: string;
+  /** Host-owned continuation state of a settle candidate, handed back inside the final round's `continuation.response`; never stored. */
+  state?: unknown;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
