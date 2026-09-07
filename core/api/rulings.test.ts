@@ -143,6 +143,7 @@ function memoryWriter() {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
+  memory.store.setWatermark(s.id, "main", t.id); // recorded: the facts may enter an Integration batch
   const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F2"] };
   return { s, t, write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
 }
@@ -211,11 +212,11 @@ test("2026-09-07: second submission commits, first does not", async () => {
     expect(first.feedback.content).toContain("NEAR:"); expect(first.feedback.content).toContain("CLOSER:");
     expect(first.feedback.content).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
     expect(memory.store.getKnowledge(1)).toBeNull();
-    expect(memory.store.getWatermark(s.id, "main")?.lastIntegratedFact ?? null).toBeNull();
+    expect(memory.store.listIntegratedFacts(1)).toEqual([]);
     input.reportRequest({ messages: ["first", first.feedback] });
     expect(JSON.parse(tool.execute(batch)).committed).toHaveLength(1);
     expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
-    expect(memory.store.getWatermark(s.id, "main")?.lastIntegratedFact).toBe(2);
+    expect(memory.store.integratedOnPath(2, memory.store.knowledgePath(s.id, "main"))).toBe(true);
     expect(tool.execute(batch)).toContain("already committed");
     return { outcome: "failure", output: "provider failed after commit", request: { messages: ["last"] } };
   });
@@ -515,6 +516,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
       expect(result.committed).toHaveLength(1);
       return { outcome: "success", request: { round: 2 }, output: "done" };
     });
+    memory.store.setWatermark(path.sessionId, path.branch, path.headTurnId); // recorded up to the head: its facts may enter the batch
     return memory.integrate({ sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId });
   };
   const result = await integrate(third, [2, 3]);
@@ -531,6 +533,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
     input.reportRequest({ round: 2 }); input.tools[3]!.execute(batch);
     return { outcome: "success", request: { round: 2 }, output: "done" };
   });
+  memory.store.setWatermark(c.sessionId, c.branch, c.headTurnId);
   const cResult = await memory.integrate({ sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId });
   if (cResult.outcome !== "success") throw new Error("expected success");
   expect(cResult.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [c.fact] });
@@ -611,7 +614,7 @@ test("16b: marks address commits, bare writes bind the path and reject multiple 
 test("16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte", () => {
   const { c, d, node, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  memory.store.setWatermark(c.sessionId, c.branch, c.headTurnId, undefined);
+  memory.store.setWatermark(c.sessionId, c.branch, c.headTurnId);
   const tail = memory.store.appendTurn({ sessionId: c.sessionId, parentTurnId: c.headTurnId, kind: "turn", userPrompt: "Unrecorded <work> & more", assistantText: "Pending", startedAt: time });
   node(c.sessionId, tail.id, c.branch); // Same branch label, but after the leaving position.
   const carry = memory.branchSummary(c.sessionId, c.branch, tail.id);
@@ -683,10 +686,26 @@ test("2026-09-07: the Integration threshold triggers, the turn boundary cuts: wh
   const seed = (turn: number, n: number, kind: "recording" | "manual" = "recording") => memory.store.commitRecordingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
     facts: Array.from({ length: n }, (_, k) => ({ turnId: turn, category: "observation", actor: "user", text: `fact ${turn}.${k}`, source: [`T${turn}#user`], createdAt: time })) });
   seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
-  memory.store.setWatermark(s.id, "main", turns[2]!.id, undefined); // T1..T3 recorded, T4 (head) not yet
+  memory.store.setWatermark(s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
   seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
   const batch = memory.store.integrationBatch(s.id, "main", 5);
   expect(batch.map((f) => f.turnId)).toEqual([turns[0]!.id, turns[0]!.id, turns[0]!.id, turns[1]!.id, turns[1]!.id, turns[1]!.id]); // T1 and T2: 6 ≥ 5 at a turn boundary; T3 waits
   expect(batch.some((f) => f.turnId === turns[3]!.id)).toBe(false); // the unrecorded head never enters a batch
   expect(memory.store.integrationBatch(s.id, "main", 50)).toHaveLength(9); // below the threshold the batch is everything recorded
+});
+
+test("2026-09-07 review: a late fact on an early turn does not make the batch skip pending facts of later turns", () => {
+  const project = memory.store.createProject({ name: "late-facts", declaredBy: "mark" });
+  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", assistantText: "ok", startedAt: time, parentTurnId: undefined });
+  const t2 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "two", assistantText: "ok", startedAt: time, parentTurnId: t1.id });
+  const seed = (turn: number, text: string) => memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
+    facts: [{ turnId: turn, category: "decision", actor: "user", text, source: [`T${turn}#user`], createdAt: time }] });
+  seed(t1.id, "early decision"); seed(t2.id, "later decision"); seed(t1.id, "late supplement to the early decision"); // F3 lands on T1 after F2 on T2
+  expect(memory.store.integrationBatch(s.id, "main", 2)).toEqual([]); // nothing recorded yet: no batch, whatever manual facts exist
+  memory.store.setWatermark(s.id, "main", t2.id);
+  const first = memory.store.integrationBatch(s.id, "main", 2);
+  expect(first.map((f) => f.id)).toEqual([1, 3]); // T1 whole: F1 and the late F3
+  expect(memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: time }, operations: [], integrated: first.map((f) => f.id) }).ok).toBe(true);
+  expect(memory.store.integrationBatch(s.id, "main", 2).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
 });

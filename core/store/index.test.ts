@@ -460,9 +460,10 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       "UPDATE knowledge SET origin_session_id = 999999",
       `INSERT INTO knowledge_links VALUES (${id}, 999, 'merged_into', ${id}, 1)`,
       `INSERT INTO knowledge_links VALUES (${id}, 1, 'merged_into', ${id}, 999)`,
-      "INSERT INTO watermarks VALUES (999999, 'main', NULL, NULL)",
-      `INSERT INTO watermarks VALUES (${s.id}, 'main', 999999, NULL)`,
-      `INSERT INTO watermarks VALUES (${s.id}, 'main', NULL, 999999)`,
+      "INSERT INTO watermarks VALUES (999999, 'main', NULL)",
+      `INSERT INTO watermarks VALUES (${s.id}, 'main', 999999)`,
+      "INSERT INTO integrated_facts VALUES (999999, 1)",
+      "INSERT INTO integrated_facts VALUES (1, 999999)",
     ]) expect(() => store.db.exec(sql)).toThrow(/FOREIGN KEY constraint failed/);
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
@@ -608,7 +609,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.addKnowledgeMark(id, 1, "verified", integrationAt).commitId).toBe(1);
   });
 
-  test("an integration rejection rolls back knowledge and lastIntegratedFact; a foreign watermark is rejected", () => {
+  test("an integration rejection rolls back knowledge and progress marks; a fact outside the project cannot be marked", () => {
     const { s, factId } = seed();
     const r = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
@@ -616,17 +617,18 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
         { op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
         { op: "update", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
       ],
-      watermark: { sessionId: s.id, branch: "main", lastIntegratedFact: factId },
+      integrated: [factId],
     });
     expect(r.ok).toBe(false);
     expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
-    expect(store.getWatermark(s.id, "main")?.lastIntegratedFact ?? null).toBeNull();
+    expect(store.listIntegratedProjectFacts(store.getSession(s.id)!.projectId)).toEqual([]);
     const foreign = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
-      operations: [],
-      watermark: { sessionId: s.id, branch: "other", lastIntegratedFact: factId },
+      operations: [{ op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt }],
+      integrated: [424242],
     });
     expect(foreign.ok).toBe(false);
+    expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
   });
 
   test("a short write lock held by another process delays the commit instead of losing it", async () => {

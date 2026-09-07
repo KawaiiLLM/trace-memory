@@ -161,8 +161,16 @@ CREATE TABLE IF NOT EXISTS watermarks (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
   last_recorded_turn INTEGER REFERENCES turns(id),
-  last_integrated_fact INTEGER REFERENCES facts(id),
   PRIMARY KEY (session_id, branch)
+);
+
+-- Integration progress is a set, not a scalar: which facts which Integration run took (facts arrive out of
+-- id order on a path, so no watermark can stand for the set). A fact counts as integrated on a path when
+-- one of its runs took only facts on that path.
+CREATE TABLE IF NOT EXISTS integrated_facts (
+  fact_id INTEGER NOT NULL REFERENCES facts(id),
+  run_id INTEGER NOT NULL REFERENCES runs(id),
+  PRIMARY KEY (fact_id, run_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);
@@ -299,7 +307,7 @@ export interface CommitIntegrationRunInput {
   operations: KnowledgeOperationInput[];
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
-  watermark?: { sessionId: number; branch: string; lastIntegratedFact: number };
+  integrated?: number[]; // the batch's fact ids, marked as taken by this run
 }
 
 export interface CommittedKnowledgeOp {
@@ -646,7 +654,7 @@ export class Store {
         catch { response = { output: input.run.response }; }
         this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, factIds: batchIds }), runId);
         if (input.watermark) {
-          this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastRecordedTurn, undefined);
+          this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastRecordedTurn);
         }
         if (input.pendingDelivery && batchIds.length) {
           this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
@@ -863,9 +871,6 @@ export class Store {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         const projectId = this.getSession(sessionId)!.projectId;
-        if (input.watermark && (input.watermark.sessionId !== sessionId || input.watermark.branch !== (input.run.branch ?? null))) {
-          throw new Error(`watermark S${input.watermark.sessionId}/${input.watermark.branch} does not belong to this run (S${sessionId}/${input.run.branch ?? null})`);
-        }
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
         for (const op of input.operations) {
@@ -873,9 +878,7 @@ export class Store {
           if (outcome.ok) committed.push(outcome.value);
           else throw new Error(outcome.reason);
         }
-        if (input.watermark) {
-          this.setWatermark(sessionId, input.watermark.branch, undefined, input.watermark.lastIntegratedFact);
-        }
+        for (const factId of input.integrated ?? []) this.markIntegrated(factId, runId, projectId);
         if (input.finalizeResponse) {
           this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
         }
@@ -1062,16 +1065,18 @@ export class Store {
 
   /**
    * The next Integration batch of a branch: unintegrated facts of fully recorded turns (never the turn
-   * still being recorded), taken in path order one whole turn at a time until the threshold is reached;
-   * the threshold is a trigger, the turn boundary is the cut (user ruling 2026-09-07).
+   * still being recorded, nothing before the first recording), taken in path order one whole turn at a
+   * time until the threshold is reached; the threshold is a trigger, the turn boundary is the cut
+   * (user ruling 2026-09-07).
    */
   integrationBatch(sessionId: number, branch: string, threshold: number): Fact[] {
-    const watermark = this.getWatermark(sessionId, branch);
-    const recorded = watermark?.lastRecordedTurn ?? null;
-    const facts = this.listBranchFacts(sessionId, branch, recorded).filter((f) => f.id > (watermark?.lastIntegratedFact ?? 0));
+    const recorded = this.getWatermark(sessionId, branch)?.lastRecordedTurn ?? null;
+    if (!recorded) return [];
+    const path = { sessionId, headTurnId: recorded };
+    const facts = this.listBranchFacts(sessionId, branch, recorded).filter((f) => !this.integratedOnPath(f.id, path));
     if (!facts.length) return [];
     const order: number[] = [];
-    for (let id: number | null = recorded ?? this.knowledgePath(sessionId, branch).headTurnId; id; id = this.getTurn(id)?.parentTurnId ?? null) order.unshift(id);
+    for (let id: number | null = recorded; id; id = this.getTurn(id)?.parentTurnId ?? null) order.unshift(id);
     const batch: Fact[] = [];
     for (const turnId of order) {
       batch.push(...facts.filter((f) => f.turnId === turnId).sort((a, b) => a.id - b.id));
@@ -1092,22 +1097,34 @@ export class Store {
     return null;
   }
 
+  markIntegrated(factId: number, runId: number, projectId: number): void {
+    const fact = this.getFact(factId);
+    if (!fact || this.getSession(this.getTurn(fact.turnId)!.sessionId)!.projectId !== projectId) throw new Error(`F${factId} is not a fact of this run's project`);
+    this.db.prepare("INSERT INTO integrated_facts (fact_id, run_id) VALUES (?, ?)").run(factId, runId);
+  }
+  /** A fact is integrated on a path when one of the runs that took it took only facts on that path (the same rule a fork applies when it inherits progress). */
+  integratedOnPath(factId: number, path: KnowledgePath, runs = new Map<number, boolean>()): boolean {
+    const turns = this.pathTurns(path);
+    return (this.db.prepare("SELECT run_id FROM integrated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
+      if (!runs.has(run_id)) runs.set(run_id, this.listIntegratedFacts(run_id).every((f) => this.factOnPath(f, path, turns)));
+      return runs.get(run_id)!;
+    });
+  }
+  listIntegratedFacts(runId: number): Fact[] {
+    return this.db.prepare("SELECT f.* FROM facts f JOIN integrated_facts i ON i.fact_id = f.id WHERE i.run_id = ? ORDER BY f.id").all(runId).map(toFact);
+  }
   listIntegratedProjectFacts(projectId: number): Fact[] {
-    const watermarks = this.db.prepare(`SELECT w.* FROM watermarks w JOIN sessions s ON s.id = w.session_id
-      WHERE s.project_id = ? AND w.last_integrated_fact IS NOT NULL`).all(projectId) as any[];
-    const ids = new Set(watermarks.flatMap((w) => this.listBranchFacts(w.session_id, w.branch)
-      .filter((f) => f.id <= w.last_integrated_fact).map((f) => f.id)));
-    return this.listProjectFacts(projectId).filter((f) => ids.has(f.id));
+    return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN integrated_facts i ON i.fact_id = f.id
+      JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.id`).all(projectId).map(toFact);
   }
 
   getWatermark(sessionId: number, branch: string): Watermark | null {
     const row = this.db.prepare("SELECT * FROM watermarks WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    return row ? { sessionId: (row as any).session_id, branch: (row as any).branch, lastRecordedTurn: (row as any).last_recorded_turn, lastIntegratedFact: (row as any).last_integrated_fact } : null;
+    return row ? { sessionId: (row as any).session_id, branch: (row as any).branch, lastRecordedTurn: (row as any).last_recorded_turn } : null;
   }
 
-  setWatermark(sessionId: number, branch: string, lastRecordedTurn: number | undefined, lastIntegratedFact: number | undefined): void {
-    const existing = this.getWatermark(sessionId, branch);
-    this.db.prepare(`INSERT INTO watermarks (session_id, branch, last_recorded_turn, last_integrated_fact) VALUES (?, ?, ?, ?)
-       ON CONFLICT (session_id, branch) DO UPDATE SET last_recorded_turn = excluded.last_recorded_turn, last_integrated_fact = excluded.last_integrated_fact`).run(sessionId, branch, lastRecordedTurn ?? existing?.lastRecordedTurn ?? null, lastIntegratedFact ?? existing?.lastIntegratedFact ?? null);
+  setWatermark(sessionId: number, branch: string, lastRecordedTurn: number): void {
+    this.db.prepare(`INSERT INTO watermarks (session_id, branch, last_recorded_turn) VALUES (?, ?, ?)
+       ON CONFLICT (session_id, branch) DO UPDATE SET last_recorded_turn = excluded.last_recorded_turn`).run(sessionId, branch, lastRecordedTurn);
   }
 }

@@ -42,7 +42,6 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("integration requires a non-empty branch");
-  const after = store.getWatermark(session.id, input.branch)?.lastIntegratedFact ?? 0;
   const facts = store.listProjectFacts(session.projectId);
   const rangeFacts = store.integrationBatch(session.id, input.branch, config.integration.triggerUnintegratedFacts);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
@@ -134,7 +133,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     if (binding.memory.failure) store.updateRun(runId, { ...run, outcome });
     return { outcome, runId, problems };
   }
-  const empty = store.commitIntegrationRun({ run, operations: [], watermark: { sessionId, branch, lastIntegratedFact: rangeFacts.at(-1)!.id } });
+  const empty = store.commitIntegrationRun({ run, operations: [], integrated: rangeFacts.map((f) => f.id) });
   return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], unansweredNear: [], range, readKnowledgeCommits }
     : { outcome: "failure", runId: empty.runId, problems: empty.problems };
 }

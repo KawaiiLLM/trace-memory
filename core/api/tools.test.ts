@@ -55,7 +55,7 @@ test("a rejected Recording batch can be corrected in the same provider loop", as
   expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls).toHaveLength(2);
 });
 
-test("manual input and result are the run request and response; facts enter branch and Integration ranges without advancing Recording", async () => {
+test("manual input and result are the run request and response; facts enter the branch at once and Integration ranges once their turn is recorded, without advancing Recording", async () => {
   const input = { facts: [fact()] };
   const result = memory.tools(manual())[2]!.execute(input);
   const run = memory.store.listRuns(1)[0]!;
@@ -66,6 +66,8 @@ test("manual input and result are the run request and response; facts enter bran
   expect(memory.store.listBranchFacts(1, "sibling")).toEqual([]);
   let range: unknown;
   agent = async raw => { range = (raw as { range: unknown }).range; return { outcome: "cancelled", output: "test", request: {} }; };
+  expect(await memory.integrate({ sessionId: 1, branch: "main" })).toEqual({ outcome: "empty" }); // T1 is not recorded yet
+  memory.store.setWatermark(1, "main", 1);
   await memory.integrate({ sessionId: 1, branch: "main" });
   expect(range).toMatchObject({ facts: [{ id: 1 }] });
 });

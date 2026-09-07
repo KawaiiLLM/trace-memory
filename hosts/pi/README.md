@@ -70,7 +70,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   results since the branch watermark. It is not cumulative provider billing
   usage, which would recount context on every tool iteration. Trigger settings
   apply to this estimate, including raw that exceeds rendering budgets.
-- Integration counts only the current branch's facts beyond its integration watermark.
+- Integration counts only the current branch's facts that no Integration run on this path has taken.
   A recording completion never triggers integration; new facts wait for the next
   `agent_settled`. Calls are launched without awaiting them in that hook. The
   facade drops duplicates. Quit/reload waits for pending runs before closing

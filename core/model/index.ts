@@ -177,7 +177,6 @@ export interface Watermark {
   sessionId: number;
   branch: string;
   lastRecordedTurn: number | null;
-  lastIntegratedFact: number | null;
 }
 
 // ---- Shared validation plumbing ----

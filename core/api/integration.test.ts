@@ -56,10 +56,10 @@ function knowledge(supports: number[], options: { sessionId?: number; text?: str
   return result.committed[0]!.knowledgeId;
 }
 function watermark(id: number, branch = "main") {
-  const result = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, branch, createdAt: time }, operations: [],
-    watermark: { sessionId, branch, lastIntegratedFact: id } });
+  const result = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, branch, createdAt: time }, operations: [], integrated: [id] });
   expect(result.ok).toBe(true);
 }
+const integrated = (id: number, branch = "main", owner = sessionId) => memory.store.integratedOnPath(id, memory.store.knowledgePath(owner, branch));
 const createOutput = (support: number, text = memories.knowledge) => ({ ...empty, operations: [{ op: "create", text, category: "mechanism" as const, scope: "project" as const, supports: [`F${support}`], because: [`F${support}`] }] });
 const integration = (branch = "main") => memory.integrate({ sessionId, branch });
 function queue(...outputs: unknown[]) { for (const output of outputs) script.push(async (input) => success(output, input)); }
@@ -103,7 +103,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(calls[1]!.input).toContain(`[K${e}@${e}]`);
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(current);
+  expect(integrated(current)).toBe(true);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]);
 });
 
@@ -171,7 +171,7 @@ for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"]
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.unansweredNear).toHaveLength(["unchanged", "archive"].includes(resolution) ? 1 : 0);
   expect(memory.store.currentCommit(e)[0]?.id).toBe(["update", "merge", "archive"].includes(resolution) ? 4 : 1);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(f);
+  expect(integrated(f)).toBe(true);
   expect(calls).toHaveLength(2);
 });
 
@@ -212,7 +212,7 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
     if (round === "final") expect(JSON.parse(run.response!).candidate).toEqual(success(empty, calls[0]!).output);
     expect(memory.store.getRun(result.runId + 1)).toBeNull();
     expect(calls).toHaveLength(round === "final" ? 2 : 1);
-    expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
+    expect(memory.store.listIntegratedProjectFacts(projectId)).toEqual([]);
     queue(empty, empty); expect((await integration()).outcome).toBe("success");
   });
 }
@@ -244,7 +244,7 @@ test("context uses timestamp freshness while range remains complete and categori
   const newest = fact(memories.base, { createdAt: "2026-08-17" }), oldest = fact(memories.observation, { createdAt: "2026-08-15" });
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   for (const category of categories) knowledge([newest], { category });
-  watermark(oldest); const current = fact(memories.interpretation);
+  watermark(newest); watermark(oldest); const current = fact(memories.interpretation);
   queue(empty, empty); await integration();
   const input = calls[0]!.input;
   expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
@@ -315,7 +315,7 @@ test("a target that moved on bounces the whole batch, audits the rejection and p
   expect(result.problems.join(" ")).toContain("current: K1@2");
   expect(memory.store.getKnowledge(e + 1)).toBeNull();
   expect(audit(result.runId, 1, "bounced").toolCalls.at(-1).result).toContain("rejected:");
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
+  expect(integrated(old)).toBe(true);
   expect(memory.trace(`F${lost}`)).toContain(memories.base);
   expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });
@@ -359,7 +359,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
     : createOutput(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign : late);
   resolve(output); const result = await pending;
   expect(result.outcome).toBe("bounced");
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
+  expect(memory.store.listIntegratedProjectFacts(projectId)).toEqual([]);
   expect(memory.store.currentCommit(e)[0]?.id).toBe(1);
 });
 
@@ -376,8 +376,8 @@ test("each session settles only its own branch facts and shares already-settled 
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
   expect(calls[2]!.input).toContain(memory.trace(`F${second}`));
-  expect(memory.store.getWatermark(secondSession, "fork")?.lastIntegratedFact).toBe(second);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(first);
+  expect(integrated(second, "fork", secondSession)).toBe(true);
+  expect(integrated(first)).toBe(true);
   expect(await integration()).toEqual({ outcome: "empty" });
   const fork = fact(memories.interpretation, { branch: "fork" });
   expect(await integration()).toEqual({ outcome: "empty" });
@@ -387,18 +387,18 @@ test("each session settles only its own branch facts and shares already-settled 
   expect(forkResult.range.facts.map((f) => f.id)).toEqual([fork]);
 });
 
-test("integration revisions and success record roll back if watermark writing fails", async () => {
+test("integration revisions and success record roll back if progress marking fails", async () => {
   const f = fact(), output = createOutput(f); queue(output, output);
-  const original = memory.store.setWatermark;
-  memory.store.setWatermark = () => { throw new Error("watermark write failed"); };
+  const original = memory.store.markIntegrated;
+  memory.store.markIntegrated = () => { throw new Error("progress write failed"); };
   try {
     const result = await integration(); expect(result.outcome).toBe("failure");
     expect(memory.store.listVisibleKnowledge(sessionId, projectId)).toEqual([]);
-    expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
+    expect(memory.store.listIntegratedProjectFacts(projectId)).toEqual([]);
     if (result.outcome !== "failure") throw new Error("expected failure");
     expect(memory.store.getRun(result.runId)?.outcome).toBe("failure");
     expect(JSON.parse(memory.store.getRun(result.runId)!.response!).problems).toEqual(result.problems);
-  } finally { memory.store.setWatermark = original; }
+  } finally { memory.store.markIntegrated = original; }
 });
 
 test("simulation v7m fixture integrates through the facade with traceable Chinese evidence", async () => {
@@ -424,7 +424,7 @@ test("an archived target bounces the whole batch and preserves the watermark and
   if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
   expect(result.problems.join(" ")).toContain("target moved on or is inactive");
   expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
+  expect(integrated(old)).toBe(true);
   // No operation commits; the entire batch remains available for a fresh run.
   expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });
@@ -480,6 +480,6 @@ test("same-project sessions commit independently while another session is pendin
   const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(first);
-  expect(memory.store.getWatermark(otherSession, "main")?.lastIntegratedFact).toBe(second);
+  expect(integrated(first)).toBe(true);
+  expect(integrated(second, "main", otherSession)).toBe(true);
 });

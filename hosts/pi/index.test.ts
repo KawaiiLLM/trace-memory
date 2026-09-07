@@ -727,7 +727,7 @@ test("the footer indicator follows activity: accent while recording runs, error 
   expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> 🧠/);
 });
 
-test("a fork inherits integration progress exactly when every integrated fact lies on its path", async () => {
+test("a fork sees integration progress exactly when every fact of that integration lies on its path", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.maxToolRounds": 4 });
   // The fake Integrator submits once per round and stops after any rejection instead of resubmitting forever.
   h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? recordingFact(c)
@@ -736,14 +736,15 @@ test("a fork inherits integration progress exactly when every integrated fact li
   const atT1 = [...h.entries];
   await h.turn(); await h.emit("agent_settled"); await h.drain(); // T2 → F2; main integrated F1 while T2 was still being recorded
   expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
-  expect(h.memory.store.getWatermark(1, "main")?.lastIntegratedFact).toBe(1);
+  expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 2 })).toBe(true);
   h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
   await h.emit("session_start");
   await h.turn(); // T3 under T1
   const branch = h.memory.store.listRuns(1).at(-1)!.branch!;
   expect(h.memory.store.getWatermark(1, branch)?.lastRecordedTurn).toBe(3);
-  // main had integrated only F1, which sits on T1 and so on this path: the progress carries and F1 is not integrated again.
-  expect(h.memory.store.getWatermark(1, branch)?.lastIntegratedFact).toBe(1);
+  // main had integrated only F1, which sits on T1 and so on this path: the progress counts here and F1 is not integrated again.
+  expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 3 })).toBe(true);
+  expect(h.memory.store.integrationBatch(1, branch, 1).map(f => f.id)).not.toContain(1);
   expect(h.memory.store.listRuns(1).some(r => r.kind === "integration" && r.branch === branch && r.rangeFrom === "F1")).toBe(false);
   expect(h.memory.store.listBranchFacts(1, branch, 3).map(f => f.id)).toContain(1);
 });
@@ -780,7 +781,7 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
 });
 
-test("integration progress is not inherited when a manual fact beyond the fork point was integrated before its turn was recorded", async () => {
+test("integration progress does not count on a fork when a manual fact beyond the fork point was integrated in the same run", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 5 });
   h.provider(async c => recordingFact(c));
   await h.turn(); // T1
@@ -790,13 +791,14 @@ test("integration progress is not inherited when a manual fact beyond the fork p
   await h.prompt("two"); await h.answer(); await h.emit("agent_settled"); // T2 exists, not recorded (threshold 5)
   h.memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T2", rangeTo: "S1/T2", outcome: "success" } as never,
     facts: [{ turnId: 2, category: "decision", actor: "user", text: "F2 manual on T2", source: ["T2#user"], createdAt: "now" }] });
-  h.memory.store.setWatermark(1, "main", 1, 2); // the Integrator consumed F1 and F2 on main
+  expect(h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, branch: "main", createdAt: "now" }, operations: [], integrated: [1, 2] }).ok).toBe(true); // one run consumed F1 and F2 on main
   h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
   await h.emit("session_start");
   const fork = h.memory.store.listWatermarks(1).find(w => w.branch !== "main")!;
   expect(fork).toBeDefined();
   expect(fork.lastRecordedTurn).toBe(1); // recording progress carries
-  expect(fork.lastIntegratedFact ?? null).toBeNull(); // F2 is off this path: F1 must be integrated again
+  expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 1 })).toBe(false); // F2 is off this path: F1 must be integrated again
+  expect(h.memory.store.integrationBatch(1, fork.branch, 1).map(f => f.id)).toEqual([1]);
 });
 
 test("a transient provider error is retried with Pi's policy before the run is failed, and a retry never repeats a committed write", async () => {

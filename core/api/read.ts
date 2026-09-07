@@ -160,7 +160,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
         ...(watermarks.length ? [] : ["Watermarks: none"]),
-        ...watermarks.map((w) => `Watermark ${w.branch}: recorded ${w.lastRecordedTurn ? `T${w.lastRecordedTurn}` : "none"}; integrated ${w.lastIntegratedFact ? `F${w.lastIntegratedFact}` : "none"}`),
+        ...watermarks.map((w) => { const facts = store.listBranchFacts(sessionId, w.branch, w.lastRecordedTurn);
+          return `Watermark ${w.branch}: recorded ${w.lastRecordedTurn ? `T${w.lastRecordedTurn}` : "none"}; integrated ${facts.filter((f) => store.integratedOnPath(f.id, { sessionId, headTurnId: w.lastRecordedTurn! })).length}/${facts.length} facts`; }),
         ...(["recording", "integration"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
         `Pending deliveries: ${branches.reduce((n, b) => n + store.listPendingDeliveries(sessionId, b).length, 0)}`].join("\n");
     },

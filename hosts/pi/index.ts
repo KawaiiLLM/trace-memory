@@ -287,19 +287,12 @@ export default function (pi: ExtensionAPI) {
         .map(e => (e as { data: State & { dbPath: string } }).data)
         .filter(d => d.dbPath === dbPath && d.sessionId === saved.sessionId && d.branch === saved.branch).at(-1);
       state = { ...saved, piId, branch: (fork && tip?.head !== saved.head) || saved.piId !== piId ? randomUUID() : saved.branch };
-      // A new branch (Pi fork, clone, or tree switch off a saved head) inherits the source branch's
-      // watermarks where they lie on its own ancestry, so shared turns are recorded once.
+      // A new branch (Pi fork, clone, or tree switch off a saved head) inherits the recording watermark of
+      // its nearest recorded ancestor, whichever branch recorded it, so shared turns are recorded once.
+      // Integration progress needs no inheritance: it is per fact and judged against the branch's own path.
       if (state.branch !== saved.branch && saved.sessionId && state.head && !memory.store.getWatermark(saved.sessionId, state.branch)) {
-        // The nearest recorded ancestor, whichever branch recorded it; integration progress from the source.
         const recorded = memory.store.lastRecordedAncestor(saved.sessionId, state.head);
-        const source = memory.store.getWatermark(saved.sessionId, saved.branch);
-        // Integration progress carries over only when every fact the source integrated lies on the new path
-        // (manual facts can be integrated before their turn is recorded, so the recording watermark proves
-        // nothing). Otherwise the common facts are integrated again rather than skipped.
-        const integrated = source?.lastIntegratedFact && memory.store.listBranchFacts(saved.sessionId, saved.branch)
-          .filter(f => f.id <= source.lastIntegratedFact!)
-          .every(f => memory.store.factOnPath(f, { sessionId: saved.sessionId!, headTurnId: state.head! })) ? source.lastIntegratedFact : undefined;
-        if (recorded || integrated) memory.store.setWatermark(saved.sessionId, state.branch, recorded ?? undefined, integrated);
+        if (recorded) memory.store.setWatermark(saved.sessionId, state.branch, recorded);
       }
     } else {
       const name = marker(ctx.cwd);

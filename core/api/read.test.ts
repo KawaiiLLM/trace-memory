@@ -27,7 +27,7 @@ function knowledge(sessionId: number, factId: number, category: "constraint" | "
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time) {
   const result = memory.store.commitIntegrationRun({ run: { sessionId, branch: "main", kind: "integration", createdAt: time },
     operations: [{ op: "create", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
-    watermark: { sessionId, branch: "main", lastIntegratedFact: factId } });
+    integrated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
 }
@@ -265,7 +265,7 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
 test("status reports attribution, counts, every watermark, last runs and pending deliveries", () => {
   const { s, t } = populated(); recording(s.id, t.id, fixture.observation, "side", true);
   const status = memory.status(s.id);
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Watermark main: recorded T1; integrated F1", "Watermark side: recorded T1; integrated none", "Last recording: run 3 success", "Last integration: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Watermark main: recorded T1; integrated 1/2 facts", "Watermark side: recorded T1; integrated 1/2 facts", "Last recording: run 3 success", "Last integration: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
