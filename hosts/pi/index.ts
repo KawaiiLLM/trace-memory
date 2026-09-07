@@ -392,6 +392,7 @@ export default function (pi: ExtensionAPI) {
     state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared", nativeCreatedAt: ctx.sessionManager.getHeader()?.timestamp, baseline, enrollmentChoice: (provisional() ?? state.enrollment!).choice }).id;
     state.originPiId = state.piId;
     if (name) memory.declareProject(state.sessionId, name, "marker");
+    try { unlinkSync(provisionalPath()); } catch { /* no receipt, or already consumed */ } // the store owns enrollment from here
   };
   const historyProblems = new Set<string>();
   const missing = (problem: string) => {

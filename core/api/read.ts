@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { freezeRecording } from "../recording/index.ts";
-import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
+import { tokens, budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
@@ -104,8 +103,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
-      const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).entries;
-      const raw = tail.map(e => renderEntry(e, config.render));
+      // Every pending entry, not Recording's next batch (review 2026-09-08: the batch cap silently cut the tail).
+      // Newest kept whole within the episodic budget; older ones are named in a receipt, never dropped silently.
+      const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render));
+      let kept = pending.length, used = 0;
+      for (let i = pending.length - 1; i >= 0; i--) {
+        used += tokens(pending[i]!.content);
+        if (used > config.render.episodicBlockTokens && i < pending.length - 1) { kept = pending.length - 1 - i; break; }
+      }
+      const raw = pending.slice(pending.length - kept);
+      const omitted = pending.length - kept;
+      if (omitted) raw.push({ content: "", receipts: [`[omitted ${omitted} earlier pending entries beyond the carry budget; read them with trace]`] });
       const path = { sessionId, headTurnId, branch }, turns = store.pathTurns(path);
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, turns)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
 import { TraceMemory, renderEntry, tokens, type RecordingAgentInput } from "../../core/api/index.ts";
 import { host, reply } from "./test-host.ts";
 
@@ -318,5 +319,69 @@ test("review 2026-09-08 P2: an image-only user message still starts a new user T
     const users = h.memory.store.listSourceEntries(1).filter(e => e.role === "user");
     expect(users.map(e => e.raw.includes("synthetic-image"))).toEqual([false, true]);
     expect(h.memory.compact(1, "main", 2)).toContain("[non-text content omitted]"); // the shared view shows the source; it has no citable text
+  } finally { await h.dispose(); }
+});
+
+test("review 2026-09-08 P1b: a shared T1#assistant address does not make a sibling-only assistant entry's fact applicable", async () => {
+  const h = host(quiet);
+  try {
+    await h.prompt("Investigate"); await h.answer("Shared interim observation.");
+    const common = [...h.entries];
+    h.persist(reply("ALPHA_ONLY: adopt alpha.")); await h.emit("agent_end");
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", quote: "ALPHA_ONLY: adopt alpha.", source: ["T1#assistant"] }] })).not.toContain("rejected:");
+    expect(h.memory.store.factEntries(1)).toHaveLength(2); // both assistant entries of T1 carry that address; the fact is bound to both
+    expect(tools[3]!.execute({ operations: [{ op: "create", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"], because: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
+    const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
+    expect(h.memory.store.sourcePath(1, branch, 1).some(e => e.text.includes("ALPHA_ONLY"))).toBe(false);
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" })).toContain("Always use alpha");
+  } finally { await h.dispose(); }
+});
+
+test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps the newest within its budget and names what it omits", async () => {
+  const h = host(quiet);
+  try {
+    h.persist({ role: "user", content: "start", timestamp: 1 });
+    for (let i = 0; i < 7; i++) h.persist(reply(`chunk ${i}: ` + "word ".repeat(15000)));
+    h.persist(reply("LAST_PENDING_SENTINEL"));
+    await h.emit("session_start");
+    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(9);
+    const carry = h.memory.branchSummary(1, "main", 1);
+    expect(carry).toContain("LAST_PENDING_SENTINEL");
+    expect(carry).toMatch(/omitted \d+ earlier pending entries beyond the carry budget/);
+    expect(h.memory.compact(1, "main", 1)).toContain("LAST_PENDING_SENTINEL");
+  } finally { await h.dispose(); }
+});
+
+test("review 2026-09-08 P3: the Recorder's active knowledge follows the branch path, like injection", async () => {
+  const h = host(quiet);
+  let runner: ReturnType<typeof TraceMemory> | undefined;
+  try {
+    await h.prompt("Investigate"); await h.answer("Shared interim."); const common = [...h.entries];
+    h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
+    const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(t[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Use alpha", source: ["T1#t1"] }] })).not.toContain("rejected:");
+    expect(t[3]!.execute({ operations: [{ op: "create", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"], because: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
+    const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
+    let sent = "";
+    runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as { input: string }).input; return { outcome: "failure", output: "inspection only", request: {} }; });
+    await runner.record({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
+    expect(sent.split("Active knowledge:")[1]!.split("Recent facts")[0]).not.toContain("SIBLING_POLICY_ALPHA");
+  } finally { runner?.close(); await h.dispose(); }
+});
+
+test("18a acceptance 2026-09-08: the provisional enrollment receipt is consumed when the memory session is allocated", async () => {
+  const h = host(quiet);
+  try {
+    const dir = join(process.env.PI_CODING_AGENT_DIR!, "trace-memory-enrollment");
+    await h.prompt("first");
+    expect(existsSync(dir) && readdirSync(dir).length > 0).toBe(true); // written before the first reply
+    await h.answer("reply"); await h.emit("agent_settled"); await h.drain();
+    expect(h.memory.store.getSession(1)).not.toBeNull();
+    expect(existsSync(dir) ? readdirSync(dir) : []).toHaveLength(0); // consumed at allocation
   } finally { await h.dispose(); }
 });

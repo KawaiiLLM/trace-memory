@@ -128,7 +128,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
             seen.add(rel.target);
           }
         }
-        if (first) commits.push({ ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt });
+        if (first) {
+          // Bind the citations to the entries they resolve to in the writer's set (review 2026-09-08).
+          const candidates = context.kind === "recording" ? frozenEntries.map(id => store.getSourceEntry(id)!) : store.sourcePath(session.id, context.branch, path.headTurnId!);
+          const entryIds = candidates.filter(e => sourceAddresses(e).some(a => (fact.source as string[]).includes(a))).map(e => e.id);
+          commits.push({ ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt, entryIds });
+        }
       }
       return errors.length ? `rejected: ${errors.join("; ")}` : "ok";
     });

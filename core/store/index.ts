@@ -86,6 +86,14 @@ CREATE TABLE IF NOT EXISTS facts (
   CHECK ((status IS NOT NULL) = (category = 'event'))
 );
 
+-- Which source entries a fact's citations resolved to when it was written. Addresses like T1#assistant
+-- are shared by every assistant entry of the Turn, so applicability needs the identities (review 2026-09-08).
+CREATE TABLE IF NOT EXISTS fact_sources (
+  fact_id INTEGER NOT NULL REFERENCES facts(id),
+  entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  PRIMARY KEY (fact_id, entry_id)
+);
+
 CREATE TABLE IF NOT EXISTS fact_relations (
   from_fact INTEGER NOT NULL REFERENCES facts(id),
   to_fact INTEGER NOT NULL REFERENCES facts(id),
@@ -279,6 +287,8 @@ export interface FactCommitInput {
   createdAt: string;
   support?: RecordingRelationTarget[];
   negate?: RecordingRelationTarget[];
+  /** The source entries the cited addresses resolved to in the writer's frozen set; empty when the path has no native ancestry. */
+  entryIds?: number[];
 }
 
 export interface CommitRecordingRunInput {
@@ -698,7 +708,12 @@ export class Store {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
           }
           const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category, f.actor, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt);
-          batchIds.push(Number(info.lastInsertRowid));
+          const factId = Number(info.lastInsertRowid);
+          batchIds.push(factId);
+          for (const entryId of new Set(f.entryIds ?? [])) {
+            if (this.getSourceEntry(entryId)?.sessionId !== sessionId) throw new Error("fact source entry does not belong to the run session");
+            this.db.prepare("INSERT INTO fact_sources (fact_id, entry_id) VALUES (?, ?)").run(factId, entryId);
+          }
         }
         const resolve = (target: string, batchIndex: number): number => {
           const fIdMatch = /^F(\d+)$/.exec(target);
@@ -836,7 +851,7 @@ export class Store {
 
   /** All citations from the reader's own session constrain applicability, including because. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
-    const turns = path ? this.pathTurns(path) : undefined, addresses = path ? this.pathAddresses(path) : null;
+    const turns = path ? this.pathTurns(path) : undefined, entries = path ? this.pathEntries(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
@@ -844,7 +859,7 @@ export class Store {
     }
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
       (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
-      (!path || this.commitApplies(r, path, turns, addresses)));
+      (!path || this.commitApplies(r, path, turns, entries)));
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
     for (const r of applicable) {
@@ -858,26 +873,34 @@ export class Store {
     return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
   }
 
-  /** The citable addresses of the branch's selected native ancestry up to the head; null when the path names
-   * no branch or the branch has no selected ancestry (headless seams keep Turn semantics). */
-  pathAddresses(path: KnowledgePath): Set<string> | null {
+  /** The branch's selected native ancestry up to the head, as entry ids and citable addresses; null when the
+   * path names no branch or the branch has no selected ancestry (headless seams keep Turn semantics). */
+  pathEntries(path: KnowledgePath): { ids: Set<number>; addresses: Set<string> } | null {
     if (!path.branch || !path.headTurnId) return null;
     const row = this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
-    return row ? new Set(this.sourcePath(path.sessionId, path.branch, path.headTurnId).flatMap(sourceAddresses)) : null;
+    if (!row) return null;
+    const entries = this.sourcePath(path.sessionId, path.branch, path.headTurnId);
+    return { ids: new Set(entries.map(e => e.id)), addresses: new Set(entries.flatMap(sourceAddresses)) };
+  }
+  factEntries(factId: number): number[] {
+    return (this.db.prepare("SELECT entry_id FROM fact_sources WHERE fact_id = ? ORDER BY entry_id").all(factId) as { entry_id: number }[]).map(r => r.entry_id);
   }
 
-  /** A fact is on a path when every source it cites is: its Turn on the ancestry and, when the branch has a
-   * selected native ancestry, each cited entry address in it (review 2026-09-08: a sibling entry of the same
-   * Turn is off-path for facts and knowledge, not only for note). Foreign-session facts are judged by scope. */
-  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path), addresses = this.pathAddresses(path)): boolean {
+  /** A fact is on a path when its Turn and every cited Turn are on the ancestry and, when the branch has a
+   * selected native ancestry, the source entries it was bound to when written are all in it (review
+   * 2026-09-08: T1#assistant is shared by every assistant entry of T1, so identity decides, not the address).
+   * A fact written without bindings falls back to the address check. Foreign-session facts are judged by scope. */
+  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path), entries = this.pathEntries(path)): boolean {
     if (this.getTurn(fact.turnId)!.sessionId !== path.sessionId) return true;
     if (!turns.has(fact.turnId) || !fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1])))) return false;
-    return addresses === null || fact.source.every(source => addresses.has(source));
+    if (entries === null) return true;
+    const bound = this.factEntries(fact.id);
+    return bound.length ? bound.every(id => entries.ids.has(id)) : fact.source.every(source => entries.addresses.has(source));
   }
 
-  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path), addresses = this.pathAddresses(path)): boolean {
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path), entries = this.pathEntries(path)): boolean {
     return this.admits(commit, path.sessionId) && [...commit.supports, ...(commit.because ?? [])]
-      .every(id => this.factOnPath(this.getFact(id)!, path, turns, addresses));
+      .every(id => this.factOnPath(this.getFact(id)!, path, turns, entries));
   }
 
   commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {

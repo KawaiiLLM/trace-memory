@@ -67,7 +67,7 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
     entries.push(entry); views.push(view);
   }
   if (pending.length && !entries.length) throw new Error("Recording capacity: oldest entry exceeds recording.batchTokens; left pending");
-  const knowledge = store.listCurrentKnowledge({ sessionId: session.id, headTurnId: input.headTurnId });
+  const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
   const mode = input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent");
   while (entries.length) {
