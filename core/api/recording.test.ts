@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type RecordingAgentInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
+import { TraceMemory, type RecordingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../test/source-fixture.ts";
 import fixture from "../../test/fixtures/recording/turns.json";
 import memories from "../../test/fixtures/recording/facts.json";
 
@@ -162,10 +162,11 @@ test("model cannot write to a late turn outside the frozen range", async () => {
 
 test("empty output recordings the range; compactions cannot acquire facts", async () => {
   const t = memory.store.appendTurn({ sessionId, kind: "compaction", startedAt: time });
-  script.push(async () => success([batch(t.id)]));
-  expect((await recording(t.id)).outcome).toBe("bounced"); unchanged();
-  script.push(async () => success([])); await recording(t.id);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
+  // 17a supersedes whole-Turn progress: compactions have no eligible source entry.
+  expect((await recording(t.id)).outcome).toBe("empty");
+  expect(calls).toHaveLength(0);
+  const raw = turn(t.id); script.push(async () => success([])); await recording(raw.id);
+  expect(memory.pendingEntries(sessionId, "main", raw.id)).toEqual([]);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(0);
 });
 
@@ -198,8 +199,9 @@ test("fixture turn golden and recording input use identical rendering with recei
   expect(memory.trace("T1")).toBe(golden("turn"));
   expect(memory.trace("T2")).toBe(golden("read"));
   script.push(async (input) => {
-    const rendered = memory.trace("T1"), [content, receipts] = rendered.split("\n\nReceipts:\n");
-    expect(input.input).toContain(content!); expect(input.input.endsWith(receipts!)).toBe(true);
+    // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
+    const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
+    expect(input.input.split("Raw:\n\n")[1]).toBe(views);
     expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
     return success([]);
   });
@@ -223,7 +225,7 @@ test("fixture fact goldens include quote, sources and both relation directions a
 test("full expands selected calls; cap is the listing budget and address flags are rejected", () => {
   const t = turn();
   const full = memory.trace(`T${t.id}`, { tool: 2, full: true });
-  expect(full).toContain(JSON.parse(fixture[0]!.calls[1]!.result!).stdout);
+  expect(full).toContain(fixture[0]!.calls[1]!.result!);
   expect(full).toContain("tool=Bash status=success omitted=false");
   expect(memory.trace(`T${t.id}`, { cap: 1 })).toContain("cursor=");
   expect(() => memory.trace("T1", { tool: 99 })).toThrow("does not exist");

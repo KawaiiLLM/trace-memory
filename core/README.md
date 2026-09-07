@@ -22,20 +22,23 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 
 ## Recording and trace host contract (ticket 02)
 
-Call `record({ sessionId, branch, headTurnId, model?, mode? })` after recording raw
-through the façade's existing `store` interface. `headTurnId` is the last turn
-present on the selected branch at trigger time. Hosts link consecutive turns
-with `parentTurnId`; a null parent starts a root. Branch names identify lineages:
-use a new name when forking before a branch's watermark. Ancestry must stay
-within the session. The core freezes ancestry, tool calls, session-wide recent
-facts and visible active knowledge revisions before calling the model.
+Hosts pass completed source identities/content through `appendEntry(SourceInput)`
+and select the persisted ancestry with `selectEntries(sessionId, branch, entryIds)`.
+The exposed store's transaction groups ingestion with Turn/tool projections.
+`pendingEntries(sessionId, branch, headTurnId)` derives work from native path
+membership and committed entry processing; it is not a second delivery queue.
+Call `record({ sessionId, branch, headTurnId, model?, mode? })` at the existing
+trigger boundary. The core freezes exact pending entries, owning Turns, rendered
+views, recent facts and applicable knowledge before calling the model. A fork
+uses a new branch identity even when its native source head changes inside the
+same Turn. Shared processed entries are inherited by identity.
 
 The recording result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per database/session/branch across façade
 instances in this process. No automatic retry or feedback call follows a bounce.
-Stopping normally without submitting is a zero-fact success: advance the frozen
-watermark without a delivery. An uncorrected rejected submission is `bounced`
+Stopping normally without submitting is a zero-fact success: process exactly the frozen
+entries without a delivery. An uncorrected rejected submission is `bounced`
 and advances nothing. Failure/cancellation before commit also advances nothing.
 A committed batch keeps outcome `success` even if the provider subsequently
 fails or is cancelled; the trailing problem is recorded without undoing business
@@ -53,23 +56,23 @@ trace evidence, the tool-call input/result sequence, problems and committed IDs.
 `tools(context)` also binds these definitions to a main agent with
 `{kind: "manual", sessionId, branch, currentTurnId}`, or to a Recording context
 with `{kind: "recording", sessionId, branch, range: {from, to},
-readKnowledgeCommits}`. `note({facts})` validates every item and commits nothing
+readKnowledgeCommits, entryIds}`. `note({facts})` validates every item and commits nothing
 on any rejection; a corrected whole batch may be resubmitted. Success returns
 `results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
 `rejected: <reason>`. A Recording binding commits at most one batch. The batch,
-run record, frozen watermark and nonempty delivery commit in one transaction.
+run record, frozen entry progress and applicable nonempty delivery commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Integration range. They do not
 advance Recording. `memory` writes knowledge with the uniform batch contract below.
 
-Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen range
-(Recording) or calling session (manual). Time is the first source turn's
+Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen entry set
+(Recording) or current selected source path (manual). Time is the first source turn's
 `started_at`; timestamps from the model are rejected. Event facts require
 `status` (completed, reported, dispatched, attempted); other categories reject
 status. Text has no completion prefix; the shared renderer supplies it. Relations
 retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
-Existing databases gain the status column and manual/bounced run values on open;
-legacy event text prefixes are moved to status while retaining rendered content.
+The v1 schema changes in place. No production-data migration, legacy coverage
+translation or compatibility shim is provided.
 
 The recording config chooses branch/subagent mode; provider prefix verification
 remains the host's responsibility.
@@ -89,12 +92,15 @@ Receipts follow all content, including assistant text, and list omitted calls
 `trace("T1", {tool: 2, full: true})` selects a tool ordinal and removes standard
 cuts, including read/write payloads. The optional listing cap paginates the
 rendered lines; it never becomes a tool-output token cap.
-Filtering keeps other calls' metadata and counted omission markers. User and
-assistant text are always uncut. Cuts occur at whole-line boundaries, including
-stdout, stderr and reports; an oversized single line can be omitted entirely.
-Counts describe omitted lines and UTF-16 characters. Token estimates weigh
-CJK characters at 0.75 and other characters at 0.25 (user ruling); they are
-approximate; caps bound retained payload, not metadata or omission markers.
+Default explicit trace previews retain the existing field cuts and pagination.
+Full reads preserve original input/result strings; when a shared call has results
+on several forks, full trace labels and returns each original result occurrence.
+Automatic Raw instead uses `renderEntry`: tool fragments first share a fixed
+1,000-token budget, then the entire entry fits 10,000 tokens, including all labels
+and omission markers. Natural language receives only the entry limit. Huge lines
+and JSON values keep character-level head/tail excerpts; omissions never claim
+the middle was inspected. All four consumers use identical entry bytes. The
+shared segment-based token estimator remains unchanged (ruling 2026-09-07).
 
 Hosts may store plain strings or JSON in tool input/result. JSON command inputs
 use `command` or `cmd`; execution results use `stdout` and `stderr`. Read/search
@@ -104,9 +110,11 @@ in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
 
-In branch mode the recording `input` carries only the range: the raw turns, the
+In branch mode the recording `input` carries the range, head reply and frozen source index: the raw turns, the
 facts delivered after earlier recordings, and the injected knowledge are already in the
-conversation the host appends to. Subagent mode carries the full context below.
+conversation the host appends to. The native prefix remains uncompressed; branch
+Recording gains nothing from the compressed view (accepted 2026-09-08). Subagent
+Recording and fallback carry the shared entry views below.
 
 Recording context uses the episodic budget for all rendered raw plus recent facts
 by descending timestamp, then id. Raw is never dropped; overage is receipted.
@@ -164,7 +172,7 @@ Four checked-in goldens cover current knowledge, snapshot, diff, and negation wa
 `integrate({ sessionId, branch, model?, mode? })` returns `empty` without a call
 when there are no facts of this session on this branch after its own
 `lastIntegratedFact`. Branch membership follows turn ancestry ending at the branch's
-`lastRecordedTurn`; hosts must record recordings with their branch watermark. A branch
+`lastRecordedTurn`, derived from entry progress to preserve pre-17b batching. A branch
 without a recorded head has no integration range. Shared ancestors belong to both branches.
 The range freezes these facts in allocation-id order, visible active knowledge
 revisions (including budget omissions), relation lines, and reminders before the
@@ -250,17 +258,15 @@ Legacy pending runs without this metadata raise an error and remain pending;
 the core cannot safely reconstruct their ownership from turn ranges alone.
 
 `compact(sessionId, branch = "main", headTurnId?)` returns knowledge followed by
-`<episodic>`: standard-cut raw first, then session facts by descending timestamp
-and id. All unrecorded raw survives budget overflow. It neither calls the model nor
-consumes pending deliveries. The schema does not record branch heads: provide
-`headTurnId` for precise ancestry, as for recording. Without it, compaction retains
-all session turns allocated after that branch's watermark, conservatively
-including other branches. Receipts follow both XML blocks.
+`<episodic>`: shared pending entry views first, then session facts by descending
+timestamp and id. All pending views survive the outer budget with an overage
+receipt. No provider is called and deliveries are not consumed. Pass `headTurnId`
+for precise ancestry; without it, the latest Turn selects one path. Sibling queues
+are never combined into an automatic Raw view.
 
-`search(query, scope = "all", { sessionId?, cap?, cursor? })` uses FTS5 query
-syntax over fact text and all knowledge revisions, including historical revisions.
-Bound tools restrict facts/raw to the session's project, and knowledge to global,
-project and the caller's own session scope (including visible history). Unbound
+`search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
+substring matching over fact text, knowledge commits and original Raw. Trace and
+search reads are unrestricted; source eligibility constrains writes only. Unbound
 facade reads remain available to hosts. Raw uses literal substring LIKE
 (including tool names, inputs and results); `%` and `_` are escaped. `all` in a
 bound search includes raw as well as facts and knowledge. Each hit is
@@ -297,8 +303,8 @@ count, all branch watermarks, latest attempts by run id, and pending run count.
 
 `branchSummary(sessionId, branch, headTurnId)` returns one `<branch_carry>` XML
 block with the fixed other-branch reminder, facts whose raw evidence lies on the
-leaving path, commits selected by that evidence, and raw after the recording
-watermark. Content markup is escaped. There is no fact budget or delivery
+leaving path, commits selected by that evidence, and shared pending entry views.
+As in every block, tags delimit and content lines remain byte-identical. There is no fact budget or delivery
 consumption. The host awaits its frozen pending recording and passes the block
-unchanged as Pi's summary; later unrecorded turns remain raw. Injected messages
+unchanged as Pi's summary; later unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.

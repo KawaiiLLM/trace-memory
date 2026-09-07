@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { TraceMemory, type IntegrationAgentInput } from "./index.ts";
+import { TraceMemory, type IntegrationAgentInput } from "../../test/source-fixture.ts";
 
 // These former model-unit cases now drive the host's actual Integration seam.
 async function checkMemoryBatch(output: unknown) {
@@ -10,7 +10,7 @@ async function checkMemoryBatch(output: unknown) {
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
     memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: "now" },
       facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),
-      watermark: { sessionId: s.id, branch: "main", lastRecordedTurn: t.id } });
+      entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) });
     memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: "now" },
       operations: Array.from({ length: 10 }, (_, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", category: "term" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
     const result = await memory.integrate({ sessionId: s.id, branch: "main" });

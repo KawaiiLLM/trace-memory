@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import type { ToolDefinition, ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import { finish, renderFact, renderTurn, renderSources, budgetKnowledge, budgetFacts } from "../render/index.ts";
+import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/recording.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -53,13 +53,18 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
     ancestry.unshift(turn);
     id = turn.parentTurnId;
   }
-  const watermark = store.getWatermark(session.id, input.branch)?.lastRecordedTurn;
-  const index = watermark == null ? -1 : ancestry.findIndex((t) => t.id === watermark);
-  if (watermark != null && index < 0) throw new Error("branch watermark is not an ancestor of its head; use a new branch identity");
-  const turns = ancestry.slice(index + 1).map((turn) => ({ turn, calls: store.listToolCalls(turn.id) }));
+  const entries = store.pendingEntries(session.id, input.branch, input.headTurnId);
+  const ids = new Set(entries.map(e => e.turnId));
+  const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
+    const selected = entries.filter(e => e.turnId === turn.id);
+    const ordinals = new Set(selected.flatMap(e => e.calls.map(c => c.ordinal)));
+    return { turn: { ...turn, userPrompt: selected.find(e => e.role === "user")?.text ?? null,
+      assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
+      calls: store.listToolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
+  });
   const knowledge = store.listCurrentKnowledge({ sessionId: session.id, headTurnId: input.headTurnId });
   const facts = store.listSessionFacts(session.id);
-  return { sessionId: session.id, branch: input.branch, turns, knowledge, facts,
+  return { sessionId: session.id, branch: input.branch, entries, turns, knowledge, facts,
     model: input.model ?? "session", mode: input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent") };
 }
 
@@ -67,12 +72,12 @@ export async function runRecording(
   store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
 ): Promise<RecordResult> {
-  const { sessionId, branch, turns, knowledge, facts, model, mode } = frozen;
+  const { sessionId, branch, entries, turns, knowledge, facts, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
-  const raw = turns.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
+  const raw = entries.map(entry => renderEntry(entry, config.render));
   const rawText = raw.map((r) => r.content).join("\n\n");
   const receipts = raw.flatMap((r) => r.receipts);
   const episodic = budgetFacts(rawText, facts, (f) => renderFact(f, store.listFactRelations(f.id)), config.render.episodicBlockTokens);
@@ -86,9 +91,11 @@ export async function runRecording(
   const input = mode === "branch" ? [`Range: ${range.from}..${range.to}`,
     ...(head.assistantText ? [renderTurn(head, [], config.render, { part: "assistant" }).content] : []),
     `Sources:\n${turns.map(({ turn, calls }) => renderSources(turn, calls)).join("\n")}`].join("\n\n") : subagentInput;
+  const entryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
+    branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
-    promptHash, model, mode, createdAt: new Date().toISOString() };
-  const binding = tools({ kind: "recording", sessionId, branch, range, readKnowledgeCommits }, run);
+    promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
+  const binding = tools({ kind: "recording", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
   const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
     subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
@@ -122,7 +129,7 @@ export async function runRecording(
     return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
   }
   const committed = store.commitRecordingRun({ run, facts: [],
-    watermark: { sessionId, branch, lastRecordedTurn: turns.at(-1)!.turn.id } });
+    entryIds: entries.map(e => e.id) });
   return committed.ok ? { outcome: "success", runId: committed.runId, facts: [] }
     : { outcome: "failure", runId: committed.runId, problems: committed.problems };
 }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, type ToolDefinition } from "../api/index.ts";
+import { TraceMemory, type ToolDefinition } from "../../test/source-fixture.ts";
 
 let memory: TraceMemory, note: ToolDefinition;
 const fact = (extra = {}) => ({ category: "observation", actor: "user", text: "Use pnpm.", source: ["T1#user"], ...extra });

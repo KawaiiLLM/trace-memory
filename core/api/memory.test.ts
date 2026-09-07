@@ -1,5 +1,6 @@
+import { recorded } from "../../test/source-fixture.ts";
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type IntegrationAgentInput, type RunAgentResult } from "./index.ts";
+import { TraceMemory, type IntegrationAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 let memory: TraceMemory;
 afterEach(() => memory?.close());
 const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] };
@@ -11,7 +12,7 @@ function setup(agent: (input: IntegrationAgentInput) => Promise<RunAgentResult>)
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
-  memory.store.setWatermark(s.id, "main", t.id); // T1 recorded: its facts may enter an Integration batch
+  recorded(memory, s.id, "main", t.id); // T1 recorded: its facts may enter an Integration batch
   return tools[3]!;
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });

@@ -5,10 +5,12 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 ## Layers
 
 - **Raw** — the conversation as the host recorded it: user messages, tool calls with results, assistant text. The only source of truth. Never edited.
+- **Source entry** — one completed native conversation message: user text, assistant content with tool calls, or a tool result. Identity is its native id within the session lineage, never its text. It belongs to a Turn; plugin injections and summaries are never sources.
+- **Compressed Raw view** — the shared, bounded head/tail excerpt of one source entry, with source labels and honest omission counts. The original Raw remains available through trace.
 - **Turn** — one user message and everything it triggered until the next user message. A compaction is also recorded as a turn, with no facts.
 - **Fact** — one claim extracted from a turn that can be overturned on its own. Six categories: question, proposal, decision, observation, interpretation, event. Carries an actor (user or agent), a source address, optional verbatim quote, and relations.
 - **Knowledge** — one durable, decontextualized conclusion integrated from facts. Seven categories: constraint, open, dispute, goal, mechanism, term, reference. Carries a scope, its supporting facts, a revision log.
-- **Recording** — the phase in which the Recorder turns raw into facts. Runs after a turn stops.
+- **Recording** — the phase in which the Recorder turns raw into facts. The current triggers run after a turn stops; each run freezes and processes source entries, and a partly processed Turn may still have pending entries.
 - **Integration** — the phase in which the Integrator turns facts into knowledge and revises existing knowledge. Runs after a turn stops when enough unintegrated facts exist.
 
 ## Relations (annotations, never derived state)
@@ -28,7 +30,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 ## Reading
 
 - **Injection** — the memory block placed into context at session start (knowledge) and at compaction (knowledge, recent facts, raw since the watermark). Grouped by category in a fixed order; bytes change only when content changes.
-- **Watermark** — the position in the raw up to which Recording has processed turns.
+- **Watermark** — the position in a derived fully processed Turn boundary retained for the current triggers and Integration batching. Recording itself processes exact source entries on a path.
 - **Compaction** — instant replacement of the context with the injection block. No model call.
 - **Trace** — the tool that walks addresses: knowledge → its facts → the source turn; knowledge revisions (`K7@2`, `K7@2..4`); a fact's later strong negations (`F101..`). Also the project name.
 - **Search** — lexical lookup over facts and knowledge (and optionally a session's raw) returning addresses. No hit does not mean absent.

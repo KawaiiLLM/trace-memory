@@ -1,5 +1,6 @@
+import { recorded } from "../../test/source-fixture.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, type RecordingAgentInput, type RunAgent, type ToolContext } from "./index.ts";
+import { TraceMemory, type RecordingAgentInput, type RunAgent, type ToolContext } from "../../test/source-fixture.ts";
 
 let memory: TraceMemory, agent: RunAgent;
 const fact = (source = "T1#user", extra = {}) => ({ category: "observation", actor: "user", text: "project evidence", source: [source], ...extra });
@@ -67,7 +68,7 @@ test("manual input and result are the run request and response; facts enter the 
   let range: unknown;
   agent = async raw => { range = (raw as { range: unknown }).range; return { outcome: "cancelled", output: "test", request: {} }; };
   expect(await memory.integrate({ sessionId: 1, branch: "main" })).toEqual({ outcome: "empty" }); // T1 is not recorded yet
-  memory.store.setWatermark(1, "main", 1);
+  recorded(memory, 1, "main", 1);
   await memory.integrate({ sessionId: 1, branch: "main" });
   expect(range).toMatchObject({ facts: [{ id: 1 }] });
 });

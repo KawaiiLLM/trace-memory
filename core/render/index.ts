@@ -1,6 +1,6 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
-import type { KnowledgeWithRevision } from "../store/index.ts";
+import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
 
 type Budgets = TraceMemoryConfig["render"];
@@ -107,6 +107,62 @@ export const tokens = (text: string): number => {
   return total;
 };
 
+export const ENTRY_VIEW_VERSION = "17a-v1-fixed-halves";
+
+const excerptText = (label: string, chars: string[], kept: number): string => {
+  const head = Math.ceil(kept / 2), tail = Math.floor(kept / 2);
+  return `${label}\n${chars.slice(0, head).join("")}\n[omitted ${chars.length - kept} characters; middle not inspected]\n${tail ? chars.slice(-tail).join("") : ""}`;
+};
+
+/** Count the entire excerpt, including its immutable source label and honest omission marker. */
+function entryExcerpt(label: string, body: string, cap: number): string {
+  const full = `${label}\n${body}`;
+  if (tokens(full) <= cap) return full;
+  const chars = [...body];
+  const excerpt = (kept: number) => excerptText(label, chars, kept);
+  if (tokens(excerpt(0)) > cap) throw new Error("entry view capacity cannot hold source labels and omission markers");
+  let low = 0, high = chars.length - 1;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (tokens(excerpt(mid)) <= cap) low = mid; else high = mid - 1;
+  }
+  return excerpt(low);
+}
+
+export const sourceAddresses = (entry: SourceEntry): string[] => [
+  ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...entry.calls.map(c => `T${entry.turnId}#t${c.ordinal}`),
+];
+
+/** One immutable view for all automatically supplied Raw. Each call reserves half for each occurrence. */
+export function renderEntry(entry: SourceEntry, budgets: Budgets): Rendered {
+  const header = `[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}]`;
+  const parts: { label: string; body: string; cap: number }[] = [];
+  if (entry.text) parts.push({ label: `[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`, body: entry.text, cap: budgets.entryTokens });
+  for (const call of entry.calls) {
+    const result = entry.role === "toolResult";
+    const cap = result ? Math.floor((budgets.toolCallTokens - 2) / 2) : Math.ceil((budgets.toolCallTokens - 2) / 2);
+    parts.push({ label: `[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} ${result ? "result" : "arguments"}:`,
+      body: result ? call.result ?? "" : call.input ?? "", cap });
+  }
+  let views = parts.map(p => entryExcerpt(p.label, p.body, p.cap));
+  const minima = parts.map(p => {
+    const chars = [...p.body];
+    return Math.min(tokens(`${p.label}\n${p.body}`), Math.max(tokens(excerptText(p.label, chars, 0)), tokens(excerptText(p.label, chars, Math.min(8, chars.length)))));
+  });
+  const content = () => [header, ...views].join("\n");
+  // ponytail: redistribute by the largest fragment; a linear priority queue is enough for one entry.
+  while (tokens(content()) > budgets.entryTokens) {
+    const available = views.map((v, i) => tokens(v) - minima[i]!);
+    const index = available.indexOf(Math.max(...available));
+    if (available[index]! <= 0) throw new Error("entry view capacity cannot hold source labels and omission markers");
+    const part = parts[index]!;
+    part.cap = Math.max(minima[index]!, tokens(views[index]!) - Math.min(Math.ceil(available[index]! / 2), Math.max(1, tokens(content()) - budgets.entryTokens)));
+    views[index] = entryExcerpt(part.label, part.body, part.cap);
+  }
+  return { content: content(), receipts: [] };
+}
+
 // Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
 function cut(text: string, head: number, tail: number): string {
   if (tokens(text) <= head + tail) return text;
@@ -155,7 +211,7 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
         body.push(read ? `${call.name} ${path}` : `receipt: ${call.name} ${call.status}`);
         const count = (call.result ?? "").length + (memoryWrite ? (call.input ?? "").length : 0);
         if (count) { body.push(`[omitted ${count} characters of ${memoryWrite ? "input/result" : "result"}]`); omitted = true; }
-      } else if (options.full && (read || memoryWrite)) {
+      } else if (options.full) {
         field("input", call.input ?? "", budgets.commandTokens, 0);
         field("result", call.result ?? "", budgets.reportHeadTokens, budgets.reportTailTokens);
       } else {

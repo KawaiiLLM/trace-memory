@@ -1,3 +1,4 @@
+import { recorded } from "../../test/source-fixture.ts";
 import { hash } from "./branch.ts";
 import { expect, test, vi } from "vitest";
 import { host } from "./test-host.ts";
@@ -67,7 +68,7 @@ test("real Anthropic Integration tool continuation preserves signed thinking and
     await h.turn();
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
-    h.memory.store.setWatermark(1, "main", 1); // T1 recorded: F1 may enter the Integration batch
+    recorded(h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Integration batch
     const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: [{ type: "text", text: "Exact signed-thinking prefix", cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: [{ type: "text", text: "Original", cache_control: { type: "ephemeral" } }] }],
       tools: tools.map((t, i) => ({ name: t.name, description: t.description, input_schema: t.parameters, ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) })) };
     await h.emit("before_provider_request", { payload: captured });

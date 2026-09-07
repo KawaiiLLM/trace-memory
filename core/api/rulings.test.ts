@@ -1,11 +1,12 @@
+import { recorded } from "../../test/source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type RecordingAgentInput, type RunAgentResult } from "./index.ts";
-import { tokens } from "./index.ts";
+import { TraceMemory, type RecordingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
 let memory: TraceMemory;
@@ -57,8 +58,11 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 test("08:53 with 2026-09-07 premise repair: branch uses conversation context; subagent carries the raw", async () => {
   const { s, t } = session();
-  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
-  await memory.record({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
+  // 17a: shared entry coverage is inherited. Compare independently frozen concurrent runs.
+  await Promise.all([
+    memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }),
+    memory.record({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" }),
+  ]);
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
   // The premise repair adds only the missing final reply and source index.
@@ -79,8 +83,8 @@ test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does no
 // 09:43 "sessions of one project integrate separately": pinned in core/api/integration.test.ts,
 // "each session settles only its own branch facts and shares already-settled context".
 
-// User, 2026-09-07: “mark可以合并掉，最终4个工具，trace search和两个分别操作事实和记忆。主agent允许用，但无需提示用，本身不是它的职责”
-// User, 2026-09-07: “工具名叫note和memory”.
+// User, 2026-09-07: four tools: trace, search, facts and knowledge writers; main agents may use them but have no memory duty.
+// User, 2026-09-07: the writer tool names are note and memory.
 test("2026-09-07: four tools, no other model-facing surface", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
@@ -149,7 +153,7 @@ function memoryWriter() {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
-  memory.store.setWatermark(s.id, "main", t.id); // recorded: the facts may enter an Integration batch
+  recorded(memory, s.id, "main", t.id); // recorded: the facts may enter an Integration batch
   const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F2"] };
   return { s, t, write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
 }
@@ -290,8 +294,9 @@ test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () 
   expect(cut).toContain("omitted=true");
   expect(cut).not.toContain(output);
   expect(cut).not.toContain("#t1");
+  // 17a preserves the full argument object, including fields beyond command.
   const full = memory.trace(`T${t.id}#t2`, { full: true });
-  expect(full).toBe(`[T${t.id}#t2] tool=Bash status=success omitted=false\ncommand:\nsecond\nreport:\n${output}`);
+  expect(full).toBe(`[T${t.id}#t2] tool=Bash status=success omitted=false\ninput:\n{"command":"second"}\nresult:\n${output}`);
   expect(memory.trace(`T${t.id}#t2`, { tool: 2, full: true })).toBe(full);
   expect(() => memory.trace(`T${t.id}#t2`, { tool: 1 })).toThrow("conflicts");
 });
@@ -522,7 +527,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
       expect(result.committed).toHaveLength(1);
       return { outcome: "success", request: { round: 2 }, output: "done" };
     });
-    memory.store.setWatermark(path.sessionId, path.branch, path.headTurnId); // recorded up to the head: its facts may enter the batch
+    recorded(memory, path.sessionId, path.branch, path.headTurnId); // recorded up to the head: its facts may enter the batch
     return memory.integrate({ sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId });
   };
   const result = await integrate(third, [2, 3]);
@@ -539,7 +544,7 @@ test("2026-09-07 A/B: Integration, NEAR and accounting use every current tip on 
     input.reportRequest({ round: 2 }); input.tools[3]!.execute(batch);
     return { outcome: "success", request: { round: 2 }, output: "done" };
   });
-  memory.store.setWatermark(c.sessionId, c.branch, c.headTurnId);
+  recorded(memory, c.sessionId, c.branch, c.headTurnId);
   const cResult = await memory.integrate({ sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId });
   if (cResult.outcome !== "success") throw new Error("expected success");
   expect(cResult.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [c.fact] });
@@ -620,7 +625,7 @@ test("16b: marks address commits, bare writes bind the path and reject multiple 
 test("16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte", () => {
   const { c, d, node, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  memory.store.setWatermark(c.sessionId, c.branch, c.headTurnId);
+  recorded(memory, c.sessionId, c.branch, c.headTurnId);
   const tail = memory.store.appendTurn({ sessionId: c.sessionId, parentTurnId: c.headTurnId, kind: "turn", userPrompt: "Unrecorded <work> & more", assistantText: "Pending", startedAt: time });
   node(c.sessionId, tail.id, c.branch); // Same branch label, but after the leaving position.
   const carry = memory.branchSummary(c.sessionId, c.branch, tail.id);
@@ -692,7 +697,7 @@ test("2026-09-07: the Integration threshold triggers, the turn boundary cuts: wh
   const seed = (turn: number, n: number, kind: "recording" | "manual" = "recording") => memory.store.commitRecordingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
     facts: Array.from({ length: n }, (_, k) => ({ turnId: turn, category: "observation", actor: "user", text: `fact ${turn}.${k}`, source: [`T${turn}#user`], createdAt: time })) });
   seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
-  memory.store.setWatermark(s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
+  recorded(memory, s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
   seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
   const batch = memory.store.integrationBatch(s.id, "main", 5);
   expect(batch.map((f) => f.turnId)).toEqual([turns[0]!.id, turns[0]!.id, turns[0]!.id, turns[1]!.id, turns[1]!.id, turns[1]!.id]); // T1 and T2: 6 ≥ 5 at a turn boundary; T3 waits
@@ -709,7 +714,7 @@ test("2026-09-07 review: a late fact on an early turn does not make the batch sk
     facts: [{ turnId: turn, category: "decision", actor: "user", text, source: [`T${turn}#user`], createdAt: time }] });
   seed(t1.id, "early decision"); seed(t2.id, "later decision"); seed(t1.id, "late supplement to the early decision"); // F3 lands on T1 after F2 on T2
   expect(memory.store.integrationBatch(s.id, "main", 2)).toEqual([]); // nothing recorded yet: no batch, whatever manual facts exist
-  memory.store.setWatermark(s.id, "main", t2.id);
+  recorded(memory, s.id, "main", t2.id);
   const first = memory.store.integrationBatch(s.id, "main", 2);
   expect(first.map((f) => f.id)).toEqual([1, 3]); // T1 whole: F1 and the late F3
   expect(memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: time }, operations: [], integrated: first.map((f) => f.id) }).ok).toBe(true);

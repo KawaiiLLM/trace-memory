@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import { freezeRecording } from "../recording/index.ts";
-import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
+import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
@@ -68,7 +68,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   return {
     spend,
     trace,
-    // Knowledge are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
+    // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
     inject: (target: number | { projectId: number } | KnowledgePath): string => {
       if (typeof target === "object" && "sessionId" in target) return finish(knowledge(target.sessionId, target.headTurnId));
@@ -91,10 +91,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
       const block = knowledge(sessionId, store.knowledgePath(sessionId, branch, headTurnId).headTurnId);
-      const after = store.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;
-      const turns = headTurnId === undefined ? store.listTurns(sessionId).filter((t) => t.id > after)
-        : freezeRecording(store, { sessionId, branch, headTurnId }, config).turns.map((t) => t.turn);
-      const raw = turns.map((t) => renderTurn(t, store.listToolCalls(t.id), config.render));
+      const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
+      const raw = head === undefined ? [] : store.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, config.render));
       const rawText = raw.map((r) => r.content).join("\n\n");
       const facts = store.listSessionFacts(sessionId);
       const episodic = budgetFacts(rawText, facts, (f) => factLine(f.id), config.render.episodicBlockTokens);
@@ -102,8 +100,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
-      const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).turns;
-      const raw = tail.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
+      const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).entries;
+      const raw = tail.map(e => renderEntry(e, config.render));
       const path = { sessionId, headTurnId }, turns = store.pathTurns(path);
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, turns)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));

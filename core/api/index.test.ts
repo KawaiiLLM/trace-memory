@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, TraceMemory, type TraceMemory as TraceMemoryHandle } from "./index.ts";
+import { DEFAULT_CONFIG, TraceMemory, type TraceMemory as TraceMemoryHandle } from "../../test/source-fixture.ts";
 
 let dir: string;
 let dbPath: string;

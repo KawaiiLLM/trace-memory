@@ -99,17 +99,18 @@ test("raw is incremental and compaction contains intermediate assistant text wit
   await h.prompt();
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.emit("message_update", { message: reply("partial") });
-  expect(h.memory.store.listTurns(1)[0]?.assistantText).toBe("partial");
+  // 17a supersedes partial-source compaction: streaming content is never an entry view.
+  expect(h.memory.store.listTurns(1)[0]?.assistantText).toBe("");
   await h.emit("tool_result", { toolName: "bash", input: { command: "pwd" }, content: [{ type: "text", text: "result" }], isError: false });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 99, firstKeptEntryId: "old" } });
   expect(block.compaction.summary).toBe(h.memory.compact(1, "main", 1));
-  expect(block.compaction.summary).toContain("partial"); expect(block.compaction.firstKeptEntryId).toBe("");
+  expect(block.compaction.summary).not.toContain("partial"); expect(block.compaction.firstKeptEntryId).toBe("");
   expect(h.requests).toHaveLength(0);
   await h.emit("session_compact", { compactionEntry: { summary: block.compaction.summary } });
   expect(h.memory.store.listTurns(1)[1]!.kind).toBe("compaction");
   await h.answer("finished"); await h.emit("agent_settled");
-  await h.prompt("next");
+  await h.prompt("next"); await h.emit("message_start", { message: reply("") });
   expect(h.memory.store.listTurns(1)[2]!.assistantText).toBeNull();
 });
 
@@ -362,7 +363,7 @@ test("before-tree waits for a frozen pending recording and summarizes its facts 
   expect(h.memory.store.getWatermark(1, "main")!.lastRecordedTurn).toBe(1);
   expect(h.memory.store.listRuns(1)[0]!.branch).toBe("main");
   h.entries.splice(0, h.entries.length, ...forkPoint); await h.emit("session_tree");
-  const branch = h.entries.at(-1).data.branch;
+  const branch = h.entries.filter(e => e.type === "custom").at(-1).data.branch;
   expect(branch).not.toBe("main");
   expect(h.memory.store.listPendingDeliveries(1, branch)).toEqual([]);
   expect((await h.prompt())?.message?.content ?? "").not.toContain("recorded");
@@ -499,8 +500,9 @@ test("main facade tools bind each call to the current turn, commit immediately a
   await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "n1", name: "note", arguments: {} }] } });
   const call = async (name: string, input: unknown) => {
     const result = await h.tools.get(name).execute("call", input, undefined, undefined, h.ctx);
-    expect(h.memory.store.listToolCalls(h.memory.store.listTurns(1).at(-1)!.id)).toHaveLength(0);
-    await h.emit("tool_result", { toolName: name, input, ...result, isError: false });
+    // 17a: the persisted assistant call is already a source; its result is still pending.
+    expect(h.memory.store.listToolCalls(h.memory.store.listTurns(1).at(-1)!.id).every(c => c.result === null)).toBe(true);
+    await h.emit("tool_result", { toolCallId: name === "note" ? "n1" : undefined, toolName: name, input, ...result, isError: false });
     return result.content[0].text as string;
   };
   const note = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] };
@@ -636,7 +638,7 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   const c = [...h.entries];
   h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
   await h.prompt("D rule"); await h.answer();
-  write(3, h.entries.at(-1).data.branch, "update", "D rule");
+  write(3, h.entries.filter(e => e.type === "custom").at(-1).data.branch, "update", "D rule");
   await h.commands.get("trace").handler("mark K1 verified", h.ctx);
   expect(h.notices.at(-1)).toBe("K1@3: verified");
   h.entries.splice(0, h.entries.length, ...c); await h.emit("session_tree");
@@ -648,7 +650,7 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   const injected = (await h.prompt("Continue C")).message.content;
   expect(injected).toContain("[K1@2]"); expect(injected).not.toContain("[K1@3]");
   const carry = await h.emit("session_before_tree");
-  expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.at(-1).data.branch, 4));
+  expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.filter(e => e.type === "custom").at(-1).data.branch, 4));
   expect(carry.summary.summary).toMatch(/^<branch_carry>\nthis is knowledge from another branch;/);
 });
 
@@ -686,14 +688,13 @@ test("the plugin's spend is a footer status item updated after every run, and th
 test("the state entry pointing at a new turn is written only after Pi persisted the user message, so a rewind before that message drops it", async () => {
   const h = host();
   await h.turn();
-  const before = h.entries.length;
-  await h.prompt("second"); // before_agent_start: the turn exists in the database, no state entry yet
-  expect(h.memory.store.listTurns(1)).toHaveLength(2);
-  expect(h.entries.length).toBe(before);
-  await h.emit("message_start", { message: { role: "user", content: "second", timestamp: Date.now() } });
-  expect(h.entries.length).toBe(before); // still nothing: Pi persists the user message after message_end
-  await h.answer(); // the assistant started: now the head advances in the session file
-  expect(h.entries.at(-1)!.data.head).toBe(2);
+  const before = h.entries.filter(e => e.type === "custom").length;
+  await h.prompt("second");
+  // 17a: source identity and its Turn are both reconciled after native persistence.
+  expect(h.memory.store.listTurns(1)).toHaveLength(1);
+  expect(h.entries.filter(e => e.type === "custom")).toHaveLength(before);
+  await h.answer();
+  expect(h.entries.filter(e => e.type === "custom").at(-1)!.data.head).toBe(2);
 });
 
 test("a branch forked from an earlier point inherits the nearest recorded ancestor as its watermark", async () => {
@@ -787,7 +788,7 @@ test("integration progress does not count on a fork when a manual fact beyond th
   h.provider(async c => recordingFact(c));
   await h.turn(); // T1
   h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" } as never,
-    facts: [{ turnId: 1, category: "decision", actor: "user", text: "F1 on T1", source: ["T1#user"], createdAt: "now" }], watermark: { sessionId: 1, branch: "main", lastRecordedTurn: 1 } });
+    facts: [{ turnId: 1, category: "decision", actor: "user", text: "F1 on T1", source: ["T1#user"], createdAt: "now" }], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   const atT1 = [...h.entries];
   await h.prompt("two"); await h.answer(); await h.emit("agent_settled"); // T2 exists, not recorded (threshold 5)
   h.memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T2", rangeTo: "S1/T2", outcome: "success" } as never,

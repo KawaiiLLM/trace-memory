@@ -157,11 +157,25 @@ CREATE TABLE IF NOT EXISTS pending_deliveries (
   delivered_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS watermarks (
+CREATE TABLE IF NOT EXISTS source_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  native_lineage TEXT NOT NULL,
+  native_id TEXT NOT NULL,
+  turn_id INTEGER NOT NULL REFERENCES turns(id),
+  content TEXT NOT NULL,
+  UNIQUE (session_id, native_lineage, native_id)
+);
+CREATE TABLE IF NOT EXISTS source_paths (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
-  last_recorded_turn INTEGER REFERENCES turns(id),
+  entry_ids TEXT NOT NULL,
   PRIMARY KEY (session_id, branch)
+);
+CREATE TABLE IF NOT EXISTS recorded_entries (
+  entry_id INTEGER NOT NULL REFERENCES source_entries(id),
+  run_id INTEGER NOT NULL REFERENCES runs(id),
+  PRIMARY KEY (entry_id, run_id)
 );
 
 -- Integration progress is a set, not a scalar: which facts which Integration run took (facts arrive out of
@@ -211,8 +225,22 @@ export interface AppendToolCallInput {
   status: string;
 }
 
+/** Host-neutral completed source occurrence. Raw is the exact serialized host message. */
+export interface SourceInput {
+  sessionId: number;
+  nativeLineage: string;
+  nativeId: string;
+  turnId: number;
+  role: "user" | "assistant" | "toolResult";
+  text: string;
+  raw: string;
+  calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[];
+}
+export interface SourceEntry extends SourceInput { id: number }
+
 export interface RunInput {
   kind: RunKind;
+  entryAudit?: unknown;
   sessionId?: number | null;
   branch?: string | null;
   rangeFrom?: string | null;
@@ -247,7 +275,7 @@ export interface CommitRecordingRunInput {
   run: RunInput; // sessionId required: every turn, watermark, and delivery must belong to it
   facts: FactCommitInput[];
   responseForFacts?: (ids: number[]) => string;
-  watermark?: { sessionId: number; branch: string; lastRecordedTurn: number };
+  entryIds?: number[];
   pendingDelivery?: { sessionId: number; branch: string | null };
 }
 
@@ -434,7 +462,7 @@ export class Store {
   }
 
   // Preserve nested transactions with savepoints: project declaration nests a merge.
-  private transaction<T>(fn: () => T): T {
+  transaction<T>(fn: () => T): T {
     const nested = this.db.isTransaction;
     this.db.exec(nested ? "SAVEPOINT trace_memory_transaction" : "BEGIN IMMEDIATE");
     try {
@@ -539,6 +567,10 @@ export class Store {
     return toToolCall(row);
   }
 
+  completeToolCall(turnId: number, ordinal: number, result: string, status: string): void {
+    this.db.prepare("UPDATE tool_calls SET result = ?, status = ? WHERE turn_id = ? AND ordinal = ?").run(result, status, turnId, ordinal);
+  }
+
   listToolCalls(turnId: number): ToolCall[] {
     return this.db.prepare("SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY ordinal").all(turnId).map(toToolCall);
   }
@@ -576,7 +608,7 @@ export class Store {
     const factIds = (this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id) as { id: number }[]).map((f) => f.id);
     const response = JSON.parse(input.response ?? "{}");
     this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
-      .run(input.request ?? null, JSON.stringify({ ...response, ...(previous.kind === "recording" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+      .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "recording" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
   }
 
   getRun(id: number): Run | null {
@@ -603,9 +635,6 @@ export class Store {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         const branch = input.run.branch ?? null;
-        if (input.watermark && (input.watermark.sessionId !== sessionId || input.watermark.branch !== branch)) {
-          throw new Error(`watermark S${input.watermark.sessionId}/${input.watermark.branch} does not belong to this run (S${sessionId}/${branch})`);
-        }
         if (input.pendingDelivery && (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== branch)) {
           throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${branch})`);
         }
@@ -653,9 +682,10 @@ export class Store {
         let response: Record<string, unknown>;
         try { const parsed = JSON.parse(input.responseForFacts?.(batchIds) ?? input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
         catch { response = { output: input.run.response }; }
-        this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, factIds: batchIds }), runId);
-        if (input.watermark) {
-          this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastRecordedTurn);
+        this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, ...(input.run.entryAudit ? { entryAudit: input.run.entryAudit } : {}), factIds: batchIds }), runId);
+        for (const id of input.entryIds ?? []) {
+          if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
+          this.db.prepare("INSERT INTO recorded_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
         if (input.pendingDelivery && batchIds.length) {
           this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
@@ -698,7 +728,7 @@ export class Store {
         input.model ?? null,
         input.mode ?? null,
         input.request ?? null,
-        input.response ?? null,
+        input.entryAudit ? JSON.stringify({ ...JSON.parse(input.response ?? "{}"), entryAudit: input.entryAudit }) : input.response ?? null,
         input.outcome,
         input.createdAt,
       );
@@ -990,8 +1020,8 @@ export class Store {
   }
 
   listWatermarks(sessionId: number): Watermark[] {
-    return (this.db.prepare("SELECT branch FROM watermarks WHERE session_id = ? ORDER BY branch").all(sessionId) as { branch: string }[])
-      .map((r) => this.getWatermark(sessionId, r.branch)!);
+    return (this.db.prepare("SELECT branch FROM source_paths WHERE session_id = ? UNION SELECT branch FROM runs WHERE session_id = ? AND kind = 'recording' AND outcome = 'success' ORDER BY branch").all(sessionId, sessionId) as { branch: string }[])
+      .map((r) => this.getWatermark(sessionId, r.branch)).filter((w): w is Watermark => w !== null);
   }
 
   projectDeclaration(sessionId: number): string {
@@ -1094,18 +1124,6 @@ export class Store {
     return batch;
   }
 
-  /** The nearest ancestor of the head (or the head itself) covered by a successful recording run's range, for a new branch's watermark. */
-  lastRecordedAncestor(sessionId: number, headTurnId: number): number | null {
-    const recorded = new Set<number>();
-    for (const run of this.listRuns(sessionId)) {
-      if (run.kind !== "recording" || run.outcome !== "success" || !run.rangeFrom || !run.rangeTo) continue;
-      const from = Number(/\/T(\d+)$/.exec(run.rangeFrom)?.[1]), to = Number(/\/T(\d+)$/.exec(run.rangeTo)?.[1]);
-      for (let id: number | null = to; id; id = this.getTurn(id)?.parentTurnId ?? null) { recorded.add(id); if (id === from) break; }
-    }
-    for (let id: number | null = headTurnId; id; id = this.getTurn(id)?.parentTurnId ?? null) if (recorded.has(id)) return id;
-    return null;
-  }
-
   markIntegrated(factId: number, runId: number, projectId: number): void {
     const fact = this.getFact(factId);
     if (!fact || this.getSession(this.getTurn(fact.turnId)!.sessionId)!.projectId !== projectId) throw new Error(`F${factId} is not a fact of this run's project`);
@@ -1127,13 +1145,70 @@ export class Store {
       JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.id`).all(projectId).map(toFact);
   }
 
+  /** Derived fully processed Turn boundary for unchanged Integration batching and trigger accounting. */
   getWatermark(sessionId: number, branch: string): Watermark | null {
-    const row = this.db.prepare("SELECT * FROM watermarks WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    return row ? { sessionId: (row as any).session_id, branch: (row as any).branch, lastRecordedTurn: (row as any).last_recorded_turn } : null;
+    const runs = this.listRuns(sessionId).filter(r => r.kind === "recording" && r.outcome === "success" && r.branch === branch);
+    const last = runs.at(-1);
+    const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
+    const nativeIds: number[] = native ? JSON.parse(native.entry_ids) : [];
+    if (!last && !nativeIds.some(id => this.entryRecorded(id))) return null;
+    const member = this.db.prepare("SELECT s.turn_id FROM recorded_entries r JOIN source_entries s ON s.id = r.entry_id WHERE r.run_id = ? ORDER BY s.id DESC LIMIT 1").get(last?.id ?? 0) as { turn_id: number } | undefined;
+    const head = Number(nativeIds.length ? this.getSourceEntry(nativeIds.at(-1)!)!.turnId : last?.rangeTo?.split("/T")[1] ?? member?.turn_id);
+    if (!Number.isSafeInteger(head) || head < 1) return { sessionId, branch, lastRecordedTurn: null };
+    const path = [...this.pathTurns({ sessionId, headTurnId: head })].reverse();
+    let recorded: number | null = null;
+    for (const turnId of path) {
+      const entries = (native ? nativeIds.map(id => this.getSourceEntry(id)!) : this.listSourceEntries(sessionId)).filter(e => e.turnId === turnId);
+      if (entries.some(e => !this.entryRecorded(e.id))) break;
+      recorded = turnId;
+    }
+    return { sessionId, branch, lastRecordedTurn: recorded };
   }
 
-  setWatermark(sessionId: number, branch: string, lastRecordedTurn: number): void {
-    this.db.prepare(`INSERT INTO watermarks (session_id, branch, last_recorded_turn) VALUES (?, ?, ?)
-       ON CONFLICT (session_id, branch) DO UPDATE SET last_recorded_turn = excluded.last_recorded_turn`).run(sessionId, branch, lastRecordedTurn);
+  appendSourceEntry(input: SourceInput): SourceEntry {
+    if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
+        !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || !c.name || !c.callId || !c.status ||
+          (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
+        new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
+    if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
+        this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
+    const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
+    if (known) {
+      const { id: _, ...original } = known;
+      if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
+      return known;
+    }
+    if (!input.text && !input.calls.length) throw new Error("empty source entry");
+    const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content) VALUES (?, ?, ?, ?, ?)")
+      .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input));
+    return this.getSourceEntry(Number(result.lastInsertRowid))!;
+  }
+  getSourceEntry(id: number): SourceEntry | null {
+    const row = this.db.prepare("SELECT id, content FROM source_entries WHERE id = ?").get(id) as { id: number; content: string } | undefined;
+    return row ? { ...JSON.parse(row.content), id: row.id } : null;
+  }
+  findSourceEntry(sessionId: number, nativeLineage: string, nativeId: string): SourceEntry | null {
+    const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId) as { id: number } | undefined;
+    return row ? this.getSourceEntry(row.id) : null;
+  }
+  listSourceEntries(sessionId: number): SourceEntry[] {
+    return (this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[]).map(r => this.getSourceEntry(r.id)!);
+  }
+  selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
+    if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some(id => this.getSourceEntry(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
+    this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
+      .run(sessionId, branch, JSON.stringify(entryIds));
+  }
+  sourcePath(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
+    const turns = this.pathTurns({ sessionId, headTurnId });
+    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
+    const entries = row ? (JSON.parse(row.entry_ids) as number[]).map(id => this.getSourceEntry(id)!) : this.listSourceEntries(sessionId);
+    return entries.filter(e => turns.has(e.turnId));
+  }
+  entryRecorded(id: number): boolean {
+    return !!this.db.prepare("SELECT 1 FROM recorded_entries WHERE entry_id = ? LIMIT 1").get(id);
+  }
+  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
+    return this.sourcePath(sessionId, branch, headTurnId).filter(e => !this.entryRecorded(e.id));
   }
 }

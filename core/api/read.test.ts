@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory } from "./index.ts";
+import { TraceMemory } from "../../test/source-fixture.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/recording/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../test/fixtures/recording/turns.json", import.meta.url), "utf8"));
@@ -18,7 +18,7 @@ function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
 function recording(sessionId: number, turnId: number, text = fixture.base, branch = "main", pending = false) {
   const result = memory.store.commitRecordingRun({ run: { sessionId, branch, kind: "recording", createdAt: time },
     facts: [{ turnId, text, category: "decision", actor: "user", source: [`T${turnId}#user`], createdAt: time }],
-    watermark: { sessionId, branch, lastRecordedTurn: turnId },
+    entryIds: memory.store.sourcePath(sessionId, branch, turnId).map(e => e.id),
     ...(pending ? { pendingDelivery: { sessionId, branch } } : {}) });
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result;
@@ -95,7 +95,9 @@ test("compaction retains oversized raw with standard tool cuts and receipts outs
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: "pwd", result: JSON.stringify({ stdout: "x".repeat(10000) }), status: "success" });
   memory.config.render.episodicBlockTokens = 70;
   const result = memory.compact(s.id, "main", next.id);
-  expect(result).toContain(raw); expect(result).toContain("omitted 1 lines, 10000 characters");
+  // 17a supersedes unbounded user Raw: both excerpts retain head, omission count and tail.
+  expect(result).not.toContain(raw); expect(result).toContain("middle not inspected");
+  expect(result).toContain(raw.slice(0, 40)); expect(result).toContain(raw.slice(-40));
   expect(result).toContain("raw overage:"); expect(result).toContain("all unrecorded raw kept");
   expect(result).toContain("omitted 1 older facts; expand: F1");
   expect(result.indexOf("Receipts:")).toBeGreaterThan(result.indexOf("</episodic>"));
@@ -107,7 +109,8 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   const abandoned = turn(s.id, "abandoned raw", t.id), selected = turn(s.id, "selected raw", t.id);
   const precise = memory.compact(s.id, "main", selected.id);
   expect(precise).toContain("selected raw"); expect(precise).not.toContain("abandoned raw");
-  expect(memory.compact(s.id)).toContain("abandoned raw");
+  // 17a: an omitted head resolves one path, never a union of sibling queues.
+  expect(memory.compact(s.id)).not.toContain("abandoned raw");
   const n = recording(s.id, selected.id, fixture.interpretation);
   const full = memory.compact(s.id, "main", selected.id);
   expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, tokens, type IntegrationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
+import { TraceMemory, tokens, type IntegrationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../test/source-fixture.ts";
 import memories from "../../test/fixtures/recording/facts.json";
 
 type IntegrationAgentInput = CoreInput & { round: "candidate" | "final"; request?: any; response?: RunAgentResult };
@@ -42,7 +42,7 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
 function fact(text = memories.base, options: { sessionId?: number; branch?: string; source?: string[]; createdAt?: string; actor?: "user" | "agent"; category?: "observation" | "question"; quote?: string; negate?: { target: string; strength: "strong" | "weak" }[] } = {}) {
   const owner = options.sessionId ?? sessionId, branch = options.branch ?? "main";
   const turn = memory.store.appendTurn({ sessionId: owner, parentTurnId: memory.store.getWatermark(owner, branch)?.lastRecordedTurn ?? undefined, kind: "turn", userPrompt: text, assistantText: text, startedAt: time });
-  const result = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: owner, branch, createdAt: time }, watermark: { sessionId: owner, branch, lastRecordedTurn: turn.id }, facts: [{ turnId: turn.id,
+  const result = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: owner, branch, createdAt: time }, entryIds: memory.store.sourcePath(owner, branch, turn.id).map(e => e.id), facts: [{ turnId: turn.id,
     category: options.category ?? "observation", actor: options.actor ?? "user", quote: options.quote, text, source: options.source ?? [`T${turn.id}#user`], createdAt: options.createdAt ?? time, negate: options.negate }] });
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result.facts[0]!.id;

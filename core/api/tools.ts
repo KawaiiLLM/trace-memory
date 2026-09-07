@@ -1,3 +1,4 @@
+import { sourceAddresses } from "../render/index.ts";
 import { bindMemory, type MemoryReview } from "../integration/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateRecordingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput } from "../store/index.ts";
@@ -10,7 +11,7 @@ export interface ToolDefinition {
   execute(input: unknown): string;
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
-  | { kind: "recording" | "integration"; sessionId: number; branch: string; headTurnId?: number | null; range: { from: string; to: string };
+  | { kind: "recording" | "integration"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
       readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
 type Reads = { trace(address: string, options?: ListingOptions): string;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
@@ -78,6 +79,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]) }
     : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
+  const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => sourceAddresses(e).includes(source));
+  const frozenEntries = context.kind === "recording" ? (context.entryIds ?? store.sourcePath(session.id, context.branch, path.headTurnId!).filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
+  const frozenSources = new Set(frozenEntries.flatMap(id => sourceAddresses(store.getSourceEntry(id)!)));
+  const frozenPath = new Set(context.kind === "recording" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
+  const sourceEligible = (source: string) => frozenSources.has(source) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
+    .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
   const memory = bindMemory(store, session.id, run, review, path, { deliverKnowledge: options.deliverKnowledge === true });
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
@@ -113,7 +120,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (Array.isArray(fact.source)) for (const source of fact.source) {
           const m = typeof source === "string" ? /^T([1-9]\d*)#(user|assistant|t([1-9]\d*))$/.exec(source) : null;
           const turn = m ? store.getTurn(Number(m[1])) : null;
-          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || (context.kind === "recording" && !allowed.has(turn.id)) || turn.kind === "compaction") errors.push(`invalid source ${source}; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
+          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || (context.kind === "manual" && !manualSourceEligible(source)) || (context.kind === "recording" && !sourceEligible(source)) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
           else {
             if (!first) first = turn.id;
             if ((m![2] === "user" && turn.userPrompt === null) || (m![2] === "assistant" && turn.assistantText === null) || (m![3] && !store.listToolCalls(turn.id).some((c) => c.ordinal === Number(m![3])))) errors.push(`source ${source} does not exist`);
@@ -139,7 +146,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "recording" ? context.readKnowledgeCommits : [] }) }, facts: commits,
       responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
-      ...(context.kind === "recording" ? { watermark: { sessionId: session.id, branch: context.branch, lastRecordedTurn: Number(context.range.to.split("/T")[1]) },
+      ...(context.kind === "recording" ? { entryIds: frozenEntries,
         ...(options.deliverFacts === false ? {} : { pendingDelivery: { sessionId: session.id, branch: context.branch } }) } : {}) });
     if (!committedRun.ok) { problems = committedRun.problems; return JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }); }
     const result = receipt(committedRun.facts.map((f) => f.id));

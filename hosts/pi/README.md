@@ -73,16 +73,26 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   between the range ends belongs to the batch. Anything the conversation does not
   hold, a manual note or a fact dropped by a compaction budget, is fetched with
   `trace`.
-- Assistant streaming updates persist intermediate text. Completed assistant
-  messages within one user turn are joined with a newline. Tool results retain
-  their input, content and details as JSON, with success/failure status. Tools
-  are recorded at `tool_result`; individual model/tool-loop steps do not create
-  additional answered turns. Queued user messages start new raw turns.
+- Source identity is `(Trace Memory session, native session lineage, Pi entry id)`.
+  The host reconciles completed messages from the selected persisted ancestry on
+  attach and at safe subsequent boundaries. Pi runs `message_end` extension hooks
+  before `SessionManager.appendMessage`, so a completion event alone supplies no
+  entry identity. Streaming and thinking-only content, custom/plugin messages,
+  compaction summaries and worker messages are not source entries. Repeated text
+  is never deduplicated. Earlier native history is imported on attach, known
+  identities are reused, and missing native parents or owning user messages are
+  reported in the UI. No replacement source is invented.
+- Each completed entry owns a Turn. An assistant entry persists its tool-call
+  occurrences immediately; a subsequent tool result is a separate source entry
+  using the same stable Turn tool ordinal. Original messages, arguments and results
+  are retained. `trace` with `full: true` retrieves the original tool argument and
+  result strings, including fields outside command/stdout/stderr. Default explicit
+  trace previews and pagination retain their existing protocol.
 - Only `agent_settled` checks extraction thresholds. Answered turns have recorded
   assistant content; a tool-call-only assistant message also counts as a reply.
   Slash commands without replies do not count. Token growth is the core's local
   CJK/UTF-16 heuristic over stored prompts, assistant text, tool inputs and
-  results since the branch watermark. It is not cumulative provider billing
+  results since the derived fully processed Turn boundary. It is not cumulative provider billing
   usage, which would recount context on every tool iteration. Trigger settings
   apply to this estimate, including raw that exceeds rendering budgets.
 - Integration counts only the current branch's facts that no Integration run on this path has taken.
@@ -96,7 +106,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
   session on its first reply. The before-tree hook finishes recordings as described below.
-- Compaction flushes partial assistant text and returns `memory.compact(...)` as
+- Compaction reconciles persisted source entries and returns `memory.compact(...)` as
   `compaction.summary`. `firstKeptEntryId: ""` retains no old Pi messages: the
   facade block replaces the context. Pi 0.85.0's context builder searches for
   that id, finds none, and keeps the compaction plus later messages. Successful
@@ -106,7 +116,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   objects, with façade descriptions and schema objects. Pi execution fields are
   non-enumerable so provider serialization includes only the shared metadata. `trace({address,
   tool, full, cursor, cap})` and `search({query, layer, cursor, cap})` read session-visible
-  evidence; `note({facts})` writes facts and `memory({operations, skipped})` writes
+  evidence without visibility restrictions; `note({facts})` writes facts and `memory({operations, skipped})` writes
   knowledge. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
@@ -384,15 +394,11 @@ leaves the watermark unchanged. No integration is triggered by this hook.
 
 The only new core capability is the read `branchSummary(sessionId, branch,
 headTurnId)`. `compact` is unsuitable because it includes session-wide recent
-facts and applies a fact budget. The summary instead uses core `renderFact`,
-`renderTurn`, and `finish`: committed lineage facts through the recording watermark,
-followed by all raw after it, with standard tool cuts and omission receipts.
-There is no summary fact budget. This resolves "since its watermark" as raw
-coverage: previously committed branch facts remain represented, rather than
-being lost when a pending recording advances the watermark. Sibling facts are
-excluded. Reading a summary never consumes a pending delivery. A pending run's
-later, unfrozen raw remains raw in the summary, without a second extraction.
-When no facts committed, failed extraction produces rendered raw alone.
+facts and applies a fact budget. The summary instead uses the same compressed entry views as Recording, after
+committed lineage facts and evidence-selected knowledge commits. All pending
+views are kept, including entries appended during a frozen run; reading the
+summary never consumes a delivery or calls a provider. The existing before-tree
+Recording trigger is retained in 17a; removing that trigger belongs to 17b.
 
 The hook returns `{ summary: { summary: text } }`. Installed Pi **0.85.0**
 `dist/core/extensions/types.d.ts:481–510` declares `TreePreparation`,
@@ -478,8 +484,49 @@ switch, whose usage rides on the branch summary.
 - A queued (steering or follow-up) user message bypasses `before_agent_start`, so
   recording results that finish during such a message are delivered at the next
   ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
-- Two identical user messages delivered back to back before any assistant reply
-  are treated as one turn: Pi events carry no message identity, and the host tells
-  messages apart by text and reply state.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
+
+## Entry views and Recording progress (17a)
+
+`render.toolCallTokens` defaults to **1,000** and `render.entryTokens` to
+**10,000** (decimal); both accept positive safe integers through the existing
+flat configuration. Tool name, native call identity, source address, status,
+labels and omission markers count inside the budget. Each call permanently
+reserves half of its budget for arguments and half for its eventual result,
+with two tokens reserved for joining the fragments. The entry cap applies next
+across natural language and all tool fragments. Excerpts retain head and tail,
+including within one huge line or JSON value, with a count of omitted characters
+and an explicit `middle not inspected` label. An impossibly small configured
+budget reports a capacity error and leaves the entries pending.
+
+The same entry bytes supply subagent Recording, subagent fallback, compaction
+Raw and branch-carry Raw. Existing episodic budgets count these compressed bytes
+when deciding which whole facts fit. Pending Raw views remain present with an
+overage receipt when their combined views exceed that outer budget. The shared
+estimator is unchanged. **Branch-mode Recording keeps reading the uncompressed
+native provider prefix and gains nothing from the compressed view.** This is the
+accepted 2026-09-08 branch-mode choice: its value is prefix reuse. The captured
+prefix is never rewritten or compressed. Its one appended user message still
+contains the Recording instruction, range, head reply and source index; the index
+contains only the frozen sources. Existing exact-prefix verification and fallback
+remain authoritative.
+
+Recording freezes entry identities on the selected path, not whole Turns. A
+successful zero-fact run processes only its selected entries; later entries in
+that same Turn remain pending. Address aliases are interpreted against the frozen
+entry set. A later matching source occurrence makes that address ineligible for
+the earlier writer, even if an unrestricted trace fetch can read it. Run records
+include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
+version and values, and the exact omission markers. Entry processing, facts, run
+audit and applicable deliveries commit atomically. Rejected or failed work remains
+pending. A fork inherits processed shared entries and keeps its sibling entries
+out of the selected ancestry.
+
+The `watermarks` table and its setter are removed in place, with no migration or
+Turn-coverage translation. `getWatermark` is now a derived, fully processed Turn
+boundary used only to preserve the existing answered-Turn/raw-token triggers and
+Integration's whole-Turn batching until 17b. It never decides which entries a
+Recording consumes. Source-path membership is native ancestry, not a delivery
+queue. Attach reconciliation performs no model call; missing history is reported
+and retained originals remain readable in the database.

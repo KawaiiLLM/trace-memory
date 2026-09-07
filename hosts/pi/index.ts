@@ -218,9 +218,9 @@ export default function (pi: ExtensionAPI) {
     }
   }, core);
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
-  type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
+  type State = { sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
-  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean; saved?: boolean } | undefined;
+  let current: { started: string; id?: number } | undefined;
   // What this agent run has shown the model and must confirm when it settles. Kept apart from
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
@@ -273,7 +273,8 @@ export default function (pi: ExtensionAPI) {
     recordings.set(key, promise); pending.add(promise);
     return promise;
   };
-  const save = () => pi.appendEntry(tag, { ...state, dbPath });
+  let savedSourceHead: number | undefined;
+  const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
     ctx = context;
     const saved = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === tag)
@@ -285,43 +286,112 @@ export default function (pi: ExtensionAPI) {
       const tip = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
         .map(e => (e as { data: State & { dbPath: string } }).data)
         .filter(d => d.dbPath === dbPath && d.sessionId === saved.sessionId && d.branch === saved.branch).at(-1);
-      state = { ...saved, piId, branch: (fork && tip?.head !== saved.head) || saved.piId !== piId ? randomUUID() : saved.branch };
-      // A new branch (Pi fork, clone, or tree switch off a saved head) inherits the recording watermark of
-      // its nearest recorded ancestor, whichever branch recorded it, so shared turns are recorded once.
-      // Integration progress needs no inheritance: it is per fact and judged against the branch's own path.
-      if (state.branch !== saved.branch && saved.sessionId && state.head && !memory.store.getWatermark(saved.sessionId, state.branch)) {
-        const recorded = memory.store.lastRecordedAncestor(saved.sessionId, state.head);
-        if (recorded) memory.store.setWatermark(saved.sessionId, state.branch, recorded);
-      }
+      state = { ...saved, piId, branch: (fork && (tip?.head !== saved.head || tip?.sourceHead !== saved.sourceHead)) || saved.piId !== piId ? randomUUID() : saved.branch };
     } else {
       const name = marker(ctx.cwd);
       const project = name && memory.store.findProjectByName(name);
       state = { projectId: project ? project.id : memory.store.createProject({ name: name ?? `pi:${piId}`, declaredBy: "marker" }).id, branch: "main", piId };
     }
     current = undefined;
+    reconciledLeaf = undefined;
+    reconcile();
     showSpend(ctx);
     if (state.sessionId) {
       const name = marker(ctx.cwd);
       if (name) memory.declareProject(state.sessionId, name, "marker");
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       if (memory.store.projectDeclaration(state.sessionId) === "mark") state.project = memory.store.getProject(state.projectId)!.name;
+      save(); // attach is a safe persistence boundary, including newly imported native history
     }
   };
   const ensure = (context: ExtensionContext) => { ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
-  const append = () => {
-    if (current && state.sessionId && !current.id) {
-      const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "turn", userPrompt: current.prompt, startedAt: current.started });
-      current.id = state.head = turn.id;
-      // Not saved yet: Pi persists the user message only after message_end, and a state entry
-      // written before it would survive a rewind to the point before that message.
+  const allocate = (started: string) => {
+    if (state.sessionId) return;
+    const name = marker(ctx.cwd);
+    if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
+      ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
+    state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared" }).id;
+    state.originPiId = state.piId;
+    if (name) memory.declareProject(state.sessionId, name, "marker");
+  };
+  const historyProblems = new Set<string>();
+  const missing = (problem: string) => {
+    if (!historyProblems.has(problem)) { historyProblems.add(problem); ctx.ui.notify(`Trace Memory: missing native history: ${problem}`, "warning"); }
+  };
+  // Pi persists AFTER message_end extension hooks. Only the ancestry supplies native identities.
+  // The walk is linear in the ancestry with one lookup per entry, and hooks fire on every streaming
+  // update, so it runs only when the persisted leaf has moved (10 ms per update at 400 entries otherwise).
+  let reconciledLeaf: string | null | undefined;
+  const reconcile = () => {
+    const leaf = ctx.sessionManager.getLeafId();
+    if (state.sessionId && leaf === reconciledLeaf) return;
+    walk();
+    // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
+    reconciledLeaf = state.sessionId ? leaf : undefined;
+  };
+  const walk = () => memory.store.transaction(() => {
+    const ancestry = ctx.sessionManager.getBranch();
+    if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
+      (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
+    if (!state.sessionId) return;
+    let lineage = state.originPiId ?? state.piId;
+    let turnId: number | undefined;
+    const selected: number[] = [], seen = new Set<string>();
+    for (const entry of ancestry) {
+      if (entry.parentId && !seen.has(entry.parentId)) missing(`parent ${entry.parentId} before ${entry.id}`);
+      seen.add(entry.id);
+      if (entry.type === "custom" && entry.customType === tag) {
+        const data = entry.data as State & { dbPath?: string };
+        if (data.dbPath === dbPath) lineage = data.piId;
+        continue;
+      }
+      if (entry.type !== "message") continue;
+      const message = entry.message;
+      if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") continue;
+      const natural = message.role === "toolResult" ? "" : text(message);
+      const calls = message.role === "assistant" ? message.content.filter(c => c.type === "toolCall") : [];
+      if (!natural && !calls.length && message.role !== "toolResult") continue;
+      const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
+      if (known) {
+        if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);
+        selected.push(known.id); turnId = known.turnId; continue;
+      }
+      if (message.role === "user") {
+        turnId = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: turnId ?? null, kind: "turn", userPrompt: natural, startedAt: entry.timestamp }).id;
+      }
+      if (!turnId) { missing(`owning user entry for ${entry.id}`); continue; }
+      const fragments: Parameters<typeof memory.appendEntry>[0]["calls"] = [];
+      for (const call of calls) {
+        const input = JSON.stringify(call.arguments);
+        const stored = memory.store.appendToolCall({ turnId, name: call.name, input, status: "attempted" });
+        fragments.push({ ordinal: stored.ordinal, name: call.name, callId: call.id, input, status: "attempted" });
+      }
+      if (message.role === "toolResult") {
+        const call = selected.map(id => memory.store.getSourceEntry(id)!).reverse()
+          .filter(e => e.turnId === turnId && e.role === "assistant").flatMap(e => e.calls).find(c => c.callId === message.toolCallId);
+        if (!call) { missing(`tool call ${message.toolCallId} for ${entry.id}`); continue; }
+        const result = JSON.stringify({ content: message.content, details: message.details });
+        const status = message.isError ? "failure" : "success";
+        memory.store.completeToolCall(turnId, call.ordinal, result, status);
+        fragments.push({ ordinal: call.ordinal, name: call.name, callId: call.callId, result, status });
+      }
+      const stored = memory.appendEntry({ sessionId: state.sessionId, nativeLineage: lineage, nativeId: entry.id, turnId,
+        role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
+      selected.push(stored.id);
+      if (message.role === "assistant") {
+        const value = memory.store.getTurn(turnId)!;
+        memory.store.updateTurn(turnId, { assistantText: [value.assistantText, natural].filter(Boolean).join("\n") });
+      }
     }
-  };
-  const persistState = () => { if (current?.id && !current.saved) { current.saved = true; save(); } };
-  const flush = (ended = false) => {
-    if (current?.id && current.replied) memory.store.updateTurn(current.id, { assistantText: [current.completed, current.partial].filter(Boolean).join("\n"), ...(ended ? { endedAt: now() } : {}) });
-  };
+    if (state.head && !turnId && memory.store.listSourceEntries(state.sessionId).length) missing("selected ancestry contains no available source entries");
+    memory.selectEntries(state.sessionId, state.branch, selected);
+    state.sourceHead = selected.at(-1);
+    if (turnId) { state.head = turnId; if (current) current.id = turnId; }
+  });
+  const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
+  const flush = (ended = false) => { reconcile(); if (ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
   pi.on("before_provider_request", (event, context) => {
-    ensure(context);
+    ensure(context); reconcile();
     if (context.model) session.capture = { payload: snapshot(event.payload) as Body,
       model: context.model.id, provider: context.model.provider, branch: state.branch };
   });
@@ -329,8 +399,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_tree", (_event, context) => { restore(context, true); state.injected = false; save(); });
   pi.on("before_agent_start", (event, context) => {
     ensure(context);
-    current = { prompt: event.prompt, started: now(), completed: "", partial: "" };
-    append();
+    current = { started: now() };
+    reconcile();
     // Knowledge once per session (the compaction block carries them afterwards); deliveries on every prompt.
     // Both are confirmed at this turn's agent_settled, after Pi has persisted the message (ruling
     // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
@@ -348,39 +418,27 @@ export default function (pi: ExtensionAPI) {
     return { message: { customType: tag, content: parts.join("\n\n"), display: false } };
   });
   pi.on("message_start", (event, context) => {
-    ensure(context);
-    if (event.message.role === "user" && (!current || current.replied || current.prompt !== text(event.message))) {
+    ensure(context); reconcile();
+    if (event.message.role === "user") {
       flush(true);
-      current = { prompt: text(event.message), started: now(), completed: "", partial: "" };
-      append();
+      current = { started: now() };
+      reconcile();
     }
   });
-  const assistant = (message: { content?: unknown }, context: ExtensionContext, ended: boolean) => {
+  const assistant = (message: { content?: unknown }, context: ExtensionContext) => {
     ensure(context);
     persistState(); // the user message is in the session file once the assistant has started
     if (!current || (!text(message) && (!Array.isArray(message.content) ||
       !message.content.some(c => c.type === "toolCall" || (c.type === "thinking" && c.thinking))))) return;
-    current.replied = true;
-    if (!state.sessionId) {
-      const name = marker(ctx.cwd);
-      // A marker may disappear between the initial injection and the first reply.
-      if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
-        ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
-      state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: current.started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared" }).id;
-      if (name) memory.declareProject(state.sessionId, name, "marker");
-      state.projectId = memory.store.getSession(state.sessionId)!.projectId;
-      append();
-    }
-    current.partial = text(message);
-    flush();
-    if (ended) { current.completed = [current.completed, current.partial].filter(Boolean).join("\n"); current.partial = ""; save(); }
+    allocate(current.started);
+    reconcile();
+    // Preserve the pre-17b answered-Turn accounting, including thinking-only replies.
+    if (current.id && memory.store.getTurn(current.id)!.assistantText === null) memory.store.updateTurn(current.id, { assistantText: "" });
   };
-  pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context, false); });
-  pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context, true); });
-  pi.on("tool_result", event => {
-    persistState();
-    if (current?.id) memory.store.appendToolCall({ turnId: current.id, name: event.toolName, input: JSON.stringify(event.input), result: JSON.stringify({ content: event.content, details: event.details }), status: event.isError ? "failure" : "success" });
-  });
+  pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
+  pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
+  pi.on("tool_result", (_event, context) => { ensure(context); persistState(); });
+  pi.on("agent_end", (_event, context) => { ensure(context); persistState(); });
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
     // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
@@ -462,7 +520,7 @@ export default function (pi: ExtensionAPI) {
   // wrapped with an executor bound to the current session and turn.
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
-      ensure(context);
+      ensure(context); reconcile();
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
       const content = bound.find(t => t.name === definition.name)!.execute(raw);

@@ -7,9 +7,10 @@ export type { ListingOptions, SearchScope } from "./read.ts";
 import { realpathSync } from "node:fs";
 import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
-export { tokens } from "../render/index.ts";
+export { tokens, renderEntry, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
-import { Store, type KnowledgePath } from "../store/index.ts";
+import { Store, type SourceInput, type SourceEntry, type KnowledgePath } from "../store/index.ts";
 
 import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
 export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
@@ -22,6 +23,8 @@ let memoryDatabaseId = 0;
 
 export interface TraceMemoryConfig {
   render: {
+    toolCallTokens: number;
+    entryTokens: number;
     commandTokens: number;
     stdoutHeadTokens: number;
     stdoutTailTokens: number;
@@ -48,6 +51,8 @@ export interface TraceMemoryConfig {
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   render: {
+    toolCallTokens: 1_000,
+    entryTokens: 10_000,
     commandTokens: 120,
     stdoutHeadTokens: 60,
     stdoutTailTokens: 120,
@@ -104,6 +109,9 @@ export interface TraceMemory {
   readonly store: Store;
   readonly config: TraceMemoryConfig;
   close(): void;
+  appendEntry(input: SourceInput): SourceEntry;
+  selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
+  pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
   tools(context: ToolContext): ToolDefinition[];
   record(input: RecordInput): Promise<RecordResult>;
   integrate(input: IntegrateInput): Promise<IntegrateResult>;
@@ -129,6 +137,9 @@ export interface TraceMemory {
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
   const store = new Store(dbPath);
   const cfg = mergeConfig(DEFAULT_CONFIG, config);
+  for (const key of ["toolCallTokens", "entryTokens"] as const) {
+    if (!Number.isSafeInteger(cfg.render[key]) || cfg.render[key] < 1) { store.close(); throw new Error(`Invalid render.${key}: expected a positive integer`); }
+  }
 
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);
   const trace = (address: string, display: ListingOptions = {}): string => {
@@ -219,7 +230,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
-    return finish(renderTurn(turn, calls, cfg.render, options));
+    const originals = options.full ? calls.map(call => {
+      const results = store.listSourceEntries(turn.sessionId).filter(e => e.turnId === turn.id && e.role === "toolResult")
+        .flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
+      return results.length < 2 ? call : { ...call, status: "multiple results", result: results.map(({ entry: e, call: c }) =>
+        `[entry ${JSON.stringify([e.nativeLineage, e.nativeId])}] status=${c.status}\n${c.result ?? ""}`).join("\n") };
+    }) : calls;
+    return finish(renderTurn(turn, originals, cfg.render, options));
   };
 
   const read = readFacade(store, cfg, trace);
@@ -232,6 +249,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     store,
     config: cfg,
     close: () => store.close(),
+    appendEntry: input => store.appendSourceEntry(input),
+    selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
+    pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     tools: (context) => bindTools(store, read, context, undefined, undefined, { deliverFacts, deliverKnowledge }).tools,
     record: async (input) => {
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);

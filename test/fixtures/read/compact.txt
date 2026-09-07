@@ -8,7 +8,7 @@
 <episodic>
 Raw:
 
-[S1/T2] 2026-09-06T00:00:00Z [turn]
+[S1/T2] [entry ["fixture","message-2"]]
 [Source entry id: T2#user]
 能不能从贴图推断
 

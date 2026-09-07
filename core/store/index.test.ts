@@ -47,7 +47,7 @@ describe("schema", () => {
       "runs",
       "knowledge_marks",
       "pending_deliveries",
-      "watermarks",
+      "source_entries", "source_paths", "recorded_entries",
       "idx_knowledge_project",
       "idx_runs_session",
     ]) {
@@ -460,8 +460,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       "UPDATE knowledge SET origin_session_id = 999999",
       `INSERT INTO knowledge_links VALUES (${id}, 999, 'merged_into', ${id}, 1)`,
       `INSERT INTO knowledge_links VALUES (${id}, 1, 'merged_into', ${id}, 999)`,
-      "INSERT INTO watermarks VALUES (999999, 'main', NULL)",
-      `INSERT INTO watermarks VALUES (${s.id}, 'main', 999999)`,
+      "INSERT INTO source_paths VALUES (999999, 'main', '[]')",
+      `INSERT INTO recorded_entries VALUES (999999, 999999)`,
       "INSERT INTO integrated_facts VALUES (999999, 1)",
       "INSERT INTO integrated_facts VALUES (1, 999999)",
     ]) expect(() => store.db.exec(sql)).toThrow(/FOREIGN KEY constraint failed/);
@@ -546,12 +546,13 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const fact = { category: "observation" as const, actor: "user" as const, text: "x", source: ["T1#user"], createdAt: integrationAt };
     const foreignTurn = store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt }, facts: [{ ...fact, turnId: t2.id }] });
     expect(foreignTurn.ok).toBe(false);
-    const foreignWatermark = store.commitRecordingRun({
+    // 17a supersedes Turn watermark writes with exact entry membership.
+    const foreignEntry = store.commitRecordingRun({
       run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt },
       facts: [{ ...fact, turnId: t.id }],
-      watermark: { sessionId: s2.id, branch: "main", lastRecordedTurn: t.id },
+      entryIds: [999999],
     });
-    expect(foreignWatermark.ok).toBe(false);
+    expect(foreignEntry.ok).toBe(false);
     const foreignDelivery = store.commitRecordingRun({
       run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: integrationAt },
       facts: [{ ...fact, turnId: t.id }],

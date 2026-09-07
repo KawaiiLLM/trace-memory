@@ -9,7 +9,7 @@ A coding agent forgets what was discussed, decided, and found a few compactions 
 
 ## Solution
 
-Two layers of memory extracted automatically from the conversation, each claim traceable back to its source turn. Recordings turn raw turns into facts; integration turns facts into durable knowledge; the agent gets knowledge at session start and at compaction, and can trace any knowledge to its facts and to the raw. Compaction is instant and never calls a model. The main agent and the user carry no memory duty.
+Two layers of memory extracted automatically from the conversation, each claim traceable back to its source turn. Recordings turn completed source entries into facts; integration turns facts into durable knowledge; the agent gets knowledge at session start and at compaction, and can trace any knowledge to its facts and to the raw. Compaction is instant and never calls a model. The main agent and the user carry no memory duty.
 
 ## User Stories
 
@@ -33,7 +33,7 @@ Two layers of memory extracted automatically from the conversation, each claim t
 18. As a main agent, I want a compaction block that contains the knowledge, the recent facts, and the raw since the last recording, so that I can continue work without a summary.
 19. As a main agent, I want a fact's later strong negations shown when I trace it, so that I do not act on an overturned claim.
 20. As a main agent, I want a knowledge item's revision history with the facts that triggered each revision, so that I can see how a conclusion evolved.
-21. As a Recorder, I want the raw since the watermark rendered per turn with tool calls structured (metadata, command, stdout, stderr), so that I can judge completion levels from evidence.
+21. As a Recorder, I want pending completed entries rendered with their owning Turn addresses, tool identity and execution status, so that I can judge completion levels from evidence.
 22. As a Recorder, I want the facts written earlier in the session shown to me, so that I do not rewrite what exists.
 23. As a Recorder, I want to reference facts written earlier in this batch by a local handle, so that I never guess ids.
 24. As a Recorder, I want each fact validated on shape only (categories, actors, event status, relations to existing facts, no ids in text) with per-item results, so that structural mistakes come back immediately and nothing half-written lands.
@@ -55,12 +55,12 @@ Two layers of memory extracted automatically from the conversation, each claim t
 
 - `core/model`: types for Turn, Fact, Knowledge, KnowledgeRevision, RunRecord; shape validation only (category enums, actor enum, relation shape `[id, strong|weak]`, event `status`, no ids in fact text, local handle syntax `$n`, the one knowledge operation shape).
 - `core/store`: SQLite behind one interface. Global autoincrement ids for turns, facts, knowledge. Tables: sessions, projects, turns, tool_calls (name, input, result, status, ordinal within turn), facts, fact_relations (from, to, kind support|negate, strength), knowledge, knowledge_revisions (text, category, scope, supports, because, op, run id, time; creation is revision 1), knowledge_links (merged_into with the survivor's revision; split_from), runs (kind, session, range, prompt version, model, input as sent, output, outcome success|failure|cancelled, time), knowledge_marks (knowledge revision, verified|flagged, time), pending_deliveries (recording results awaiting injection into a session). Referential checks and revision matching live here. All writes of one run are one transaction.
-- `core/recording`: builds the recording input (rendered raw since the watermark, recent facts by freshness, active knowledge, the range), calls `runAgent` with the four tool definitions bound to the run, and commits the one `note` batch the model submits (facts, run record, watermark, pending delivery) in one transaction.
+- `core/recording`: builds the recording input (rendered pending entry views, recent facts by freshness, active knowledge, the range), calls `runAgent` with the four tool definitions bound to the run, and commits the one `note` batch the model submits (facts, run record, exact entry progress, pending delivery) in one transaction.
 - `core/integration`: builds the integration input (all facts in range with annotations, context facts by freshness, active knowledge, the negated-evidence reminder), calls `runAgent` with the bound tools, answers the first `memory` batch with NEAR, CLOSER and the checklist, and on the second batch runs accounting (every user fact and question in range cited or listed in `skipped`), applies create/update/merge/archive as revisions, and commits with the run record. Diagnostics (numbers not found in cited facts, an item over 200 tokens, NEAR without an update or merge after the feedback round) are reported, never rejected.
-- `core/render`: one renderer. Turn rendering: user message and assistant text uncut; per tool call a fixed metadata line (ordinal `#t<n>`, tool, status, omission flag), command cut at line boundaries to a token cap, stdout head/tail, stderr tail, reads and searches as name plus path, memory-tool writes as a receipt line, reports head/tail; every cut carries an omission marker with the count. Fact line and knowledge line formats per CONTEXT.md, relations at line end with continuation lines for quote and source. XML injection blocks with a fixed header, category tags in fixed order, no volatile attributes; dynamic receipts appended after the stable content. Budgets are parameters; defaults: command 120 tokens, stdout 60 head 120 tail, stderr 120 tail, reports 200 head 80 tail, knowledge block 10K, episodic block 20K (oldest facts dropped first, raw tail kept). Token estimate is a local heuristic, no tokenizer dependency. Grilling Q12 ruled two weights over character classes, 0.75 per CJK character and 0.25 per other; measured against a real tokenizer that ran 28% low on Chinese and 46% high on English prose, and refitting the two constants left the Chinese shortfall at 23%, because the residual is not on that axis. The user ruled for the segment method on 2026-09-07: the text is split on whitespace and punctuation runs and each segment is priced by its own rule (CJK by script, digit runs by three, short segments and common lowercase words at one token, punctuation runs, a default ratio otherwise), the shape used by tokenx, whose ratios are calibrated against o200k_base. Two rules are ours and measured here: runs are priced across letter/digit boundaries, because this project's own addresses are that shape in every line a budget measures, and a run of horizontal whitespace costs the single token a tokenizer holds for it whatever its width. Accuracy over 20 corpora of this project's text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting only wastes budget room while under-counting overruns it, so the estimate is allowed to run high and held close on the low side. `core/render/index.test.ts` pins the bound against true counts recorded offline; Claude's tokenizer is not public, so o200k stands in for it.
+- `core/render`: one shared entry renderer for automatic Raw (see Completed source entries and compressed Raw below). Explicit Turn preview rendering: user message and assistant text uncut; per tool call a fixed metadata line (ordinal `#t<n>`, tool, status, omission flag), command cut at line boundaries to a token cap, stdout head/tail, stderr tail, reads and searches as name plus path, memory-tool writes as a receipt line, reports head/tail; every cut carries an omission marker with the count. Fact line and knowledge line formats per CONTEXT.md, relations at line end with continuation lines for quote and source. XML injection blocks with a fixed header, category tags in fixed order, no volatile attributes; dynamic receipts appended after the stable content. Budgets are parameters; defaults: command 120 tokens, stdout 60 head 120 tail, stderr 120 tail, reports 200 head 80 tail, knowledge block 10K, episodic block 20K (oldest facts dropped first, raw tail kept). Token estimate is a local heuristic, no tokenizer dependency. Grilling Q12 ruled two weights over character classes, 0.75 per CJK character and 0.25 per other; measured against a real tokenizer that ran 28% low on Chinese and 46% high on English prose, and refitting the two constants left the Chinese shortfall at 23%, because the residual is not on that axis. The user ruled for the segment method on 2026-09-07: the text is split on whitespace and punctuation runs and each segment is priced by its own rule (CJK by script, digit runs by three, short segments and common lowercase words at one token, punctuation runs, a default ratio otherwise), the shape used by tokenx, whose ratios are calibrated against o200k_base. Two rules are ours and measured here: runs are priced across letter/digit boundaries, because this project's own addresses are that shape in every line a budget measures, and a run of horizontal whitespace costs the single token a tokenizer holds for it whatever its width. Accuracy over 20 corpora of this project's text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting only wastes budget room while under-counting overruns it, so the estimate is allowed to run high and held close on the low side. `core/render/index.test.ts` pins the bound against true counts recorded offline; Claude's tokenizer is not public, so o200k stands in for it.
 - `core/api`: the façade `TraceMemory(dbPath, runAgent, config)` exposing `record`, `integrate`, `compact`, `inject`, `deliver`, `trace`, `search`, `status`, `declareProject`, `mark`, and `tools(context)` returning the four model-facing tool definitions bound to a run or to the main agent's session. Hosts call only this.
 - `core/prompts`: `recording.md`, `integration.md`, versioned by content hash recorded in runs.
-- `hosts/pi`: registers `agent_settled` (triggers recording when ≥5 answered turns or ≥50K tokens since the watermark; triggers integration when ≥50 unintegrated facts), `session_before_compact` (returns the compaction block, cancels nothing, calls no model), `session_before_tree` (finishes recordings on the abandoned branch, returns its facts as the summary), `before_agent_start` (injects the knowledge block at session start and any pending recording deliveries), the four tools from `tools(context)` (`trace`, `search`, `note`, `memory`), command `/trace` (read-only status; `/trace project <name>` declares the project; `/trace mark K<n> <kind>` marks a knowledge item). Implements `runAgent` two ways: branch mode builds a pi-ai call whose system prompt and messages are byte-identical to the session's current request plus one appended user message; subagent mode builds a fresh call with the rendered input. Recording defaults to branch mode with the session model; integration defaults to subagent mode with the session model; both overridable. In branch mode the appended message carries only the recording prompt and the range: the raw turns, the facts delivered after earlier recordings, and the injected knowledge are already in the conversation (user ruling 2026-09-06 08:53). That premise fails for a recording result committed after the current prompt started, since deliveries land at prompt start: the host does not start a branch recording while such a result is undelivered and lets the next turn stop start it. Subagent mode carries the full rendered input. In integration branch mode the candidate round appends the integration prompt, the range and the exact list of facts to integrate to the captured prefix, and the final round appends the candidate reply (replayed in the provider's native assistant shape) and the feedback message to the verified candidate request. Tool calls in either mode are executed and the model is called again on the extended request (see Write tools).
+- `hosts/pi`: registers `agent_settled` (triggers recording when ≥5 answered turns or ≥50K original Raw tokens since the derived fully processed Turn boundary; triggers integration when ≥50 unintegrated facts), `session_before_compact` (returns the compaction block, cancels nothing, calls no model), `session_before_tree` (finishes recordings on the abandoned branch, returns its facts as the summary), `before_agent_start` (injects the knowledge block at session start and any pending recording deliveries), the four tools from `tools(context)` (`trace`, `search`, `note`, `memory`), command `/trace` (read-only status; `/trace project <name>` declares the project; `/trace mark K<n> <kind>` marks a knowledge item). Implements `runAgent` two ways: branch mode builds a pi-ai call whose system prompt and messages are byte-identical to the session's current request plus one appended user message; subagent mode builds a fresh call with the rendered input. Recording defaults to branch mode with the session model; integration defaults to subagent mode with the session model; both overridable. In branch mode the appended message carries the recording prompt, range, head reply and frozen source index: the raw turns, the facts delivered after earlier recordings, and the injected knowledge are already in the conversation (user ruling 2026-09-06 08:53). That premise fails for a recording result committed after the current prompt started, since deliveries land at prompt start: the host does not start a branch recording while such a result is undelivered and lets the next turn stop start it. Subagent mode carries the full rendered input. In integration branch mode the candidate round appends the integration prompt, the range and the exact list of facts to integrate to the captured prefix, and the final round appends the candidate reply (replayed in the provider's native assistant shape) and the feedback message to the verified candidate request. Tool calls in either mode are executed and the model is called again on the extended request (see Write tools).
 - `hosts/cc`: placeholder; not in v1.
 
 ### Contracts
@@ -75,7 +75,7 @@ Two layers of memory extracted automatically from the conversation, each claim t
 
 ### Vocabulary (user ruling 2026-09-07)
 
-The two phases are Recording (the Recorder writes facts) and Integration (the Integrator writes knowledge). "Note", "settle", "entry", and "settlement" are retired: modules, prompts, run kinds (`recording` | `integration` | `manual`), configuration keys, façade methods, tables (`knowledge`, `knowledge_revisions`, `knowledge_links`, `knowledge_marks`), and the address prefix (`K<n>` replaces `E<n>`) follow the new words. The rest of this document is swept by the rename ticket; until then, read note = recording, settle = integration, entry = knowledge.
+The two phases are Recording (the Recorder writes facts) and Integration (the Integrator writes knowledge). "Note", "settle", "entry" as a synonym for knowledge, and "settlement" are retired: modules, prompts, run kinds (`recording` | `integration` | `manual`), configuration keys, façade methods, tables (`knowledge`, `knowledge_revisions`, `knowledge_links`, `knowledge_marks`), and the address prefix (`K<n>` replaces `E<n>`) follow the new words. Source entry now names a completed native conversation occurrence; it is never a synonym for knowledge.
 
 ### Write tools (user ruling 2026-09-07, shape refined 2026-09-07)
 
@@ -109,29 +109,72 @@ Knowledge is git-like: `K<n>` is a stable identity; every change is an immutable
 
 The simulation driver's validation and application logic is the executable prototype of `core/model`, `core/integration` accounting, and revision application; port its behaviour, not its Python.
 
+### Completed source entries and compressed Raw (17a, 2026-09-08)
+
+A source entry is a completed user, assistant or tool-result message, identified by
+its native entry id within its session lineage and owning Trace Memory session.
+It retains its owning Turn and native tool-call occurrence identities with stable
+Turn tool ordinals. Repeated identical assistant messages are distinct occurrences.
+Only persisted ancestry supplies identities: Pi persists messages after extension
+`message_end` hooks, so the host reconciles at the next safe boundary and on attach.
+Earlier native history is imported, known identities reused and missing parents or
+owning user entries reported without inventing content. Streaming, thinking-only,
+empty, plugin, state, compaction-summary and background-worker messages are excluded.
+
+One renderer supplies subagent Recording, fallback, compaction and branch-carry Raw.
+`render.toolCallTokens = 1000` limits each call's name, identity, arguments, result,
+status and labels; arguments and result permanently reserve half each, leaving two
+tokens for joining fragments. `render.entryTokens = 10000` then limits the complete
+entry, including natural language, all source labels and omission markers. Values
+are decimal positive safe integers in the existing configuration system. Oversized
+lines and JSON values retain character-level head and tail with omission counts
+and `middle not inspected` markers. Impossible metadata capacity reports an error;
+unprocessed entries remain pending. Existing outer budgets measure the compressed
+views, retain whole pending views with overage receipts, and omit whole older facts.
+The shared token estimator is unchanged. Original native messages and complete tool
+arguments/results are retained; explicit full trace reads retrieve them under the
+existing pagination protocol. Default explicit trace previews retain their contract.
+
+Branch-mode Recording reads the uncompressed captured provider prefix and gains
+nothing from this view, as accepted on 2026-09-08. Its request remains that exact
+prefix plus one user message containing the instruction, range, head reply and
+frozen source index. Exact-prefix verification and fallback stay unchanged.
+
+Recording progress is exact entry membership on a path. Each run freezes its entry
+set and records native identities, owning Turns, branch, view-budget version/values
+and exact omission markers in `entryAudit`. Success, including zero facts, commits
+only those entries atomically with facts, the run and applicable deliveries. Later
+same-Turn entries remain pending and cannot become eligible citations for that run.
+Reads remain unrestricted. Shared processed entries are inherited on forks; native
+ancestry determines selected membership, independent of delivery confirmation.
+There is no Turn-coverage migration, compatibility translation or second delivery
+protocol. A derived fully processed Turn boundary preserves current triggers and
+Integration batching only. Ticket 17b changes timing and batching; 17c adds closure
+and catch-up. Neither is implemented by 17a.
+
 ### Run boundaries
 
-- A recording run freezes, at start: the session, the branch, the raw range end (the last turn present when the trigger fired), and the knowledge revisions it read. On success it commits its facts, the run record, the watermark advanced exactly to that range end, and a pending delivery bound to that branch — all in one transaction. It never advances to turns that arrived while it ran; those wait for the next trigger.
+- A recording run freezes, at start: the session, the branch, the exact pending source-entry identities on the selected ancestry, their owning Turns and immutable views, and the knowledge revisions it read. On success it commits its facts, the run record, only those entry identities marked processed, and a pending delivery bound to that branch — all in one transaction. It never processes entries that arrived while it ran, even inside the same Turn; those wait for the next trigger.
 - An Integration run freezes the fact range and the knowledge revisions it read. It applies operations only on top of those revisions; if an item moved on meanwhile, that operation is rejected with the reason and, as for any rejection, the batch writes nothing: the Integrator resubmits without it or after re-reading. (Supersedes the earlier "the rest commit" rule; the write-tools ruling makes every batch atomic.)
 - Within one process, at most one recording run and one integration run per session-branch at a time; a trigger that fires while one is running is dropped (the next trigger re-evaluates). An Integration run covers only that session-branch's own facts; sessions of one project integrate separately (user ruling 2026-09-06 09:43). No leases across processes in v1.
 - Failure or cancellation commits nothing but the run record. A run's business result is whether a batch committed: once the write tool has committed the batch, the run record, the watermark and the delivery in one transaction, the run is a `success` whatever the model does afterwards; a provider failure after that point is recorded in the run record's response only, and a committed batch is never undone. `failure` / `cancelled` (nothing committed), `bounced` (last submission rejected, never corrected), and success with zero facts (stopped normally without submitting) are therefore mutually exclusive. A branch switch while a recording run is pending lets the run finish against its frozen branch; its delivery goes to that branch only. The branch summary for the abandoned branch uses committed facts plus the rendered raw for anything still unrecorded; it never silently drops raw.
 - Two behaviour cases the tests must cover: a new turn arrives while the model has not returned; the user switches branch while the model has not returned.
 - Integration batches (user ruling 2026-09-07): the unintegrated-fact threshold is only the trigger; the batch is cut at turn boundaries. A run takes the unintegrated facts of fully recorded turns on its branch, in path order, one whole turn at a time until the count reaches the threshold; the turn still being recorded never enters a batch, nothing enters before the branch's first successful recording, and what is left waits for the next turn stop. Integration progress is a set, not a scalar (peer review 2026-09-07: facts reach a path out of id order, so a "last integrated fact" watermark skipped pending facts): each Integration run records which facts it took, and a fact counts as integrated on a path when one of the runs that took it took only facts on that path.
-- A Pi fork or clone whose copied path carries Trace Memory state continues the same Trace Memory session on a new branch id: same facts, same project, sibling-branch rules apply, and the new branch inherits the recording watermark of its nearest recorded ancestor, so shared turns are recorded once; integration progress needs no inheritance, since it is per fact and judged against the new branch's own path. A copy without plugin state starts a new session.
+- A Pi fork or clone whose copied path carries Trace Memory state continues the same Trace Memory session on a new branch id: same facts, same project, sibling-branch rules apply, and the new branch inherits processed shared entry identities, so shared entries are recorded once; integration progress needs no inheritance, since it is per fact and judged against the new branch's own path. A copy without plugin state starts a new session.
 - **Backfill is decided by the consumer** (user ruling 2026-09-07): a branch Recorder reads earlier facts out of the conversation, so its appended message carries only the range; a branch Integrator reads earlier facts and the current knowledge, so its appended message carries only the range and the exact fact list. A successful Recording therefore leaves a fact delivery when either kind runs in branch mode, and a successful Integration leaves a knowledge-change delivery (`<integrated>`, the commits of that run) when Integration runs in branch mode. With both kinds in subagent mode nothing is delivered, because nothing reads it. The batch is listed fact by fact rather than as an `F..F` span: whole recorded turns are cut at a turn boundary, so not every address between the ends is in it. Facts the conversation does not hold, manual notes among them, are fetched with `trace`. The session-start knowledge injection and the compaction block are separate and unaffected; a branch run whose facts were dropped from a compaction block fetches them the same way.
 - A branch run does not start while a delivery it would read is pending: a branch Recording waits for a pending fact delivery, a branch Integration waits for either kind. The run starts at the next prompt's turn stop, one prompt behind.
 - Deliveries and the first knowledge injection are confirmed at the turn's `agent_settled`, after Pi has persisted the message; only the run ids that prompt took are confirmed, results committed during the turn wait for the next prompt, and confirmation is bound to the ids, not to the current session state. A turn that never settles delivers or injects again: duplicates are allowed before confirmation, silent loss is not (user ruling 2026-09-07).
 
 ### Overflow policy
 
-- Compaction never refuses and never calls a model. The episodic block is assembled in this order: raw since the watermark (kept whole, rendered with the standard cuts), then recent facts newest-first until the 20K budget is reached. If the raw alone exceeds the budget it is still kept whole and the receipt states the overage; nothing unrecorded is dropped.
+- Compaction never refuses and never calls a model. The episodic block is assembled in this order: pending completed entry views (kept whole, each bounded by the shared view limits), then recent facts newest-first until the 20K budget is reached. If the raw alone exceeds the budget it is still kept whole and the receipt states the overage; nothing unrecorded is dropped.
 - The knowledge block is assembled in category order; whole categories from the end of the order (reference, term, mechanism, …) are left out when the 10K budget is reached, and the receipt names the count and the trace address to fetch them. Constraints, open items, and disputes are never left out.
 - A recording run in subagent mode may fetch any tool call's full text by address (the same read path as trace); the run record lists what it fetched. Evidence it did not fetch stays at the level the preview supports: a cut result cannot justify `completed:`; a cut report is `reported:`.
 
 ### Run record contract
 
 - `runAgent(input) → {outcome: success|failure|cancelled, output, usage, request}` where `request` is the exact request as sent to the provider (system prompt, messages, tool definitions), filled by the host. The core stores `request`, never its own assembled input, as the record of what the model saw.
-- Every attempt that ends is recorded: success, bounced outputs, feedback rounds, failures, and cancellations. A process death before the commit leaves no run record; the raw and the watermark are untouched and the range is re-run at the next trigger (user ruling 2026-09-07: business safety, not per-attempt audit). Business writes are one transaction per successful run; run records are written regardless.
+- Every attempt that ends is recorded: success, bounced outputs, feedback rounds, failures, and cancellations. A process death before the commit leaves no run record; the raw and entry progress are untouched and the range is re-run at the next trigger (user ruling 2026-09-07: business safety, not per-attempt audit). Business writes are one transaction per successful run; run records are written regardless.
 - Branch-mode verification compares request bodies structurally (system prompt and message prefix) against the session's own last provider request; cache-read usage is an additional observation, never the proof. The verification is re-run whenever the model, provider, or tool definitions change.
 
 ### Integration feedback loop
@@ -146,7 +189,7 @@ The initial integration input separately lists every visible active knowledge wh
 ### Visibility rule
 
 - Injection and integration see: global knowledge, the current project's project knowledge, and session knowledge of the current session only. Another session's session knowledge is never visible. An undeclared session's project is itself.
-- Reads are not restricted (user ruling 2026-09-07 「为什么要限制可见性，没必要」): `trace` and `search` resolve any existing address in any project or session; the scope rule above applies to injection and Integration only. Writes still cite only the calling session's sources.
+- Reads are not restricted (user ruling 2026-09-07: no need to restrict visibility): `trace` and `search` resolve any existing address in any project or session; the scope rule above applies to injection and Integration only. Writes still cite only the calling session's sources.
 
 ### Prompt and spec synchronization
 
@@ -162,17 +205,19 @@ turns           id · session_id · ordinal · parent_turn_id · kind (turn | co
 tool_calls      id · turn_id · ordinal · name · input · result · status
 facts           id · turn_id · category · actor · text · quote · source · created_at
 fact_relations  from_fact · to_fact · kind (support | negate) · strength (strong | weak)
-knowledge         id · project_id · status (active | merged | archived) · author · current_revision
-knowledge_revisions id · knowledge_id · rev (from 1) · text · category · scope · supports · op · because · run_id · created_at
-knowledge_links     from_knowledge · from_rev · kind (merged_into | split_from) · to_knowledge · to_rev
-runs            id · kind (recording | integration) · session_id · branch · range_from · range_to · prompt_hash · model · mode · request · response · outcome · created_at
-knowledge_marks knowledge_id · rev · kind (verified | flagged) · created_at
+knowledge         id · project_id · origin_session_id · author
+knowledge_revisions id · knowledge_id · parent_id · text · category · scope · supports · op · because · run_id · created_at
+knowledge_links     from_knowledge · from_commit · kind (merged_into | split_from) · to_knowledge · to_commit
+runs            id · kind (recording | integration | manual) · session_id · branch · range_from · range_to · prompt_hash · model · mode · request · response · outcome · created_at
+knowledge_marks knowledge_id · commit_id · kind (verified | flagged) · created_at
 pending_deliveries  run_id · session_id · branch · delivered_at
-watermarks      session_id · branch · last_recorded_turn
+source_entries  id · session_id · native_lineage · native_id · turn_id · content (role, text, raw message, stable tool fragments)
+source_paths    session_id · branch · entry_ids (selected native ancestry, not queue state)
+recorded_entries entry_id · run_id (successful processing membership)
 integrated_facts  fact_id · run_id
 ```
 
-Indexes: knowledge by project and status; runs by session. Search is a literal substring match (LIKE) over fact text, knowledge revision text and raw; no FTS, no ranking (user ruling 2026-09-07).
+Indexes: knowledge by project; runs by session. Search is a literal substring match (LIKE) over fact text, knowledge revision text and raw; no FTS, no ranking (user ruling 2026-09-07).
 
 ## Testing Decisions
 
