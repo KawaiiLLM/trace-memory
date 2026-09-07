@@ -165,6 +165,7 @@ test("a model switch during the integration candidate round does not redirect or
   });
   await h.emit("before_provider_request", { payload: payload() });
   await h.turn();
+  await h.prompt(); // the recording's facts reach the conversation; only then may a branch Integrator read them
   await h.emit("agent_settled"); await h.drain();
   h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-integration.
   release(); await h.drain();
@@ -201,6 +202,7 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
   });
   await h.emit("before_provider_request", { payload: payload() });
   await h.turn();
+  await h.prompt(); // the recording's facts reach the conversation first
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(2); expect(complete).toHaveBeenCalledTimes(3);
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
@@ -227,6 +229,7 @@ test("integration branch mode without a capture falls back to subagent for both 
   disposers.push(h.dispose);
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? integrationOutput : recordingFact(c));
   await h.turn();
+  await h.prompt(); // the recording's facts reach the conversation first
   await h.emit("agent_settled"); await h.drain();
   expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(5);
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");

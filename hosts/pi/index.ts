@@ -205,7 +205,7 @@ export default function (pi: ExtensionAPI) {
         }
       }
       // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
-      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
+      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
         tools: toolDefinitions as unknown as Tool[] };
       const { reply, usage, retries } = await converse(suffix => {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round
@@ -403,17 +403,23 @@ export default function (pi: ExtensionAPI) {
         .finally(() => { pending.delete(promise); activity.running.set(kind, (activity.running.get(kind) ?? 1) - 1); showSpend(context); });
     };
     const recordingLaunch = launch("recording");
-    // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is
-    // already in the conversation. A result committed after this prompt started is not delivered
-    // until the next prompt, so the recording waits for that prompt's turn stop.
-    const undelivered = memory.store.listPendingDeliveries(sessionId, branch).length > 0;
+    // A branch run carries only its instruction (ruling 08:53): it presumes every earlier result is already
+    // in the conversation. A result committed after this prompt started is not delivered until the next
+    // prompt, so a branch run waits for that prompt's turn stop.
+    // A branch Recorder reads earlier facts, so a pending fact delivery holds it; a branch Integrator reads
+    // facts and current knowledge, so either pending kind holds it (user ruling 2026-09-07).
+    const undelivered = new Set(memory.store.listPendingDeliveries(sessionId, branch).map(p => memory.store.getRun(p.runId)?.kind));
+    const paused = (kind: "recording" | "integration", mode: string | undefined) =>
+      mode === "branch" && (kind === "recording" ? undelivered.has("recording") : undelivered.size > 0);
     const due = answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens;
-    if (due && recordingLaunch.mode === "branch" && undelivered) { activity.last = "warning"; showSpend(context); } // paused until the next prompt delivers
-    if (due && !(recordingLaunch.mode === "branch" && undelivered))
+    if (due && paused("recording", recordingLaunch.mode)) { activity.last = "warning"; showSpend(context); }
+    if (due && !paused("recording", recordingLaunch.mode))
       background("recording", recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
+    const integrationLaunch = launch("integration");
     const count = memory.store.integrationBatch(sessionId, branch, memory.config.integration.triggerUnintegratedFacts).length;
-    if (count >= memory.config.integration.triggerUnintegratedFacts)
-      background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...launch("integration") }));
+    if (count >= memory.config.integration.triggerUnintegratedFacts && paused("integration", integrationLaunch.mode)) { activity.last = "warning"; showSpend(context); }
+    if (count >= memory.config.integration.triggerUnintegratedFacts && !paused("integration", integrationLaunch.mode))
+      background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...integrationLaunch }));
   });
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);

@@ -81,7 +81,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
-      return store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("recorded", facts.map((f) => factLine(f.id)).join("\n")) : "");
+      return store.deliver(sessionId, branch, (facts, commits) => [
+        facts.length ? xmlBlock("recorded", facts.map((f) => factLine(f.id)).join("\n")) : "",
+        commits.length ? xmlBlock("integrated", commits.map((r) => knowledgeLine({ knowledge: store.getKnowledge(r.knowledgeId)!, revision: r })).join("\n")) : "",
+      ].filter(Boolean).join("\n\n"));
     },
     // Ruling 2026-09-07: a delivery is confirmed only after the host persisted it (at the turn's stop);
     // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.

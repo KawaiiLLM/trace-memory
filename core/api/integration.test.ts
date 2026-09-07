@@ -483,3 +483,16 @@ test("same-project sessions commit independently while another session is pendin
   expect(integrated(first)).toBe(true);
   expect(integrated(second, "main", otherSession)).toBe(true);
 });
+
+test("2026-09-07: a branch Integration appends the exact fact list and leaves fact lines and knowledge to the conversation", async () => {
+  const first = fact(); const second = fact(memories.observation);
+  await memory.integrate({ sessionId, branch: "main", mode: "subagent" }); // the queue is empty; only the rendered input matters here
+  expect(calls[0]!.input).toContain("Active knowledge:");
+  expect(calls[0]!.input).toContain("Range facts:");
+  await memory.integrate({ sessionId, branch: "main", mode: "branch" });
+  const appended = calls[1]!.input;
+  expect(appended).toContain(`Facts to integrate: F${first}, F${second}`); // the exact set, not the F..F span
+  expect(appended).not.toContain("Active knowledge:");
+  expect(appended).not.toContain("Range facts:");
+  expect(calls[1]!.subagentInput).toContain("Active knowledge:"); // the full context stays available for a host fallback
+});

@@ -28,6 +28,8 @@ export interface IntegrationAgentInput {
   prompt: string;
   promptHash: string;
   input: string;
+  /** Frozen full context for a host fallback after branch verification fails. */
+  subagentInput: string;
   tools: import("../api/tools.ts").ToolDefinition[];
   reportRequest(request: unknown): void;
 }
@@ -89,9 +91,16 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
   const recent = episodic.recent, knowledgeLines = active.groups.map((g) => g.text);
   const receipts = [...episodic.receipts, ...active.receipts];
-  const initial = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
+  const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
     "Already-integrated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
+  // In branch mode the fact lines and the active knowledge are already in the conversation, delivered
+  // after the runs that wrote them. The batch is listed fact by fact: whole recorded turns are cut at a
+  // turn boundary, so the addresses between `from` and `to` are not all in it.
+  const branchInput = [`Range: ${range.from}..${range.to}`,
+    `Facts to integrate: ${rangeFacts.map((f) => `F${f.id}`).join(", ")}`,
+    `Negated-evidence reminder (review cues only; no status derived):\n${reminders.join("\n\n") || "none"}`].join("\n\n");
+  const initial = mode === "branch" ? branchInput : subagentInput;
   const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
   const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}` +
@@ -110,7 +119,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     return { text: feedback, near };
   } });
   let result: RunAgentResult;
-  try { result = await runAgent({ ...structuredClone(base), input: initial, tools: binding.tools, reportRequest: binding.reportRequest }); }
+  try { result = await runAgent({ ...structuredClone(base), input: initial, subagentInput, tools: binding.tools, reportRequest: binding.reportRequest }); }
   catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: error instanceof Error ? error.message : String(error) }; }
   binding.close();
   run.mode = result.mode ?? mode;

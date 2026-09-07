@@ -308,6 +308,7 @@ export interface CommitIntegrationRunInput {
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
   integrated?: number[]; // the batch's fact ids, marked as taken by this run
+  pendingDelivery?: { sessionId: number; branch: string | null }; // knowledge changes awaiting injection
 }
 
 export interface CommittedKnowledgeOp {
@@ -879,6 +880,12 @@ export class Store {
           else throw new Error(outcome.reason);
         }
         for (const factId of input.integrated ?? []) this.markIntegrated(factId, runId, projectId);
+        if (input.pendingDelivery && committed.length) {
+          if (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== (input.run.branch ?? null)) {
+            throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${input.run.branch ?? null})`);
+          }
+          this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
+        }
         if (input.finalizeResponse) {
           this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
         }
@@ -1019,11 +1026,13 @@ export class Store {
   }
 
   /** Renders the pending deliveries without consuming them; the host confirms the run ids it persisted. */
-  deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): { text: string; runIds: number[] } {
+  /** A Recording run delivers its facts, an Integration run its knowledge commits: what each branch-mode consumer reads out of the conversation. */
+  deliver(sessionId: number, branch: string | null, render: (facts: Fact[], commits: KnowledgeRevision[]) => string): { text: string; runIds: number[] } {
     return this.transaction(() => {
       const pending = this.listPendingDeliveries(sessionId, branch);
-      const facts = pending.flatMap((p) => this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(p.runId).map(toFact));
-      return { text: render(facts), runIds: pending.map((p) => p.runId) };
+      const facts = pending.flatMap((p) => this.listFactsByRun(p.runId));
+      const commits = pending.flatMap((p) => this.listCommitsByRun(p.runId));
+      return { text: render(facts, commits), runIds: pending.map((p) => p.runId) };
     });
   }
   confirmDeliveries(runIds: number[]): void {

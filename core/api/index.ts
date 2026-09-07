@@ -223,18 +223,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, trace);
+  // Backfill is decided by the consumer (user ruling 2026-09-07): a branch Recorder reads earlier facts
+  // out of the conversation; a branch Integrator reads facts and current knowledge. With both kinds in
+  // subagent mode nothing is delivered, because nothing reads it.
+  const deliverKnowledge = !cfg.integration.subagentModeDefault;
+  const deliverFacts = cfg.recording.branchModeDefault || deliverKnowledge;
   return {
     store,
     config: cfg,
     close: () => store.close(),
-    tools: (context) => bindTools(store, read, context).tools,
+    tools: (context) => bindTools(store, read, context, undefined, undefined, { deliverFacts, deliverKnowledge }).tools,
     record: async (input) => {
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
       if (inFlightRecordings.has(key)) return { outcome: "dropped" };
       inFlightRecordings.add(key);
       try {
         const frozen = freezeRecording(store, input, cfg);
-        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
+        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run, undefined, { deliverFacts, deliverKnowledge }));
       } finally { inFlightRecordings.delete(key); }
     },
     integrate: async (input) => {
@@ -245,7 +250,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       inFlightIntegrations.add(key);
       try {
         const frozen = freezeIntegration(store, input, cfg);
-        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
+        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review, { deliverFacts, deliverKnowledge }));
       } finally { inFlightIntegrations.delete(key); }
     },
     ...read,

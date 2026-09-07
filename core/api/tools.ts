@@ -41,7 +41,15 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Bare K1 is rejected with several tips; use explicit K1@57 bases.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
+export interface BindOptions {
+  /** Deliveries exist for branch-mode consumers only: a branch Recorder reads earlier facts out of the
+   * conversation, a branch Integrator reads facts and current knowledge. With both kinds in subagent mode
+   * nobody consumes them (user ruling 2026-09-07). */
+  deliverFacts?: boolean;
+  deliverKnowledge?: boolean;
+}
+
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview, options: BindOptions = {}) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
@@ -70,7 +78,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]) }
     : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
-  const memory = bindMemory(store, session.id, run, review, path);
+  const memory = bindMemory(store, session.id, run, review, path, { deliverKnowledge: options.deliverKnowledge === true });
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
@@ -131,7 +139,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "recording" ? context.readKnowledgeCommits : [] }) }, facts: commits,
       responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
-      ...(context.kind === "recording" ? { watermark: { sessionId: session.id, branch: context.branch, lastRecordedTurn: Number(context.range.to.split("/T")[1]) }, pendingDelivery: { sessionId: session.id, branch: context.branch } } : {}) });
+      ...(context.kind === "recording" ? { watermark: { sessionId: session.id, branch: context.branch, lastRecordedTurn: Number(context.range.to.split("/T")[1]) },
+        ...(options.deliverFacts === false ? {} : { pendingDelivery: { sessionId: session.id, branch: context.branch } }) } : {}) });
     if (!committedRun.ok) { problems = committedRun.problems; return JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }); }
     const result = receipt(committedRun.facts.map((f) => f.id));
     if (context.kind === "recording") committed = committedRun;

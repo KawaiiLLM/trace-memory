@@ -55,9 +55,24 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `declareProject(..., "marker")`; a persisted `/trace project` declaration wins on resume.
 - `before_agent_start` injects the knowledge block once per session (by project
   before allocation, by session afterward; after compaction the compaction block
-  already carries the knowledge) and, on every prompt, the pending recording deliveries
-  for this branch. It performs no search. The facade controls category order,
-  chronological ordering, constraints first, and atomic delivery consumption.
+  already carries the knowledge) and, on every prompt, the pending deliveries for
+  this branch: a Recording's facts as `<recorded>`, an Integration's knowledge
+  changes as `<integrated>`. It performs no search. The facade controls category
+  order, chronological ordering, constraints first, and atomic delivery consumption.
+
+  Deliveries exist for branch-mode consumers only. A branch Recorder reads earlier
+  facts out of the conversation; a branch Integrator reads earlier facts and the
+  current knowledge. So facts are delivered when either kind runs in branch mode,
+  knowledge changes when Integration does, and with both kinds in subagent mode
+  nothing is delivered at all. A branch run does not start while a delivery it
+  would read is pending; it starts one prompt later.
+
+  A branch Integration appends the range plus the exact list of facts to
+  integrate, never the fact lines or the knowledge block again. The list is
+  explicit because batches are cut at turn boundaries, so not every address
+  between the range ends belongs to the batch. Anything the conversation does not
+  hold, a manual note or a fact dropped by a compaction budget, is fetched with
+  `trace`.
 - Assistant streaming updates persist intermediate text. Completed assistant
   messages within one user turn are joined with a newline. Tool results retain
   their input, content and details as JSON, with success/failure status. Tools

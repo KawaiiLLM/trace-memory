@@ -440,18 +440,18 @@ test("removing a marker before first reply cannot turn its shared project into a
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
 
-test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; subagent mode does not", async branchMode => {
+test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; with no branch consumer nothing is delivered and nothing waits", async branchMode => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": branchMode, recordingModel: "fake/recorder" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Recording A in flight over T1.
   await h.prompt("second"); await h.answer(); // This prompt saw no delivery.
   release(recordingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(branchMode ? 1 : 0); // no branch consumer, no delivery
   h.provider(async c => recordingFact(c));
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 2 : 4);
-  expect((await h.prompt("third"))?.message?.content).toContain("recorded");
+  expect(String((await h.prompt("third"))?.message?.content ?? "").includes("recorded")).toBe(branchMode);
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 4 : 6);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
@@ -846,4 +846,31 @@ test("the footer shows the warning indicator while a retry waits", async () => {
   await new Promise(r => setTimeout(r, 120)); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");
+});
+
+const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
+  arguments: { operations: [{ op: "create", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] } }] });
+
+test("2026-09-07 backfill by consumer: with both kinds in subagent mode nothing is delivered; a branch Integrator gets facts and knowledge changes", async () => {
+  const settings = { "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "recording.branchModeDefault": false, "integration.maxToolRounds": 4 };
+  const subagentOnly = host({ ...settings, "integration.subagentModeDefault": true });
+  subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : recordingFact(c));
+  await subagentOnly.turn(); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
+  expect(subagentOnly.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Integration did commit
+  expect(subagentOnly.memory.store.listPendingDeliveries(1, "main")).toEqual([]); // nobody reads the conversation
+
+  // Integration in branch mode: the Recording's facts and the Integration's own commits are both delivered.
+  const h = host({ ...settings, "integration.subagentModeDefault": false });
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : recordingFact(c));
+  await h.turn(); // Recording commits F1 and leaves it for delivery.
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  await h.emit("agent_settled"); await h.drain(); // the batch is due, but F1 is not in the conversation yet
+  expect(h.memory.store.listRuns(1).some(r => r.kind === "integration")).toBe(false); // the branch Integration waits for that delivery
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
+  expect(String((await h.prompt("second"))?.message?.content ?? "")).toContain("<recorded>");
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
+  const carried = String((await h.prompt("third"))?.message?.content ?? "");
+  expect(carried).toContain("<integrated>"); // the knowledge change reaches the conversation the branch Integrator reads
+  expect(carried).toContain("[K1@1]");
 });
