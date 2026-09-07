@@ -798,3 +798,20 @@ test("integration progress is not inherited when a manual fact beyond the fork p
   expect(fork.lastRecordedTurn).toBe(1); // recording progress carries
   expect(fork.lastIntegratedFact ?? null).toBeNull(); // F2 is off this path: F1 must be integrated again
 });
+
+test("a transient provider error is retried with Pi's policy before the run is failed, and a retry never repeats a committed write", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  let calls = 0;
+  h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return recordingFact(c); });
+  await h.turn();
+  await new Promise(r => setTimeout(r, 50)); await h.drain(); // the retry backoff is a timer, not a microtask
+  const run = h.memory.store.listRuns(1)[0]!;
+  expect(run.outcome).toBe("success"); expect(calls).toBeGreaterThanOrEqual(2);
+  expect(h.notices.some(n => n.includes("recording retry 1/1") && n.includes("fetch failed"))).toBe(true);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // one commit despite the retry
+  // A non-retryable error is not retried.
+  calls = 0;
+  h.provider(async () => { calls++; return { ...reply(""), stopReason: "error", errorMessage: "invalid_api_key" }; });
+  await h.turn(); await new Promise(r => setTimeout(r, 50)); await h.drain();
+  expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure"); expect(calls).toBe(1);
+});

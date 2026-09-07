@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -11,6 +11,10 @@ export const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTo
 export const reply = (output: string): Reply => ({ role: "assistant", content: [{ type: "text", text: output }], api: "openai-completions", provider: "fake", model: "test", stopReason: "stop", timestamp: 1, usage });
 export function host(config: Record<string, unknown> = {}, marker?: string) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
+  // Pi settings the host reads for retries: a fast, deterministic policy instead of the user's ~/.pi/agent.
+  const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) } }));
+  process.env.PI_CODING_AGENT_DIR = agentDir;
   if (marker) writeFileSync(join(dir, ".trace-memory"), marker);
   const dbPath = join(dir, "trace.db");
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
@@ -41,7 +45,8 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
     appendEntry: (customType: string, data: unknown) => { const entry = { id: `e${allEntries.length}`, type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
   } as unknown as ExtensionAPI;
   const previous = process.env.TRACE_MEMORY_CONFIG;
-  process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...config });
+  const { retry: _retry, ...extensionConfig } = config as { retry?: unknown } & Record<string, unknown>;
+  process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
   try { extension(pi); } finally { if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
   const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); });
   const emit = async (name: string, event: object = {}) => hooks.get(name)?.({ type: name, ...event }, ctx);

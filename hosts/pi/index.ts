@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
-import type { Tool, ToolCall, Usage } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type Tool, type ToolCall, type Usage } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
 import { DEFAULT_CONFIG, TraceMemory, tokens, toolDefinitions, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
 
@@ -74,6 +74,18 @@ function reviewMessage(result: string): string | undefined {
   catch { return undefined; }
 }
 
+// Pi's own retry settings: settings.json `retry` from the agent dir (PI_CODING_AGENT_DIR or ~/.pi/agent),
+// overridden by the project's .pi/settings.json, with Pi's defaults. Read as files: a value import of Pi's
+// SettingsManager pulls the package entry, which needs @earendil-works/pi-server on this machine.
+function retrySettings(cwd: string) {
+  type Retry = { enabled?: boolean; maxRetries?: number; baseDelayMs?: number; provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number } };
+  const read = (path: string): Retry => { try { return (JSON.parse(readFileSync(path, "utf8")) as { retry?: Retry }).retry ?? {}; } catch { return {}; } };
+  const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+  const retry: Retry = { ...read(join(agentDir, "settings.json")), ...read(join(cwd, ".pi", "settings.json")) };
+  return { policy: { enabled: retry.enabled ?? true, maxRetries: retry.maxRetries ?? 3, baseDelayMs: retry.baseDelayMs ?? 2000 },
+    provider: { timeoutMs: retry.provider?.timeoutMs, maxRetries: retry.provider?.maxRetries, maxRetryDelayMs: retry.provider?.maxRetryDelayMs ?? 60000 } };
+}
+
 export default function (pi: ExtensionAPI) {
   const { flat, core } = configuration();
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
@@ -102,11 +114,18 @@ export default function (pi: ExtensionAPI) {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
       // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
       // append the Integration feedback, call the model again until it stops. Only sending differs.
+      // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
+      // own compaction and branch-summary calls): transient provider errors back off and retry;
+      // tool execution and commits happen only after a reply, so a retry never repeats a write.
+      const retry = retrySettings(callContext.cwd);
       const converse = async (send: (suffix: Conversation["messages"]) => Promise<Reply>) => {
         let suffix: Conversation["messages"] = [], rounds = 0, usage: unknown, reply: Reply;
         const cap = memory.config[input.kind].maxToolRounds; // 0 = unlimited (spec: the model is called again until it stops)
         for (;;) {
-          reply = await send(suffix);
+          reply = await retryAssistantCall(() => send(suffix), retry.policy, undefined, {
+            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { activity.last = "warning"; showSpend(callContext);
+              callContext.ui.notify(`Trace Memory: ${input.kind} retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s: ${message}`, "warning"); },
+          });
           usage = addUsage(usage, reply.usage);
           const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
           if (reply.stopReason !== "toolUse" || !calls.length) break;
@@ -156,7 +175,7 @@ export default function (pi: ExtensionAPI) {
         if (!auth.ok) throw new Error(auth.error);
         const key = messageKey(model.api);
         const { reply, usage } = await converse(suffix => complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-          { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId,
+          { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider,
             onPayload(native) {
               // The installed adapter serializes only the new suffix (native tool ids, thinking
               // signatures). Its cache markers are stripped so rounds add none to the captured
@@ -181,7 +200,7 @@ export default function (pi: ExtensionAPI) {
         tools: toolDefinitions as unknown as Tool[] };
       const { reply, usage } = await converse(suffix => {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] };
-        return registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
+        return registry.complete(model, conversation, { ...retry.provider, onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
       });
       return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason };
     } catch (error) {

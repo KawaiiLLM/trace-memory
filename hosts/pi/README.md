@@ -415,6 +415,17 @@ injection, session-knowledge isolation, shared duplicate visibility, deferred re
 completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
+## Retries
+
+Every model call of a run goes through pi-ai's `retryAssistantCall`, the helper
+Pi uses for its own compaction and branch-summary calls, with the policy from
+Pi's `settings.json` (`retry.enabled`, `maxRetries`, `baseDelayMs`; provider
+timeouts and SDK retries from `retry.provider`). Transient errors (429, 5xx,
+overloaded, timeouts, fetch failures) back off exponentially; other errors
+fail at once. A retry wraps one model call only: tool execution and commits
+happen after a reply, so a retried call never repeats a write. While a retry
+waits, the footer shows the warning indicator and a notice names the attempt.
+
 ## Run records
 
 Every Recording, Integration and manual write leaves a row in `runs` with the
