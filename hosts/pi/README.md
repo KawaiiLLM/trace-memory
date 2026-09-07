@@ -415,6 +415,17 @@ injection, session-knowledge isolation, shared duplicate visibility, deferred re
 completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
+## Spend in the footer
+
+Background runs never enter Pi's session totals: Pi only counts entries of the
+session file (assistant messages, tool results and summaries carrying usage).
+The host therefore publishes its own footer status item through
+`ctx.ui.setStatus("trace-memory", "mem <runs> runs $<cost>")`, the shape the
+ponytail extension uses, updated at session start and after every run; a
+statusline extension renders it as one segment. `/trace` prints the breakdown
+by run kind. The one cost Pi does count is the recording performed before a
+tree switch, whose usage rides on the branch summary.
+
 ## Known limits
 
 - A queued (steering or follow-up) user message bypasses `before_agent_start`, so

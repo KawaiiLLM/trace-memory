@@ -51,7 +51,22 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     const result = expand(address, options);
     return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
   };
+  // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
+  const spend = (sessionId: number) => {
+    session(sessionId);
+    const totals = { runs: { recording: 0, integration: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    for (const run of store.listRuns(sessionId)) {
+      totals.runs[run.kind]++;
+      let usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
+      try { usage = JSON.parse(run.response ?? "{}").usage ?? null; } catch { usage = null; }
+      if (!usage) continue;
+      totals.input += usage.input ?? 0; totals.output += usage.output ?? 0;
+      totals.cacheRead += usage.cacheRead ?? 0; totals.cacheWrite += usage.cacheWrite ?? 0; totals.cost += usage.cost?.total ?? 0;
+    }
+    return totals;
+  };
   return {
+    spend,
     trace,
     // Knowledge are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
@@ -138,8 +153,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     status: (sessionId: number): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId), watermarks = store.listWatermarks(sessionId);
+      const totals = spend(sessionId);
       const branches = [...new Set([...watermarks.map((w) => w.branch), ...runs.map((r) => r.branch)])];
       return [`Session: S${sessionId}`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
+        `Spend: ${totals.runs.recording} recording, ${totals.runs.integration} integration, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
         ...(watermarks.length ? [] : ["Watermarks: none"]),

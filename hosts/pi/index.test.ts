@@ -667,3 +667,17 @@ test("a Pi fork continues the same session on a new branch that inherits the sou
   expect(h.memory.store.getWatermark(1, run.branch!)?.lastRecordedTurn).toBe(2);
   void branch;
 });
+
+test("the plugin's spend is a footer status item updated after every run, and the tree-switch recording's usage rides on the branch summary", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c));
+  await h.turn();
+  expect(h.statuses.get("trace-memory")).toMatch(/^mem 1 runs \$\d+\.\d{3}$/);
+  const spend = h.memory.spend(1);
+  expect(spend.runs).toEqual({ recording: 1, integration: 0, manual: 0 });
+  expect(spend.input + spend.output).toBeGreaterThan(0);
+  await h.prompt("more"); await h.answer();
+  const result = await h.emit("session_before_tree");
+  expect(result.summary.usage).toMatchObject({ input: expect.any(Number), output: expect.any(Number), cost: expect.any(Object) });
+  expect(h.statuses.get("trace-memory")).toMatch(/^mem 2 runs/);
+});

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
-import type { Tool, ToolCall } from "@earendil-works/pi-ai";
+import type { Tool, ToolCall, Usage } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
 import { DEFAULT_CONFIG, TraceMemory, tokens, toolDefinitions, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
 
@@ -203,7 +203,15 @@ export default function (pi: ExtensionAPI) {
     return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
+  // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
+  // background runs never enter Pi's session totals, which only count entries of the session file.
+  const showSpend = (context: ExtensionContext) => {
+    if (!state?.sessionId || !context.ui?.setStatus) return;
+    const s = memory.spend(state.sessionId);
+    context.ui.setStatus("trace-memory", `mem ${s.runs.recording + s.runs.integration + s.runs.manual} runs $${s.cost.toFixed(3)}`);
+  };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
+    showSpend(context);
     const r = result as { outcome?: string; problems?: string[] } | undefined;
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
@@ -242,6 +250,7 @@ export default function (pi: ExtensionAPI) {
       state = { projectId: project ? project.id : memory.store.createProject({ name: name ?? `pi:${piId}`, declaredBy: "marker" }).id, branch: "main", piId };
     }
     current = undefined;
+    showSpend(ctx);
     if (state.sessionId) {
       const name = marker(ctx.cwd);
       if (name) memory.declareProject(state.sessionId, name, "marker");
@@ -337,7 +346,7 @@ export default function (pi: ExtensionAPI) {
     const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
     const background = (promise: Promise<unknown>) => {
       pending.add(promise);
-      void promise.then(result => reportProblems(result, context), error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
+      void promise.then(result => reportProblems(result, context), error => { showSpend(context); context.ui.notify(String(error), "error"); }).finally(() => pending.delete(promise));
     };
     const recordingLaunch = launch("recording");
     // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is
@@ -354,11 +363,15 @@ export default function (pi: ExtensionAPI) {
     ensure(context); flush(true);
     const { sessionId, branch, head } = state;
     if (!sessionId || !head) return { summary: { summary: "" } };
+    let usage: Usage | undefined;
     try {
       // A pending run owns its frozen range. Later raw stays in the summary.
-      reportProblems(await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") }), context);
+      const result = await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") });
+      reportProblems(result, context);
+      // The switch's own recording cost rides on the branch summary, which Pi counts in the session totals.
+      if ("runId" in result) { try { usage = JSON.parse(memory.store.getRun(result.runId)?.response ?? "{}").usage ?? undefined; } catch { usage = undefined; } }
     } catch (error) { context.ui.notify(String(error), "error"); }
-    return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
+    return { summary: { summary: memory.branchSummary(sessionId, branch, head), ...(usage ? { usage } : {}) } };
   });
   pi.on("session_before_compact", (event, context) => {
     ensure(context); flush();

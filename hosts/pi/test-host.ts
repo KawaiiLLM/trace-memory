@@ -19,7 +19,8 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   let provider = async (_conversation: Conversation) => reply("[]");
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   const model = { provider: "fake", id: "test", api: "openai-completions" };
-  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s) },
+  const statuses = new Map<string, string | undefined>();
+  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text) },
     sessionManager: { getSessionId: () => "pi-test", getBranch: () => entries, getEntries: () => allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
@@ -48,7 +49,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const answer = (value = "好的。") => emit("message_end", { message: reply(value) });
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
   const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close(); rmSync(dir, { recursive: true, force: true }); };
-  return { dispose, dir, ctx, entries, hooks, tools, commands, notices, memory, emit, prompt, answer, turn, drain, requests, conversations,
+  return { dispose, dir, ctx, entries, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; } };
 }
 export function recordingFact(conversation: Conversation) {
