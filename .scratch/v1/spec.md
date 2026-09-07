@@ -152,7 +152,7 @@ pending_deliveries  run_id · session_id · branch · delivered_at
 watermarks      session_id · branch · last_recorded_turn · last_integrated_fact
 ```
 
-Indexes: FTS over facts and knowledge; knowledge by project and status; runs by session.
+Indexes: knowledge by project and status; runs by session. Search is a literal substring match (LIKE) over fact text, knowledge revision text and raw; no FTS, no ranking (user ruling 2026-09-07).
 
 ## Testing Decisions
 
