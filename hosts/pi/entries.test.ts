@@ -278,3 +278,45 @@ test("17a acceptance 2026-09-08: streaming updates on an unchanged persisted lea
     expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toEqual(["user", "assistant", "user", "assistant"]); // the moved leaf is still reconciled
   } finally { await h.dispose(); }
 });
+
+test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for facts and knowledge, not only for note", async () => {
+  const h = host(quiet);
+  try {
+    await h.prompt("Investigate");
+    h.persist({ ...reply(""), content: [{ type: "toolCall", id: "shared", name: "bash", arguments: { command: "inspect common" } }] });
+    await h.emit("agent_end");
+    const common = [...h.entries];
+    h.persist({ ...reply(""), content: [{ type: "toolCall", id: "sibling-only", name: "bash", arguments: { command: "adopt alpha" } }] });
+    await h.emit("agent_end");
+    let tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", source: ["T1#t2"] }] })).not.toContain("rejected:");
+    h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
+    const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
+    expect(branch).not.toBe("main");
+    tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
+    expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", source: ["T1#t2"] }] })).toContain("rejected:");
+    expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
+    const knowledge = tools[3]!.execute({ operations: [{ op: "create", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    expect(knowledge).toContain("rejected:");
+    expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
+    // On the original path the fact and knowledge built on it are applicable.
+    expect(h.memory.store.listBranchFacts(1, "main", 1)).toHaveLength(1);
+  } finally { await h.dispose(); }
+});
+
+test("review 2026-09-08 P2: an image-only user message still starts a new user Turn and stays a source", async () => {
+  const h = host(quiet);
+  try {
+    await h.prompt("Previous task"); await h.answer("Previous answer");
+    const image = { role: "user", content: [{ type: "image", mimeType: "image/png", data: "synthetic-image" }], timestamp: 2 };
+    await h.emit("message_start", { message: image }); await h.emit("message_end", { message: image });
+    await h.answer("The image shows a red chart.");
+    const turns = h.memory.store.listTurns(1);
+    expect(turns).toHaveLength(2);
+    expect(turns[0]!.assistantText).toBe("Previous answer");
+    expect(turns[1]!.assistantText).toBe("The image shows a red chart.");
+    const users = h.memory.store.listSourceEntries(1).filter(e => e.role === "user");
+    expect(users.map(e => e.raw.includes("synthetic-image"))).toEqual([false, true]);
+    expect(h.memory.compact(1, "main", 2)).toContain("[non-text content omitted]"); // the shared view shows the source; it has no citable text
+  } finally { await h.dispose(); }
+});

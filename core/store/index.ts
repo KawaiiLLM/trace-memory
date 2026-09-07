@@ -325,7 +325,15 @@ export type KnowledgeOperationInput =
       createdAt: string;
     };
 
-export type KnowledgePath = { sessionId: number; headTurnId: number | null };
+/** A path is a session's Turn ancestry; with a branch, also that branch's selected native ancestry (17a), so
+ * applicability is decided per source entry, not per Turn: a sibling entry inside the same Turn is off-path. */
+export type KnowledgePath = { sessionId: number; headTurnId: number | null; branch?: string };
+
+/** The citable source addresses of one entry: `#user` or `#assistant` when it has text, `#t<n>` per tool call. */
+export const sourceAddresses = (entry: SourceEntry): string[] => [
+  ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...entry.calls.map(c => `T${entry.turnId}#t${c.ordinal}`),
+];
 export interface KnowledgeFilter { scope?: KnowledgeScope; projectId?: number }
 
 export interface CommitIntegrationRunInput {
@@ -663,19 +671,9 @@ export class Store {
         };
         input.facts.forEach((f, i) => {
           const fromFact = batchIds[i]!;
-          for (const rel of f.support ?? []) {
-            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'support', ?)").run(
-              fromFact,
-              resolve(rel.target, i),
-              rel.strength,
-            );
-          }
-          for (const rel of f.negate ?? []) {
-            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, 'negate', ?)").run(
-              fromFact,
-              resolve(rel.target, i),
-              rel.strength,
-            );
+          for (const kind of ["support", "negate"] as const) for (const rel of f[kind] ?? []) {
+            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)")
+              .run(fromFact, resolve(rel.target, i), kind, rel.strength);
           }
         });
         let response: Record<string, unknown>;
@@ -741,12 +739,6 @@ export class Store {
     return row ? toKnowledge(row) : null;
   }
 
-  getKnowledgeWithRevision(id: number, path: KnowledgePath | null = null): KnowledgeWithRevision | null {
-    const tips = this.currentCommit(id, path);
-    if (tips.length > 1) throw new Error(`K${id}: several tips; use ${tips.map(r => `K${id}@${r.id}`).join(", ")}`);
-    return tips.length ? { knowledge: this.getKnowledge(id)!, revision: tips[0]! } : null;
-  }
-
   getKnowledgeRevision(knowledgeId: number, commitId: number): KnowledgeRevision | null {
     const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? AND id = ?").get(knowledgeId, commitId);
     return row ? toKnowledgeRevision(row) : null;
@@ -778,16 +770,16 @@ export class Store {
 
   /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
   knowledgePath(sessionId: number, branch?: string, headTurnId?: number | null): KnowledgePath {
-    if (headTurnId !== undefined) return { sessionId, headTurnId };
+    if (headTurnId !== undefined) return branch === undefined ? { sessionId, headTurnId } : { sessionId, headTurnId, branch };
     if (branch === undefined) return { sessionId, headTurnId: this.listTurns(sessionId).at(-1)?.id ?? null };
     const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    if (native) return { sessionId, headTurnId: this.getSourceEntry((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0)?.turnId ?? null };
+    if (native) return { sessionId, headTurnId: this.getSourceEntry((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0)?.turnId ?? null, branch };
     const member = this.db.prepare("SELECT s.turn_id FROM recorded_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
     const recorded = Math.max(member?.turn_id ?? 0, ...this.listRuns(sessionId).filter(r => r.kind === "recording" && r.outcome === "success" && r.branch === branch)
       .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0)));
     const manual = this.listRuns(sessionId).filter(r => r.kind === "manual" && r.branch === branch)
       .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0));
-    return { sessionId, headTurnId: Math.max(recorded, ...manual) || null };
+    return { sessionId, headTurnId: Math.max(recorded, ...manual) || null, branch };
   }
 
   private admits(revision: KnowledgeRevision, sessionId: number): boolean {
@@ -799,7 +791,7 @@ export class Store {
 
   /** All citations from the reader's own session constrain applicability, including because. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
-    const turns = path ? this.pathTurns(path) : undefined;
+    const turns = path ? this.pathTurns(path) : undefined, addresses = path ? this.pathAddresses(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
@@ -807,7 +799,7 @@ export class Store {
     }
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
       (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
-      (!path || this.commitApplies(r, path, turns)));
+      (!path || this.commitApplies(r, path, turns, addresses)));
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
     for (const r of applicable) {
@@ -821,14 +813,26 @@ export class Store {
     return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
   }
 
-  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path)): boolean {
-    return this.getTurn(fact.turnId)!.sessionId !== path.sessionId ||
-      (turns.has(fact.turnId) && fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1]))));
+  /** The citable addresses of the branch's selected native ancestry up to the head; null when the path names
+   * no branch or the branch has no selected ancestry (headless seams keep Turn semantics). */
+  pathAddresses(path: KnowledgePath): Set<string> | null {
+    if (!path.branch || !path.headTurnId) return null;
+    const row = this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
+    return row ? new Set(this.sourcePath(path.sessionId, path.branch, path.headTurnId).flatMap(sourceAddresses)) : null;
   }
 
-  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path)): boolean {
+  /** A fact is on a path when every source it cites is: its Turn on the ancestry and, when the branch has a
+   * selected native ancestry, each cited entry address in it (review 2026-09-08: a sibling entry of the same
+   * Turn is off-path for facts and knowledge, not only for note). Foreign-session facts are judged by scope. */
+  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path), addresses = this.pathAddresses(path)): boolean {
+    if (this.getTurn(fact.turnId)!.sessionId !== path.sessionId) return true;
+    if (!turns.has(fact.turnId) || !fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1])))) return false;
+    return addresses === null || fact.source.every(source => addresses.has(source));
+  }
+
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path), addresses = this.pathAddresses(path)): boolean {
     return this.admits(commit, path.sessionId) && [...commit.supports, ...(commit.because ?? [])]
-      .every(id => this.factOnPath(this.getFact(id)!, path, turns));
+      .every(id => this.factOnPath(this.getFact(id)!, path, turns, addresses));
   }
 
   commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {
@@ -852,13 +856,8 @@ export class Store {
       (!filter.scope || r.scope === filter.scope));
   }
 
-  isKnowledgeVisible(id: number, sessionId: number, commitId?: number): boolean {
-    return commitId === undefined ? this.currentCommit(id, this.knowledgePath(sessionId)).length > 0
-      : !!this.getKnowledgeRevision(id, commitId) && this.admits(this.getKnowledgeRevision(id, commitId)!, sessionId);
-  }
-
-  listVisibleKnowledge(sessionId: number, projectId: number, headTurnId?: number | null): KnowledgeWithRevision[] {
-    return sessionId ? this.listCurrentKnowledge(this.knowledgePath(sessionId, undefined, headTurnId))
+  listVisibleKnowledge(sessionId: number, projectId: number, headTurnId?: number | null, branch?: string): KnowledgeWithRevision[] {
+    return sessionId ? this.listCurrentKnowledge(this.knowledgePath(sessionId, branch, headTurnId))
       : this.listCurrentKnowledge(null, { projectId });
   }
 
@@ -1018,9 +1017,6 @@ export class Store {
   listCommitsByRun(runId: number): KnowledgeRevision[] {
     return this.db.prepare("SELECT * FROM knowledge_revisions WHERE run_id = ? ORDER BY id").all(runId).map(toKnowledgeRevision);
   }
-  listRunsSince(createdAt: string): Run[] {
-    return this.db.prepare("SELECT * FROM runs WHERE created_at >= ? ORDER BY id").all(createdAt).map(toRun);
-  }
 
   projectDeclaration(sessionId: number): string {
     return (this.db.prepare("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
@@ -1095,7 +1091,7 @@ export class Store {
       WHERE t.session_id = ?
     ) SELECT f.* FROM facts f WHERE f.turn_id IN (SELECT id FROM lineage) ORDER BY f.id`)
       .all(root, sessionId, sessionId).map(toFact)
-      .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root })); // every source on the path, not only the first
+      .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root, branch })); // every source on the path, not only the first
   }
 
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */
@@ -1139,7 +1135,7 @@ export class Store {
       if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
       return known;
     }
-    if (!input.text && !input.calls.length) throw new Error("empty source entry");
+    if (!input.text && !input.calls.length && input.role !== "user") throw new Error("empty source entry"); // an image-only user message still bounds a Turn
     const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content) VALUES (?, ?, ?, ?, ?)")
       .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input));
     return this.getSourceEntry(Number(result.lastInsertRowid))!;

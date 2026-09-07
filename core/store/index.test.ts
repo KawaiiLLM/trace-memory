@@ -286,7 +286,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
     expect(store.getRun(round3.runId)?.outcome).toBe("failure");
 
     // the knowledge itself still holds the round-2 text, untouched by the rejected round-3 edit
-    const finalKnowledge = store.getKnowledgeWithRevision(knowledgeId)!;
+    const finalKnowledge = { knowledge: store.getKnowledge(knowledgeId)!, revision: store.currentCommit(knowledgeId)[0]! };
     expect(finalKnowledge.revision.id).toBe(2);
     expect(finalKnowledge.revision.text).toBe("The project uses pnpm exclusively.");
   });

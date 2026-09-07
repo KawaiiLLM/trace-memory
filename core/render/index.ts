@@ -129,16 +129,15 @@ function entryExcerpt(label: string, body: string, cap: number): string {
   return excerpt(low);
 }
 
-export const sourceAddresses = (entry: SourceEntry): string[] => [
-  ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
-  ...entry.calls.map(c => `T${entry.turnId}#t${c.ordinal}`),
-];
+export { sourceAddresses } from "../store/index.ts";
 
 /** One immutable view for all automatically supplied Raw. Each call reserves half for each occurrence. */
 export function renderEntry(entry: SourceEntry, budgets: Budgets): Rendered {
   const header = `[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}]`;
   const parts: { label: string; body: string; cap: number }[] = [];
-  if (entry.text) parts.push({ label: `[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`, body: entry.text, cap: budgets.entryTokens });
+  // A user message without text (an image, say) still shows as a source with a marker; it has no citable address.
+  if (entry.text || entry.role === "user") parts.push({ label: `[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`,
+    body: entry.text || "[non-text content omitted]", cap: budgets.entryTokens });
   for (const call of entry.calls) {
     const result = entry.role === "toolResult";
     const cap = result ? Math.floor((budgets.toolCallTokens - 2) / 2) : Math.ceil((budgets.toolCallTokens - 2) / 2);

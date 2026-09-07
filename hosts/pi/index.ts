@@ -359,7 +359,9 @@ export default function (pi: ExtensionAPI) {
       if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") continue;
       const natural = message.role === "toolResult" ? "" : text(message);
       const calls = message.role === "assistant" ? message.content.filter(c => c.type === "toolCall") : [];
-      if (!natural && !calls.length && message.role !== "toolResult") continue;
+      // A user message is a Turn boundary whatever it carries (an image-only message has no text); only an
+      // assistant message with neither text nor tool calls is nothing (review 2026-09-08).
+      if (!natural && !calls.length && message.role === "assistant") continue;
       const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
         if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);
@@ -421,7 +423,7 @@ export default function (pi: ExtensionAPI) {
     // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
     const parts: string[] = [];
     if (!state.injected) {
-      const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : { projectId: state.projectId });
+      const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
       if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
     }
     if (state.sessionId) {

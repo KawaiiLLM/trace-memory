@@ -135,8 +135,8 @@ export interface TraceMemory {
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
   status(sessionId: number): string;
-  /** Model spend of one session's runs, or of every run created since an ISO time: run counts by kind, token totals and cost, from recorded usage. */
-  spend(scope: number | { since: string }): { runs: { recording: number; integration: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
+  spend(sessionId: number): { runs: { recording: number; integration: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {

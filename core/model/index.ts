@@ -175,11 +175,6 @@ export interface PendingDelivery {
 
 // ---- Shared validation plumbing ----
 
-export interface ValidationResult<T> {
-  problems: string[];
-  value: T | null;
-}
-
 const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, recording.md
 const FACT_ID_RE = /^F\d+$/;
 // A bare fact or knowledge id embedded in prose text; ids belong only in relation/supports fields.

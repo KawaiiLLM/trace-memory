@@ -668,7 +668,6 @@ test("the plugin's spend is a footer status item updated after every run, and th
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ recording: 1, integration: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
-  expect(h.memory.spend({ since: new Date(Date.now() - 60_000).toISOString() }).runs.recording).toBe(1);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");
   expect(result.summary.usage).toBeUndefined(); // 17b removes tree-switch extraction and its usage attribution

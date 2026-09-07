@@ -75,8 +75,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
   if (context.kind === "integration" && !review) throw new Error("Integration tools require the frozen review context supplied by integrate()");
-  const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId }
-    : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]) }
+  // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
+  const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
+    : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
     : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
   const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => sourceAddresses(e).includes(source));
@@ -93,19 +94,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
   // injection and Integration keep their scope rules elsewhere. Writes still bind sources to the run.
   const existingFact = (id: number) => !!store.getFact(id);
-  const checkAddress = (address: string) => {
-    for (const target of address.split(",").map((a) => a.trim())) {
-      const run = /^R([1-9]\d*)$/.exec(target);
-      if (run) { if (!store.getRun(Number(run[1]))) throw new Error(`address does not exist: ${target}`); continue; }
-      if (/^K/.test(target)) continue; // The façade validates commit, diff and tree addresses.
-      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$/.exec(target);
-      if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);
-      const missing = () => new Error(`address does not exist: ${target}`);
-      if (m[2]) { const t = store.getTurn(Number(m[2])); if (!t || (m[1] && t.sessionId !== Number(m[1]))) throw missing(); }
-      if (m[3] && !store.getSession(Number(m[3]))) throw missing();
-      if (m[4] && !existingFact(Number(m[4]))) throw missing();
-    }
-  };
   const note = (input: Record<string, unknown>): string => {
     if (context.kind === "integration") return "rejected: note is not the writer for an integration run";
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
@@ -174,7 +162,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const tools = [
     definition("trace", (input) => {
       if (typeof input.address !== "string") throw new Error("address must be a string");
-      checkAddress(input.address);
       if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
       if (input.full !== undefined && typeof input.full !== "boolean") throw new Error("full must be boolean");
       const content = read.trace(input.address, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
