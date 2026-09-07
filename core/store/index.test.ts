@@ -410,49 +410,6 @@ describe("marks and pending deliveries", () => {
   });
 });
 
-describe("full-text index", () => {
-  test("committed facts and knowledge revisions are searchable through FTS", () => {
-    const p = store.createProject({ name: "proj", declaredBy: "mark" });
-    const s = makeSession(p.id);
-    const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
-    const recordingResult = store.commitRecordingRun({
-      run: { kind: "recording", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
-      facts: [
-        { turnId: t.id, category: "decision", actor: "user", text: "integration runs on a watermark", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" },
-      ],
-    });
-    expect(recordingResult.ok).toBe(true);
-    if (!recordingResult.ok) return;
-    const factId = recordingResult.facts[0]!.id;
-
-    const integrated = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
-      operations: [
-        {
-          op: "create",
-          handle: "$e1",
-          author: "integration",
-          text: "Integration is triggered by an unintegrated-fact watermark.",
-          category: "mechanism",
-          scope: "project",
-          supports: [factId],
-          createdAt: "2026-01-01T00:01:00Z",
-        },
-      ],
-    });
-    expect(integrated.ok).toBe(true);
-    if (!integrated.ok) return;
-
-    const factHits = store.db.prepare("SELECT rowid FROM facts_fts WHERE facts_fts MATCH ?").all("watermark") as { rowid: number }[];
-    expect(factHits.map((h) => h.rowid)).toEqual([factId]);
-
-    const knowledgeHits = store.db
-      .prepare("SELECT rowid FROM knowledge_revisions_fts WHERE knowledge_revisions_fts MATCH ?")
-      .all("watermark") as { rowid: number }[];
-    expect(knowledgeHits).toHaveLength(1);
-  });
-});
-
 describe("commit boundaries (ticket 01 review repairs)", () => {
   function seed() {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });

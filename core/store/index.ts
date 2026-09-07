@@ -167,19 +167,6 @@ CREATE TABLE IF NOT EXISTS watermarks (
   PRIMARY KEY (session_id, branch)
 );
 
-CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(text, content='facts', content_rowid='id');
-CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_revisions_fts USING fts5(text, content='knowledge_revisions', content_rowid='id');
-
--- facts and knowledge_revisions are append-only, so an AFTER INSERT trigger is the whole
--- index maintenance: no update or delete path exists that could leave the FTS stale.
-CREATE TRIGGER IF NOT EXISTS facts_fts_insert AFTER INSERT ON facts BEGIN
-  INSERT INTO facts_fts (rowid, text) VALUES (new.id, new.text);
-END;
-
-CREATE TRIGGER IF NOT EXISTS knowledge_revisions_fts_insert AFTER INSERT ON knowledge_revisions BEGIN
-  INSERT INTO knowledge_revisions_fts (rowid, text) VALUES (new.id, new.text);
-END;
-
 CREATE INDEX IF NOT EXISTS idx_knowledge_project_status ON knowledge(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 `;
@@ -1038,19 +1025,19 @@ export class Store {
   }
 
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionId?: number): string[] {
+    const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
     if (scope === "raw") {
       if (sessionId === undefined || !this.getSession(sessionId)) throw new Error("raw search requires an existing sessionId");
-      const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
       return (this.db.prepare(`SELECT t.id FROM turns t JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? AND
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
         .all(this.getSession(sessionId)!.projectId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     }
-    const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rowid").all(query) as { id: number }[]).map((r) => `F${r.id}`);
-    const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT r.knowledge_id, r.rev FROM knowledge_revisions_fts f
-      JOIN knowledge_revisions r ON r.id = f.rowid WHERE knowledge_revisions_fts MATCH ? ORDER BY r.knowledge_id, r.rev`)
-      .all(query) as { knowledge_id: number; rev: number }[]).map((r) => `K${r.knowledge_id}@${r.rev}`);
+    const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT id FROM facts WHERE text LIKE ? ESCAPE '\\' ORDER BY id").all(pattern) as { id: number }[]).map((r) => `F${r.id}`);
+    const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, rev FROM knowledge_revisions
+      WHERE text LIKE ? ESCAPE '\\' ORDER BY knowledge_id, rev`)
+      .all(pattern) as { knowledge_id: number; rev: number }[]).map((r) => `K${r.knowledge_id}@${r.rev}`);
     const visible = [...facts, ...knowledge].filter((address) => {
       if (sessionId === undefined) return true;
       if (address.startsWith("K")) { const [id, rev] = address.slice(1).split("@").map(Number); return this.isKnowledgeVisible(id!, sessionId, rev); }

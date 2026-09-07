@@ -95,7 +95,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         const [id, rev] = address.slice(1).split("@").map(Number);
         return knowledgeLine({ knowledge: store.getKnowledge(id!)!, revision: store.getKnowledgeRevision(id!, rev!)! });
       }).map(listingLine);
-      return page(lines, options, `${scope === "raw" ? "Raw search uses literal LIKE over turns and tool calls. " : "Search uses FTS5 over stored fact text and knowledge revisions. "}No hit does not mean absent.`);
+      return page(lines, options, "Search uses literal substring search. No hit does not mean absent.");
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

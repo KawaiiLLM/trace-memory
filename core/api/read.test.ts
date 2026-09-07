@@ -167,7 +167,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.store.listKnowledgeMarks(e).map((m) => m.rev)).toEqual([1]);
 });
 
-test("FTS searches facts and historical knowledge, while raw LIKE searches only the selected session", () => {
+test("literal search finds facts and historical knowledge, with raw scoped to the project", () => {
   const s = session(), t = turn(s.id, "needle raw"), n = recording(s.id, t.id, "needle fact");
   const e = knowledge(s.id, n.facts[0]!.id, "goal", "project", "needle knowledge");
   expect(memory.search("needle", "facts")).toContain("[F1]"); expect(memory.search("needle", "facts")).not.toContain("[K");
@@ -181,10 +181,59 @@ test("FTS searches facts and historical knowledge, while raw LIKE searches only 
   const other = session(), foreign = turn(other.id, "needle foreign");
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "toolonly", result: "literal%_", status: "success" });
   const raw = memory.search("toolonly", "raw", { sessionId: s.id });
-  expect(raw).toContain(`[S${s.id}/T${t.id}]`); expect(raw).toContain("literal LIKE"); expect(raw).not.toContain(`T${foreign.id}`);
+  expect(raw).toContain(`[S${s.id}/T${t.id}]`); expect(raw).toContain("literal substring search"); expect(raw).not.toContain(`T${foreign.id}`);
   expect(memory.search("%_", "raw", { sessionId: s.id })).toContain(`[S${s.id}/T${t.id}]`);
   expect(() => memory.search("needle", "raw")).toThrow("requires an existing sessionId");
   expect(memory.search("nohits", "all")).toContain("No hit does not mean absent.");
+});
+
+test("schema has no unused full-text tables or triggers", () => {
+  expect(memory.store.db.prepare("SELECT name FROM sqlite_schema WHERE name GLOB '*_fts*'").all()).toEqual([]);
+});
+
+test.each([
+  ["美琴", "御坂美琴的电击"],
+  ["pnpm", "使用pnpm而不是npm"],
+  ["不要", "用 pnpm，不要 npm"],
+  ["琴", "御坂美琴的电击"],
+  ["用pnpm", "使用pnpm而不是npm"],
+  ["core/api/read.ts", "查看core/api/read.ts文件"],
+  ["%", "进度100%完成"],
+  ["_", "使用snake_case命名"],
+  ["\\", "路径core\\api\\read.ts"],
+])("literal substring search for %s across all layers preserves visibility and cursor order", (query, text) => {
+  const s = session(), foreign = session();
+  const expected = { facts: [] as string[], knowledge: [] as string[], raw: [] as string[] };
+  for (const owner of [s, foreign]) {
+    for (const content of [text, "无关内容 core/api/read.ts snakeXcase 100X coreapi", text]) {
+      const t = turn(owner.id, "raw prompt");
+      memory.store.appendToolCall({ turnId: t.id, name: "Bash", result: content, status: "success" });
+      const f = recording(owner.id, t.id, content).facts[0]!;
+      const k = knowledge(owner.id, f.id, "reference", "project", content);
+      if (owner.id === s.id && content.includes(query)) {
+        expected.facts.push(`[F${f.id}]`);
+        expected.knowledge.push(`[K${k}@1]`);
+        expected.raw.push(`[S${s.id}/T${t.id}]`);
+      }
+    }
+  }
+  const search = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: 1 }).find(t => t.name === "search")!;
+  for (const layer of ["facts", "knowledge", "raw", "all"] as const) {
+    const wanted = layer === "all" ? [...expected.facts, ...expected.knowledge, ...expected.raw] : expected[layer];
+    const found: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = search.execute({ query, layer, cap: 1, ...(cursor ? { cursor } : {}) });
+      const addresses = [...page.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0]);
+      expect(addresses).toHaveLength(1);
+      expect(page).toContain("literal substring search");
+      found.push(...addresses);
+      cursor = /cursor=(\S+)/.exec(page)?.[1];
+      expect(found.length).toBeLessThanOrEqual(wanted.length);
+    } while (cursor);
+    expect(found).toEqual(wanted);
+  }
+  expect(search.description).toContain("literal substring search");
 });
 
 test("opaque cursors continue search snapshots and trace session, comma, revision and negation listings", () => {
