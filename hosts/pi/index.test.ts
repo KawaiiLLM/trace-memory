@@ -192,7 +192,7 @@ test("consolidation waits for a turn stop after facts arrive and final replays c
   expect(JSON.parse(runs[0]!.request!)).toEqual(h.requests[4]);
 });
 
-test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
+test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs — superseded 17c 2026-09-08: cancels, launches nothing, and closes the store", async reason => {
   const h = host({ "noting.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
@@ -201,7 +201,9 @@ test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) wait
   const shutdown = h.emit("session_shutdown", { reason }).then(() => { closed = true; });
   await h.drain(); expect(closed).toBe(false);
   release(notingFact(h.conversations[0]!)); await shutdown;
-  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success"); expect(h.requests).toHaveLength(2);
+  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("cancelled"); expect(h.requests).toHaveLength(1);
+  expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(h.memory.store.getSession(1)!.closedAt).not.toBeNull();
   await expect(h.emit("session_start")).rejects.toThrow(/not open/); // Pi re-runs the factory; this instance is dead.
 });
 

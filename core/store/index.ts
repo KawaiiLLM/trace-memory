@@ -3,6 +3,7 @@
 // Global ids: turns, facts, and knowledge use SQLite's per-table AUTOINCREMENT, which never
 // reuses an id and is not reset per session or project — that is the "global id" the spec asks for.
 
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type {
   Actor,
@@ -43,9 +44,21 @@ CREATE TABLE IF NOT EXISTS sessions (
   enrollment_choice INTEGER CHECK (enrollment_choice IN (0,1)),
   started_at TEXT NOT NULL,
   first_reply_at TEXT NOT NULL,
+  closed_at TEXT,
   project_id INTEGER NOT NULL REFERENCES projects(id),
   parent_session_id INTEGER REFERENCES sessions(id),
   project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark'))
+);
+
+CREATE TABLE IF NOT EXISTS task_claims (
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  phase TEXT NOT NULL CHECK (phase IN ('noting','consolidation')),
+  executor_id TEXT NOT NULL,
+  token TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  borrowed INTEGER NOT NULL CHECK (borrowed IN (0,1)),
+  reserved INTEGER NOT NULL CHECK (reserved IN (0,1)),
+  PRIMARY KEY (session_id, phase)
 );
 
 CREATE TABLE IF NOT EXISTS turns (
@@ -256,7 +269,17 @@ export interface SourceInput {
 }
 export interface SourceEntry extends SourceInput { id: number }
 
+export type Phase = "noting" | "consolidation";
+export interface TaskTarget { sessionId: number; branch: string; headTurnId: number }
+export interface TaskClaim {
+  sessionId: number; phase: Phase; executorId: string; token: string; expiresAt: number;
+  borrowed: boolean; reserved: boolean;
+}
+
 export interface RunInput {
+  claim?: TaskClaim;
+  projectId?: number;
+  executorSessionId?: number;
   kind: RunKind;
   entryAudit?: unknown;
   sessionId?: number | null;
@@ -395,6 +418,7 @@ function toSession(row: any): Session {
     host: row.host,
     startedAt: row.started_at,
     firstReplyAt: row.first_reply_at,
+    closedAt: row.closed_at,
     projectId: row.project_id,
     parentSessionId: row.parent_session_id,
   };
@@ -474,6 +498,7 @@ function toRun(row: any): Run {
 
 export class Store {
   readonly db: DatabaseSync;
+  closed = false;
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -485,7 +510,14 @@ export class Store {
     this.db.exec(SCHEMA_SQL);
   }
 
+  beginShutdown(): void {
+    // Cleanup shares the host deadline; synchronous SQLite busy waits cannot consume it per write.
+    this.db.exec("PRAGMA busy_timeout = 0;");
+  }
+
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 
@@ -568,6 +600,98 @@ export class Store {
   }
   requireEnabled(sessionId: number): void {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+  }
+
+  closeSession(sessionId: number, at = new Date().toISOString()): void {
+    this.db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(at, sessionId);
+  }
+
+  reopenSession(sessionId: number, executorId: string): void {
+    this.transaction(() => {
+      this.db.prepare("UPDATE sessions SET closed_at = NULL WHERE id = ?").run(sessionId);
+      // Reserve the new tokens for this executor without launching either phase.
+      for (const phase of ["noting", "consolidation"] as const) {
+        const previous = this.getClaim(sessionId, phase);
+        if (!previous || previous.executorId === executorId) continue;
+        this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ?")
+          .run(executorId, randomUUID(), Date.now() + 30 * 60_000, sessionId, phase);
+      }
+    });
+  }
+
+  getClaim(sessionId: number, phase: Phase): TaskClaim | null {
+    const row = this.db.prepare("SELECT * FROM task_claims WHERE session_id = ? AND phase = ?").get(sessionId, phase);
+    return row ? { sessionId, phase, executorId: String(row.executor_id), token: String(row.token),
+      expiresAt: Number(row.expires_at), borrowed: !!row.borrowed, reserved: !!row.reserved } : null;
+  }
+
+  acquireClaim(target: TaskTarget, phase: Phase, executorId: string, borrowed = false, eligible: () => boolean = () => true): TaskClaim | null {
+    return this.transaction(() => {
+      if (!executorId || !this.enabled(target.sessionId)) return null;
+      if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
+      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+        : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+      if (!pending.length || !eligible()) return null;
+      const current = this.getClaim(target.sessionId, phase), now = Date.now();
+      const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
+      if (current && current.expiresAt > now && !takeover) return null;
+      const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
+        token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
+      this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
+        expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`)
+        .run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
+      return claim;
+    });
+  }
+
+  releaseClaim(claim: TaskClaim): boolean {
+    return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ?")
+      .run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;
+  }
+
+  invalidateExecutor(executorId: string): void {
+    this.db.prepare("UPDATE task_claims SET expires_at = 0 WHERE executor_id = ?").run(executorId);
+  }
+
+  releaseExecutor(executorId: string): void {
+    const rows = this.db.prepare("SELECT session_id, phase FROM task_claims WHERE executor_id = ?").all(executorId);
+    for (const row of rows) {
+      const claim = this.getClaim(Number(row.session_id), row.phase as Phase);
+      if (claim?.executorId === executorId) this.releaseClaim(claim);
+    }
+  }
+
+  private requireClaim(run: RunInput): void {
+    if (!run.claim) return; // Manual writes and explicit low-level store commits have no worker.
+    if (run.executorSessionId !== undefined) this.requireEnabled(run.executorSessionId);
+    const claim = run.claim, current = this.getClaim(claim.sessionId, claim.phase);
+    if (claim.sessionId !== run.sessionId || claim.phase !== run.kind || !current || current.reserved ||
+        current.token !== claim.token || current.executorId !== claim.executorId || current.expiresAt <= Date.now())
+      throw new Error("task claim is no longer current and unexpired");
+    if (current.borrowed && this.getSession(claim.sessionId)?.closedAt == null) throw new Error("borrowed target is no longer closed");
+    if (run.projectId !== undefined && this.getSession(claim.sessionId)?.projectId !== run.projectId)
+      throw new Error("target project changed after admission");
+  }
+
+  closedTasks(phase: Phase, executorSessionId: number): TaskTarget[] {
+    if (!this.enabled(executorSessionId)) return [];
+    const targets: (TaskTarget & { oldest: number })[] = [];
+    const sessions = this.db.prepare("SELECT id FROM sessions WHERE closed_at IS NOT NULL AND id != ? AND COALESCE(enrollment_choice, enrollment_default) = 1 ORDER BY id").all(executorSessionId);
+    for (const row of sessions) {
+      const sessionId = Number(row.id);
+      if ((this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now()) continue;
+      const branches = this.db.prepare("SELECT branch FROM source_paths WHERE session_id = ? UNION SELECT branch FROM runs WHERE session_id = ? AND branch IS NOT NULL ORDER BY branch").all(sessionId, sessionId);
+      for (const { branch } of branches) {
+        const headTurnId = this.knowledgePath(sessionId, String(branch)).headTurnId;
+        if (!headTurnId) continue;
+        const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId) : this.consolidationBatch(sessionId, String(branch), headTurnId);
+        if (pending.length) targets.push({ sessionId, branch: String(branch), headTurnId, oldest: Math.min(...pending.map(e => e.id)) });
+      }
+    }
+    // Global source/fact allocation order is durable pending arrival order; branches never coalesce.
+    return targets.sort((a, b) => a.oldest - b.oldest || a.sessionId - b.sessionId || (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : 0))
+      .map(({ oldest: _, ...target }) => target);
   }
 
   // -- turns & tool calls --
@@ -696,6 +820,7 @@ export class Store {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
+        this.requireClaim(input.run);
         const branch = input.run.branch ?? null;
         if (input.pendingDelivery && (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== branch)) {
           throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${branch})`);
@@ -972,6 +1097,7 @@ export class Store {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
+        this.requireClaim(input.run);
         const projectId = this.getSession(sessionId)!.projectId;
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];

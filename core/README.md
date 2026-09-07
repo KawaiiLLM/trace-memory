@@ -27,7 +27,7 @@ and select the persisted ancestry with `selectEntries(sessionId, branch, entryId
 The exposed store's transaction groups ingestion with Turn/tool projections.
 `pendingEntries(sessionId, branch, headTurnId)` derives work from native path
 membership and committed entry processing; it is not a second delivery queue.
-Call `record({ sessionId, branch, headTurnId, model?, mode? })` at the existing
+Call `noting({ sessionId, branch, headTurnId, model?, mode? })` at the existing
 trigger boundary. The core freezes exact pending entries, owning Turns, rendered
 views, recent facts and applicable knowledge before calling the model. A fork
 uses a new branch identity even when its native source head changes inside the
@@ -35,8 +35,8 @@ same Turn. Shared processed entries are inherited by identity.
 
 The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
-a run record. A duplicate is dropped per database/session/branch across façade
-instances in this process. No automatic retry or feedback call follows a bounce.
+a run record. A duplicate is dropped per target session and phase across branches,
+hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
 Stopping normally without submitting is a zero-fact success: process exactly the frozen
 entries without a delivery. An uncorrected rejected submission is `bounced`
 and advances nothing. Failure/cancellation before commit also advances nothing.
@@ -169,7 +169,7 @@ Four checked-in goldens cover current knowledge, snapshot, diff, and negation wa
 
 ## Consolidation feedback host contract (ticket 03b)
 
-`integrate({ sessionId, branch, headTurnId?, model?, mode? })` returns `empty`
+`consolidate({ sessionId, branch, headTurnId?, model?, mode? })` returns `empty`
 without a call when there are no applicable unconsolidated committed facts on the
 selected path. Facts become eligible immediately, including on partly recorded
 Turns; there is no Turn grouping or first-Noting gate. Shared ancestors belong
@@ -233,8 +233,8 @@ One run record retains tool inputs/results, candidate, fetched evidence, exact l
 request, final output, usage, read revisions and problems. Once committed, business
 outcome is success even if the provider later fails or is cancelled; trailing errors
 only append problems. Before commit, failure/cancellation advances nothing; an
-uncorrected rejection or first-only submission ends bounced. Run deduplication is
-per database/session/branch across facades in this process.
+uncorrected rejection or first-only submission ends bounced. Run admission uses the same target-wide phase claim as Noting, across facades,
+branches and processes.
 
 The fixture `test/fixtures/consolidation.json` copies K2 from v7m's first Consolidation output and its
 supporting facts F2/F35 from facts.jsonl. Chinese memory content is preserved;
@@ -322,4 +322,11 @@ from explicit intent. Source mutations and automatic facade admission check this
 state; both run commits reread it inside their immediate transaction. Failure audits
 remain possible, but disabled business writes/progress cannot commit. Reads and pending
 queue inspection remain available; automatic blocks and confirmation are gated.
-No Pi SDK, migration, cancellation or claim machinery enters core.
+No Pi SDK or migration enters core. The facade owns an executor id, atomic task
+admission, cancellation signals and conditional claim release. `taskEligibility`
+shares the threshold/delivery predicate with host preselection; `automatic: true`
+rechecks it in admission. `borrowed: true` requires a closed target and forces
+subagent mode. `cancelTasks(true)` stops admission and fences tokens before abort;
+`forceTasks()` ends local waits at the host cleanup deadline. The host awaits those
+local tasks before `close()`. Cancellation preserves available audit and unknown
+usage; closed tools and rejection handlers prevent late store access.

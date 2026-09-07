@@ -84,9 +84,11 @@ test("switching branch while pending preserves the old delivery and excludes the
   const sibling = turn(root.id);
   selection.branch = "new"; selection.headTurnId = sibling.id;
   script.push(async () => success([]));
-  await memory.noting(selection);
+  // 17c 2026-09-08 supersedes concurrent sibling workers: the target claim spans branches.
+  expect(await memory.noting(selection)).toEqual({ outcome: "dropped" });
   resolve(success([batch(old.id)]));
   await pending;
+  await memory.noting(selection);
   expect(memory.store.sourcePath(sessionId, "old", old.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "old", old.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).length).toBeGreaterThan(0);
@@ -94,7 +96,7 @@ test("switching branch while pending preserves the old delivery and excludes the
   expect(memory.store.listPendingDeliveries(sessionId, "old").map((d) => d.branch)).toEqual(["old"]);
   expect(memory.store.listPendingDeliveries(sessionId, "new")).toEqual([]);
   expect(calls[1]!.input).not.toContain(`[S${sessionId}/T${old.id}]`);
-  expect(memory.store.getRun(2)?.branch).toBe("old");
+  expect(memory.store.getRun(1)?.branch).toBe("old");
 });
 
 test("duplicate trigger is dropped, including another façade on the same file", async () => {

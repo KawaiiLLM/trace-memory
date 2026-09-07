@@ -16,11 +16,11 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) } }));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   if (marker) writeFileSync(join(dir, ".trace-memory"), marker);
-  const dbPath = join(dir, "trace.db");
+  const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];
-  const requests: unknown[] = [], conversations: Conversation[] = [];
-  let provider = async (_conversation: Conversation) => reply("[]");
+  const requests: unknown[] = [], conversations: Conversation[] = [], signals: AbortSignal[] = [];
+  let provider = async (_conversation: Conversation, _signal?: AbortSignal) => reply("[]");
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   const model = { provider: "fake", id: "test", api: "openai-completions", contextWindow: 200_000, maxTokens: 8192 };
   const dialogs: { title: string; options?: string[] }[] = [];
@@ -36,14 +36,15 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
       complete: async (selected: unknown, conversation: Conversation, options: any) => {
+        signals.push(options.signal);
         conversations.push(structuredClone(conversation));
         const payload = { providerSpecific: true, model: selected, system: conversation.systemPrompt, messages: structuredClone(conversation.messages), tools: structuredClone(conversation.tools ?? []) };
         await options.onPayload(payload);
         requests.push(structuredClone(payload));
         payload.providerSpecific = false; // The saved request must not alias provider state.
         if (autoStop && conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
-        if (conversation.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.includes('"committed"'))) return reply("Done.");
-        return provider(conversation);
+        if (autoStop && conversation.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.includes('"committed"'))) return reply("Done.");
+        return provider(conversation, options.signal);
       } },
   } as unknown as ExtensionContext;
   const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
@@ -85,7 +86,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); };
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
   const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close(); rmSync(dir, { recursive: true, force: true }); };
-  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; } };
 }
 export function notingFact(conversation: Conversation) {

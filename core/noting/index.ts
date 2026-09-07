@@ -4,13 +4,13 @@ import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
-import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
+import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 
-export interface NotingInput {
+export interface NotingInput extends TaskOptions {
   sessionId: number;
   branch: string;
   headTurnId: number;
@@ -19,7 +19,7 @@ export interface NotingInput {
   model?: string;
   mode?: "branch" | "subagent";
 }
-export interface NotingAgentInput {
+export interface NotingAgentInput extends AgentControl {
   kind: "noting";
   entryIds: number[];
   sessionId: number;
@@ -136,13 +136,15 @@ export async function runNoting(
     result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
       output: error instanceof Error ? error.message : String(error) };
   } finally { binding.close(); }
+  // A direct facade close may dispose before the provider settles; never access that store.
+  if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
   run.mode = result.mode ?? mode;
   if (result.request !== undefined) run.request = JSON.stringify(result.request);
   const problems = binding.committed
     ? (result.outcome === "success" ? (result.request == null ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : result.request === undefined || result.request === null ? ["runAgent must return the exact provider request"] : binding.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits,
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits,
     toolCalls: binding.sequence, fetched: binding.fetched, problems,
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),

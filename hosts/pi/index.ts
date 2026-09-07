@@ -114,6 +114,7 @@ export default function (pi: ExtensionAPI) {
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   let ctx: ExtensionContext;
+  let closed = false;
   type Capture = { entries: { id: string; raw: string }[]; payload: Body; model: string; provider: string; branch: string };
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
@@ -133,7 +134,11 @@ export default function (pi: ExtensionAPI) {
     let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] }) | undefined;
     let fallbackReason: string | undefined;
     let mode: "branch" | "subagent" = "subagent";
+    let usage: unknown;
+    const retries: { attempt: number; error: string }[] = [];
+    const progress = () => input.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason });
     try {
+      input.signal?.throwIfAborted();
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
       const checkCapacity = (payload: unknown) => {
         if (input.kind !== "noting") return;
@@ -152,17 +157,23 @@ export default function (pi: ExtensionAPI) {
       // `prepare` builds one round's request context exactly once (suffix appended, base fixed) and
       // returns the send; the retry helper re-sends that same request, never a re-appended one.
       const converse = async (prepare: (suffix: Conversation["messages"]) => () => Promise<Reply>) => {
-        let suffix: Conversation["messages"] = [], rounds = 0, usage: unknown, reply: Reply;
-        const retries: { attempt: number; error: string }[] = [];
+        let suffix: Conversation["messages"] = [], rounds = 0, reply: Reply;
         const cap = memory.config[input.kind].maxToolRounds; // 0 = unlimited (spec: the model is called again until it stops)
         for (;;) {
+          input.signal?.throwIfAborted();
           const produce = prepare(suffix);
-          reply = await retryAssistantCall(async () => { const r = await produce(); usage = addUsage(usage, r.usage); return r; }, retry.policy, undefined, {
-            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { retries.push({ attempt, error: message }); activity.retrying = true; showSpend(callContext);
+          reply = await retryAssistantCall(async () => {
+            input.signal?.throwIfAborted();
+            const r = await produce(); usage = addUsage(usage, r.usage); progress();
+            input.signal?.throwIfAborted();
+            return r;
+          }, retry.policy, input.signal, {
+            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { retries.push({ attempt, error: message }); progress(); activity.retrying = true; showSpend(callContext);
               callContext.ui.notify(`Trace Memory: ${input.kind} retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s: ${message}`, "warning"); },
             onRetryAttemptStart: () => { activity.retrying = false; showSpend(callContext); },
             onRetryFinished: () => { activity.retrying = false; showSpend(callContext); },
           });
+          input.signal?.throwIfAborted();
           const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
           if (reply.stopReason !== "toolUse" || !calls.length) break;
           if (cap && ++rounds > cap) throw new Error(`tool rounds exceeded (${cap})`); // over budget is a failure, not an empty batch
@@ -214,14 +225,16 @@ export default function (pi: ExtensionAPI) {
       if (!fallbackReason && candidate) {
         mode = "branch";
         const auth = await registry.getApiKeyAndHeaders(model);
+        input.signal?.throwIfAborted();
         if (!auth.ok) throw new Error(auth.error);
         const key = messageKey(model.api);
-        const { reply, usage, retries } = await converse(suffix => {
+        const { reply } = await converse(suffix => {
           const previous = candidate!; // this round's base, fixed before any attempt: a retry rebuilds the same request
           let verified = false;
           return () => complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-            { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider,
+            { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider, signal: input.signal,
               onPayload(native) {
+                input.signal?.throwIfAborted();
                 // The installed adapter serializes only the new suffix (native tool ids, thinking
                 // signatures). Its cache markers are stripped so rounds add none to the captured
                 // prefix's own; the session id stays so routing and connection reuse are unchanged.
@@ -234,7 +247,7 @@ export default function (pi: ExtensionAPI) {
                   if (!checked.passed) { verification!.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
                 }
                 checkCapacity(candidate);
-                request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
+                request = snapshot(candidate); input.reportRequest(request); progress(); return snapshot(candidate);
               } });
         });
         if (verification && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number") verification.cache_read = (usage as { cacheRead: number }).cacheRead;
@@ -244,14 +257,15 @@ export default function (pi: ExtensionAPI) {
       // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
       let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
         tools: toolDefinitions as unknown as Tool[] };
-      const { reply, usage, retries } = await converse(suffix => {
+      const { reply } = await converse(suffix => {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round
         const fixed = conversation;
-        return () => registry.complete(model, fixed, { ...retry.provider, onPayload(payload: unknown) { checkCapacity(payload); request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
+        return () => registry.complete(model, fixed, { ...retry.provider, signal: input.signal, onPayload(payload: unknown) { input.signal?.throwIfAborted(); checkCapacity(payload); request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); progress(); } });
       });
       return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason, ...(retries.length ? { retries } : {}) };
     } catch (error) {
-      return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
+      return { outcome: input.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "failure",
+        output: String(error), usage, retries, request, mode, verification, fallbackReason };
     }
   }, core);
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
@@ -286,6 +300,7 @@ export default function (pi: ExtensionAPI) {
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
+  const slots = new Set<"noting" | "consolidation">();
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to branch, consolidation to
@@ -303,7 +318,7 @@ export default function (pi: ExtensionAPI) {
   const activity = { running: new Map<"noting" | "consolidation", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
   const runningKind = (kind: "noting" | "consolidation") => (activity.running.get(kind) ?? 0) > 0;
   const showSpend = (context: ExtensionContext) => {
-    if (!context.ui?.setStatus) return;
+    if (closed || !context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
     const indicator = !enabled() ? paint("dim", "○") : activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
@@ -371,6 +386,7 @@ export default function (pi: ExtensionAPI) {
       : provisional() ?? latest?.enrollment ?? saved?.enrollment ?? { defaultEnabled: enrollmentDefault(ctx.sessionManager.getHeader()?.timestamp, baseline), choice: null };
     if (!state.sessionId) { persistProvisional(state.enrollment); state.enrollment = provisional()!; }
     state.shared = state.shared || (!!state.sessionId && memory.store.getSession(state.sessionId)!.host !== `pi:${piId}`);
+    if (state.sessionId && !fork) memory.store.reopenSession(state.sessionId, memory.executorId);
     current = undefined;
     reconciledLeaf = undefined;
     reconcile(false);
@@ -383,7 +399,7 @@ export default function (pi: ExtensionAPI) {
     }
     save(); // Provisional intent is durable before the first reply, too.
   };
-  const ensure = (context: ExtensionContext) => { ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
+  const ensure = (context: ExtensionContext) => { if (closed) throw new Error("Trace Memory executor is closed"); ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
   const allocate = (started: string) => {
     if (state.sessionId) return;
     const name = marker(ctx.cwd);
@@ -541,41 +557,55 @@ export default function (pi: ExtensionAPI) {
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
   });
   const checkQueues = () => {
-    if (!enabled()) return;
-    if (!state.sessionId || !state.head) return;
+    if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
-    const { sessionId, branch, head } = state;
-    const background = (kind: "noting" | "consolidation", promise: Promise<unknown>) => {
-      pending.add(promise); activity.running.set(kind, (activity.running.get(kind) ?? 0) + 1); showSpend(context);
-      void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })
-        .finally(() => { pending.delete(promise); activity.running.set(kind, (activity.running.get(kind) ?? 1) - 1); showSpend(context); });
-    };
-    const count = memory.store.consolidationBatch(sessionId, branch, head).length;
-    const notingLaunch = launch("noting");
-    // A branch run carries only its instruction (ruling 08:53): it presumes every earlier result is already
-    // in the conversation. A result committed after this prompt started is not delivered until the next
-    // prompt, so a branch run waits for that prompt's turn stop.
-    // A branch Noter reads earlier facts, so a pending fact delivery holds it; a branch Consolidator reads
-    // facts and current knowledge, so either pending kind holds it (user ruling 2026-09-07).
-    const undelivered = new Set(memory.store.listPendingDeliveries(sessionId, branch).map(p => memory.store.getRun(p.runId)?.kind));
-    const paused = (kind: "noting" | "consolidation", mode: string | undefined) =>
-      mode === "branch" && (kind === "noting" ? undelivered.has("noting") : undelivered.size > 0);
-    let due = false;
-    try { due = tokens(memory.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, memory.config.render).content).join("\n\n")) >= memory.config.noting.triggerTokens; }
-    catch (error) { context.ui.notify(String(error), "error"); }
-    if (due && paused("noting", notingLaunch.mode)) { activity.last = "warning"; showSpend(context); }
-    if (due && !paused("noting", notingLaunch.mode)) {
-      const [provider, ...id] = notingLaunch.model.split("/");
-      const model = notingLaunch.model === "session" || notingLaunch.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-      if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) context.ui.notify("Noting capacity: unavailable model context/output limits; left pending", "error");
-      else background("noting", memory.noting({ sessionId, branch, headTurnId: head, ...notingLaunch,
-        capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
-          prefixTokens: notingLaunch.mode === "branch" && session.capture?.branch === branch ? tokens(JSON.stringify(session.capture.payload)) : 0 } }));
+    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head };
+    for (const kind of ["noting", "consolidation"] as const) {
+      if (slots.has(kind)) continue;
+      const selected = launch(kind);
+      let due = false, paused = false;
+      try { ({ due, paused } = memory.taskEligibility(kind, own, selected.mode)); }
+      catch (error) { context.ui.notify(String(error), "error"); }
+      if (due && paused) { activity.last = "warning"; showSpend(context); }
+      const candidates = [...(due && !paused ? [{ ...own, borrowed: false }] : []),
+        ...memory.store.closedTasks(kind, own.sessionId).map(target => ({ ...target, borrowed: true }))];
+      if (!candidates.length) continue;
+      slots.add(kind); // Reserve before any asynchronous admission or model work.
+      const work = async () => {
+        const attempt = async (target: typeof own, borrowed: boolean) => {
+          if (closed || !enabled()) return { outcome: "dropped" };
+          const selected = borrowed ? { mode: "subagent" as const, model: modelName(kind) } : launch(kind);
+          if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, borrowed, automatic: true, executorSessionId: own.sessionId });
+          const [provider, ...id] = selected.model.split("/");
+          const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
+          if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) {
+            context.ui.notify("Noting capacity: unavailable model context/output limits; left pending", "error");
+            return { outcome: "dropped" };
+          }
+          return memory.noting({ ...target, ...selected, borrowed, automatic: true, executorSessionId: own.sessionId,
+            capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
+              prefixTokens: selected.mode === "branch" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 } });
+        };
+        for (const { borrowed, ...target } of candidates) {
+          if (closed || !enabled()) return;
+          try {
+            const result = await attempt(target, borrowed);
+            if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
+          } catch (error) {
+            context.ui.notify(String(error), "error");
+            if (!(error instanceof Error && error.cause === "task admission")) return;
+          }
+        }
+      };
+      const promise = work();
+      pending.add(promise); activity.running.set(kind, 1); showSpend(context);
+      // The handled promise includes cleanup; no detached rejecting finally chain survives disposal.
+      const settled = promise.then(result => reportProblems(result, context), error => {
+        activity.last = "error"; context.ui.notify(String(error), "error");
+      }).finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context); });
+      pending.delete(promise); pending.add(settled);
+      void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     }
-    const consolidationLaunch = launch("consolidation");
-    if (count >= memory.config.consolidation.triggerUnconsolidatedFacts && paused("consolidation", consolidationLaunch.mode)) { activity.last = "warning"; showSpend(context); }
-    if (count >= memory.config.consolidation.triggerUnconsolidatedFacts && !paused("consolidation", consolidationLaunch.mode))
-      background("consolidation", memory.consolidate({ sessionId, branch, headTurnId: head, ...consolidationLaunch }));
   };
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); if (!enabled()) return; flush(true);
@@ -596,13 +626,23 @@ export default function (pi: ExtensionAPI) {
   });
   // Pi tears the extension runtime down and re-runs the factory for every reason, including
   // session replacement (new, resume, fork); this instance never serves the next session.
-  let closed = false;
   pi.on("session_shutdown", async () => {
     if (closed) return;
     closed = true;
-    if (state) flush(true);
-    await Promise.allSettled([...pending]);
-    memory.close();
+    const report = (error: unknown) => { try { ctx?.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* reporting cannot block exit */ } };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); });
+    try {
+      try { memory.cancelTasks(true); } catch (error) { report(error); }
+      try { if (state) flush(true); } catch (error) { report(error); }
+      await Promise.race([Promise.allSettled([...pending]), deadline]);
+      memory.forceTasks(); // Close bindings and end only local waits, retaining partial audit.
+      await Promise.allSettled([...pending]);
+      try { if (state?.sessionId) memory.store.closeSession(state.sessionId); } catch (error) { report(error); }
+    } finally {
+      clearTimeout(timer);
+      try { memory.close(); } catch (error) { report(error); }
+    }
   });
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   // The main agent registers the façade metadata (same name, description, schema the runs send)
@@ -631,6 +671,7 @@ export default function (pi: ExtensionAPI) {
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
+    if (!value) memory.cancelTasks();
     state.injected = false;
     unconfirmed.deliveries = []; unconfirmed.injected = false;
     save();

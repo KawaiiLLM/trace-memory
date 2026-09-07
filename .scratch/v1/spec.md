@@ -58,7 +58,7 @@ Two layers of memory extracted automatically from the conversation, each claim t
 - `core/noting`: builds the noting input (rendered pending entry views, recent facts by freshness, active knowledge, the range), calls `runAgent` with the four tool definitions bound to the run, and commits the one `note` batch the model submits (facts, run record, exact entry progress, pending delivery) in one transaction.
 - `core/consolidation`: builds the consolidation input (all facts in range with annotations, context facts by freshness, active knowledge, the negated-evidence reminder), calls `runAgent` with the bound tools, answers the first `memory` batch with NEAR, CLOSER and the checklist, and on the second batch runs accounting (every user fact and question in range cited or listed in `skipped`), applies create/update/merge/archive as revisions, and commits with the run record. Diagnostics (numbers not found in cited facts, an item over 200 tokens, NEAR without an update or merge after the feedback round) are reported, never rejected.
 - `core/render`: one shared entry renderer for automatic Raw (see Completed source entries and compressed Raw below). Explicit Turn preview rendering: user message and assistant text uncut; per tool call a fixed metadata line (ordinal `#t<n>`, tool, status, omission flag), command cut at line boundaries to a token cap, stdout head/tail, stderr tail, reads and searches as name plus path, memory-tool writes as a receipt line, reports head/tail; every cut carries an omission marker with the count. Fact line and knowledge line formats per CONTEXT.md, relations at line end with continuation lines for quote and source. XML injection blocks with a fixed header, category tags in fixed order, no volatile attributes; dynamic receipts appended after the stable content. Budgets are parameters; defaults: command 120 tokens, stdout 60 head 120 tail, stderr 120 tail, reports 200 head 80 tail, knowledge block 10K, episodic block 20K (oldest facts dropped first, raw tail kept). Token estimate is a local heuristic, no tokenizer dependency. Grilling Q12 ruled two weights over character classes, 0.75 per CJK character and 0.25 per other; measured against a real tokenizer that ran 28% low on Chinese and 46% high on English prose, and refitting the two constants left the Chinese shortfall at 23%, because the residual is not on that axis. The user ruled for the segment method on 2026-09-07: the text is split on whitespace and punctuation runs and each segment is priced by its own rule (CJK by script, digit runs by three, short segments and common lowercase words at one token, punctuation runs, a default ratio otherwise), the shape used by tokenx, whose ratios are calibrated against o200k_base. Two rules are ours and measured here: runs are priced across letter/digit boundaries, because this project's own addresses are that shape in every line a budget measures, and a run of horizontal whitespace costs the single token a tokenizer holds for it whatever its width. Accuracy over 20 corpora of this project's text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting only wastes budget room while under-counting overruns it, so the estimate is allowed to run high and held close on the low side. `core/render/index.test.ts` pins the bound against true counts recorded offline; Claude's tokenizer is not public, so o200k stands in for it.
-- `core/api`: the façade `TraceMemory(dbPath, runAgent, config)` exposing `record`, `integrate`, `compact`, `inject`, `deliver`, `trace`, `search`, `status`, `declareProject`, `mark`, and `tools(context)` returning the four model-facing tool definitions bound to a run or to the main agent's session. Hosts call only this.
+- `core/api`: the façade `TraceMemory(dbPath, runAgent, config)` exposing `noting`, `consolidate`, `compact`, `inject`, `deliver`, `trace`, `search`, `status`, `declareProject`, `mark`, and `tools(context)` returning the four model-facing tool definitions bound to a run or to the main agent's session. Hosts call only this.
 - `core/prompts`: `noting.md`, `consolidation.md`, versioned by content hash recorded in runs.
 - `hosts/pi`: reconciles persisted eligible entry completions at safe hooks (checks Noting at ≥10,000 pending compressed-view tokens and Consolidation at ≥50 applicable unconsolidated committed facts; `agent_settled` retains delivery confirmation), `session_before_compact` (returns the compaction block, cancels nothing, calls no model), `session_before_tree` (returns committed memory plus pending compressed Raw as the summary without extraction), `before_agent_start` (injects the knowledge block at session start and any pending noting deliveries), the four tools from `tools(context)` (`trace`, `search`, `note`, `memory`), command `/trace` (native enrollment/settings/runs/status menu; `/trace status` reads status; `/trace project <name>` declares the project; `/trace mark K<n> <kind>` marks a knowledge item). Implements `runAgent` two ways: branch mode builds a pi-ai call whose system prompt and messages are byte-identical to the session's current request plus one appended user message; subagent mode builds a fresh call with the rendered input. Noting defaults to branch mode with the session model; consolidation defaults to subagent mode with the session model; both overridable. In branch mode the appended message carries the noting prompt, range, head reply and frozen source index: the raw turns, the facts delivered after earlier notings, and the injected knowledge are already in the conversation (user ruling 2026-09-06 08:53). That premise fails for a noting result committed after the current prompt started, since deliveries land at prompt start: the host does not start a branch noting while such a result is undelivered and lets the next eligible completion after delivery confirmation start it. Subagent mode carries the full rendered input. In consolidation branch mode the candidate round appends the consolidation prompt, the range and the exact list of facts to integrate to the captured prefix, and the final round appends the candidate reply (replayed in the provider's native assistant shape) and the feedback message to the verified candidate request. Tool calls in either mode are executed and the model is called again on the extended request (see Write tools).
 - `hosts/cc`: placeholder; not in v1.
@@ -148,8 +148,8 @@ same-Turn entries remain pending and cannot become eligible citations for that r
 Reads remain unrestricted. Shared processed entries are inherited on forks; native
 ancestry determines selected membership, independent of delivery confirmation.
 There is no Turn-coverage migration, compatibility translation or second delivery
-protocol. Ticket 17b removes the derived Turn boundary and its readers/status line.
-Ticket 17c owns closure and catch-up; neither is implemented here.
+protocol. Ticket 17b removed the derived Turn boundary and its readers/status line.
+Ticket 17c adds the shared task admission and lifecycle below.
 
 ### Enrollment, baseline and settings (18a, 2026-09-08)
 
@@ -183,7 +183,7 @@ failure audit records remain valid. A batch committed before disable stays succe
 Stored Raw, facts, knowledge, scope and runs remain. Disabled hosts return no compaction
 or carry override, allowing Pi's native fallback. Unseen deliveries remain unconfirmed;
 already-injected text is not removed. Trace, search and status remain unrestricted.
-In-flight model calls are not cancelled until 17c; no cancellation mechanism is added.
+Disabling this executor also requests cancellation of its workers after persisting enrollment and invalidating their tokens. Other executors still recheck target enrollment at commit.
 
 Configuration is a flat object under `trace-memory` in Pi's global `settings.json`
 (`PI_CODING_AGENT_DIR` or `~/.pi/agent`) and project `.pi/settings.json`, project over
@@ -207,17 +207,77 @@ indicator, colors, counts and spend. Catch up and Stop are ticket 18b, not imple
 
 - A noting run freezes, at start: the session, the branch, the oldest contiguous pending source-entry prefix on the selected ancestry within `noting.batchTokens` (default 50,000 compressed-view tokens including separators), their owning Turns and immutable views, and the knowledge revisions it read. On success it commits its facts, the run record, only those entry identities marked processed, and a pending delivery bound to that branch — all in one transaction. It never processes entries that arrived while it ran, even inside the same Turn; those wait for the next eligible entry completion. The effective batch can be smaller to reserve instructions, knowledge, tool definitions, output and existing model context. If the oldest entry cannot fit, it stays pending with a capacity problem; it is never skipped. The host uses the shared estimator with a 15% context margin and the model output limit. The native branch prefix is never rewritten; its size is additional to the 50,000-token new-material limit.
 - An Consolidation run freezes the fact range and the knowledge revisions it read. It applies operations only on top of those revisions; if an item moved on meanwhile, that operation is rejected with the reason and, as for any rejection, the batch writes nothing: the Consolidator resubmits without it or after re-reading. (Supersedes the earlier "the rest commit" rule; the write-tools ruling makes every batch atomic.)
-- Within one process, at most one noting run and one consolidation run per session-branch at a time; a trigger that fires while one is running is dropped (the next trigger re-evaluates). An Consolidation run covers only that session-branch's own facts; sessions of one project integrate separately (user ruling 2026-09-06 09:43). No leases across processes in v1.
+- Each enabled active Pi executor has one Noting slot and one Consolidation slot, reserved before asynchronous admission. Each target memory session has at most one valid claim per phase across branches, hosts and processes. Both ordinary and borrowed work acquire this claim. Each Consolidation run covers only its frozen target path; sessions of one project consolidate separately (user ruling 2026-09-06 09:43).
 - Failure or cancellation commits nothing but the run record. A run's business result is whether a batch committed: once the write tool has committed the batch, the run record, entry progress and the delivery in one transaction, the run is a `success` whatever the model does afterwards; a provider failure after that point is recorded in the run record's response only, and a committed batch is never undone. `failure` / `cancelled` (nothing committed), `bounced` (last submission rejected, never corrected), and success with zero facts (stopped normally without submitting) are therefore mutually exclusive. A branch switch while a noting run is pending lets the run finish against its frozen branch; its delivery goes to that branch only. The branch summary for the abandoned branch uses committed facts plus the rendered raw for anything still unrecorded; it never silently drops raw.
 - Two behaviour cases the tests must cover: a new turn arrives while the model has not returned; the user switches branch while the model has not returned.
 - Consolidation batches (2026-09-07 ruling superseded 2026-09-08 by 17b): fifty applicable unconsolidated committed facts trigger a run; selection takes eligible facts on the frozen path without Turn grouping, whole-Turn completion or a first-Noting gate. The threshold is not a promise to take exactly fifty. Consolidation progress remains the `consolidated_facts` set (peer review 2026-09-07): each run records its exact membership, and a fact counts as consolidated on a path when one of the runs that took it took only facts on that path. Late facts on earlier Turns are neither skipped nor reconsolidated because of their ids.
 - Each eligible entry completion checks both queues independently. `noting.triggerTokens` defaults to 10,000 compressed-view tokens from `renderEntry` over `pendingEntries`; no entry-count or answered-Turn trigger exists. `noting.batchTokens` defaults to 50,000; both and the view limits are validated positive safe integers. Unknown and removed configuration keys are errors. Finishing a worker starts nothing; excess work waits for a fresh eligible completion. Existing provider retries remain within a run.
-- Compaction, shutdown and tree switching launch neither extraction phase and preserve pending work. Existing in-flight runs may settle under the existing shutdown wait; it is not a new trigger. Tree summaries and compaction use committed memory plus the shared pending view. Closure, claims and catch-up belong to 17c.
+- Compaction, shutdown and tree switching launch neither extraction phase and preserve pending work. Tree summaries and compaction use committed memory plus the shared pending view. Shutdown cancels and fences workers under the bounded lifecycle below; tree navigation lets its already-running worker retain the frozen path.
 
 - A Pi fork or clone whose copied path carries Trace Memory state continues the same Trace Memory session on a new branch id: same facts, same project, sibling-branch rules apply, and the new branch inherits processed shared entry identities, so shared entries are recorded once; consolidation progress needs no inheritance, since it is per fact and judged against the new branch's own path. A copy without plugin state starts a new session.
 - **Enrollment controls delivery** (user ruling 2026-09-08, superseding the 2026-09-07 consumer matrix): enabled sessions receive both `<noted>` facts and `<consolidated>` knowledge commits regardless of Noting or Consolidation mode. Worker modes control execution only. Facts absent from conversation, including manual notes, remain available through unrestricted `trace`. Initial knowledge injection and compaction are separately enrollment-gated.
 - A branch run does not start while a delivery it would read is pending: a branch Noting waits for a pending fact delivery, a branch Consolidation waits for either kind. The next eligible completion after settled delivery confirmation supplies another opportunity; confirmation remains at `agent_settled`.
 - Deliveries and the first knowledge injection are confirmed at the turn's `agent_settled`, after Pi has persisted the message; only the run ids that prompt took are confirmed, results committed during the turn wait for the next prompt, and confirmation is bound to the ids, not to the current session state. A turn that never settles delivers or injects again: duplicates are allowed before confirmation, silent loss is not (user ruling 2026-09-07).
+
+### Shared tasks and lifecycle (17c, 2026-09-08)
+
+An executor is an enabled active Pi runtime; a target is the memory session and
+branch it processes. Each eligible entry completion offers one opportunity in each
+free phase slot. Own work under the normal 10,000 compressed-token / fifty-fact
+thresholds wins. If it cannot be claimed, consider other enabled normally closed
+targets with nonempty phase queues, ignoring thresholds. Order those targets by
+oldest pending source-entry id or fact id, then session id and branch name. Global
+allocation ids supply stable pending arrival order. A phase may select a branch
+with no pending work in the other phase. Never combine sibling branch ranges.
+
+The existing source/progress memberships supply the logical queue; only ownership
+is newly persisted. Claim acquisition and eligibility checking share an immediate
+transaction, which ends before a model call. Claims carry executor id, random
+ownership token and a thirty-minute expiry. A failed acquisition may try another
+target. Freeze target project, branch and evidence before calling the model.
+Borrowed work always uses subagent mode; own work retains configured/effective
+mode and branch-delivery gating. Runs, cost, commits, progress, audit and deliveries
+belong to the target. A changed target project rejects a commit rather than
+silently moving the frozen batch's attribution.
+
+Both commit transactions recheck the current unexpired token and target enrollment;
+borrowed work also requires the target still closed. Pi supplies its own memory
+session id for an enrollment recheck at admission and commit, so an externally
+disabled executor cannot keep borrowing enabled targets. Releases compare tokens and
+executor ids. Expiry can recover ownership but never implies closure. A running
+borrowed worker is not preempted by new own work. Slots release only when workers
+finish or teardown fences them. Completion launches nothing; later eligible
+entries supply the next bounded opportunity. No heartbeat, liveness discovery,
+polling or continuous drain exists.
+
+Normal shutdown sets `sessions.closed_at`; runtime restoration clears it. Restore
+immediately replaces another executor's claims with fresh reserved tokens for the
+restoring executor, without launching work or waiting for expiry/release. The next
+eligible admission consumes the reservation after checking current queues and
+thresholds. Old workers cannot commit or release the replacement. This also lets
+a crashed conversation resume despite its abandoned own claim. A crash creates no
+closed mark; until resume its unclosed tails are ineligible for borrowing. Ordinary
+tree navigation is not executor restoration and retains its existing worker.
+
+Shutdown and foreground session replacement stop scheduling, invalidate owned
+tokens, close their tool bindings and signal active provider calls and retry waits.
+One five-second cleanup deadline covers both slots. Teardown switches SQLite busy
+waiting off so competing writers cannot multiply the deadline by blocking the
+event loop. At the deadline, finish local waits with cancellation diagnostics,
+retaining available request/usage, then release claims conditionally, mark only
+the executor's own session closed and close SQLite. Borrowed targets keep their
+closure state. Late promises are rejection-handled and cannot access the closed
+store. No model is started for shutdown or compaction.
+
+A business commit that wins first stays successful, even if its final reply, audit
+update or claim release fails. Cancellation that wins first permits no business
+writes or progress. Uncommitted work remains queued. Cancellation without returned
+usage is labelled unknown; partial counters are known usage only, not total cost.
+Cleanup/audit failures are reported without undoing business commits or waiting
+indefinitely. If a locked/unavailable database prevents persisting closure, report
+that failure: do not infer normal closure afterward. Forced process death retains
+the existing precommit audit gap. No child session runtime or manual catch-up/stop
+command is part of this slice.
 
 ### Overflow policy
 
@@ -253,7 +313,7 @@ The initial consolidation input separately lists every visible active knowledge 
 ### Schema
 
 ```text
-sessions        id · host · enrollment_default (boolean) · enrollment_choice (nullable boolean) · started_at · first_reply_at · project_id · parent_session_id
+sessions        id · host · enrollment_default (boolean) · enrollment_choice (nullable boolean) · started_at · first_reply_at · closed_at (nullable normal-close timestamp) · project_id · parent_session_id
 projects        id · name · declared_by (marker | mark) · merged_into
 turns           id · session_id · ordinal · parent_turn_id · kind (turn | compaction) · user_prompt · assistant_text · started_at · ended_at
 tool_calls      id · turn_id · ordinal · name · input · result · status
@@ -269,6 +329,7 @@ source_entries  id · session_id · native_lineage · native_id · turn_id · co
 source_paths    session_id · branch · entry_ids (selected native ancestry, not queue state)
 noted_entries entry_id · run_id (successful processing membership)
 consolidated_facts  fact_id · run_id
+task_claims     session_id · phase (noting | consolidation) · executor_id · token · expires_at (epoch milliseconds) · borrowed · reserved (reopen reservation); primary key (session_id, phase)
 ```
 
 Indexes: knowledge by project; runs by session. Search is a literal substring match (LIKE) over fact text, knowledge revision text and raw; no FTS, no ranking (user ruling 2026-09-07).
@@ -288,7 +349,7 @@ Indexes: knowledge by project; runs by session. Search is a literal substring ma
 ## Out of Scope
 
 - Claude Code host.
-- Proxy consolidation of closed sessions, task claims and leases (ruled at grilling Q9; planned as ticket 08 after the host tickets).
+- Manual catch-up/stop commands and native child-session runtimes. Automatic closed-session tails and claims are included by 17c.
 - Per-prompt automatic retrieval hints.
 - Cross-project sharing beyond global scope.
 - Any confidence score; any model-judged pruning of facts.

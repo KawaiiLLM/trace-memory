@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -655,6 +655,62 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect((await exited)[0]).toBe(0);
     expect(r.ok).toBe(true);
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM runs").get()).toEqual({ n: 2 });
+
+    // 17c 2026-09-08 extends this real-process write-lock seam with task admission and fencing.
+    const entry = store.appendSourceEntry({ sessionId: s.id, turnId: t.id, nativeId: "pending", nativeLineage: "process-test",
+      role: "user", text: "pending evidence", raw: "pending evidence", calls: [] });
+    store.selectSourcePath(s.id, "main", [entry.id]);
+    store.closeSession(s.id);
+    const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+    const clock = Date.now();
+    const workers = ["process-a", "process-b"].map(executor => spawn(process.execPath, ["--input-type=module", "-e", `
+      import { Store } from ${JSON.stringify(new URL("./index.ts", import.meta.url).href)};
+      const store = new Store(${JSON.stringify(dbPath)});
+      Date.now = () => ${clock};
+      process.on("message", () => process.send(["noting", "consolidation"].map(phase =>
+        store.acquireClaim(${JSON.stringify(target)}, phase, ${JSON.stringify(executor)}, true))));
+      process.send("ready");
+    `], { stdio: ["ignore", "pipe", "inherit", "ipc"] }));
+    const exits = workers.map(worker => once(worker, "exit"));
+    try {
+      await Promise.all(workers.map(worker => once(worker, "message")));
+      const results = workers.map(worker => once(worker, "message"));
+      workers.forEach(worker => worker.send("race"));
+      const claims = (await Promise.all(results)).flatMap(([value]) => value as (import("./index.ts").TaskClaim | null)[]).filter(c => c !== null);
+      expect(claims.map(c => c.phase).sort()).toEqual(["consolidation", "noting"]);
+      expect(claims.every(c => c.expiresAt === clock + 30 * 60_000)).toBe(true);
+      workers.forEach(worker => worker.kill("SIGKILL"));
+      await Promise.all(exits);
+      expect(store.getSession(s.id)!.closedAt).not.toBeNull();
+      const time = vi.spyOn(Date, "now").mockReturnValue(clock + 30 * 60_000);
+      try {
+        for (const stale of claims) {
+          const replacement = store.acquireClaim(target, stale.phase, "replacement-process", true)!;
+          expect(replacement).not.toBeNull(); expect(replacement.token).not.toBe(stale.token);
+          const run = { kind: stale.phase, sessionId: s.id, branch: "main", claim: stale, createdAt: consolidationAt };
+          const rejected = stale.phase === "noting" ? store.commitNotingRun({ run, facts: [], entryIds: [entry.id] })
+            : store.commitConsolidationRun({ run, operations: [], consolidated: store.consolidationBatch(s.id, "main", t.id).map(f => f.id) });
+          expect(rejected.ok).toBe(false);
+          expect(store.releaseClaim(stale)).toBe(false);
+          expect(store.getClaim(s.id, stale.phase)!.token).toBe(replacement.token);
+          expect(store.releaseClaim(replacement)).toBe(true);
+        }
+        expect(store.pendingEntries(s.id, "main", t.id)).toHaveLength(1);
+        expect(store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0);
+        const live = makeSession(store.getSession(s.id)!.projectId);
+        const liveTurn = store.appendTurn({ sessionId: live.id, kind: "turn", startedAt: consolidationAt });
+        store.appendSourceEntry({ sessionId: live.id, turnId: liveTurn.id, nativeId: "live", nativeLineage: "process-test", role: "user", text: "live", raw: "live", calls: [] });
+        const livePath = { sessionId: live.id, branch: "main", headTurnId: liveTurn.id };
+        expect(store.acquireClaim(livePath, "noting", "crashed", false)).not.toBeNull();
+        time.mockReturnValue(clock + 60 * 60_000);
+        expect(store.getSession(live.id)!.closedAt).toBeNull();
+        expect(store.acquireClaim(livePath, "noting", "borrower", true)).toBeNull();
+        expect(store.acquireClaim(livePath, "noting", "resumed", false)).not.toBeNull();
+      } finally { time.mockRestore(); }
+    } finally {
+      workers.forEach(worker => { if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL"); });
+      await Promise.allSettled(exits);
+    }
   });
 });
 

@@ -22,9 +22,10 @@ test("real pi-ai serialization sends the preserved body and reports cache reads"
     ], tools: [{ type: "function", function: { name: "trace", description: "Read", parameters: { type: "object", properties: {} } } }],
     stream_options: { include_usage: true } };
     await h.prompt(); await h.emit("before_provider_request", { payload: captured });
-    await h.answer(); await h.emit("agent_settled"); await h.drain(); await h.emit("session_shutdown", { reason: "new" });
-    // SDK initialization can outlast the stub host's short drain.
+    await h.answer(); await h.emit("agent_settled"); await h.drain();
+    // 17c 2026-09-08: shutdown cancels; wait for this wire-verification run explicitly.
     await vi.waitFor(() => expect(h.memory.store.listRuns(1)).toHaveLength(1));
+    await h.emit("session_shutdown", { reason: "new" });
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.outcome).toBe("success"); expect(run.mode).toBe("branch");
     expect(sent).toHaveLength(1); expect(JSON.parse(run.request!)).toEqual(sent[0]);
@@ -72,7 +73,10 @@ test("real Anthropic Consolidation tool continuation preserves signed thinking a
     const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: [{ type: "text", text: "Exact signed-thinking prefix", cache_control: { type: "ephemeral" } }], messages: [{ role: "user", content: [{ type: "text", text: "Original", cache_control: { type: "ephemeral" } }] }],
       tools: tools.map((t, i) => ({ name: t.name, description: t.description, input_schema: t.parameters, ...(i === tools.length - 1 ? { cache_control: { type: "ephemeral" } } : {}) })) };
     await h.emit("before_provider_request", { payload: captured });
-    await h.answer("tick"); await h.emit("agent_settled"); await h.emit("session_shutdown");
+    await h.answer("tick"); await h.emit("agent_settled");
+    // 17c 2026-09-08: completion is observed before shutdown, which now cancels workers.
+    await vi.waitFor(() => expect(JSON.parse(h.memory.store.listRuns(1).find(r => r.kind === "consolidation")?.response ?? "{}").output).toBe("Done"));
+    await h.emit("session_shutdown");
     const run = h.memory.store.listRuns(1).find(r => r.kind === "consolidation")!;
     expect(run.outcome, run.response ?? "").toBe("success");
     expect(sent).toHaveLength(3);

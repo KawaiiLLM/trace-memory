@@ -69,6 +69,7 @@ export interface Session {
   host: string;
   startedAt: string;
   firstReplyAt: string;
+  closedAt: string | null;
   projectId: number;
   parentSessionId: number | null;
 }

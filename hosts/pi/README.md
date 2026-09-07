@@ -6,14 +6,14 @@ its exposed store. Notings use verified branch mode by default; consolidation us
 subagent mode. Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
-Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
+Run the extension with Pi 0.85.1 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
 repository root, run `npm install`, `npm test`, `npm run typecheck`, and
 `npm run smoke:pi`. The smoke script loads the extension directly under Node
 using the host tests' stub ExtensionAPI and commits one noting through a fake
 provider into a temporary database. See below for launching a real Pi session.
 
-v1 is unreleased. Databases created before the vocabulary rename are not read;
+v1 is unreleased. Databases created before the 17c closure/claim schema are not read;
 there is no migration. Start with a new database.
 
 ## Configuration
@@ -56,7 +56,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   request. Tree navigation launches no extraction.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
-`@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
+`@earendil-works/pi-coding-agent` 0.85.1. Tests use Vitest on Node; the standalone
 smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
@@ -116,9 +116,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   without Turn grouping; path-aware per-fact progress is unchanged. There is no
   first-Noting gate and no scalar fact cursor.
 - Worker completion starts nothing. A fresh eligible entry completion provides
-  the next opportunity; no timers or draining are added. Runs launch without awaiting
-  completion. The facade drops duplicates. Quit/reload preserves its existing wait
-  for in-flight runs before closing SQLite, and starts no flush.
+  the next opportunity; no polling or draining is added. Each runtime reserves one
+  slot per phase before asynchronous admission. Quit/reload cancels its workers
+  under one five-second cleanup deadline and starts no flush.
 - Pi custom entries persist session/turn/branch references, using Pi's own
   `appendEntry` facility. Resuming restores the selected lineage. Returning to a
   branch tip reuses its name; selecting an earlier point creates a new branch.
@@ -143,6 +143,65 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   declares the project, saves host state and displays refreshed injection.
   `/trace mark K<n> verified|flagged|clear` marks a knowledge revision. These are
   user commands; the former model-facing `mark` tool is removed.
+
+## Executor slots, claims and shutdown
+
+Each enabled active Pi runtime is an executor with one Noting slot and one
+Consolidation slot, including borrowed tasks. Each eligible entry completion checks
+free slots. Own eligible work has priority under the normal thresholds and branch
+pending-delivery gates. If no own task can be claimed, one enabled normally closed
+target with a nonempty phase queue may use that slot, even for one entry or one
+fact. Closed targets are ordered by oldest pending entry/fact allocation id, then
+session id and branch name; sibling paths never combine into one writable range.
+Failed claims may try another target. Completion only releases capacity; it never
+launches another batch. New own work does not preempt a borrowed worker.
+
+The facade shares the threshold/delivery predicate with host preselection and
+rechecks eligibility during atomic admission. A SQLite claim excludes other
+workers of the same target phase across branches, hosts and processes. It records
+executor id, a random token and a thirty-minute expiry; no transaction spans a
+provider request. Commits require the current unexpired token and target enrollment.
+Borrowed commits also require a closed target; release compares token and executor.
+Pi supplies the executor's memory-session id so external disable is rechecked at
+admission and commit as well.
+Borrowed work uses subagent mode and the configured phase model, with `session`
+resolved from the executor's model. Its target project, branch and evidence freeze
+before launch; a later project change rejects the commit. All business results,
+usage, run records and deliveries remain attributed to that target.
+
+Normal shutdown marks only the executor's own memory session closed. Restore clears
+the mark and immediately reserves new tokens for that executor in place of another
+owner's claims. The next eligible completion can consume them under normal
+thresholds without waiting for the old worker. Old commits/releases are fenced.
+Resume also takes abandoned own claims from a crashed runtime; ordinary tree
+navigation does not change worker ownership. Restoring launches no extraction.
+
+Shutdown/session replacement performs this sequence:
+
+1. Stop admission; invalidate owned tokens before aborting model calls and retry
+   waits. Close bound tools so cancellation cannot permit a late write.
+2. Allow one five-second cleanup deadline across both slots. SQLite busy waiting
+   is disabled for teardown, so lock contention reports errors promptly.
+3. At the deadline close bindings and finish local worker waits, retaining available
+   request/usage and cancellation diagnostics. Consume late provider failures.
+4. Release claims conditionally, mark the own session closed, and close SQLite.
+   Borrowed targets keep their closure state.
+
+A commit that wins before cancellation stays successful. Cancellation that wins
+first preserves the pending batch. No committed batch is restarted to obtain a
+final reply. Audit/cleanup failure is reported without changing a committed result
+or delaying exit indefinitely. Unknown cancelled usage renders as `cost unknown`;
+partial usage identifies known cost only. Session spend totals sum returned counters
+and cannot recover unknown provider charges. If SQLite is locked or unavailable,
+closure/audit writes can fail; the host reports them and still closes. The absence
+of a persisted closed mark is never repaired by guessing.
+
+The runner passes its per-worker `AbortSignal` to pi-ai `complete`, registry
+`complete`, and `retryAssistantCall`. Installed `dist/types.d.ts` declares the
+signal option; `dist/utils/retry.d.ts` declares the retry signal, whose implementation
+interrupts backoff. No provider-global cancellation or foreground cancellation is
+used. A provider that ignores cancellation may keep its remote request alive,
+but cannot hold local shutdown past cleanup or write through disposed tools.
 
 ## Enrollment and native menu
 
@@ -179,8 +238,9 @@ override so Pi proceeds with native context handling. Stored Raw, facts, knowled
 runs and knowledge scope stay intact; other sessions still see shared knowledge.
 Already-injected text remains in context. Unseen deliveries remain unconfirmed.
 The transactional commit checks reject late business writes and leave their batch
-pending; a batch committed before disable remains successful. In-flight model
-calls are **not cancelled until ticket 17c**.
+pending; a batch committed before disable remains successful. Disabling this
+executor invalidates its tokens and cancels active model calls and retry waits.
+Another executor still rechecks the disabled target inside its commit transaction.
 
 Bare `/trace` opens native dialogs:
 
@@ -475,7 +535,8 @@ Consolidation, and does not await a worker. Committed lineage facts and evidence
 knowledge commits precede the same pending compressed entry views used by Noting.
 Entries arriving during a frozen run remain in the summary. Reading it never
 consumes a delivery or calls a provider. Compaction and shutdown also launch nothing;
-pending work remains durable and the existing shutdown wait lets in-flight runs settle.
+pending work remains durable; shutdown cancels and fences in-flight runs under one
+shared five-second cleanup deadline.
 
 The hook returns `{ summary: { summary: text } }`. Installed Pi **0.85.0**
 `dist/core/extensions/types.d.ts:481–510` declares `TreePreparation`,
@@ -556,6 +617,14 @@ error `●` the last run failed. `/trace` prints the session's breakdown by run
 kind. Tree switching contributes no extraction usage to Pi totals.
 
 ## Known limits
+
+- No heartbeat or process-liveness discovery exists. A crash does not mark a session
+  closed; that conversation waits until resumed. Claim expiry only recovers ownership.
+- Catch-up needs later eligible entries in another enabled runtime. There is no
+  timer, completion chaining or continuous drain. A lease that expires during a
+  long provider request fences its eventual commit; there is no renewal timer.
+- Cancellation requests cannot guarantee that a remote provider stops billing.
+  Available usage is retained; missing cancelled usage is unknown, never free.
 
 - A queued (steering or follow-up) user message bypasses `before_agent_start`, so
   noting results that finish during such a message are delivered at the next

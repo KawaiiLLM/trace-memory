@@ -4,22 +4,20 @@ export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";
 export type { ListingOptions, SearchScope } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
-import { realpathSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { tokens, renderEntry } from "../render/index.ts";
 export { tokens, renderEntry, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput } from "../noting/index.ts";
-import { Store, type SourceInput, type SourceEntry, type KnowledgePath } from "../store/index.ts";
+import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget } from "../store/index.ts";
 
 import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
 export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
 
-const inFlightConsolidations = new Set<string>();
-const inFlightNotings = new Set<string>();
-let memoryDatabaseId = 0;
 
 // ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
 
@@ -125,12 +123,24 @@ export interface RunAgentResult {
 
 }
 
+export interface TaskOptions { borrowed?: boolean; automatic?: boolean; executorSessionId?: number }
+export interface AgentControl {
+  signal?: AbortSignal;
+  reportProgress?: (progress: Partial<RunAgentResult>) => void;
+}
+
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 
 // ---- Façade ----
 
 export interface TraceMemory {
   readonly store: Store;
+  readonly executorId: string;
+  taskEligibility(phase: Phase, target: TaskTarget, mode: "branch" | "subagent"): { due: boolean; paused: boolean };
+  /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
+  cancelTasks(stopping?: boolean): void;
+  /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
+  forceTasks(): void;
   readonly config: TraceMemoryConfig;
   close(): void;
   appendEntry(input: SourceInput): SourceEntry;
@@ -161,7 +171,14 @@ export interface TraceMemory {
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
   const cfg = validateConfig(config);
   const store = new Store(dbPath);
-  const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);
+  const executorId = randomUUID();
+  let stopping = false;
+  const tasks = new Set<{ controller: AbortController; force(): void; close(): void }>();
+  const cancelTasks = (stop = false) => {
+    stopping ||= stop;
+    try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
+    finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
+  };
   const trace = (address: string, display: ListingOptions = {}): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
@@ -260,36 +277,88 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, trace);
+  const taskEligibility = (phase: Phase, target: TaskTarget, mode: "branch" | "subagent") => {
+    if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
+    const due = phase === "noting" ? tokens(store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+      .map(e => renderEntry(e, cfg.render).content).join("\n\n")) >= cfg.noting.triggerTokens
+      : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).length >= cfg.consolidation.triggerUnconsolidatedFacts;
+    const paused = mode === "branch" && store.listPendingDeliveries(target.sessionId, target.branch)
+      .some(p => phase === "consolidation" || store.getRun(p.runId)?.kind === "noting");
+    return { due, paused };
+  };
+  const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
+    if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
+    const target = { sessionId: input.sessionId, branch: input.branch,
+      headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
+    let claim: TaskClaim | null = null;
+    let empty = false, projectId: number;
+    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | null;
+    try { frozen = store.transaction(() => {
+      empty = !(phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+        : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId)).length;
+      if (empty) return null;
+      claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
+        if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
+        if (!input.automatic || input.borrowed) return true;
+        const mode = input.mode ?? (phase === "noting" ? (cfg.noting.branchModeDefault ? "branch" : "subagent") : (cfg.consolidation.subagentModeDefault ? "subagent" : "branch"));
+        const { due, paused } = taskEligibility(phase, target, mode);
+        return due && !paused;
+      });
+      if (!claim) return null;
+      projectId = store.getSession(input.sessionId)!.projectId;
+      const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
+      return phase === "noting" ? freezeNoting(store, selected, cfg) : freezeConsolidation(store, selected, cfg);
+    }); } catch (error) {
+      throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
+    }
+    if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
+    const controller = new AbortController();
+    let force!: () => void;
+    const forced = new Promise<RunAgentResult>(resolve => { force = () => resolve({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
+    const progress: Partial<RunAgentResult> = {};
+    const task = { controller, force, close: () => {} };
+    tasks.add(task);
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
+      run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
+      const binding = bindTools(store, read, context, run, review);
+      task.close = binding.close;
+      return binding;
+    };
+    const agent: RunAgent = raw => {
+      controller.signal.throwIfAborted();
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal,
+        reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
+    };
+    let result: NotingResult | ConsolidateResult | undefined;
+    try {
+      result = phase === "noting"
+        ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
+        : await runConsolidation(store, frozen as ReturnType<typeof freezeConsolidation>, agent, cfg, bind);
+    } finally {
+      task.close(); tasks.delete(task);
+      try { if (!store.closed) store.releaseClaim(claim); }
+      catch (error) {
+        if (result && "runId" in result) result.problems = [...(result.problems ?? []), `claim release failed: ${String(error)}`];
+        else throw error;
+      }
+    }
+    return result;
+  };
   return {
-    store,
+    store, executorId, cancelTasks, taskEligibility,
+    forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
-    close: () => store.close(),
+    close: () => {
+      if (store.closed) return;
+      try { cancelTasks(true); store.releaseExecutor(executorId); }
+      finally { for (const task of tasks) task.force(); store.close(); }
+    },
     appendEntry: input => store.appendSourceEntry(input),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     tools: (context) => bindTools(store, read, context).tools,
-    noting: async (input) => {
-      if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
-      const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightNotings.has(key)) return { outcome: "dropped" };
-      inFlightNotings.add(key);
-      try {
-        const frozen = freezeNoting(store, input, cfg);
-        return await runNoting(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
-      } finally { inFlightNotings.delete(key); }
-    },
-    consolidate: async (input) => {
-      if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
-      const session = store.getSession(input.sessionId);
-      if (!session) throw new Error(`session S${input.sessionId} does not exist`);
-      const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightConsolidations.has(key)) return { outcome: "dropped" };
-      inFlightConsolidations.add(key);
-      try {
-        const frozen = freezeConsolidation(store, input, cfg);
-        return await runConsolidation(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
-      } finally { inFlightConsolidations.delete(key); }
-    },
+    noting: input => execute("noting", input) as Promise<NotingResult>,
+    consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
     ...read,
   };
 }

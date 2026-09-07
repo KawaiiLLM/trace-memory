@@ -58,11 +58,14 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 test("08:53 with 2026-09-07 premise repair: branch uses conversation context; subagent carries the raw", async () => {
   const { s, t } = session();
-  // 17a: shared entry coverage is inherited. Compare independently frozen concurrent runs.
-  await Promise.all([
-    memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }),
-    memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" }),
-  ]);
+  // 17c 2026-09-08 supersedes concurrent sibling admission. A failed input probe leaves the
+  // same evidence pending for the subagent comparison; exact branch bytes remain the ruling.
+  const probe = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
+  });
+  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }); }
+  finally { probe.close(); }
+  await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
   // The premise repair adds only the missing final reply and source index.

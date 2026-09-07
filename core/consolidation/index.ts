@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
-import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
+import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { finish, renderKnowledge, renderFact, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
@@ -14,10 +14,10 @@ const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionSta
 
 export type { ConsolidationDiagnostic } from "./commit.ts";
 
-export interface ConsolidateInput { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
+export interface ConsolidateInput extends TaskOptions { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
-export interface ConsolidationAgentInput {
+export interface ConsolidationAgentInput extends AgentControl {
   kind: "consolidation";
   sessionId: number;
   branch: string;
@@ -121,11 +121,13 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   try { result = await runAgent({ ...structuredClone(base), input: initial, subagentInput, tools: binding.tools, reportRequest: binding.reportRequest }); }
   catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: error instanceof Error ? error.message : String(error) }; }
   binding.close();
+  // A direct facade close may dispose before the provider settles; never access that store.
+  if (store.closed) return binding.memory.committed ? { outcome: "success", ...binding.memory.committed, range, readKnowledgeCommits } : { outcome: "dropped" };
   run.mode = result.mode ?? mode;
   if (result.request != null) run.request = JSON.stringify(result.request);
   const committed = binding.memory.committed;
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null ? ["runAgent must return the exact provider request"] : binding.memory.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
     ...(result.retries?.length ? { retries: result.retries } : {}) });

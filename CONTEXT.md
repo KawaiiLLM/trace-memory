@@ -26,6 +26,10 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Enrollment** — the durable enabled or disabled participation of one memory-session identity. Explicit intent overrides its derived default; shared forks and clones share the switch. Disable pauses future work and injection while retaining memory and unrestricted reads.
 - **Baseline** — the installation-scoped instant of the plugin's first successful initialization, retained across restarts and upgrades. Only native sessions created strictly after it default enabled; unknown or malformed creation times default disabled.
 - **Session** — one host conversation. Gets an id only once an assistant reply exists.
+- **Executor** — an enabled active host runtime that provides one Noting slot and one Consolidation slot. A free slot prefers its own eligible work before borrowing another session's closed tail.
+- **Target** — the memory session and branch whose evidence a worker processes. Its project, costs, commits, progress and deliveries remain its own even when another executor hosts the worker.
+- **Claim** — exclusive ownership of one target's phase across branches and executors, identified by an executor, a token and a thirty-minute expiry. Current ownership fences commits; reopening immediately replaces another executor's token.
+- **Closed** — a session marked by normal shutdown and cleared on restore. A crash or expired claim does not establish closure; an unclosed crashed conversation waits for resume.
 - **Project** — the unit that shares knowledge. A session belongs to a project only by explicit declaration (a `.trace-memory` marker file found upward from cwd, or an in-session `/trace project <name>`; the in-session declaration wins). An undeclared session is its own project and may later be merged into another, retroactively.
 - **Scope** of a knowledge item — `session` (holds only in that session), `project`, or `global` (about the user, the environment, general working method).
 
