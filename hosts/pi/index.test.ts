@@ -293,6 +293,8 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
+  expect((await h.prompt("before"))?.message?.content).toContain("<knowledge>"); // the own project's knowledge is already injected
+  await h.answer();
   await h.commands.get("trace").handler("project named", h.ctx);
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
   expect(store.listProjectFacts(own)).toEqual([]);
