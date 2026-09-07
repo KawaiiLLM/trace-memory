@@ -147,3 +147,18 @@ three prompts, the first also running a 2,500-line command.
   result was already in the conversation, so there was nothing to fetch. It
   recorded no event fact for the command, a content judgment, not a defect.
 - Facts carry system-derived times and no `status` (none were events).
+
+## Session 6 (`tmtail2`, after ticket 14): the final reply reaches the branch Recorder
+
+One prompt asking for a codename with no tools, so the only recordable content is
+the assistant's final reply. The branch message carried the range line, the reply
+under `[Source entry id: T1#assistant]`, and a `Sources:` index for T1; the
+Recorder wrote one fact citing `T1#assistant` (decision/agent, "codename Indigo
+Fox"). Before ticket 14 this reply was absent from the branch request (verified
+on the session-5 database: run 1's request did not contain the assistant's final
+sentence).
+
+A first attempt (`tmtail1`) stalled for five minutes before any turn row was
+written and was killed; the retry ran in 16 seconds. Second occurrence of the
+startup stall first seen in session 2; still not reproduced on demand and not
+inside the extension's hooks (no turn had been recorded when it hung).
