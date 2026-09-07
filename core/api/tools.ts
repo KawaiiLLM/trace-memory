@@ -35,7 +35,7 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 ] };
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
-  { name: "trace", description: "Read evidence visible to this session: facts/raw in its project; global, project and own-session knowledge. F<n>.. navigates later strong negations, never a current conclusion.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
+  { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge item or revision. F<n>.. navigates later strong negations, never a current conclusion.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: "Use literal substring search over facts/raw in this session's project and global, project and own-session knowledge. layer selects facts, knowledge, raw or all; no hit does not mean absent.", parameters: object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Recording runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
   { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
@@ -71,16 +71,22 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
   let problems: string[] = [];
-  const visibleSession = (id: number) => store.getSession(id)?.projectId === store.getSession(session.id)?.projectId;
-  const visibleFact = (id: number) => { const f = store.getFact(id); return f && visibleSession(store.getTurn(f.turnId)!.sessionId); };
+  // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
+  // injection and Integration keep their scope rules elsewhere. Writes still bind sources to the run.
+  const existingFact = (id: number) => !!store.getFact(id);
   const checkAddress = (address: string) => {
     for (const target of address.split(",").map((a) => a.trim())) {
-      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@[1-9]\d*(?:\.\.[1-9]\d*)?)?$/.exec(target);
+      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target);
       if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);
-      if (m[2]) { const t = store.getTurn(Number(m[2])); if (!t || !visibleSession(t.sessionId) || (m[1] && t.sessionId !== Number(m[1]))) throw new Error("address does not exist or is not visible in this session"); }
-      if (m[3] && !visibleSession(Number(m[3]))) throw new Error("address does not exist or is not visible in this session");
-      if (m[4] && !visibleFact(Number(m[4]))) throw new Error("address does not exist or is not visible in this session");
-      if (m[5] && !store.isKnowledgeVisible(Number(m[5]), session.id)) throw new Error("address does not exist or is not visible in this session");
+      const missing = () => new Error(`address does not exist: ${target}`);
+      if (m[2]) { const t = store.getTurn(Number(m[2])); if (!t || (m[1] && t.sessionId !== Number(m[1]))) throw missing(); }
+      if (m[3] && !store.getSession(Number(m[3]))) throw missing();
+      if (m[4] && !existingFact(Number(m[4]))) throw missing();
+      if (m[5]) {
+        const knowledge = store.getKnowledge(Number(m[5]));
+        if (!knowledge) throw missing();
+        for (const rev of [m[6], m[7]].filter(Boolean).map(Number)) if (!store.getKnowledgeRevision(knowledge.id, rev)) throw missing();
+      }
     }
   };
   const note = (input: Record<string, unknown>): string => {
@@ -107,7 +113,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           const seen = new Set<string>();
           for (const rel of fact[kind] ?? []) {
             const n = typeof rel.target === "string" ? Number(rel.target.slice(1)) : NaN;
-            if (typeof rel.target !== "string" || (rel.target.startsWith("$") ? !Number.isSafeInteger(n) || n < 1 || n > index : !visibleFact(n))) errors.push(`invalid relation target ${rel.target}; expected existing fact or earlier local handle`);
+            if (typeof rel.target !== "string" || (rel.target.startsWith("$") ? !Number.isSafeInteger(n) || n < 1 || n > index : !existingFact(n))) errors.push(`invalid relation target ${rel.target}; expected existing fact or earlier local handle`);
             if (seen.has(rel.target)) errors.push(`duplicate ${kind} target ${rel.target}`);
             seen.add(rel.target);
           }

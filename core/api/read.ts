@@ -89,11 +89,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (options.cursor) return page([], options);
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
-      const lines = store.searchAddresses(query, scope, options.sessionId).map((address) => {
+      const lines = store.searchAddresses(query, scope).map((address) => {
         if (address.startsWith("F")) return factLine(Number(address.slice(1)));
         if (address.startsWith("T")) return expand(address);
         const [id, rev] = address.slice(1).split("@").map(Number);
-        return knowledgeLine({ knowledge: store.getKnowledge(id!)!, revision: store.getKnowledgeRevision(id!, rev!)! });
+        const knowledge = store.getKnowledge(id!)!;
+        // A hit on history or on a retired item must not read like a current rule.
+        const status = knowledge.status === "merged"
+          ? (() => { const link = store.listKnowledgeLinks(id!).find((l) => l.kind === "merged_into"); return link ? `merged into K${link.toKnowledge}@${link.toRev}` : "merged"; })()
+          : knowledge.status === "archived" ? "archived"
+          : rev !== knowledge.currentRevision ? `historical; current: K${id}@${knowledge.currentRevision}` : "";
+        return knowledgeLine({ knowledge, revision: store.getKnowledgeRevision(id!, rev!)! }) + (status ? `\n  note: ${status}` : "");
       }).map(listingLine);
       return page(lines, options, "Search uses literal substring search. No hit does not mean absent.");
     },

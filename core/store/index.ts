@@ -1024,27 +1024,19 @@ export class Store {
     });
   }
 
-  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionId?: number): string[] {
+  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {
     const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-    if (scope === "raw") {
-      if (sessionId === undefined || !this.getSession(sessionId)) throw new Error("raw search requires an existing sessionId");
-      return (this.db.prepare(`SELECT t.id FROM turns t JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? AND
+    const raw = () => (this.db.prepare(`SELECT t.id FROM turns t WHERE
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
-        .all(this.getSession(sessionId)!.projectId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
-    }
+        .all(pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+    if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT id FROM facts WHERE text LIKE ? ESCAPE '\\' ORDER BY id").all(pattern) as { id: number }[]).map((r) => `F${r.id}`);
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, rev FROM knowledge_revisions
       WHERE text LIKE ? ESCAPE '\\' ORDER BY knowledge_id, rev`)
       .all(pattern) as { knowledge_id: number; rev: number }[]).map((r) => `K${r.knowledge_id}@${r.rev}`);
-    const visible = [...facts, ...knowledge].filter((address) => {
-      if (sessionId === undefined) return true;
-      if (address.startsWith("K")) { const [id, rev] = address.slice(1).split("@").map(Number); return this.isKnowledgeVisible(id!, sessionId, rev); }
-      const fact = this.getFact(Number(address.slice(1)))!;
-      return this.getSession(this.getTurn(fact.turnId)!.sessionId)?.projectId === this.getSession(sessionId)?.projectId;
-    });
-    return scope === "all" && sessionId !== undefined ? [...visible, ...this.searchAddresses(query, "raw", sessionId)] : visible;
+    return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 
   // -- watermarks --

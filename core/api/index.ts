@@ -134,10 +134,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           (to !== undefined && to < from!)) throw invalid();
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
-      const visible = (rev: number) => display.sessionId === undefined || store.isKnowledgeVisible(id!, display.sessionId, rev);
-      const history = store.listKnowledgeRevisions(id!).filter((r) => visible(r.rev));
+      // Reads are unrestricted (user ruling 2026-09-07); the scope rule applies to injection and Integration.
+      const history = store.listKnowledgeRevisions(id!);
       const revision = (rev: number) => {
-        if (!visible(rev)) throw new Error("knowledge revision is not visible in this session");
         const value = store.getKnowledgeRevision(id!, rev);
         if (!value) throw new Error(`knowledge K${id} has no revision ${rev}`);
         return value;
@@ -146,7 +145,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         history.filter((r) => r.rev > from! && r.rev <= to));
       if (from !== undefined) return renderKnowledgeTrace({ knowledge, revision: revision(from) }, undefined, [], store.listKnowledgeMarks(id!));
       return renderKnowledgeTrace({ knowledge, revision: revision(knowledge.currentRevision) },
-        history, store.listKnowledgeLinks(id!).filter((l) => display.sessionId === undefined || store.isKnowledgeVisible(l.toKnowledge, display.sessionId, l.toRev)), store.listKnowledgeMarks(id!));
+        history, store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!));
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {
@@ -157,9 +156,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const { id, depth } = pending.pop()!;
         const fact = store.getFact(id);
         if (!fact) throw new Error(`fact F${id} does not exist`);
-        const relations = store.listFactRelations(id).filter((r) => display.sessionId === undefined || [r.fromFact, r.toFact].every((id) => {
-          const fact = store.getFact(id)!; return store.getSession(store.getTurn(fact.turnId)!.sessionId)?.projectId === store.getSession(display.sessionId!)?.projectId;
-        }));
+        const relations = store.listFactRelations(id);
         // Later facts have larger allocated IDs; stored edges point newer -> older.
         const children = relations.filter((r) => r.toFact === id && r.fromFact > id && r.kind === "negate" && r.strength === "strong");
         steps.push({ fact, relations, depth, terminal: children.length === 0 });

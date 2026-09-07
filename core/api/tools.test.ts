@@ -115,15 +115,15 @@ test("trace and search use parameter options, share scoped pagination, and rejec
   expect(trace!.execute({ address: "T1", cap: 0 })).toContain("rejected:");
 });
 
-test("read tools bind facts and raw to the project, write sources to the session, and cursors to their owner", () => {
+test("reads reach any project's evidence; write sources stay bound to the session; cursors to their owner", () => {
   const p = memory.store.createProject({ name: "other", declaredBy: "mark" });
   memory.store.createSession({ host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 2, kind: "turn", userPrompt: "private evidence", startedAt: "now" });
   memory.tools(manual(2, 2))[2]!.execute({ facts: [fact("T2#user", { text: "private evidence" })] });
   const tools = memory.tools(manual());
-  for (const address of ["F1", "F1..", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).toContain("rejected:");
-  expect(tools[1]!.execute({ query: "private", layer: "all" })).not.toContain("private evidence");
-  expect(tools[2]!.execute({ facts: [fact("T2#user")] })).toContain("rejected:");
+  for (const address of ["F1", "F1..", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
+  expect(tools[1]!.execute({ query: "private", layer: "all" })).toContain("private evidence");
+  expect(tools[2]!.execute({ facts: [fact("T2#user")] })).toContain("rejected:"); // a write may only cite its own session
   const page = memory.tools(manual(2, 2))[0]!.execute({ address: "T2", cap: 1 });
   expect(tools[0]!.execute({ address: "T1", cursor: /cursor=(\S+)/.exec(page)![1] })).toContain("rejected:");
 });
@@ -137,7 +137,7 @@ test("manual facts on a common ancestor remain bound to their calling branch", a
   expect(await memory.integrate({ sessionId: 1, branch: "B" })).toEqual({ outcome: "empty" });
 });
 
-test("bound knowledge reads include global/project/own-session history and exclude other sessions and projects", () => {
+test("reads return every knowledge item while injection still applies the scope rule", () => {
   const ownProject = memory.store.getSession(1)!.projectId;
   const otherProject = memory.store.createProject({ name: "elsewhere", declaredBy: "mark" }).id;
   for (const projectId of [ownProject, otherProject]) {
@@ -151,10 +151,11 @@ test("bound knowledge reads include global/project/own-session history and exclu
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
-  for (const id of [1, 2, 3, 4, 5, 7]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@1]`);
-  for (const id of [6, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain("rejected:");
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@1]`); // reads are unrestricted
   const hits = search!.execute({ query: "knowledge", layer: "knowledge" });
-  for (const id of [6, 8, 9]) expect(hits).not.toContain(`[K${id}@`);
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(hits).toContain(`[K${id}@`);
+  // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
+  for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "later" }, operations: [
     { op: "archive", knowledgeId: 3, expectedRevision: 1, because: [1], createdAt: "later" },
   ] });

@@ -128,6 +128,7 @@ The initial integration input separately lists every visible active knowledge wh
 ### Visibility rule
 
 - Injection and integration see: global knowledge, the current project's project knowledge, and session knowledge of the current session only. Another session's session knowledge is never visible. An undeclared session's project is itself.
+- Reads are not restricted (user ruling 2026-09-07 「为什么要限制可见性，没必要」): `trace` and `search` resolve any existing address in any project or session; the scope rule above applies to injection and Integration only. Writes still cite only the calling session's sources.
 
 ### Prompt and spec synchronization
 
