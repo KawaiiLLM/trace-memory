@@ -22,7 +22,7 @@ afterEach(() => {
 });
 
 function makeSession(projectId: number, host = "test-host") {
-  return store.createSession({ host, startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:05Z", projectId });
+  return store.createSession({ enrollmentChoice: true, host, startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "2026-01-01T00:00:05Z", projectId });
 }
 
 describe("schema", () => {
@@ -98,7 +98,7 @@ describe("session id allocation", () => {
   test("requires a first assistant reply timestamp", () => {
     const p = store.createProject({ name: "proj", declaredBy: "marker" });
     expect(() =>
-      store.createSession({ host: "test", startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "", projectId: p.id }),
+      store.createSession({ enrollmentChoice: true, host: "test", startedAt: "2026-01-01T00:00:00Z", firstReplyAt: "", projectId: p.id }),
     ).toThrow();
   });
 

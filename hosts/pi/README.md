@@ -18,9 +18,24 @@ there is no migration. Start with a new database.
 
 ## Configuration
 
-Set `TRACE_MEMORY_CONFIG` to one flat JSON object. Environment configuration was
-chosen because this ticket permits settings or environment; the extension does
-not discover or modify Pi settings files. Example:
+Read configuration from the `trace-memory` namespace in Pi's global `settings.json`
+(`PI_CODING_AGENT_DIR` or `~/.pi/agent`) and project `.pi/settings.json`. Project
+values override global values; `TRACE_MEMORY_CONFIG` is the final flat JSON override.
+The same file reader supplies Pi retry settings. The plugin never writes settings.
+For example, either settings file can contain:
+
+```json
+{
+  "trace-memory": {
+    "recording.branchModeDefault": true,
+    "integration.subagentModeDefault": true,
+    "recording.triggerTokens": 10000,
+    "recording.batchTokens": 50000
+  }
+}
+```
+
+Environment override example:
 
 ```sh
 export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerTokens":10000,"recording.batchTokens":50000,"integration.triggerUnintegratedFacts":50,"recording.maxToolRounds":0,"integration.maxToolRounds":0}'
@@ -59,12 +74,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   changes as `<integrated>`. It performs no search. The facade controls category
   order, chronological ordering, constraints first, and atomic delivery consumption.
 
-  Deliveries exist for branch-mode consumers only. A branch Recorder reads earlier
-  facts out of the conversation; a branch Integrator reads earlier facts and the
-  current knowledge. So facts are delivered when either kind runs in branch mode,
-  knowledge changes when Integration does, and with both kinds in subagent mode
-  nothing is delivered at all. A branch run does not start while a delivery it
-  would read is pending; it starts one prompt later.
+  Enabled sessions receive both delivery kinds in every worker-mode combination
+  (2026-09-08 supersedes the 2026-09-07 consumer matrix). A branch run still waits
+  while a delivery it would read is pending; mode controls execution, not delivery.
 
   A branch Integration appends the range plus the exact list of facts to
   integrate, never the fact lines or the knowledge block again. The list is
@@ -127,10 +139,71 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   knowledge. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
-- `/trace` alone reads status without extraction or injection. `/trace project <name>`
+- `/trace` opens the native menu described below; `/trace status` reads status. `/trace project <name>`
   declares the project, saves host state and displays refreshed injection.
   `/trace mark K<n> verified|flagged|clear` marks a knowledge revision. These are
   user commands; the former model-facing `mark` tool is removed.
+
+## Enrollment and native menu
+
+One enrollment switch belongs to each memory identity. New native sessions whose
+`ctx.sessionManager.getHeader().timestamp` is strictly after the baseline default
+Enabled; older, equal, missing or malformed timestamps default Disabled. The
+baseline is atomically published in `trace-memory-baseline.json` in Pi's agent
+directory at first successful initialization. It survives restart and upgrade,
+independently of the configured database. This operational baseline cannot infer
+when the package was installed before its first run. A native session created
+before that first run therefore defaults Disabled. No migration exists in v1;
+database presence is never explicit enrollment.
+
+Use `/trace enable` to opt in or `/trace disable` to pause. Explicit choices survive
+reopen, configuration reload and tree navigation. Before a memory identity exists,
+the host persists provisional intent in a native custom entry and transfers it at
+allocation after the first assistant reply. Pi defers writing a new native file until
+that reply, so an atomic host-state receipt under the agent directory
+(`trace-memory-enrollment/<identity hash>.json`) also preserves provisional intent.
+It is enrollment state, not configuration; the database switch takes authority
+after allocation. No artificial Turn is created. Forks
+and clones carrying an identity share its current switch; a copied file's newer
+creation timestamp cannot override it.
+
+Enabling reconciles available current-path history, including the paused interval,
+through the same identity-based importer as ordinary entries. It makes no provider
+call and does not synthesize a completion. The next eligible completion checks
+normal queue thresholds. Repeating enable does not duplicate imported sources.
+
+Disabled sessions ingest nothing, inject nothing and start neither worker. Manual
+`note` and `memory` reject with `/trace enable`; `trace`, `search` and status remain
+available even before allocation. Compaction and tree hooks return no plugin
+override so Pi proceeds with native context handling. Stored Raw, facts, knowledge,
+runs and knowledge scope stay intact; other sessions still see shared knowledge.
+Already-injected text remains in context. Unseen deliveries remain unconfirmed.
+The transactional commit checks reject late business writes and leave their batch
+pending; a batch committed before disable remains successful. In-flight model
+calls are **not cancelled until ticket 17c**.
+
+Bare `/trace` opens native dialogs:
+
+- **Current session:** Enabled/Disabled, default or explicit origin, enable/disable
+  with confirmation and shared fork/clone scope.
+- **Settings (Global, read-only):** every effective value, its Default/Global/Project/
+  Environment source, and masked file values. Edit files by hand; there is no editor.
+- **Runs:** the existing run view, with an optional count input.
+- **Status:** enrollment, counts, pending deliveries, last runs and spend.
+
+Cancel leaves enrollment unchanged. Headless bare `/trace` prints status and the
+available commands. `/trace enable`, `/trace disable`, `/trace status`,
+`/trace runs [n]`, `/trace project <name>` and `/trace mark K<n>@<commit>
+verified|flagged|clear` remain available; menu and command actions share operations.
+Catch up and Stop belong to 18b and are not exposed in this slice.
+
+All configuration layers validate before use, including masked values. Unknown or
+removed keys fail by name. Counts and token limits require positive safe integers;
+`maxToolRounds` retains its documented zero-unlimited sentinel, and `nearThreshold`
+is a similarity in [0,1]. Mode settings require booleans. Impossible view capacity
+still fails with a capacity message and retains pending sources. Changing `dbPath`
+requires reloading the extension. The footer adds `Disabled` to its existing shape;
+Enabled but idle retains the dim hollow indicator without that label.
 
 ## SDK signatures and request auditing
 
@@ -197,12 +270,12 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
   --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
 ```
 
-1. Run `/trace` before speaking. Expect no Trace Memory session id.
+1. Run `/trace status` before speaking. Expect no Trace Memory session id. Use `/trace enable` if this session predates the first initialization baseline.
 2. Send these six prompts separately, waiting for each assistant reply:
    “For this project use pnpm.”; “Do not use npm.”; “Keep code and comments in
    English.”; “Preserve the language of quoted conversation.”; “Please repeat
    those constraints.”; “What constraints are we following?”
-3. Run `/trace` after the replies. Short exchanges below 10,000 compressed-view
+3. Run `/trace status` after the replies. Short exchanges below 10,000 compressed-view
    tokens produce no Recording. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
    entry audit and exact progress. Deliveries are confirmed only after a prompt
@@ -342,7 +415,7 @@ This is a human-run check, not an automated claim of live cache hits.
    No payload rewriter should follow Trace Memory.
 
 3. Send a substantial prompt with several explicit project constraints. Wait for
-   the assistant and the recording to finish before another prompt; `/trace` is
+   the assistant and the recording to finish before another prompt; `/trace status` is
    read-only. From a second terminal, in the repository root, run:
 
    ```sh

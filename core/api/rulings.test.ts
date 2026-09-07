@@ -23,7 +23,7 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
 
 function session() {
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   return { s, t };
@@ -336,7 +336,7 @@ function commitPaths() {
   const edit = (who: typeof root, text: string, fact = who.fact) => who.write([{ op: "update", id: "K1", ...content(fact, text) }]);
   const tips = (path: { sessionId: number; headTurnId: number }) => memory.store.currentCommit(1, path).map(r => r.id);
   const peer = (projectId = s.projectId) => {
-    const other = memory.store.createSession({ host: "fake", projectId, startedAt: time, firstReplyAt: time });
+    const other = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId, startedAt: time, firstReplyAt: time });
     return node(other.id, null, "main");
   };
   return { root, c, d, node, peer, content, edit, tips };
@@ -693,7 +693,7 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
 
 test("2026-09-07 superseded 2026-09-08 (17b): the Integration threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {
   const project = memory.store.createProject({ name: "batches", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const turns = [1, 2, 3, 4].map((i, _, arr) => memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: `t${i}`, assistantText: "ok", startedAt: time, parentTurnId: undefined }));
   for (let i = 1; i < turns.length; i++) memory.store.db.prepare("UPDATE turns SET parent_turn_id = ? WHERE id = ?").run(turns[i - 1]!.id, turns[i]!.id);
   const seed = (turn: number, n: number, kind: "recording" | "manual" = "recording") => memory.store.commitRecordingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
@@ -709,7 +709,7 @@ test("2026-09-07 superseded 2026-09-08 (17b): the Integration threshold triggers
 
 test("2026-09-07 review: a late fact on an early turn does not make the batch skip pending facts of later turns", () => {
   const project = memory.store.createProject({ name: "late-facts", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const t1 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "one", assistantText: "ok", startedAt: time, parentTurnId: undefined });
   const t2 = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "two", assistantText: "ok", startedAt: time, parentTurnId: t1.id });
   const seed = (turn: number, text: string) => memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,

@@ -23,10 +23,16 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   let provider = async (_conversation: Conversation) => reply("[]");
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   const model = { provider: "fake", id: "test", api: "openai-completions", contextWindow: 200_000, maxTokens: 8192 };
+  const dialogs: { title: string; options?: string[] }[] = [];
+  const answers: (string | boolean | undefined)[] = [];
+  let headerTimestamp: unknown = "2099-01-01T00:00:00.000Z";
   const statuses = new Map<string, string | undefined>();
-  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+  const ctx = { cwd: dir, model, hasUI: false, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+      select: async (title: string, options: string[]) => { dialogs.push({ title, options }); return answers.shift(); },
+      confirm: async (title: string, message: string) => { dialogs.push({ title: `${title} ${message}` }); return answers.shift() ?? false; },
+      input: async (title: string) => { dialogs.push({ title }); return answers.shift(); },
       theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` } },
-    sessionManager: { getSessionId: () => "pi-test", getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries, getEntries: () => allEntries },
+    sessionManager: { getHeader: () => ({ timestamp: headerTimestamp }), getSessionId: () => "pi-test", getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries, getEntries: () => allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
       complete: async (selected: unknown, conversation: Conversation, options: any) => {
@@ -47,7 +53,8 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const previous = process.env.TRACE_MEMORY_CONFIG;
   const { retry: _retry, ...extensionConfig } = config as { retry?: unknown } & Record<string, unknown>;
   process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
-  try { extension(pi); } finally { if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
+  const originalCwd = process.cwd();
+  try { process.chdir(dir); extension(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
   const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); });
   const persist = (message: unknown, id = `e${allEntries.length}`) => {
     const entry = { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "message", message: structuredClone(message) };
@@ -78,7 +85,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); };
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
   const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close(); rmSync(dir, { recursive: true, force: true }); };
-  return { dispose, dir, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; } };
 }
 export function recordingFact(conversation: Conversation) {

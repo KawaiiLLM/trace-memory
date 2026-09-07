@@ -42,15 +42,20 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Bare K1 is rejected with several tips; use explicit K1@57 bases.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
-export interface BindOptions {
-  /** Deliveries exist for branch-mode consumers only: a branch Recorder reads earlier facts out of the
-   * conversation, a branch Integrator reads facts and current knowledge. With both kinds in subagent mode
-   * nobody consumes them (user ruling 2026-09-07). */
-  deliverFacts?: boolean;
-  deliverKnowledge?: boolean;
+export function validateReadInput(name: "trace" | "search", raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
+  const input = raw as Record<string, unknown>;
+  const properties = toolDefinitions.find(t => t.name === name)!.parameters.properties as object;
+  if (Object.keys(input).some(k => !(k in properties))) throw new Error("unexpected parameter");
+  if (name === "trace") {
+    if (typeof input.address !== "string") throw new Error("address must be a string");
+    if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
+    if (input.full !== undefined && typeof input.full !== "boolean") throw new Error("full must be boolean");
+  } else if (typeof input.query !== "string") throw new Error("query must be a string");
+  return input;
 }
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview, options: BindOptions = {}) {
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
@@ -86,7 +91,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const frozenPath = new Set(context.kind === "recording" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
   const sourceEligible = (source: string) => frozenSources.has(source) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
     .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
-  const memory = bindMemory(store, session.id, run, review, path, { deliverKnowledge: options.deliverKnowledge === true });
+  const memory = bindMemory(store, session.id, run, review, path);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
@@ -135,7 +140,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "recording" ? context.readKnowledgeCommits : [] }) }, facts: commits,
       responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
       ...(context.kind === "recording" ? { entryIds: frozenEntries,
-        ...(options.deliverFacts === false ? {} : { pendingDelivery: { sessionId: session.id, branch: context.branch } }) } : {}) });
+        pendingDelivery: { sessionId: session.id, branch: context.branch } } : {}) });
     if (!committedRun.ok) { problems = committedRun.problems; return JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }); }
     const result = receipt(committedRun.facts.map((f) => f.id));
     if (context.kind === "recording") committed = committedRun;
@@ -144,13 +149,14 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...toolDefinitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
+      if ((name === "note" || name === "memory") && !store.enabled(session.id)) return "rejected: Trace Memory is Disabled; use /trace enable to enable memory.";
       let result: string;
       try {
         if (name === "note" && committed) result = "rejected: already committed";
         else if (name === "memory") result = execute(raw && typeof raw === "object" ? raw as Record<string, unknown> : {});
         else {
           if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
-          if (name !== "note" && Object.keys(raw).some((k) => !(k in (toolDefinitions.find(t => t.name === name)!.parameters.properties as object)))) throw new Error("unexpected parameter");
+          if (name === "trace" || name === "search") validateReadInput(name, raw);
           result = execute(raw as Record<string, unknown>);
         }
       } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
@@ -161,12 +167,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     } });
   const tools = [
     definition("trace", (input) => {
-      if (typeof input.address !== "string") throw new Error("address must be a string");
-      if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
-      if (input.full !== undefined && typeof input.full !== "boolean") throw new Error("full must be boolean");
-      const content = read.trace(input.address, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
-      memory.reread(input.address);
-      fetched.push({ address: input.address, input: structuredClone(input), content }); return content;
+      const content = read.trace(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
+      memory.reread(input.address as string);
+      fetched.push({ address: input.address as string, input: structuredClone(input), content }); return content;
     }),
     definition("search", (input) => {
       if (typeof input.query !== "string") throw new Error("query must be a string");

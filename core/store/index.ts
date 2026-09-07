@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   host TEXT NOT NULL,
+  enrollment_default INTEGER NOT NULL CHECK (enrollment_default IN (0,1)),
+  enrollment_choice INTEGER CHECK (enrollment_choice IN (0,1)),
   started_at TEXT NOT NULL,
   first_reply_at TEXT NOT NULL,
   project_id INTEGER NOT NULL REFERENCES projects(id),
@@ -197,7 +199,16 @@ export interface CreateProjectInput {
   declaredBy: "marker" | "mark";
 }
 
+export interface Enrollment { defaultEnabled: boolean; choice: boolean | null }
+export const enrollmentDefault = (created: unknown, baseline: unknown): boolean =>
+  typeof created === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(created) &&
+  Number.isFinite(Date.parse(created)) && new Date(created).toISOString() === created.replace(/(?<=:\d{2})Z$/, ".000Z") && typeof baseline === "string" &&
+  Number.isFinite(Date.parse(baseline)) && Date.parse(created) > Date.parse(baseline);
+
 export interface CreateSessionInput {
+  nativeCreatedAt?: unknown;
+  baseline?: string;
+  enrollmentChoice?: boolean | null;
   host: string;
   startedAt: string;
   firstReplyAt: string; // required: a session row only exists once the first reply exists
@@ -516,10 +527,11 @@ export class Store {
 
   /** A session row — and its id — exists only once the first assistant reply exists. */
   createSession(input: CreateSessionInput): Session {
+    if (input.enrollmentChoice != null && typeof input.enrollmentChoice !== "boolean") throw new Error("Enrollment choice must be boolean");
     if (!input.firstReplyAt) {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
-    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration) VALUES (?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker");
+    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice));
     return this.getSession(Number(info.lastInsertRowid))!;
   }
 
@@ -528,36 +540,62 @@ export class Store {
     return row ? toSession(row) : null;
   }
 
+  enrollment(sessionId: number): Enrollment {
+    const row = this.db.prepare("SELECT enrollment_default, enrollment_choice FROM sessions WHERE id = ?").get(sessionId);
+    if (!row) throw new Error(`session S${sessionId} does not exist`);
+    return { defaultEnabled: !!row.enrollment_default, choice: row.enrollment_choice === null ? null : !!row.enrollment_choice };
+  }
+  enabled(sessionId: number): boolean {
+    const value = this.enrollment(sessionId);
+    return value.choice ?? value.defaultEnabled;
+  }
+  setEnrollment(sessionId: number, enabled: boolean): void {
+    if (typeof enabled !== "boolean") throw new Error("Enrollment choice must be boolean");
+    this.transaction(() => {
+      this.enrollment(sessionId);
+      this.db.prepare("UPDATE sessions SET enrollment_choice = ? WHERE id = ?").run(Number(enabled), sessionId);
+    });
+  }
+  requireEnabled(sessionId: number): void {
+    if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+  }
+
   // -- turns & tool calls --
 
   appendTurn(input: AppendTurnInput): Turn {
-    const ordinalRow = this.db
-      .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM turns WHERE session_id = ?")
-      .get(input.sessionId) as { next: number };
-    const info = this.db.prepare(`INSERT INTO turns (session_id, ordinal, parent_turn_id, kind, user_prompt, assistant_text, started_at, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        input.sessionId,
-        ordinalRow.next,
-        input.parentTurnId ?? null,
-        input.kind,
-        input.userPrompt ?? null,
-        input.assistantText ?? null,
-        input.startedAt,
-        input.endedAt ?? null,
-      );
-    return this.getTurn(Number(info.lastInsertRowid))!;
+    return this.transaction(() => {
+      this.requireEnabled(input.sessionId);
+      const ordinalRow = this.db
+        .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM turns WHERE session_id = ?")
+        .get(input.sessionId) as { next: number };
+      const info = this.db.prepare(`INSERT INTO turns (session_id, ordinal, parent_turn_id, kind, user_prompt, assistant_text, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          input.sessionId,
+          ordinalRow.next,
+          input.parentTurnId ?? null,
+          input.kind,
+          input.userPrompt ?? null,
+          input.assistantText ?? null,
+          input.startedAt,
+          input.endedAt ?? null,
+        );
+      return this.getTurn(Number(info.lastInsertRowid))!;
+    });
   }
 
   /** Raw is recorded incrementally: the turn row exists from the prompt; text and end time land when the turn ends. */
   updateTurn(id: number, patch: { assistantText?: string | null; endedAt?: string | null }): Turn {
-    const turn = this.getTurn(id);
-    if (!turn) throw new Error(`turn T${id} does not exist`);
-    this.db.prepare("UPDATE turns SET assistant_text = ?, ended_at = ? WHERE id = ?").run(
-      patch.assistantText === undefined ? turn.assistantText : patch.assistantText,
-      patch.endedAt === undefined ? turn.endedAt : patch.endedAt,
-      id,
-    );
-    return this.getTurn(id)!;
+    return this.transaction(() => {
+      const turn = this.getTurn(id);
+      if (!turn) throw new Error(`turn T${id} does not exist`);
+      this.requireEnabled(turn.sessionId);
+      this.db.prepare("UPDATE turns SET assistant_text = ?, ended_at = ? WHERE id = ?").run(
+        patch.assistantText === undefined ? turn.assistantText : patch.assistantText,
+        patch.endedAt === undefined ? turn.endedAt : patch.endedAt,
+        id,
+      );
+      return this.getTurn(id)!;
+    });
   }
 
   getTurn(id: number): Turn | null {
@@ -566,16 +604,22 @@ export class Store {
   }
 
   appendToolCall(input: AppendToolCallInput): ToolCall {
-    const ordinalRow = this.db
-      .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM tool_calls WHERE turn_id = ?")
-      .get(input.turnId) as { next: number };
-    const info = this.db.prepare("INSERT INTO tool_calls (turn_id, ordinal, name, input, result, status) VALUES (?, ?, ?, ?, ?, ?)").run(input.turnId, ordinalRow.next, input.name, input.input ?? null, input.result ?? null, input.status);
-    const row = this.db.prepare("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
-    return toToolCall(row);
+    return this.transaction(() => {
+      this.requireEnabled(this.getTurn(input.turnId)!.sessionId);
+      const ordinalRow = this.db
+        .prepare("SELECT COALESCE(MAX(ordinal), 0) + 1 AS next FROM tool_calls WHERE turn_id = ?")
+        .get(input.turnId) as { next: number };
+      const info = this.db.prepare("INSERT INTO tool_calls (turn_id, ordinal, name, input, result, status) VALUES (?, ?, ?, ?, ?, ?)").run(input.turnId, ordinalRow.next, input.name, input.input ?? null, input.result ?? null, input.status);
+      const row = this.db.prepare("SELECT * FROM tool_calls WHERE id = ?").get(Number(info.lastInsertRowid));
+      return toToolCall(row);
+    });
   }
 
   completeToolCall(turnId: number, ordinal: number, result: string, status: string): void {
-    this.db.prepare("UPDATE tool_calls SET result = ?, status = ? WHERE turn_id = ? AND ordinal = ?").run(result, status, turnId, ordinal);
+    return this.transaction(() => {
+      this.requireEnabled(this.getTurn(turnId)!.sessionId);
+      this.db.prepare("UPDATE tool_calls SET result = ?, status = ? WHERE turn_id = ? AND ordinal = ?").run(result, status, turnId, ordinal);
+    });
   }
 
   listToolCalls(turnId: number): ToolCall[] {
@@ -641,6 +685,7 @@ export class Store {
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
+        this.requireEnabled(sessionId);
         const branch = input.run.branch ?? null;
         if (input.pendingDelivery && (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== branch)) {
           throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${branch})`);
@@ -903,6 +948,7 @@ export class Store {
     try {
       const result = this.transaction(() => {
         const sessionId = this.requireRunSession(input.run);
+        this.requireEnabled(sessionId);
         const projectId = this.getSession(sessionId)!.projectId;
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
@@ -1053,6 +1099,7 @@ export class Store {
   /** A Recording run delivers its facts, an Integration run its knowledge commits: what each branch-mode consumer reads out of the conversation. */
   deliver(sessionId: number, branch: string | null, render: (facts: Fact[], commits: KnowledgeRevision[]) => string): { text: string; runIds: number[] } {
     return this.transaction(() => {
+      if (!this.enabled(sessionId)) return { text: "", runIds: [] };
       const pending = this.listPendingDeliveries(sessionId, branch);
       const facts = pending.flatMap((p) => this.listFactsByRun(p.runId));
       const commits = pending.flatMap((p) => this.listCommitsByRun(p.runId));
@@ -1061,7 +1108,7 @@ export class Store {
   }
   confirmDeliveries(runIds: number[]): void {
     const at = new Date().toISOString();
-    this.transaction(() => { for (const runId of runIds) this.clearPendingDelivery(runId, at); });
+    this.transaction(() => { for (const runId of runIds) { const id = this.getRun(runId)?.sessionId; if (id && this.enabled(id)) this.clearPendingDelivery(runId, at); } });
   }
 
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {
@@ -1123,22 +1170,25 @@ export class Store {
   }
 
   appendSourceEntry(input: SourceInput): SourceEntry {
-    if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
-        !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || !c.name || !c.callId || !c.status ||
-          (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
-        new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
-    if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
-        this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
-    const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
-    if (known) {
-      const { id: _, ...original } = known;
-      if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
-      return known;
-    }
-    if (!input.text && !input.calls.length && input.role !== "user") throw new Error("empty source entry"); // an image-only user message still bounds a Turn
-    const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content) VALUES (?, ?, ?, ?, ?)")
-      .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input));
-    return this.getSourceEntry(Number(result.lastInsertRowid))!;
+    return this.transaction(() => {
+      this.requireEnabled(input.sessionId);
+      if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
+          !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || !c.name || !c.callId || !c.status ||
+            (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
+          new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
+      if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
+          this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
+      const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
+      if (known) {
+        const { id: _, ...original } = known;
+        if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
+        return known;
+      }
+      if (!input.text && !input.calls.length && input.role !== "user") throw new Error("empty source entry"); // an image-only user message still bounds a Turn
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content) VALUES (?, ?, ?, ?, ?)")
+        .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input));
+      return this.getSourceEntry(Number(result.lastInsertRowid))!;
+    });
   }
   getSourceEntry(id: number): SourceEntry | null {
     const row = this.db.prepare("SELECT id, content FROM source_entries WHERE id = ?").get(id) as { id: number; content: string } | undefined;
@@ -1152,9 +1202,12 @@ export class Store {
     return (this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[]).map(r => this.getSourceEntry(r.id)!);
   }
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
-    if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some(id => this.getSourceEntry(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
-    this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
-      .run(sessionId, branch, JSON.stringify(entryIds));
+    return this.transaction(() => {
+      this.requireEnabled(sessionId);
+      if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some(id => this.getSourceEntry(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
+      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
+        .run(sessionId, branch, JSON.stringify(entryIds));
+    });
   }
   sourcePath(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
     const turns = this.pathTurns({ sessionId, headTurnId });

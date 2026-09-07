@@ -6,7 +6,7 @@ export interface MemoryReview {
   frozen: ReturnType<typeof freezeIntegration>;
   feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
 }
-export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId), options: { deliverKnowledge?: boolean } = {}) {
+export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId)) {
   const reads = new Map((review?.frozen.knowledge ?? store.listCurrentKnowledge(path)).map(k => [k.revision.id, k]));
   const reread = (addresses: string) => {
     for (const address of addresses.split(",").map(a => a.trim())) {
@@ -47,7 +47,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results, committed: items, diagnostics });
     const result = store.commitIntegrationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
       ...(review ? { integrated: review.frozen.rangeFacts.map(f => f.id),
-        ...(options.deliverKnowledge ? { pendingDelivery: { sessionId, branch: run.branch ?? null } } : {}) } : {}),
+        pendingDelivery: { sessionId, branch: run.branch ?? null } } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path));
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });

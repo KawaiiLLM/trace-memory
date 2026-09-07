@@ -6,7 +6,7 @@ async function checkMemoryBatch(output: unknown) {
   const memory = TraceMemory(":memory:", async raw => { const input = raw as IntegrationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { integration: { nearThreshold: 1 } });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
-    const s = memory.store.createSession({ host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+    const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
     const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", assistantText: "evidence", startedAt: "now" });
     memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, branch: "main", createdAt: "now" },
       facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),

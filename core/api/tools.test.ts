@@ -10,7 +10,7 @@ beforeEach(() => {
   agent = async () => ({ outcome: "success", output: "", request: {} });
   memory = TraceMemory(":memory:", raw => agent(raw));
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
-  memory.store.createSession({ host: "fake", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+  memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "project evidence", assistantText: "done", startedAt: "first source time" });
 });
 afterEach(() => memory.close());
@@ -123,7 +123,7 @@ test("trace and search use parameter options, share scoped pagination, and rejec
 
 test("reads reach any project's evidence; write sources stay bound to the session; cursors to their owner", () => {
   const p = memory.store.createProject({ name: "other", declaredBy: "mark" });
-  memory.store.createSession({ host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 2, kind: "turn", userPrompt: "private evidence", startedAt: "now" });
   memory.tools(manual(2, 2))[2]!.execute({ facts: [fact("T2#user", { text: "private evidence" })] });
   const tools = memory.tools(manual());
@@ -148,7 +148,7 @@ test("reads return every knowledge item while injection still applies the scope 
   const ownProject = memory.store.getSession(1)!.projectId;
   const otherProject = memory.store.createProject({ name: "elsewhere", declaredBy: "mark" }).id;
   for (const projectId of [ownProject, otherProject]) {
-    const s = memory.store.createSession({ host: "fake", projectId, startedAt: "now", firstReplyAt: "now" });
+    const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId, startedAt: "now", firstReplyAt: "now" });
     memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
   }
   for (const sessionId of [1, 2, 3]) {

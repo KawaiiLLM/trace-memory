@@ -1,4 +1,4 @@
-export { toolDefinitions } from "./tools.ts";
+export { toolDefinitions, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";
@@ -8,6 +8,8 @@ import { realpathSync } from "node:fs";
 import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens, renderEntry, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { enrollmentDefault } from "../store/index.ts";
+export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath } from "../store/index.ts";
@@ -79,9 +81,11 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
 export type ConfigOverride = { [K in keyof TraceMemoryConfig]?: Partial<TraceMemoryConfig[K]> };
 
 function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMemoryConfig {
+  if (!override || typeof override !== "object" || Array.isArray(override)) throw new Error("Invalid configuration: expected an object");
   for (const [section, values] of Object.entries(override)) {
     if (!Object.hasOwn(base, section)) throw new Error(`Unknown setting ${section}`);
     const defaults = base[section as keyof TraceMemoryConfig];
+    if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error(`Invalid ${section}: expected an object`);
     for (const key of Object.keys(values)) if (!Object.hasOwn(defaults, key)) throw new Error(`Unknown setting ${section}.${key}`);
   }
   return {
@@ -89,6 +93,21 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
     recording: { ...base.recording, ...override.recording },
     integration: { ...base.integration, ...override.integration },
   };
+}
+
+export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
+  const cfg = mergeConfig(DEFAULT_CONFIG, override);
+  for (const [section, values] of Object.entries(cfg)) for (const [key, value] of Object.entries(values)) {
+    const name = `${section}.${key}`;
+    if (key.endsWith("ModeDefault")) {
+      if (typeof value !== "boolean") throw new Error(`Invalid ${name}: expected boolean`);
+    } else if (key === "nearThreshold") {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) throw new Error(`Invalid ${name}: expected a similarity between 0 and 1`);
+    } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
+      throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
+    }
+  }
+  return cfg;
 }
 
 // ---- runAgent contract (spec.md: Contracts, Run record contract) ----
@@ -140,16 +159,8 @@ export interface TraceMemory {
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
-  const cfg = mergeConfig(DEFAULT_CONFIG, config);
+  const cfg = validateConfig(config);
   const store = new Store(dbPath);
-  for (const key of ["toolCallTokens", "entryTokens"] as const) {
-    if (!Number.isSafeInteger(cfg.render[key]) || cfg.render[key] < 1) { store.close(); throw new Error(`Invalid render.${key}: expected a positive integer`); }
-  }
-
-  for (const key of ["triggerTokens", "batchTokens"] as const) {
-    if (!Number.isSafeInteger(cfg.recording[key]) || cfg.recording[key] < 1) { store.close(); throw new Error(`Invalid recording.${key}: expected a positive integer`); }
-  }
-
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);
   const trace = (address: string, display: ListingOptions = {}): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
@@ -249,11 +260,6 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, trace);
-  // Backfill is decided by the consumer (user ruling 2026-09-07): a branch Recorder reads earlier facts
-  // out of the conversation; a branch Integrator reads facts and current knowledge. With both kinds in
-  // subagent mode nothing is delivered, because nothing reads it.
-  const deliverKnowledge = !cfg.integration.subagentModeDefault;
-  const deliverFacts = cfg.recording.branchModeDefault || deliverKnowledge;
   return {
     store,
     config: cfg,
@@ -261,17 +267,19 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     appendEntry: input => store.appendSourceEntry(input),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
-    tools: (context) => bindTools(store, read, context, undefined, undefined, { deliverFacts, deliverKnowledge }).tools,
+    tools: (context) => bindTools(store, read, context).tools,
     record: async (input) => {
+      if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
       if (inFlightRecordings.has(key)) return { outcome: "dropped" };
       inFlightRecordings.add(key);
       try {
         const frozen = freezeRecording(store, input, cfg);
-        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run, undefined, { deliverFacts, deliverKnowledge }));
+        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
       } finally { inFlightRecordings.delete(key); }
     },
     integrate: async (input) => {
+      if (!store.enabled(input.sessionId)) return { outcome: "dropped" };
       const session = store.getSession(input.sessionId);
       if (!session) throw new Error(`session S${input.sessionId} does not exist`);
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
@@ -279,7 +287,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       inFlightIntegrations.add(key);
       try {
         const frozen = freezeIntegration(store, input, cfg);
-        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review, { deliverFacts, deliverKnowledge }));
+        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
       } finally { inFlightIntegrations.delete(key); }
     },
     ...read,

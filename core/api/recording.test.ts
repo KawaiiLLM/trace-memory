@@ -32,7 +32,7 @@ function open(config: ConfigOverride = {}) {
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-recording-")); calls = []; script = []; open();
   const project = memory.store.createProject({ name: "fixture", declaredBy: "mark" });
-  sessionId = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
+  sessionId = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id }).id;
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 function turn(parentTurnId: number | null = null, index = 0) {
@@ -270,7 +270,7 @@ test("knowledge budgets keep protected categories and omit whole later categorie
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
-  memory.close(); open({ render: { knowledgeBlockTokens: 0 } });
+  memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
   const second = turn(first.id, 1); script.push(async () => success([])); await recording(second.id);
   const input = calls[1]!.input;
   for (const category of categories.slice(0, 3)) expect(input).toContain(`[${category}/project]`);

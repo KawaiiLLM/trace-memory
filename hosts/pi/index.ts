@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, linkSync, unlinkSync, renameSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, tokens, renderEntry, toolDefinitions, type ConfigOverride, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type RecordingAgentInput, type IntegrationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -18,23 +18,43 @@ const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
 
-function configuration(): { flat: FlatConfig; core: ConfigOverride } {
-  const flat: FlatConfig = JSON.parse(process.env.TRACE_MEMORY_CONFIG ?? "{}");
-  const core: ConfigOverride = {};
-  for (const section of ["render", "recording", "integration"] as const) {
-    const values: Record<string, number | boolean> = {};
-    for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
-      const override = flat[`${section}.${key}`];
-      if (override !== undefined && (typeof override !== typeof value ||
-        (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${section}.${key}`);
-      values[key] = (override ?? value) as number | boolean;
+const agentDirectory = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+function settings(cwd: string, agentDir = agentDirectory()) {
+  const read = (path: string): Record<string, any> => {
+    try { return JSON.parse(readFileSync(path, "utf8")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new Error(`Invalid settings.json ${path}: ${String(error)}`); }
+  };
+  return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
+}
+function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
+  const files = settings(cwd, agentDir);
+  const layers = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
+  for (const [name, layer] of Object.entries(layers)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
+  const flat: FlatConfig = Object.assign({}, ...Object.values(layers));
+  const sources: Record<string, string> = {};
+  for (const [layer, values] of Object.entries(layers)) for (const key of Object.keys(values)) sources[key] = layer;
+
+  const parse = (flat: FlatConfig) => {
+    const core: ConfigOverride = {};
+    for (const section of ["render", "recording", "integration"] as const) {
+      const values: Record<string, number | boolean> = {};
+      for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
+        const override = flat[`${section}.${key}`];
+        if (override !== undefined && (typeof override !== typeof value ||
+          (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${section}.${key}`);
+        values[key] = (override ?? value) as number | boolean;
+      }
+      Object.assign(core, { [section]: values });
     }
-    Object.assign(core, { [section]: values });
-  }
-  for (const key of Object.keys(flat)) if (!["dbPath", "recordingModel", "integrationModel"].includes(key) &&
-    !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
-  for (const key of ["dbPath", "recordingModel", "integrationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
-  return { flat, core };
+    for (const key of Object.keys(flat)) if (!["dbPath", "recordingModel", "integrationModel"].includes(key) &&
+      !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
+    for (const key of ["dbPath", "recordingModel", "integrationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+    validateConfig(core);
+    return core;
+  };
+  for (const values of Object.values(layers)) parse(values);
+  const core = parse(flat);
+  return { flat, core, sources, layers };
 }
 function marker(cwd: string): string | undefined {
   for (let dir = resolve(cwd); ; dir = dirname(dir)) {
@@ -78,18 +98,19 @@ function reviewMessage(result: string): string | undefined {
 // Pi's own retry settings: settings.json `retry` from the agent dir (PI_CODING_AGENT_DIR or ~/.pi/agent),
 // overridden by the project's .pi/settings.json, with Pi's defaults. Read as files: a value import of Pi's
 // SettingsManager pulls the package entry, which needs @earendil-works/pi-server on this machine.
-function retrySettings(cwd: string) {
+function retrySettings(cwd: string, agentDir: string) {
   type Retry = { enabled?: boolean; maxRetries?: number; baseDelayMs?: number; provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number } };
-  const read = (path: string): Retry => { try { return (JSON.parse(readFileSync(path, "utf8")) as { retry?: Retry }).retry ?? {}; } catch { return {}; } };
-  const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-  const global = read(join(agentDir, "settings.json")), project = read(join(cwd, ".pi", "settings.json"));
+  const files = settings(cwd, agentDir);
+  const global: Retry = files.global.retry ?? {}, project: Retry = files.project.retry ?? {};
   const retry: Retry = { ...global, ...project, provider: { ...global.provider, ...project.provider } }; // nested like Pi's own merge
   return { policy: { enabled: retry.enabled ?? true, maxRetries: retry.maxRetries ?? 3, baseDelayMs: retry.baseDelayMs ?? 2000 },
     provider: { timeoutMs: retry.provider?.timeoutMs, maxRetries: retry.provider?.maxRetries, maxRetryDelayMs: retry.provider?.maxRetryDelayMs ?? 60000 } };
 }
 
 export default function (pi: ExtensionAPI) {
-  const { flat, core } = configuration();
+  const environment = process.env.TRACE_MEMORY_CONFIG;
+  const agentDir = agentDirectory();
+  let { flat, core, sources, layers } = configuration(process.cwd());
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   let ctx: ExtensionContext;
@@ -127,7 +148,7 @@ export default function (pi: ExtensionAPI) {
       // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
       // own compaction and branch-summary calls): transient provider errors back off and retry;
       // tool execution and commits happen only after a reply, so a retry never repeats a write.
-      const retry = retrySettings(callContext.cwd);
+      const retry = retrySettings(callContext.cwd, agentDir);
       // `prepare` builds one round's request context exactly once (suffix appended, base fixed) and
       // returns the send; the retry helper re-sends that same request, never a re-appended one.
       const converse = async (prepare: (suffix: Conversation["messages"]) => () => Promise<Reply>) => {
@@ -234,8 +255,32 @@ export default function (pi: ExtensionAPI) {
     }
   }, core);
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
-  type State = { sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
+  type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
+  let baseline: string;
+  const baselinePath = join(agentDir, "trace-memory-baseline.json");
+  const enrollment = () => state.sessionId ? memory.store.enrollment(state.sessionId) : state.enrollment!;
+  const enabled = () => { const e = enrollment(); return e.choice ?? e.defaultEnabled; };
+
+  // Pi does not flush a new native file before its first assistant message. Keep the
+  // provisional enrollment entry durable without manufacturing a reply or a Turn.
+  const provisionalPath = () => join(agentDir, "trace-memory-enrollment", `${hash([dbPath, state.piId])}.json`);
+  const provisional = (): Enrollment | undefined => {
+    try {
+      const value = JSON.parse(readFileSync(provisionalPath(), "utf8"));
+      if (!value || typeof value.defaultEnabled !== "boolean" || (value.choice !== null && typeof value.choice !== "boolean")) throw new Error("Invalid provisional enrollment state");
+      return value;
+    }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+  };
+  const persistProvisional = (value: Enrollment, replace = false) => {
+    const path = provisionalPath(), temporary = `${path}.${randomUUID()}`;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(temporary, JSON.stringify(value), { flag: "wx" });
+    try { if (replace) renameSync(temporary, path); else linkSync(temporary, path); }
+    catch (error) { if (replace || (error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+    finally { if (existsSync(temporary)) unlinkSync(temporary); }
+  };
   let current: { started: string; id?: number } | undefined;
   // What this agent run has shown the model and must confirm when it settles. Kept apart from
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
@@ -261,7 +306,7 @@ export default function (pi: ExtensionAPI) {
     if (!context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const indicator = activity.retrying ? paint("warning", "●") : runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
+    const indicator = !enabled() ? paint("dim", "○") : activity.retrying ? paint("warning", "●") : runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
     // Fixed reading (user ruling 2026-09-07): applicable current knowledge / facts on this branch;
     // $ = this session's cumulative spend.
@@ -271,7 +316,7 @@ export default function (pi: ExtensionAPI) {
       knowledge = memory.store.listCurrentKnowledge({ sessionId: state.sessionId, headTurnId: state.head ?? null }).length;
       cost = memory.spend(state.sessionId).cost;
     }
-    context.ui.setStatus("trace-memory", `🧠 ${indicator} trace-memory ${knowledge}/${facts} $${cost.toFixed(2)}`);
+    context.ui.setStatus("trace-memory", `🧠 ${indicator} trace-memory${enabled() ? "" : " Disabled"} ${knowledge}/${facts} $${cost.toFixed(2)}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
@@ -284,6 +329,21 @@ export default function (pi: ExtensionAPI) {
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
     ctx = context;
+    const loaded = configuration(ctx.cwd, environment, agentDir);
+    if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
+    ({ flat, core, sources, layers } = loaded);
+    Object.assign(memory.config, validateConfig(core));
+    marker(ctx.cwd); // An invalid initialization must not establish the baseline.
+    if (!baseline) {
+      mkdirSync(dirname(baselinePath), { recursive: true });
+      const temporary = `${baselinePath}.${randomUUID()}`;
+      writeFileSync(temporary, JSON.stringify(now()), { flag: "wx" });
+      try { linkSync(temporary, baselinePath); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+      finally { unlinkSync(temporary); }
+      baseline = JSON.parse(readFileSync(baselinePath, "utf8"));
+      if (typeof baseline !== "string" || !Number.isFinite(Date.parse(baseline))) throw new Error("Invalid Trace Memory baseline");
+    }
     const saved = ctx.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath).at(-1);
     const piId = ctx.sessionManager.getSessionId();
@@ -299,6 +359,18 @@ export default function (pi: ExtensionAPI) {
       const project = name && memory.store.findProjectByName(name);
       state = { projectId: project ? project.id : memory.store.createProject({ name: name ?? `pi:${piId}`, declaredBy: "marker" }).id, branch: "main", piId };
     }
+    // Branch history restores position only; the database and latest provisional choice own intent.
+    const latest = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
+      .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath && d.piId === piId).at(-1);
+    if (!state.sessionId && latest?.sessionId) {
+      state.sessionId = latest.sessionId;
+      state.originPiId = latest.originPiId;
+      state.branch = randomUUID();
+    }
+    state.enrollment = state.sessionId ? memory.store.enrollment(state.sessionId)
+      : provisional() ?? latest?.enrollment ?? saved?.enrollment ?? { defaultEnabled: enrollmentDefault(ctx.sessionManager.getHeader()?.timestamp, baseline), choice: null };
+    if (!state.sessionId) { persistProvisional(state.enrollment); state.enrollment = provisional()!; }
+    state.shared = state.shared || (!!state.sessionId && memory.store.getSession(state.sessionId)!.host !== `pi:${piId}`);
     current = undefined;
     reconciledLeaf = undefined;
     reconcile(false);
@@ -308,8 +380,8 @@ export default function (pi: ExtensionAPI) {
       if (name) memory.declareProject(state.sessionId, name, "marker");
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       if (memory.store.projectDeclaration(state.sessionId) === "mark") state.project = memory.store.getProject(state.projectId)!.name;
-      save(); // attach is a safe persistence boundary, including newly imported native history
     }
+    save(); // Provisional intent is durable before the first reply, too.
   };
   const ensure = (context: ExtensionContext) => { ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
   const allocate = (started: string) => {
@@ -317,7 +389,7 @@ export default function (pi: ExtensionAPI) {
     const name = marker(ctx.cwd);
     if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
       ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
-    state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared" }).id;
+    state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared", nativeCreatedAt: ctx.sessionManager.getHeader()?.timestamp, baseline, enrollmentChoice: (provisional() ?? state.enrollment!).choice }).id;
     state.originPiId = state.piId;
     if (name) memory.declareProject(state.sessionId, name, "marker");
   };
@@ -330,6 +402,7 @@ export default function (pi: ExtensionAPI) {
   // update, so it runs only when the persisted leaf has moved (10 ms per update at 400 entries otherwise).
   let reconciledLeaf: string | null | undefined;
   const reconcile = (check = true) => {
+    if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
     const previous = state.sourceHead;
@@ -400,9 +473,10 @@ export default function (pi: ExtensionAPI) {
     if (turnId) { state.head = turnId; if (current) current.id = turnId; }
   });
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
-  const flush = (ended = false) => { reconcile(false); if (ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
+  const flush = (ended = false) => { reconcile(false); if (enabled() && ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
   pi.on("before_provider_request", (event, context) => {
     ensure(context);
+    if (!enabled()) { showSpend(context); return; }
     const previous = state.sourceHead;
     reconcile(false);
     const ancestry = context.sessionManager.getBranch();
@@ -417,6 +491,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", (event, context) => {
     ensure(context);
     current = { started: now() };
+    if (!enabled()) { showSpend(context); return; }
     reconcile();
     // Knowledge once per session (the compaction block carries them afterwards); deliveries on every prompt.
     // Both are confirmed at this turn's agent_settled, after Pi has persisted the message (ruling
@@ -444,6 +519,7 @@ export default function (pi: ExtensionAPI) {
   });
   const assistant = (message: { content?: unknown }, context: ExtensionContext) => {
     ensure(context);
+    if (!enabled()) return;
     persistState(); // the user message is in the session file once the assistant has started
     if (!current || (!text(message) && (!Array.isArray(message.content) ||
       !message.content.some(c => c.type === "toolCall" || (c.type === "thinking" && c.thinking))))) return;
@@ -456,6 +532,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_end", (_event, context) => { ensure(context); persistState(); });
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
+    if (!enabled()) { unconfirmed.deliveries = []; unconfirmed.injected = false; showSpend(context); return; }
     // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
     if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
     if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
@@ -463,6 +540,7 @@ export default function (pi: ExtensionAPI) {
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
   });
   const checkQueues = () => {
+    if (!enabled()) return;
     if (!state.sessionId || !state.head) return;
     const context = ctx;
     const { sessionId, branch, head } = state;
@@ -499,18 +577,18 @@ export default function (pi: ExtensionAPI) {
       background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...integrationLaunch }));
   };
   pi.on("session_before_tree", async (_event, context) => {
-    ensure(context); flush(true);
+    ensure(context); if (!enabled()) return; flush(true);
     const { sessionId, branch, head } = state;
     if (!sessionId || !head) return { summary: { summary: "" } };
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
   pi.on("session_before_compact", (event, context) => {
-    ensure(context); flush();
+    ensure(context); if (!enabled()) return; flush();
     return { compaction: { summary: state.sessionId ? memory.compact(state.sessionId, state.branch, state.head) : memory.inject({ projectId: state.projectId }),
       firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore } };
   });
   pi.on("session_compact", event => {
-    if (state.sessionId) {
+    if (enabled() && state.sessionId) {
       const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: event.compactionEntry.summary, startedAt: now(), endedAt: now() });
       state.head = turn.id; save();
     }
@@ -521,7 +599,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     if (closed) return;
     closed = true;
-    flush(true);
+    if (state) flush(true);
     await Promise.allSettled([...pending]);
     memory.close();
   });
@@ -531,6 +609,13 @@ export default function (pi: ExtensionAPI) {
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
+      if (definition.name === "trace" || definition.name === "search") {
+        const input = validateReadInput(definition.name, raw);
+        const options = { ...input, sessionId: state.sessionId, headTurnId: state.head };
+        return result(definition.name === "trace" ? memory.trace(input.address as string, options)
+          : memory.search(input.query as string, input.layer as import("../../core/api/index.ts").SearchScope, options));
+      }
+      if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
       const content = bound.find(t => t.name === definition.name)!.execute(raw);
@@ -538,10 +623,53 @@ export default function (pi: ExtensionAPI) {
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
-  pi.registerCommand("trace", { description: "Read Trace Memory status without running extraction.",
+  const status = () => {
+    const e = enrollment();
+    return state.sessionId ? memory.status(state.sessionId) : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no session id.`;
+  };
+  const toggle = (value: boolean) => {
+    if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
+    else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
+    state.injected = false;
+    unconfirmed.deliveries = []; unconfirmed.injected = false;
+    save();
+    reconciledLeaf = undefined;
+    if (value) { reconcile(false); save(); }
+    showSpend(ctx);
+    ctx.ui.notify(`${status()}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
+  };
+  const commands = "/trace enable | disable | status | runs [n] | project <name> | mark K<n>@<commit> verified|flagged|clear";
+  const runView = (limit = 10) => {
+    const runs = state.sessionId ? memory.store.listRuns(state.sessionId).slice(-limit).reverse() : [];
+    ctx.ui.notify(runs.length ? runs.map(r => memory.trace(`R${r.id}`).split("\n")[0]!).join("\n") : "Trace Memory: no runs yet.", "info");
+  };
+  const menu = async () => {
+    const selected = await ctx.ui.select("Trace Memory", ["Current session", "Settings (Global, read-only)", "Runs", "Status"]);
+    if (selected === "Current session") {
+      const action = enabled() ? "Disable" : "Enable";
+      const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
+      const choice = await ctx.ui.select(`${status()}${shared}`, [action]);
+      if (choice && await ctx.ui.confirm(`${action} Trace Memory?`, shared + (action === "Disable"
+        ? " Processing and future injection stop; stored memory and already-injected text remain."
+        : " Available history, including the paused interval, will be queued without a model call."))) toggle(action === "Enable");
+    } else if (selected === "Settings (Global, read-only)") {
+      const defaults = { dbPath: "~/.trace-memory/trace.db", recordingModel: "session", integrationModel: "session",
+        ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
+      ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
+        const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);
+        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}`;
+      }).join("\n"), "info");
+    } else if (selected === "Runs") {
+      const count = await ctx.ui.input("Runs: number to show", "10");
+      if (count !== undefined) runView(Math.max(1, Number(count) || 10));
+    } else if (selected === "Status") ctx.ui.notify(status(), "info");
+  };
+  pi.registerCommand("trace", { description: "Trace Memory enrollment, read-only settings, runs and status.",
     async handler(args, context) {
       ensure(context);
+      if (!args.trim()) { if (context.hasUI) await menu(); else context.ui.notify(`${status()}\n${commands}`, "info"); return; }
       const parts = args.trim().split(/\s+/);
+      if (parts[0] === "enable" || parts[0] === "disable") { toggle(parts[0] === "enable"); return; }
       if (parts[0] === "project") {
         if (!state.sessionId) throw new Error("A session requires an assistant reply");
         const marked = memory.declareProject(state.sessionId, parts.slice(1).join(" "));
@@ -551,14 +679,11 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(marked, "info"); return;
       }
       if (parts[0] === "runs") {
-        if (!state.sessionId) throw new Error("A session requires an assistant reply");
-        const limit = Math.max(1, Number(parts[1] ?? 10) || 10);
-        const runs = memory.store.listRuns(state.sessionId).slice(-limit).reverse();
-        context.ui.notify(runs.length ? runs.map(r => memory.trace(`R${r.id}`).split("\n")[0]!).join("\n") : "Trace Memory: no runs yet.", "info"); return;
+        runView(Math.max(1, Number(parts[1] ?? 10) || 10)); return;
       }
       if (parts[0] === "mark") {
         if (!/^K[1-9]\d*(?:@[1-9]\d*)?$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n>@<commit> verified|flagged|clear");
         context.ui.notify(memory.mark(parts[1]!, parts[2] as "verified" | "flagged" | "clear", state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info"); return;
       }
-      context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });
+      context.ui.notify(status(), "info"); } });
 }

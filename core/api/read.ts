@@ -71,6 +71,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
     inject: (target: number | { projectId: number } | KnowledgePath): string => {
+      const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
+      if (id !== undefined && !store.enabled(id)) return "";
       if (typeof target === "object" && "sessionId" in target) return finish(knowledge(target.sessionId, target.headTurnId, target.branch));
       if (typeof target === "object") {
         // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
@@ -90,6 +92,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.
     confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
+      if (!store.enabled(sessionId)) return "";
       const block = knowledge(sessionId, store.knowledgePath(sessionId, branch, headTurnId).headTurnId, branch);
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       const raw = head === undefined ? [] : store.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, config.render));
@@ -100,6 +103,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
+      if (!store.enabled(sessionId)) return "";
       const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).entries;
       const raw = tail.map(e => renderEntry(e, config.render));
       const path = { sessionId, headTurnId, branch }, turns = store.pathTurns(path);
@@ -156,7 +160,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);
       const branches = [...new Set(runs.map((r) => r.branch))];
-      return [`Session: S${sessionId}`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
+      return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         `Spend: ${totals.runs.recording} recording, ${totals.runs.integration} integration, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,

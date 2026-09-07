@@ -10,7 +10,7 @@ beforeEach(() => { calls = 0; memory = TraceMemory(":memory:", async () => { cal
 afterEach(() => memory.close());
 function session(projectId?: number, declaration: "marker" | "undeclared" = "marker") {
   const project = projectId ?? memory.store.createProject({ name: "mapC", declaredBy: "marker" }).id;
-  return memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project, projectDeclaration: declaration });
+  return memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project, projectDeclaration: declaration });
 }
 function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
   return memory.store.appendTurn({ sessionId, userPrompt: text, assistantText: null, parentTurnId, kind: "turn", startedAt: time });

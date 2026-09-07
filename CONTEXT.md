@@ -23,6 +23,8 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 
 ## Scope and attribution
 
+- **Enrollment** — the durable enabled or disabled participation of one memory-session identity. Explicit intent overrides its derived default; shared forks and clones share the switch. Disable pauses future work and injection while retaining memory and unrestricted reads.
+- **Baseline** — the installation-scoped instant of the plugin's first successful initialization, retained across restarts and upgrades. Only native sessions created strictly after it default enabled; unknown or malformed creation times default disabled.
 - **Session** — one host conversation. Gets an id only once an assistant reply exists.
 - **Project** — the unit that shares knowledge. A session belongs to a project only by explicit declaration (a `.trace-memory` marker file found upward from cwd, or an in-session `/trace project <name>`; the in-session declaration wins). An undeclared session is its own project and may later be merged into another, retroactively.
 - **Scope** of a knowledge item — `session` (holds only in that session), `project`, or `global` (about the user, the environment, general working method).

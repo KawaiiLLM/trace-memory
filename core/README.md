@@ -218,8 +218,9 @@ Targets must match the visible active revisions frozen at run start; manual call
 use current revisions. Every item is checked before writing and every participant
 is rechecked in the immediate transaction. Any rejection writes no operations.
 The survivor revision, merged status and links, run record and frozen Integration
-fact membership commit together; absorbed items retain their own last revision. No pending
-delivery is created. Supports and because cite project facts available at start.
+fact membership and a nonempty knowledge-change delivery commit together; absorbed
+items retain their own last revision. Enabled sessions receive both delivery kinds
+regardless of worker mode (2026-09-08 supersession). Supports and because cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
 transaction, including concurrent changes to untouched knowledge. Uncited user facts
@@ -309,3 +310,16 @@ As in every block, tags delimit and content lines remain byte-identical. There i
 consumption. The host passes the block immediately as Pi's summary, launching
 neither phase and awaiting no Recording; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.
+
+
+## Enrollment (18a)
+
+`store.createSession` accepts host-supplied `nativeCreatedAt`, `baseline` and optional
+`enrollmentChoice`. Only a valid native creation timestamp strictly after baseline
+derives Enabled; missing metadata derives Disabled. Test fixtures opt in explicitly.
+`store.enrollment`, `enabled` and `setEnrollment` retain the derived default separately
+from explicit intent. Source mutations and automatic facade admission check this
+state; both run commits reread it inside their immediate transaction. Failure audits
+remain possible, but disabled business writes/progress cannot commit. Reads and pending
+queue inspection remain available; automatic blocks and confirmation are gated.
+No Pi SDK, migration, cancellation or claim machinery enters core.

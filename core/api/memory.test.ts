@@ -8,7 +8,7 @@ const batch = { operations: [create], skipped: [] };
 function setup(agent: (input: IntegrationAgentInput) => Promise<RunAgentResult>) {
   memory = TraceMemory(":memory:", raw => agent(raw as IntegrationAgentInput));
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
@@ -84,7 +84,7 @@ test("memory rejects malformed items, obsolete fields and invisible evidence wit
     expect(memory.store.getKnowledge(1)).toBeNull();
   }
   const p = memory.store.createProject({ name: "foreign", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "secret", startedAt: "now" });
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "secret", source: [`T${t.id}#user`] }] });
   expect(tool.execute({ operations: [{ ...create, supports: ["F2"] }], skipped: [] })).toContain("not an available fact");

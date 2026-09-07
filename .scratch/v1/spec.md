@@ -60,7 +60,7 @@ Two layers of memory extracted automatically from the conversation, each claim t
 - `core/render`: one shared entry renderer for automatic Raw (see Completed source entries and compressed Raw below). Explicit Turn preview rendering: user message and assistant text uncut; per tool call a fixed metadata line (ordinal `#t<n>`, tool, status, omission flag), command cut at line boundaries to a token cap, stdout head/tail, stderr tail, reads and searches as name plus path, memory-tool writes as a receipt line, reports head/tail; every cut carries an omission marker with the count. Fact line and knowledge line formats per CONTEXT.md, relations at line end with continuation lines for quote and source. XML injection blocks with a fixed header, category tags in fixed order, no volatile attributes; dynamic receipts appended after the stable content. Budgets are parameters; defaults: command 120 tokens, stdout 60 head 120 tail, stderr 120 tail, reports 200 head 80 tail, knowledge block 10K, episodic block 20K (oldest facts dropped first, raw tail kept). Token estimate is a local heuristic, no tokenizer dependency. Grilling Q12 ruled two weights over character classes, 0.75 per CJK character and 0.25 per other; measured against a real tokenizer that ran 28% low on Chinese and 46% high on English prose, and refitting the two constants left the Chinese shortfall at 23%, because the residual is not on that axis. The user ruled for the segment method on 2026-09-07: the text is split on whitespace and punctuation runs and each segment is priced by its own rule (CJK by script, digit runs by three, short segments and common lowercase words at one token, punctuation runs, a default ratio otherwise), the shape used by tokenx, whose ratios are calibrated against o200k_base. Two rules are ours and measured here: runs are priced across letter/digit boundaries, because this project's own addresses are that shape in every line a budget measures, and a run of horizontal whitespace costs the single token a tokenizer holds for it whatever its width. Accuracy over 20 corpora of this project's text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting only wastes budget room while under-counting overruns it, so the estimate is allowed to run high and held close on the low side. `core/render/index.test.ts` pins the bound against true counts recorded offline; Claude's tokenizer is not public, so o200k stands in for it.
 - `core/api`: the façade `TraceMemory(dbPath, runAgent, config)` exposing `record`, `integrate`, `compact`, `inject`, `deliver`, `trace`, `search`, `status`, `declareProject`, `mark`, and `tools(context)` returning the four model-facing tool definitions bound to a run or to the main agent's session. Hosts call only this.
 - `core/prompts`: `recording.md`, `integration.md`, versioned by content hash recorded in runs.
-- `hosts/pi`: reconciles persisted eligible entry completions at safe hooks (checks Recording at ≥10,000 pending compressed-view tokens and Integration at ≥50 applicable unintegrated committed facts; `agent_settled` retains delivery confirmation), `session_before_compact` (returns the compaction block, cancels nothing, calls no model), `session_before_tree` (returns committed memory plus pending compressed Raw as the summary without extraction), `before_agent_start` (injects the knowledge block at session start and any pending recording deliveries), the four tools from `tools(context)` (`trace`, `search`, `note`, `memory`), command `/trace` (read-only status; `/trace project <name>` declares the project; `/trace mark K<n> <kind>` marks a knowledge item). Implements `runAgent` two ways: branch mode builds a pi-ai call whose system prompt and messages are byte-identical to the session's current request plus one appended user message; subagent mode builds a fresh call with the rendered input. Recording defaults to branch mode with the session model; integration defaults to subagent mode with the session model; both overridable. In branch mode the appended message carries the recording prompt, range, head reply and frozen source index: the raw turns, the facts delivered after earlier recordings, and the injected knowledge are already in the conversation (user ruling 2026-09-06 08:53). That premise fails for a recording result committed after the current prompt started, since deliveries land at prompt start: the host does not start a branch recording while such a result is undelivered and lets the next eligible completion after delivery confirmation start it. Subagent mode carries the full rendered input. In integration branch mode the candidate round appends the integration prompt, the range and the exact list of facts to integrate to the captured prefix, and the final round appends the candidate reply (replayed in the provider's native assistant shape) and the feedback message to the verified candidate request. Tool calls in either mode are executed and the model is called again on the extended request (see Write tools).
+- `hosts/pi`: reconciles persisted eligible entry completions at safe hooks (checks Recording at ≥10,000 pending compressed-view tokens and Integration at ≥50 applicable unintegrated committed facts; `agent_settled` retains delivery confirmation), `session_before_compact` (returns the compaction block, cancels nothing, calls no model), `session_before_tree` (returns committed memory plus pending compressed Raw as the summary without extraction), `before_agent_start` (injects the knowledge block at session start and any pending recording deliveries), the four tools from `tools(context)` (`trace`, `search`, `note`, `memory`), command `/trace` (native enrollment/settings/runs/status menu; `/trace status` reads status; `/trace project <name>` declares the project; `/trace mark K<n> <kind>` marks a knowledge item). Implements `runAgent` two ways: branch mode builds a pi-ai call whose system prompt and messages are byte-identical to the session's current request plus one appended user message; subagent mode builds a fresh call with the rendered input. Recording defaults to branch mode with the session model; integration defaults to subagent mode with the session model; both overridable. In branch mode the appended message carries the recording prompt, range, head reply and frozen source index: the raw turns, the facts delivered after earlier recordings, and the injected knowledge are already in the conversation (user ruling 2026-09-06 08:53). That premise fails for a recording result committed after the current prompt started, since deliveries land at prompt start: the host does not start a branch recording while such a result is undelivered and lets the next eligible completion after delivery confirmation start it. Subagent mode carries the full rendered input. In integration branch mode the candidate round appends the integration prompt, the range and the exact list of facts to integrate to the captured prefix, and the final round appends the candidate reply (replayed in the provider's native assistant shape) and the feedback message to the verified candidate request. Tool calls in either mode are executed and the model is called again on the extended request (see Write tools).
 - `hosts/cc`: placeholder; not in v1.
 
 ### Contracts
@@ -151,6 +151,58 @@ There is no Turn-coverage migration, compatibility translation or second deliver
 protocol. Ticket 17b removes the derived Turn boundary and its readers/status line.
 Ticket 17c owns closure and catch-up; neither is implemented here.
 
+### Enrollment, baseline and settings (18a, 2026-09-08)
+
+Enrollment is one durable switch per memory identity. The store saves the derived
+default separately from a nullable explicit choice; explicit intent wins permanently.
+The host supplies the native Pi header creation timestamp and installation baseline;
+core imports no Pi SDK. Native timestamps strictly after the baseline default enabled;
+earlier, equal, missing or malformed values default disabled. Database presence is
+not an opt-in. The host atomically publishes one `trace-memory-baseline.json` in Pi's
+agent directory at first successful initialization and retains it across restarts and
+upgrades. This cannot recover an earlier package-manager installation date.
+
+Before the first assistant reply, a persisted Pi custom state holds provisional
+intent. Because Pi defers native file creation until an assistant exists, an atomic
+host-state receipt in the agent directory also preserves this provisional entry.
+Allocation transfers it without an artificial Turn; afterward the database switch
+is authoritative. Restoring tree position
+recovers the current allocated identity independently of historical state; forks and
+clones carrying that identity share its current database switch even with newer headers.
+
+Enabled sessions ingest and reconcile current-path native sources, inject knowledge,
+deliver both result kinds, accept manual writes and check 17b thresholds. Enable and
+re-enable import available history, including the paused interval, locally through
+17a reconciliation without any provider call or synthetic completion. Import does
+not drain work; the next ordinary eligible completion checks queues.
+
+Disable persists first. Core gates source mutation, automatic admission, automatic
+blocks and delivery confirmation; Recording and Integration reread enrollment inside
+their immediate commit transactions. Late business writes and progress are rejected;
+failure audit records remain valid. A batch committed before disable stays successful.
+Stored Raw, facts, knowledge, scope and runs remain. Disabled hosts return no compaction
+or carry override, allowing Pi's native fallback. Unseen deliveries remain unconfirmed;
+already-injected text is not removed. Trace, search and status remain unrestricted.
+In-flight model calls are not cancelled until 17c; no cancellation mechanism is added.
+
+Configuration is a flat object under `trace-memory` in Pi's global `settings.json`
+(`PI_CODING_AGENT_DIR` or `~/.pi/agent`) and project `.pi/settings.json`, project over
+global, with flat `TRACE_MEMORY_CONFIG` JSON on top. The retry-settings file reader is
+shared. Every layer is validated, including masked values; unknown/removed keys fail
+by name. Counts and token budgets are positive safe integers; the existing
+`maxToolRounds: 0` unlimited sentinel and `nearThreshold` similarity in [0,1] retain
+their meanings. Modes are booleans. Impossible source-view capacity still reports
+an error and retains pending work. The plugin never writes settings.
+
+Bare `/trace` uses native select/confirm/input dialogs for Current session (state,
+default or explicit origin, enable/disable and shared-identity scope), Settings
+(labelled Global, read-only, effective values, sources and masked values), Runs and
+Status. Cancel changes no enrollment choice. Headless bare `/trace` prints status
+and available commands. `/trace enable`, `/trace disable`, `/trace status`,
+`/trace runs [n]`, `/trace project <name>` and `/trace mark K<n>@<commit> <kind>`
+share existing operations. The existing footer adds Disabled while retaining its
+indicator, colors, counts and spend. Catch up and Stop are ticket 18b, not implemented.
+
 ### Run boundaries
 
 - A recording run freezes, at start: the session, the branch, the oldest contiguous pending source-entry prefix on the selected ancestry within `recording.batchTokens` (default 50,000 compressed-view tokens including separators), their owning Turns and immutable views, and the knowledge revisions it read. On success it commits its facts, the run record, only those entry identities marked processed, and a pending delivery bound to that branch — all in one transaction. It never processes entries that arrived while it ran, even inside the same Turn; those wait for the next eligible entry completion. The effective batch can be smaller to reserve instructions, knowledge, tool definitions, output and existing model context. If the oldest entry cannot fit, it stays pending with a capacity problem; it is never skipped. The host uses the shared estimator with a 15% context margin and the model output limit. The native branch prefix is never rewritten; its size is additional to the 50,000-token new-material limit.
@@ -163,7 +215,7 @@ Ticket 17c owns closure and catch-up; neither is implemented here.
 - Compaction, shutdown and tree switching launch neither extraction phase and preserve pending work. Existing in-flight runs may settle under the existing shutdown wait; it is not a new trigger. Tree summaries and compaction use committed memory plus the shared pending view. Closure, claims and catch-up belong to 17c.
 
 - A Pi fork or clone whose copied path carries Trace Memory state continues the same Trace Memory session on a new branch id: same facts, same project, sibling-branch rules apply, and the new branch inherits processed shared entry identities, so shared entries are recorded once; integration progress needs no inheritance, since it is per fact and judged against the new branch's own path. A copy without plugin state starts a new session.
-- **Backfill is decided by the consumer** (user ruling 2026-09-07): a branch Recorder reads earlier facts out of the conversation, so its appended message carries only the range; a branch Integrator reads earlier facts and the current knowledge, so its appended message carries only the range and the exact fact list. A successful Recording therefore leaves a fact delivery when either kind runs in branch mode, and a successful Integration leaves a knowledge-change delivery (`<integrated>`, the commits of that run) when Integration runs in branch mode. With both kinds in subagent mode nothing is delivered, because nothing reads it. The batch is listed fact by fact rather than as an `F..F` span: other paths and already-integrated facts can lie between the ends. Facts the conversation does not hold, manual notes among them, are fetched with `trace`. The session-start knowledge injection and the compaction block are separate and unaffected; a branch run whose facts were dropped from a compaction block fetches them the same way.
+- **Enrollment controls delivery** (user ruling 2026-09-08, superseding the 2026-09-07 consumer matrix): enabled sessions receive both `<recorded>` facts and `<integrated>` knowledge commits regardless of Recording or Integration mode. Worker modes control execution only. Facts absent from conversation, including manual notes, remain available through unrestricted `trace`. Initial knowledge injection and compaction are separately enrollment-gated.
 - A branch run does not start while a delivery it would read is pending: a branch Recording waits for a pending fact delivery, a branch Integration waits for either kind. The next eligible completion after settled delivery confirmation supplies another opportunity; confirmation remains at `agent_settled`.
 - Deliveries and the first knowledge injection are confirmed at the turn's `agent_settled`, after Pi has persisted the message; only the run ids that prompt took are confirmed, results committed during the turn wait for the next prompt, and confirmation is bound to the ids, not to the current session state. A turn that never settles delivers or injects again: duplicates are allowed before confirmation, silent loss is not (user ruling 2026-09-07).
 
@@ -201,7 +253,7 @@ The initial integration input separately lists every visible active knowledge wh
 ### Schema
 
 ```text
-sessions        id · host · started_at · first_reply_at · project_id · parent_session_id
+sessions        id · host · enrollment_default (boolean) · enrollment_choice (nullable boolean) · started_at · first_reply_at · project_id · parent_session_id
 projects        id · name · declared_by (marker | mark) · merged_into
 turns           id · session_id · ordinal · parent_turn_id · kind (turn | compaction) · user_prompt · assistant_text · started_at · ended_at
 tool_calls      id · turn_id · ordinal · name · input · result · status

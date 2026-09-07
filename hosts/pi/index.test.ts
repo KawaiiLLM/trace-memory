@@ -63,7 +63,7 @@ test("recording through runAgent commits the exact provider request, prompt, mod
 test("first prompt injects project/global knowledge without allocating a session; marker is declared and mark wins", async () => {
   const h = host({}, "project-name");
   const p = h.memory.store.createProject({ name: "project-name", declaredBy: "marker" });
-  const s = h.memory.store.createSession({ host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  const s = h.memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const recorded = h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, createdAt: "now" }, facts: [
     { turnId: t.id, category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
@@ -132,7 +132,7 @@ test("pending delivery is injected once on its own branch", async () => {
 test("2026-09-07: deliveries and the first injection are confirmed at agent_settled with only the run ids that prompt took", async () => {
   const h = host({ "recording.triggerTokens": 60 }, "project-name");
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "marker" });
-  const seed = store.createSession({ host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const noted = store.commitRecordingRun({ run: { kind: "recording", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
@@ -308,7 +308,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   seed(1, 1, ["project", "session"]);
   const sessionRevision = store.getKnowledgeRevision(2, 2);
   const target = store.createProject({ name: "named", declaredBy: "mark" });
-  const peer = store.createSession({ host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
+  const peer = store.createSession({ enrollmentChoice: true, host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
   const recorded = store.commitRecordingRun({ run: { kind: "recording", sessionId: peer.id, createdAt: "now" }, facts: [
     { turnId: turn.id, category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
@@ -429,18 +429,18 @@ test("removing a marker before first reply cannot turn its shared project into a
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
 
-test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; with no branch consumer nothing is delivered and nothing waits", async branchMode => {
+test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; 2026-09-08 supersession: enabled sessions always receive delivery; only branch mode waits", async branchMode => {
   const h = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": branchMode, recordingModel: "fake/recorder" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Recording A in flight over T1.
   await h.prompt("second"); await h.answer(); // This prompt saw no delivery.
   release(recordingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(branchMode ? 1 : 0); // no branch consumer, no delivery
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1); // 2026-09-08: enabled means delivered, whatever the worker mode
   h.provider(async c => recordingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 2 : 4);
-  expect(String((await h.prompt("third"))?.message?.content ?? "").includes("recorded")).toBe(branchMode);
+  expect(String((await h.prompt("third"))?.message?.content ?? "").includes("recorded")).toBe(true);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 4 : 6);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
@@ -847,13 +847,14 @@ test("the footer shows the warning indicator while a retry waits", async () => {
 const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
   arguments: { operations: [{ op: "create", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] } }] });
 
-test("2026-09-07 backfill by consumer: with both kinds in subagent mode nothing is delivered; a branch Integrator gets facts and knowledge changes", async () => {
+test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagents and branch Integrators get facts and knowledge changes", async () => {
   const settings = { "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "recording.branchModeDefault": false, "integration.maxToolRounds": 4 };
   const subagentOnly = host({ ...settings, "integration.subagentModeDefault": true });
   subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : recordingFact(c));
   await subagentOnly.turn(); await subagentOnly.answer("tick"); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
   expect(subagentOnly.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Integration did commit
-  expect(subagentOnly.memory.store.listPendingDeliveries(1, "main")).toEqual([]); // nobody reads the conversation
+  expect(subagentOnly.memory.deliver(1, "main").text).toContain("<recorded>");
+  expect(subagentOnly.memory.deliver(1, "main").text).toContain("<integrated>");
 
   // Integration in branch mode: the Recording's facts and the Integration's own commits are both delivered.
   const h = host({ ...settings, "integration.subagentModeDefault": false });

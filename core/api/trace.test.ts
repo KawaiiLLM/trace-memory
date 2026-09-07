@@ -21,7 +21,7 @@ function edit(knowledgeId: number, baseCommit: number, text: string, extra: Part
 beforeEach(() => {
   memory = TraceMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
   const project = memory.store.createProject({ name: "trace", declaredBy: "mark" });
-  sessionId = memory.store.createSession({ host: "test", projectId: project.id, startedAt: time, firstReplyAt: time }).id;
+  sessionId = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: time, firstReplyAt: time }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", startedAt: time });
   const facts = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, createdAt: time }, facts: [
     { text: "original claim" },

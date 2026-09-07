@@ -33,7 +33,7 @@ function open(config: ConfigOverride = {}) {
     }
   }, config);
 }
-const session = (project = projectId) => memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project }).id;
+const session = (project = projectId) => memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project }).id;
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-integration-")); calls = []; script = []; open();
   projectId = memory.store.createProject({ name: "fixture", declaredBy: "mark" }).id; sessionId = session();
@@ -104,7 +104,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(integrated(current)).toBe(true);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]);
+  expect(memory.deliver(sessionId, "main").text).toContain("<integrated>"); // 2026-09-08 supersedes mode-derived delivery
 });
 
 test("reminder lists every visible supporting knowledge for both strengths and ignores lexical distance and budgets", async () => {
@@ -122,7 +122,7 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   watermark(unrelatedFact);
   const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
   const weak = fact(memories.interpretation, { negate: [{ target: `F${cited}`, strength: "weak" }] });
-  memory.close(); open({ render: { knowledgeBlockTokens: 0, episodicBlockTokens: 0 }, integration: { nearThreshold: 1 } });
+  memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 }, integration: { nearThreshold: 1 } });
   const traces = ids.map((id) => memory.trace(`K${id}`)); queue(empty, empty);
   expect((await integration()).outcome).toBe("success");
   const reminder = calls[0]!.input.split("Negated-evidence reminder (review cues only; no status derived):\n\n")[1]!.split("\n\nReceipts:")[0]!;
@@ -249,7 +249,7 @@ test("context uses timestamp freshness while range remains complete and categori
   const input = calls[0]!.input;
   expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
-  memory.close(); open({ render: { knowledgeBlockTokens: 0, episodicBlockTokens: 0 } });
+  memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 } });
   const next = fact(memories.interpretation);
   queue(empty, empty); await integration(); const small = calls[2]!.input;
   expect(small).toContain(memory.trace(`F${next}`));

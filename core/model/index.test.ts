@@ -6,7 +6,7 @@ const fact = (extra = {}) => ({ category: "observation", actor: "user", text: "U
 beforeEach(() => {
   memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
   const p = memory.store.createProject({ name: "p", declaredBy: "mark" });
-  const s = memory.store.createSession({ host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm.", assistantText: "Done.", startedAt: "source time" });
   note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: 1 }).find((t) => t.name === "note")!;
 });
