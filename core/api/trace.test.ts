@@ -10,14 +10,13 @@ function integration(...operations: Operation[]) {
   const result = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.problems.join(", "));
-  expect(result.rejected).toEqual([]);
   return result.committed;
 }
 function create(text = "use red tiles now") {
-  return integration({ op: "new", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
+  return integration({ op: "create", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
 }
-function edit(knowledgeId: number, expectedRevision: number, text: string, extra: Partial<Extract<Operation, { op: "edit" }>> = {}) {
-  integration({ op: "edit", knowledgeId, expectedRevision, text, category: "reference", scope: "project", supports: [1], because: [2], createdAt: time, ...extra });
+function edit(knowledgeId: number, expectedRevision: number, text: string, extra: Partial<Extract<Operation, { op: "update" }>> = {}) {
+  integration({ op: "update", knowledgeId, expectedRevision, text, category: "reference", scope: "project", supports: [1], because: [2], createdAt: time, ...extra });
 }
 beforeEach(() => {
   memory = TraceMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
@@ -39,18 +38,18 @@ afterEach(() => memory.close());
 test("current knowledge and historical snapshot include evidence and revision metadata", () => {
   const id = create();
   edit(id, 1, "use blue tiles now", { category: "constraint", scope: "global", supports: [2, 3] });
-  expect(memory.trace(`K${id}`)).toBe(`[K1@2] [constraint/global] use blue tiles now\n  supports: F2, F3\n  status: active\nRevisions:\n  K1@1 new ${time} because: none\n  K1@2 edit ${time} because: F2`);
-  expect(memory.trace(`K${id}@1`)).toBe(`[K1@1] [reference/project] use red tiles now\n  supports: F1\n  K1@1 new ${time} because: none`);
+  expect(memory.trace(`K${id}`)).toBe(`[K1@2] [constraint/global] use blue tiles now\n  supports: F2, F3\n  status: active\nRevisions:\n  K1@1 create ${time} because: none\n  K1@2 update ${time} because: F2`);
+  expect(memory.trace(`K${id}@1`)).toBe(`[K1@1] [reference/project] use red tiles now\n  supports: F1\n  K1@1 create ${time} because: none`);
 });
 
 test("diff preserves unchanged spans and lists all transitions even if endpoints revert", () => {
   const id = create();
   edit(id, 1, "use blue tiles now", { supports: [2], category: "constraint", scope: "global" });
   edit(id, 2, "use green tiles now", { supports: [2, 3], category: "constraint", scope: "global", because: [3, 4] });
-  expect(memory.trace(`K${id}@1..3`)).toBe(`[K1@1..3]\n  text: use [-red-]{+green+} tiles now\n  supports added: F2, F3\n  supports removed: F1\n  category: reference -> constraint\n  scope: project -> global\nRevisions:\n  K1@2 edit ${time} because: F2\n  K1@3 edit ${time} because: F3, F4`);
+  expect(memory.trace(`K${id}@1..3`)).toBe(`[K1@1..3]\n  text: use [-red-]{+green+} tiles now\n  supports added: F2, F3\n  supports removed: F1\n  category: reference -> constraint\n  scope: project -> global\nRevisions:\n  K1@2 update ${time} because: F2\n  K1@3 update ${time} because: F3, F4`);
   edit(id, 3, "use red tiles now");
   expect(memory.trace(`K${id}@1..4`)).toContain("text: use red tiles now\n  supports added: none\n  supports removed: none");
-  expect(memory.trace(`K${id}@1..4`)).toContain(`K1@3 edit ${time} because: F3, F4`);
+  expect(memory.trace(`K${id}@1..4`)).toContain(`K1@3 update ${time} because: F3, F4`);
   expect(memory.trace(`K${id}@2..2`)).toContain("Revisions: none");
 });
 
@@ -111,8 +110,8 @@ test("simulation knowledge and strong negation goldens preserve Chinese memory c
   expect(committed.ok).toBe(true);
   fixture.knowledge.log.forEach((r, i) => {
     const fields = { text: r.text, category: "reference" as const, scope: "project" as const, supports: r.supports.map((id) => ids.get(id)!), createdAt: r.at };
-    if (!i) integration({ ...fields, op: "new", handle: "$e1", author: "integration" });
-    else integration({ ...fields, op: "edit", knowledgeId: 1, expectedRevision: i, because: r.because.map((id) => ids.get(Number(id.slice(1)))!) });
+    if (!i) integration({ ...fields, op: "create", handle: "$e1", author: "integration" });
+    else integration({ ...fields, op: "update", knowledgeId: 1, expectedRevision: i, because: r.because.map((id) => ids.get(Number(id.slice(1)))!) });
   });
   expect(memory.trace("K1")).toMatchSnapshot();
   expect(memory.trace("K1@1")).toMatchSnapshot();

@@ -78,10 +78,10 @@ test("first prompt injects project/global knowledge without allocating a session
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   const seeded = h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: "now" }, operations: [
-    { op: "new", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
-    { op: "new", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
+    { op: "create", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
+    { op: "create", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
   ] });
-  expect(seeded.ok && seeded.rejected.length === 0).toBe(true);
+  expect(seeded.ok).toBe(true);
   const injection = await h.prompt();
   expect(injection.message.content).toContain("项目规则"); expect(injection.message.content).toContain("全局规则");
   expect(h.memory.store.getSession(2)).toBeNull();
@@ -228,7 +228,7 @@ test("knowledge are injected once per session, only once something exists; later
     facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
   h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
-    { op: "new", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
+    { op: "create", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
   void p;
   const second = await h.prompt("again");
   expect(second?.message?.content).toContain("<knowledge>");
@@ -278,10 +278,10 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
     const commit = store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
-      op: "new" as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
+      op: "create" as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
       createdAt: "now", category: "constraint" as const, scope,
     })) });
-    expect(commit.ok && commit.rejected.length === 0).toBe(true);
+    expect(commit.ok).toBe(true);
   };
   seed(1, 1, ["project", "session"]);
   const sessionRevision = store.getKnowledgeRevision(2, 1);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type IntegrationDiagnostic } from "./commit.ts";
-import type { CommittedKnowledgeOp, RejectedKnowledgeOp, Store, RunInput } from "../store/index.ts";
+import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { finish, renderKnowledge, renderFact, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
@@ -35,7 +35,7 @@ export type IntegrateResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch;
-      committed: CommittedKnowledgeOp[]; rejected: RejectedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
+      committed: CommittedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
       range: IntegrationRange; readKnowledgeRevisions: { knowledgeId: number; rev: number }[]; unansweredNear: NearPair[] };
 
 export function freezeIntegration(store: Store, input: IntegrateInput, config: TraceMemoryConfig) {
@@ -116,7 +116,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const committed = binding.memory.committed;
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null ? ["runAgent must return the exact provider request"] : binding.memory.problems;
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, toolCalls: binding.sequence, fetched: binding.fetched,
-    candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, rejected: committed.rejected, diagnostics: committed.diagnostics } : {}),
+    candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (committed) {
     store.updateRun(committed.runId, { ...run, outcome: "success" });

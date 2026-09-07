@@ -1,4 +1,3 @@
-import { memoryBatch } from "../../test/memory-batch.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -11,8 +10,8 @@ type IntegrationAgentInput = CoreInput & { round: "candidate" | "final"; request
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
 let calls: IntegrationAgentInput[], script: ((input: IntegrationAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
-const empty = { new: [], edit: [], merge: [], delete: [], not_admitted: [], near_ack: [], over_budget: false };
-const success = (output: unknown, input: IntegrationAgentInput): RunAgentResult => ({ outcome: "success", output: output === empty ? { ...empty, not_admitted: input.range.facts.map(f => ({ id: `F${f.id}`, because: "Not retained in this test." })) } : output,
+const empty = { operations: [], skipped: [] };
+const success = (output: unknown, input: IntegrationAgentInput): RunAgentResult => ({ outcome: "success", output: output === empty ? { ...empty, skipped: input.range.facts.map(f => ({ fact: `F${f.id}`, because: "Not retained in this test." })) } : output,
   usage: { tokens: 12 }, request: input.request });
 function open(config: ConfigOverride = {}) {
   memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
@@ -24,7 +23,7 @@ function open(config: ConfigOverride = {}) {
       const next = script.shift(); if (!next) throw new Error("unexpected call");
       const response = await next(input); input.response = response;
       if (response.outcome !== "success" || response.request == null) return response;
-      const batch = memoryBatch(response.output);
+      const batch = response.output;
       const receipt = input.tools.find(t => t.name === "memory")!.execute(batch);
       messages.push({ role: "assistant", toolCall: { name: "memory", arguments: batch } }, { role: "toolResult", content: receipt });
       const parsed = JSON.parse(receipt);
@@ -50,10 +49,10 @@ function fact(text = memories.base, options: { sessionId?: number; branch?: stri
 }
 function knowledge(supports: number[], options: { sessionId?: number; text?: string; category?: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference"; scope?: "session" | "project" | "global" } = {}) {
   const result = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: options.sessionId ?? sessionId, createdAt: time }, operations: [{
-    op: "new", handle: "$e1", author: "fake", text: options.text ?? memories.knowledge, supports, createdAt: time,
+    op: "create", handle: "$e1", author: "fake", text: options.text ?? memories.knowledge, supports, createdAt: time,
     category: options.category ?? "mechanism", scope: options.scope ?? "project",
   }] });
-  if (!result.ok || result.rejected.length) throw new Error("fixture knowledge failed");
+  if (!result.ok) throw new Error("fixture knowledge failed");
   return result.committed[0]!.knowledgeId;
 }
 function watermark(id: number, branch = "main") {
@@ -61,7 +60,7 @@ function watermark(id: number, branch = "main") {
     watermark: { sessionId, branch, lastIntegratedFact: id } });
   expect(result.ok).toBe(true);
 }
-const newOutput = (support: number, text = memories.knowledge) => ({ ...empty, new: [{ handle: "$e1", text, category: "mechanism" as const, scope: "project" as const, supports: [`F${support}`] }] });
+const createOutput = (support: number, text = memories.knowledge) => ({ ...empty, operations: [{ op: "create", text, category: "mechanism" as const, scope: "project" as const, supports: [`F${support}`], because: [`F${support}`] }] });
 const integration = (branch = "main") => memory.integrate({ sessionId, branch });
 function queue(...outputs: unknown[]) { for (const output of outputs) script.push(async (input) => success(output, input)); }
 function deferred() {
@@ -87,12 +86,12 @@ test("freezes session branch range, read revisions, relations and guidance throu
   const pending = memory.integrate(selection);
   selection.branch = "switched";
   const late = fact(memories.observation, { negate: [{ target: `F${current}`, strength: "strong" }] });
-  const update = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "edit", knowledgeId: e,
+  const update = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "update", knowledgeId: e,
     expectedRevision: 1, text: memories.editedKnowledge, category: "open", scope: "project", supports: [late], because: [late], createdAt: time }] });
   expect(update.ok).toBe(true);
   const moved = memory.trace(`K${e}`); expect(moved).not.toBe(before);
   knowledge([late]);
-  queue(newOutput(current)); resolve(newOutput(current)); const result = await pending;
+  queue(createOutput(current)); resolve(createOutput(current)); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range).toEqual({ from: `F${current}`, to: `F${current}`, facts: [memory.store.getFact(current)!] });
   expect(result.readKnowledgeRevisions).toEqual([{ knowledgeId: e, rev: 1 }]);
@@ -138,9 +137,9 @@ test("reminder lists every visible supporting knowledge for both strengths and i
 
 test("feedback contains NEAR, CLOSER, an exact checklist section and continuation of the candidate request and response", async () => {
   const f = fact(memories.knowledge), e = knowledge([f], { category: "open" }), goal = knowledge([f], { category: "goal" });
-  const candidate = newOutput(f); queue(candidate, candidate);
+  const candidate = createOutput(f); queue(candidate, candidate);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.output).toEqual(memoryBatch(candidate));
+  expect(result.output).toEqual(candidate);
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
   expect(calls[0]!.input).not.toContain("NEAR:"); expect(calls[0]!.input).not.toContain("CLOSER:");
   expect(calls[0]!.request.messages).toHaveLength(1);
@@ -159,28 +158,27 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   audit(result.runId, 1);
 });
 
-for (const resolution of ["edit", "merge", "ack", "withdraw", "wrong ack", "archive"] as const) test(`corrected final output: ${resolution}`, async () => {
+for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"] as const) test(`corrected final output: ${resolution}`, async () => {
   const f = fact(), e = knowledge([f]), absorbed = knowledge([f], { text: memories.observation });
-  const candidate = newOutput(f), final = { ...candidate };
+  const candidate = createOutput(f), final = { ...candidate };
   let output: unknown = final;
   const operation = { id: `K${e}`, text: memories.knowledge, category: "mechanism", scope: "project", supports: [`F${f}`], because: [`F${f}`] };
-  if (resolution === "edit") output = { ...final, edit: [operation] };
-  if (resolution === "merge") output = { ...final, merge: [{ ...operation, into: `K${e}`, absorb: [`K${absorbed}`] }] };
-  if (resolution === "ack" || resolution === "wrong ack") output = { ...final, near_ack: [{ candidate: resolution === "ack" ? "$e1" : "$e2", knowledge: `K${e}`, because: memories.interpretation }] };
+  if (resolution === "update") output = { ...final, operations: [...final.operations, { op: "update", ...operation }] };
+  if (resolution === "merge") output = { ...final, operations: [...final.operations, { op: "merge", ...operation, id: `K${e}`, absorb: [`K${absorbed}`] }] };
   if (resolution === "withdraw") output = empty;
-  if (resolution === "archive") output = { ...final, delete: [{ id: `K${e}`, because: [`F${f}`] }] };
+  if (resolution === "archive") output = { ...final, operations: [...final.operations, { op: "archive", id: `K${e}`, because: [`F${f}`] }] };
   const before = memory.trace(`K${e}`); queue(candidate, output);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toHaveLength(["ack", "wrong ack", "archive"].includes(resolution) ? 1 : 0);
-  expect(memory.store.getKnowledge(e)?.currentRevision).toBe(["edit", "merge", "archive"].includes(resolution) ? 2 : 1);
+  expect(result.unansweredNear).toHaveLength(["unchanged", "archive"].includes(resolution) ? 1 : 0);
+  expect(memory.store.getKnowledge(e)?.currentRevision).toBe(["update", "merge", "archive"].includes(resolution) ? 2 : 1);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(f);
   expect(calls).toHaveLength(2);
 });
 
-test("NEAR covers new, edit and merge text, excludes each target, and uses threshold on character bigram sets", async () => {
+test("NEAR covers create, update and merge text, excludes each target, and uses threshold on character bigram sets", async () => {
   const f = fact(), a = knowledge([f]), b = knowledge([f]), c = knowledge([f], { text: memories.observation });
   const op = { text: memories.knowledge, scope: "project", category: "mechanism", supports: [`F${f}`], because: [] };
-  const output = { ...newOutput(f), edit: [{ ...op, id: `K${a}` }], merge: [{ ...op, into: `K${b}`, absorb: [`K${c}`] }] };
+  const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", ...op, id: `K${a}` }, { op: "merge", ...op, id: `K${b}`, absorb: [`K${c}`] }] };
   queue(output, output); const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
   const feedback = calls[1]!.input.split("CLOSER:")[0]!;
   expect(feedback).toContain(`$e1 -> K${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b} (Jaccard 1)`);
@@ -188,7 +186,7 @@ test("NEAR covers new, edit and merge text, excludes each target, and uses thres
   expect(feedback).not.toContain(`K${a} -> K${a}`); expect(feedback).not.toContain(`K${b} -> K${b}`);
   expect(feedback).not.toContain(`-> K${c}`);
   memory.close(); open({ integration: { nearThreshold: 1, subagentModeDefault: false } });
-  fact(); queue(newOutput(f, memories.base), empty); await integration();
+  fact(); queue(createOutput(f, memories.base), empty); await integration();
   expect(calls[3]!.input).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("branch");
 });
 
@@ -199,7 +197,7 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
       if (bad === "failure" || bad === "cancelled") return { ...success(empty, input), outcome: bad, output: "stopped" };
       if (bad === "missing request") return { outcome: "success", output: "{}" };
-      return { ...success(empty, input), output: bad === "json" ? "{" : { new: [{ handle: "$e1", category: "invalid" }] } };
+      return { ...success(empty, input), output: bad === "json" ? "{" : { operations: [{ op: "create", category: "invalid", because: [] }], skipped: [] } };
     });
     const result = await integration();
     if (!("problems" in result)) throw new Error("expected failure");
@@ -211,7 +209,7 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
     expect(run.outcome).toBe(expected);
     expect(JSON.parse(run.response!).problems).toEqual(result.problems);
     audit(result.runId, round === "final" ? 1 : 0, run.outcome as RunAgentResult["outcome"]);
-    if (round === "final") expect(JSON.parse(run.response!).candidate).toEqual(memoryBatch(success(empty, calls[0]!).output));
+    if (round === "final") expect(JSON.parse(run.response!).candidate).toEqual(success(empty, calls[0]!).output);
     expect(memory.store.getRun(result.runId + 1)).toBeNull();
     expect(calls).toHaveLength(round === "final" ? 2 : 1);
     expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
@@ -267,19 +265,18 @@ test("bigram Jaccard has a known nontrivial score and an inclusive configurable 
   // The two fixture strings share eight bigrams; their union has twelve.
   // The longer fact inserts three bigrams and replaces one shared boundary.
   memory.close(); open({ integration: { nearThreshold: 2 / 3 } });
-  queue(newOutput(f, memories.base), newOutput(f, memories.base));
+  queue(createOutput(f, memories.base), createOutput(f, memories.base));
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 2 / 3 }]);
   memory.close(); open({ integration: { nearThreshold: 2 / 3 + 0.001 } });
-  fact(); queue(newOutput(f, memories.base), empty); await integration();
+  fact(); queue(createOutput(f, memories.base), empty); await integration();
   expect(calls[3]!.input).not.toContain(`-> K${e} (`);
 });
 
-const editOutput = (id: number, support: number) => ({ ...empty, edit: [{ id: `K${id}`, text: memories.editedKnowledge,
-  category: "mechanism", scope: "project", supports: [`F${support}`], because: [`F${support}`] }] });
-const decline = (...ids: number[]) => ids.map((id) => ({ id: `F${id}`, because: "Not durable." }));
+const updateOutput = (id: number, support: number) => ({ ...empty, operations: [{ op: "update", id: `K${id}`, text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${support}`], because: [`F${support}`] }] });
+const decline = (...ids: number[]) => ids.map((id) => ({ fact: `F${id}`, because: "Not durable." }));
 
-test("accounting bounces for user facts and agent questions, then accepts explicit not_admitted", async () => {
+test("accounting diagnoses uncited user facts and agent questions, then accepts explicit skipped facts", async () => {
   const user = fact(), question = fact(memories.base, { actor: "agent", category: "question" });
   fact(memories.observation, { actor: "agent" });
   const output = { ...empty }; queue(output, output);
@@ -288,30 +285,30 @@ test("accounting bounces for user facts and agent questions, then accepts explic
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${user}`, `F${question}`] });
   expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
   expect(memory.store.listVisibleKnowledge(sessionId, projectId)).toEqual([]);
-  const later = fact(); queue(output, { ...output, not_admitted: decline(later) });
+  const later = fact(); queue(output, { ...output, skipped: decline(later) });
   const skipped = await integration();
   if (skipped.outcome !== "success") throw new Error("expected success");
   expect(skipped.diagnostics).toEqual([]);
 });
 
-for (const operation of ["edit", "delete", "merge"] as const) test(`accounting evaluates supports after ${operation}`, async () => {
+for (const operation of ["update", "archive", "merge"] as const) test(`accounting evaluates supports after ${operation}`, async () => {
   const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([f]), survivor = knowledge([other]);
-  const output = operation === "edit" ? editOutput(e, other) : operation === "delete"
-    ? { ...empty, delete: [{ id: `K${e}`, because: [`F${other}`] }] }
-    : { ...empty, merge: [{ ...editOutput(survivor, other).edit[0], into: `K${survivor}`, absorb: [`K${e}`] }] };
+  const output = operation === "update" ? updateOutput(e, other) : operation === "archive"
+    ? { ...empty, operations: [{ op: "archive", id: `K${e}`, because: [`F${other}`] }] }
+    : { ...empty, operations: [{ ...updateOutput(survivor, other).operations[0], op: "merge", id: `K${survivor}`, absorb: [`K${e}`] }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
-  expect(memory.store.getKnowledge(e)?.status).toBe(operation === "delete" ? "archived" : operation === "merge" ? "merged" : "active");
+  expect(memory.store.getKnowledge(e)?.status).toBe(operation === "archive" ? "archived" : operation === "merge" ? "merged" : "active");
 });
 
-test("a conflict rejects only its operation and records actual lost citations with the watermark", async () => {
+test("a target that moved on bounces the whole batch, audits the rejection and preserves the watermark", async () => {
   const old = fact(), e = knowledge([old]); watermark(old);
   const lost = fact(), kept = fact(memories.observation);
-  const output = { ...newOutput(kept), edit: editOutput(e, lost).edit };
+  const output = { ...empty, operations: [...createOutput(kept).operations, ...updateOutput(e, lost).operations.map(op => ({ ...op, supports: [`F${lost}`, `F${kept}`] }))] };
   queue(output); const resolve = deferred(), pending = integration();
   await new Promise((r) => setTimeout(r, 0));
-  memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "edit", knowledgeId: e,
+  memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "update", knowledgeId: e,
     expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
   resolve(output); const result = await pending;
   if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
@@ -320,12 +317,12 @@ test("a conflict rejects only its operation and records actual lost citations wi
   expect(audit(result.runId, 1, "bounced").toolCalls.at(-1).result).toContain("rejected:");
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
   expect(memory.trace(`F${lost}`)).toContain(memories.base);
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });
 
 test("merge records survivor revision, absorbed links, and trace history", async () => {
   const a = fact(), b = fact(memories.observation), survivor = knowledge([a]), absorbed = knowledge([b]);
-  const output = { ...empty, merge: [{ into: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge,
-    category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`], because: [`F${b}`] }] };
+  const output = { ...empty, operations: [{ op: "merge", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`], because: [`F${b}`] }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, rev: 2 }]);
@@ -338,12 +335,12 @@ test("merge records survivor revision, absorbed links, and trace history", async
 
 test("numbers, token overage and unanswered NEAR are diagnostics, never gates", async () => {
   const f = fact("Measured 12 samples.", { quote: "Confirmed 42." }); knowledge([f], { text: "Measured 12 samples." });
-  const output = newOutput(f, "Measured 12 samples. 42 2 999 " + "x".repeat(801));
-  queue(newOutput(f, "Measured 12 samples."), output); const result = await integration();
+  const output = createOutput(f, "Measured 12 samples. 42 2 999 " + "x".repeat(801));
+  queue(createOutput(f, "Measured 12 samples."), output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.committed).toHaveLength(1); expect(result.rejected).toEqual([]);
+  expect(result.committed).toHaveLength(1);
   expect(result.diagnostics).toContainEqual({ kind: "unsupported_numbers", knowledge: "$e1", numbers: ["2", "999"] });
-  expect(result.diagnostics).toContainEqual({ kind: "over_200_tokens", knowledge: "$e1", tokens: Math.ceil(output.new[0]!.text.length / 4) });
+  expect(result.diagnostics).toContainEqual({ kind: "over_200_tokens", knowledge: "$e1", tokens: Math.ceil(output.operations[0]!.text.length / 4) });
   expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: result.unansweredNear });
   expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
 });
@@ -352,14 +349,14 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
   const f = fact(), e = knowledge([f]);
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
   const foreign = fact(memories.base, { sessionId: session(foreignProject) });
-  queue(newOutput(f)); const resolve = deferred(), pending = integration();
+  queue(createOutput(f)); const resolve = deferred(), pending = integration();
   await new Promise((r) => setTimeout(r, 0));
   const late = fact(), unread = knowledge([late]);
-  const output = bad === "unread knowledge" ? editOutput(unread, f)
-    : bad === "duplicate target" ? { ...editOutput(e, f), delete: [{ id: `K${e}`, because: [] }] }
-    : bad === "empty merge" ? { ...empty, merge: [{ ...editOutput(e, f).edit[0], into: `K${e}`, absorb: [] }] }
-    : bad === "duplicate handle" ? { operations: [{ ...memoryBatch(newOutput(f)).operations[0], handle: "$e1" }], skipped: [] }
-    : newOutput(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign : late);
+  const output = bad === "unread knowledge" ? updateOutput(unread, f)
+    : bad === "duplicate target" ? { ...empty, operations: [...updateOutput(e, f).operations, { op: "archive", id: `K${e}`, because: [] }] }
+    : bad === "empty merge" ? { ...empty, operations: [{ ...updateOutput(e, f).operations[0], op: "merge", id: `K${e}`, absorb: [] }] }
+    : bad === "duplicate handle" ? { operations: [{ ...createOutput(f).operations[0], handle: "$e1" }], skipped: [] }
+    : createOutput(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign : late);
   resolve(output); const result = await pending;
   expect(result.outcome).toBe("bounced");
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
@@ -369,12 +366,12 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
 test("each session settles only its own branch facts and shares already-settled context", async () => {
   const first = fact(), secondSession = session();
   const second = fact(memories.observation, { sessionId: secondSession, branch: "fork" });
-  queue(newOutput(second), newOutput(second));
+  queue(createOutput(second), createOutput(second));
   const other = await memory.integrate({ sessionId: secondSession, branch: "fork" });
   if (other.outcome !== "success") throw new Error("expected success");
   expect(other.range.facts.map((f) => f.id)).toEqual([second]);
   expect(calls[0]!.input).not.toContain(`[F${first}]`);
-  queue(newOutput(first), newOutput(first));
+  queue(createOutput(first), createOutput(first));
   const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
@@ -384,14 +381,14 @@ test("each session settles only its own branch facts and shares already-settled 
   expect(await integration()).toEqual({ outcome: "empty" });
   const fork = fact(memories.interpretation, { branch: "fork" });
   expect(await integration()).toEqual({ outcome: "empty" });
-  queue(newOutput(fork), newOutput(fork));
+  queue(createOutput(fork), createOutput(fork));
   const forkResult = await integration("fork");
   if (forkResult.outcome !== "success") throw new Error("expected success");
   expect(forkResult.range.facts.map((f) => f.id)).toEqual([fork]);
 });
 
 test("integration revisions and success record roll back if watermark writing fails", async () => {
-  const f = fact(), output = newOutput(f); queue(output, output);
+  const f = fact(), output = createOutput(f); queue(output, output);
   const original = memory.store.setWatermark;
   memory.store.setWatermark = () => { throw new Error("watermark write failed"); };
   try {
@@ -408,7 +405,7 @@ test("simulation v7m fixture integrates through the facade with traceable Chines
   const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/integration.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
   for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, source: source.source, createdAt: source.timestamp }));
-  const output = { ...empty, new: [{ ...fixture.knowledge, supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };
+  const output = { ...empty, operations: [{ op: "create", ...fixture.knowledge, supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`), because: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.committed).toHaveLength(1);
@@ -416,9 +413,9 @@ test("simulation v7m fixture integrates through the facade with traceable Chines
   for (const source of fixture.facts) expect(memory.trace(`F${ids.get(source.id)}`)).toContain(source.text);
 });
 
-test("conflict diagnostics exclude citations retained by another committed knowledge", async () => {
+test("an archived target bounces the whole batch and preserves the watermark and audit", async () => {
   const old = fact(), e = knowledge([old]); watermark(old); const f = fact();
-  const output = { ...newOutput(f), edit: editOutput(e, f).edit };
+  const output = { ...empty, operations: [...createOutput(f).operations, ...updateOutput(e, f).operations] };
   queue(output); const resolve = deferred(), pending = integration();
   await new Promise((r) => setTimeout(r, 0));
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "archive", knowledgeId: e,
@@ -434,12 +431,12 @@ test("conflict diagnostics exclude citations retained by another committed knowl
 
 test("because addresses are resolved but do not satisfy accounting", async () => {
   const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([other]);
-  const output = { ...empty, edit: [{ ...editOutput(e, other).edit[0], because: [`F${f}`] }] };
+  const output = { ...empty, operations: [{ op: "update", ...updateOutput(e, other).operations[0], because: [`F${f}`] }] };
   queue(output, output); const first = await integration();
   if (first.outcome !== "success") throw new Error("expected diagnostic success");
   expect(first.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
   fact();
-  queue(output, { ...output, edit: [{ ...output.edit[0], because: ["F999999"] }] });
+  queue(output, { ...output, operations: [{ op: "update", ...output.operations[0], because: ["F999999"] }] });
   const bad = await integration();
   if (bad.outcome !== "bounced") throw new Error("expected bounce");
   expect(bad.problems.join(" ")).toContain("F999999");
@@ -449,20 +446,20 @@ test("a different project can integration while this project is in flight", asyn
   const f = fact(), resolve = deferred(), pending = integration();
   const project = memory.store.createProject({ name: "independent", declaredBy: "mark" }).id, owner = session(project);
   const other = fact(memories.observation, { sessionId: owner });
-  queue(newOutput(other), newOutput(other));
+  queue(createOutput(other), createOutput(other));
   expect((await memory.integrate({ sessionId: owner, branch: "main" })).outcome).toBe("success");
-  queue(newOutput(f)); resolve(newOutput(f)); expect((await pending).outcome).toBe("success");
+  queue(createOutput(f)); resolve(createOutput(f)); expect((await pending).outcome).toBe("success");
 });
 
 test("exactly 200 estimated tokens is accepted without a length diagnostic", async () => {
-  const f = fact(), output = newOutput(f, "x".repeat(800)); queue(output, output);
+  const f = fact(), output = createOutput(f, "x".repeat(800)); queue(output, output);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.diagnostics).toEqual([]);
 });
 
 test("narrowing another session's global knowledge cannot conceal an uncited fact", async () => {
   const f = fact(), e = knowledge([f], { scope: "global", sessionId: session() });
-  const output = { ...empty, edit: [{ ...editOutput(e, f).edit[0], scope: "session" }] };
+  const output = { ...empty, operations: [{ op: "update", ...updateOutput(e, f).operations[0], scope: "session" }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
@@ -473,30 +470,14 @@ test("same-project sessions commit independently while another session is pendin
   const first = fact(), otherSession = session();
   const second = fact(memories.observation, { sessionId: otherSession });
   const resolve = deferred(), pending = integration();
-  queue(newOutput(second), newOutput(second));
+  queue(createOutput(second), createOutput(second));
   const other = await memory.integrate({ sessionId: otherSession, branch: "main" });
   if (other.outcome !== "success") throw new Error("expected success");
   expect(other.range.facts.map((f) => f.id)).toEqual([second]);
-  queue(newOutput(first)); resolve(newOutput(first));
+  queue(createOutput(first)); resolve(createOutput(first));
   const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(first);
   expect(memory.store.getWatermark(otherSession, "main")?.lastIntegratedFact).toBe(second);
-});
-
-test("rejected supports still cited by a committed operation are not lost", async () => {
-  const old = fact(), e = knowledge([old]); watermark(old);
-  const current = fact(), output = { ...newOutput(current), edit: editOutput(e, current).edit };
-  queue(output); const resolve = deferred(), pending = integration();
-  await new Promise((r) => setTimeout(r, 0));
-  memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "edit", knowledgeId: e,
-    expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
-  resolve(output); const result = await pending;
-  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
-  expect(result.problems.join(" ")).toContain("target moved on or is inactive");
-  expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
-  // No operation commits; the entire batch remains available for a fresh run.
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });

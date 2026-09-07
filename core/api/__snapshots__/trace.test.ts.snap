@@ -5,14 +5,14 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
   supports: F7, F9, F10
   status: active
 Revisions:
-  K1@1 new integration@F50 because: none
-  K1@2 edit integration@F86 because: F10"
+  K1@1 create integration@F50 because: none
+  K1@2 update integration@F86 because: F10"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 2`] = `
 "[K1@1] [reference/project] mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。
   supports: F7, F9
-  K1@1 new integration@F50 because: none"
+  K1@1 create integration@F50 because: none"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 3`] = `
@@ -21,7 +21,7 @@ exports[`simulation knowledge and strong negation goldens preserve Chinese memor
   supports added: F10
   supports removed: none
 Revisions:
-  K1@2 edit integration@F86 because: F10"
+  K1@2 update integration@F86 because: F10"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 4`] = `

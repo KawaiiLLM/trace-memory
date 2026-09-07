@@ -40,7 +40,7 @@ export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 export const KNOWLEDGE_STATUSES = ["active", "merged", "archived"] as const;
 export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
 
-export const KNOWLEDGE_OPS = ["new", "edit", "merge", "archive"] as const;
+export const KNOWLEDGE_OPS = ["create", "update", "merge", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
 
 export const RUN_KINDS = ["recording", "integration", "manual"] as const;

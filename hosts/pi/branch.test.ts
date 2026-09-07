@@ -236,22 +236,6 @@ test("integration branch mode without a capture falls back to subagent for both 
   expect(h.notices.filter(n => n.includes("integration fell back"))).toHaveLength(1);
 });
 
-test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s replays an assistant reply in pi-ai's native shape before the feedback message", api => {
-  const body: branch.Body = api === "openai-responses" ? { instructions: "system", input: payload().messages, tools: [] }
-    : { system: "system", messages: payload().messages, tools: [] };
-  const appended: branch.Appended[] = [{ role: "assistant", text: "candidate" }, { role: "user", text: "feedback" }];
-  const request = branch.buildRequest(body, api, appended);
-  const messages = request[branch.messageKey(api)] as branch.Body[];
-  expect(messages).toHaveLength(payload().messages.length + 2);
-  expect(messages.at(-2)).toEqual(api === "openai-responses"
-    ? { type: "message", role: "assistant", content: [{ type: "output_text", text: "candidate", annotations: [] }], status: "completed", id: "msg_pi_branch" }
-    : api === "anthropic-messages" ? { role: "assistant", content: [{ type: "text", text: "candidate" }] } : { role: "assistant", content: "candidate" });
-  expect(branch.verifyRequest(body, request, api, appended).passed).toBe(true);
-  expect(branch.verifyRequest(body, request, api, [appended[1]!]).passed).toBe(false); // The replay is part of the audit.
-  (messages.at(-2) as { content: unknown }).content = "tampered";
-  expect(branch.verifyRequest(body, request, api, appended).differingPath).toContain(".append");
-});
-
 test("capture with the four tools, run, verification passed, tools unchanged", async () => {
   const h = await setup();
   const { toolDefinitions } = await import("../../core/api/index.ts");

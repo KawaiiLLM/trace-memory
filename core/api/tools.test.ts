@@ -146,7 +146,7 @@ test("bound knowledge reads include global/project/own-session history and exclu
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
     note.execute({ facts: [fact(`T${sessionId}#user`)] });
     memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: "now" }, operations:
-      (["global", "project", "session"] as const).map((scope, i) => ({ op: "new" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
+      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
   for (const id of [1, 2, 3, 4, 5, 7]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@1]`);

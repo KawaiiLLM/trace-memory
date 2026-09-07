@@ -9,7 +9,7 @@ import { freezeRecording, runRecording, type RecordInput, type RecordResult } fr
 import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens } from "../render/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
-import { openStore, type Store } from "../store/index.ts";
+import { Store } from "../store/index.ts";
 
 import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
 export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
@@ -120,7 +120,7 @@ export interface TraceMemory {
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
-  const store = openStore(dbPath);
+  const store = new Store(dbPath);
   const cfg = mergeConfig(DEFAULT_CONFIG, config);
 
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);

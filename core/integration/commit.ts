@@ -55,9 +55,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
     const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: op === "archive" ? [] : facts(value.supports, errors, true), because, createdAt: run.createdAt };
-    if (!errors.length) operations.push(op === "create" ? { op: "new", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
+    if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoExpectedRevision: dest!.expectedRevision, absorb, ...content }
-      : op === "archive" ? { op: "archive", ...dest!, because, createdAt: run.createdAt } : { op: "edit", ...dest!, ...content });
+      : op === "archive" ? { op: "archive", ...dest!, because, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
   const declined = new Set<number>();
@@ -76,7 +76,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const diagnostics: IntegrationDiagnostic[] = [];
   for (const op of operations) {
     if (op.op === "archive") continue;
-    const label = op.op === "new" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
+    const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
     const cited = new Set(op.supports.flatMap(id => numbers(`${evidence.get(id)!.text}\n${evidence.get(id)!.quote ?? ""}`)));
     const unsupported = [...new Set(numbers(op.text))].filter(n => !cited.has(n));
     if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: label, numbers: unsupported });

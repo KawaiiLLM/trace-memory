@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 export type Body = Record<string, unknown>;
-/** A message appended after the verified prefix: the recording or integration instruction, or a replayed candidate reply. */
-export type Appended = { role: "user" | "assistant"; text: string };
+/** A message appended after the verified prefix: the recording or integration instruction. */
+export type Appended = { role: "user"; text: string };
 export const snapshot = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 // Sort object keys only. Array order, strings, whitespace and Unicode stay exact.
 export function serialize(value: unknown): string {
@@ -19,10 +19,7 @@ export function messageKey(api: string): "messages" | "input" {
 }
 // Native message shapes copied from pi-ai's adapters (openai-responses-shared, anthropic-messages, openai-completions).
 function providerMessage(api: string, message: Appended): Body {
-  if (responsesApi(api)) return message.role === "user"
-    ? { role: "user", content: [{ type: "input_text", text: message.text }] }
-    : { type: "message", role: "assistant", content: [{ type: "output_text", text: message.text, annotations: [] }], status: "completed", id: "msg_pi_branch" };
-  if (api === "anthropic-messages" && message.role === "assistant") return { role: "assistant", content: [{ type: "text", text: message.text }] };
+  if (responsesApi(api)) return { role: "user", content: [{ type: "input_text", text: message.text }] };
   return { role: message.role, content: message.text };
 }
 const list = (appended: string | Appended[]): Appended[] => typeof appended === "string" ? [{ role: "user", text: appended }] : appended;

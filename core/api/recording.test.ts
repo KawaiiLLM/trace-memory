@@ -172,14 +172,14 @@ test("empty output recordings the range; compactions cannot acquire facts", asyn
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await recording(first.id);
   const created = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [
-    { op: "new", handle: "$e1", author: "fake", category: "mechanism", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
+    { op: "create", handle: "$e1", author: "fake", category: "mechanism", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = recording(second.id);
   expect(calls[1]!.readKnowledgeRevisions).toEqual([{ knowledgeId: 1, rev: 1 }]);
   expect(calls[1]!.input).toContain("[K1@1]");
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [
-    { op: "edit", knowledgeId: 1, expectedRevision: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
+    { op: "update", knowledgeId: 1, expectedRevision: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
   ] });
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
@@ -261,7 +261,7 @@ test("knowledge budgets keep protected categories and omit whole later categorie
   const first = turn(); script.push(async () => success([batch(first.id)])); await recording(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
-    op: "new" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
+    op: "create" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
   memory.close(); open({ render: { knowledgeBlockTokens: 0 } });
   const second = turn(first.id, 1); script.push(async () => success([])); await recording(second.id);

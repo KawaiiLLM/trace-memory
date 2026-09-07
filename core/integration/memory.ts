@@ -11,7 +11,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
   let requests = 0, candidateRequest = -1;
-  let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; rejected: import("../store/index.ts").RejectedKnowledgeOp[]; diagnostics: import("./commit.ts").IntegrationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
+  let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").IntegrationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
   const execute = (input: unknown) => {
@@ -32,7 +32,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     const diagnostics = prepared.diagnostics;
     if (unansweredNear.length) diagnostics.push({ kind: "unanswered_near", pairs: unansweredNear });
     const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results, committed: items, diagnostics });
-    const result = store.commitIntegrationRun({ run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations, atomic: true,
+    const result = store.commitIntegrationRun({ run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
       ...(review ? { watermark: { sessionId, branch: run.branch!, lastIntegratedFact: review.frozen.rangeFacts.at(-1)!.id } } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts));

@@ -26,9 +26,9 @@ function recording(sessionId: number, turnId: number, text = fixture.base, branc
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time) {
   const result = memory.store.commitIntegrationRun({ run: { sessionId, branch: "main", kind: "integration", createdAt: time },
-    operations: [{ op: "new", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
+    operations: [{ op: "create", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
     watermark: { sessionId, branch: "main", lastIntegratedFact: factId } });
-  if (!result.ok || result.rejected.length) throw new Error(JSON.stringify(result));
+  if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
 }
 function populated() {
@@ -137,7 +137,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
   const edit = memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
-    op: "edit", knowledgeId: e, expectedRevision: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
+    op: "update", knowledgeId: e, expectedRevision: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
@@ -155,7 +155,7 @@ test("FTS searches facts and historical knowledge, while raw LIKE searches only 
   const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@1]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(2);
   memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
-    op: "edit", knowledgeId: e, expectedRevision: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
+    op: "update", knowledgeId: e, expectedRevision: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@1]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");

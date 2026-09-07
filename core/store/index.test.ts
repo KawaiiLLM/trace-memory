@@ -4,9 +4,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory } from "../api/index.ts";
-type Store = TraceMemory["store"];
-const openStore = (path: string) => TraceMemory(path, async () => ({ outcome: "success", output: "", request: {} })).store;
+import { Store } from "./index.ts";
 
 let dir: string;
 let dbPath: string;
@@ -15,7 +13,7 @@ let store: Store;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-store-"));
   dbPath = join(dir, "test.sqlite");
-  store = openStore(dbPath);
+  store = new Store(dbPath);
 });
 
 afterEach(() => {
@@ -29,9 +27,9 @@ function makeSession(projectId: number, host = "test-host") {
 
 describe("schema", () => {
   test("creates all tables without error and is reopenable", () => {
-    // openStore already ran the schema in beforeEach; reopening the same file must not fail
+    // Store already ran the schema in beforeEach; reopening the same file must not fail
     // (CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / CREATE VIRTUAL TABLE IF NOT EXISTS).
-    const again = openStore(dbPath);
+    const again = new Store(dbPath);
     const tables = again.db
       .prepare("SELECT name FROM sqlite_master WHERE type IN ('table','index') ORDER BY name")
       .all() as { name: string }[];
@@ -201,7 +199,7 @@ describe("commitRecordingRun: local handle resolution", () => {
 });
 
 describe("commitIntegrationRun: revision conflicts", () => {
-  test("rejects an edit against a stale expected revision while committing the rest", () => {
+  test("a stale expected revision rolls back the whole batch and records failure", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
@@ -217,7 +215,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
-          op: "new",
+          op: "create",
           handle: "$e1",
           author: "integration",
           text: "The project uses pnpm.",
@@ -237,7 +235,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z" },
       operations: [
         {
-          op: "edit",
+          op: "update",
           knowledgeId,
           expectedRevision: 1,
           text: "The project uses pnpm exclusively.",
@@ -252,14 +250,23 @@ describe("commitIntegrationRun: revision conflicts", () => {
     expect(round2.ok).toBe(true);
     if (!round2.ok) return;
     expect(round2.committed).toHaveLength(1);
-    expect(round2.rejected).toHaveLength(0);
 
-    // ...but a second edit that still expects revision 1 (stale) is rejected, alongside one that commits
+    // A stale update rejects the whole batch, including earlier writes.
     const round3 = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:03:00Z" },
       operations: [
         {
-          op: "edit",
+          op: "create",
+          handle: "$e2",
+          author: "integration",
+          text: "A second, unrelated knowledge.",
+          category: "reference",
+          scope: "project",
+          supports: [factId],
+          createdAt: "2026-01-01T00:03:00Z",
+        },
+        {
+          op: "update",
           knowledgeId,
           expectedRevision: 1, // stale: the knowledge is now at revision 2
           text: "A conflicting edit.",
@@ -269,24 +276,13 @@ describe("commitIntegrationRun: revision conflicts", () => {
           because: [factId],
           createdAt: "2026-01-01T00:03:00Z",
         },
-        {
-          op: "new",
-          handle: "$e2",
-          author: "integration",
-          text: "A second, unrelated knowledge.",
-          category: "reference",
-          scope: "project",
-          supports: [factId],
-          createdAt: "2026-01-01T00:03:00Z",
-        },
       ],
     });
-    expect(round3.ok).toBe(true);
-    if (!round3.ok) return;
-    expect(round3.rejected).toHaveLength(1);
-    expect(round3.rejected[0]!.reason).toMatch(/moved/);
-    expect(round3.committed).toHaveLength(1);
-    expect(round3.committed[0]!.op).toBe("new");
+    expect(round3.ok).toBe(false);
+    if (round3.ok) return;
+    expect(round3.problems.join(" ")).toMatch(/moved/);
+    expect(store.getKnowledge(knowledgeId + 1)).toBeNull();
+    expect(store.getRun(round3.runId)?.outcome).toBe("failure");
 
     // the knowledge itself still holds the round-2 text, untouched by the rejected round-3 edit
     const finalKnowledge = store.getKnowledgeWithRevision(knowledgeId)!;
@@ -311,7 +307,7 @@ describe("project merge", () => {
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
-          op: "new",
+          op: "create",
           handle: "$e1",
           author: "integration",
           text: "The project uses pnpm.",
@@ -355,7 +351,7 @@ describe("visibility rule", () => {
       const r = store.commitIntegrationRun({
         run: { kind: "integration", sessionId, createdAt: "2026-01-01T00:01:00Z" },
         operations: [
-          { op: "new", handle: "$e1", author: "integration", text, category: "term", scope, supports: [factId], createdAt: "2026-01-01T00:01:00Z" },
+          { op: "create", handle: "$e1", author: "integration", text, category: "term", scope, supports: [factId], createdAt: "2026-01-01T00:01:00Z" },
         ],
       });
       if (!r.ok) throw new Error("setup failed");
@@ -392,7 +388,7 @@ describe("marks and pending deliveries", () => {
     const integrated = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
-        { op: "new", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
+        { op: "create", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
       ],
     });
     if (!integrated.ok) throw new Error("setup failed");
@@ -432,7 +428,7 @@ describe("full-text index", () => {
       run: { kind: "integration", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
-          op: "new",
+          op: "create",
           handle: "$e1",
           author: "integration",
           text: "Integration is triggered by an unintegrated-fact watermark.",
@@ -474,18 +470,18 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const { p, s, factId } = seed();
     const made = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "new", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: integrationAt }],
+      operations: [{ op: "create", handle: "$e1", author: "integration", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: integrationAt }],
     });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.getKnowledge(id)!.projectId).toBeNull();
     const edited = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "edit", knowledgeId: id, expectedRevision: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
+      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
     });
     expect(edited.ok).toBe(true);
     store.close();
-    store = openStore(dbPath);
+    store = new Store(dbPath);
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     expect(store.listVisibleKnowledge(s.id, p.id).map((e) => e.knowledge.id)).toContain(id);
   });
@@ -495,24 +491,24 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const mk = (text: string) =>
       store.commitIntegrationRun({
         run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-        operations: [{ op: "new", handle: "$e1", author: "integration", text, category: "term", scope: "project", supports: [factId], createdAt: integrationAt }],
+        operations: [{ op: "create", handle: "$e1", author: "integration", text, category: "term", scope: "project", supports: [factId], createdAt: integrationAt }],
       });
     const a = mk("A");
     const b = mk("B");
     if (!a.ok || !b.ok) throw new Error("setup failed");
     const aId = a.committed[0]!.knowledgeId;
     const bId = b.committed[0]!.knowledgeId;
-    const merged = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [
-        { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: aId, expectedRevision: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
-        { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: bId, expectedRevision: 1 }, { knowledgeId: bId, expectedRevision: 1 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
-      ],
-    });
+    const run = { kind: "integration" as const, sessionId: s.id, createdAt: integrationAt };
+    const rejected = store.commitIntegrationRun({ run, operations: [
+      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: aId, expectedRevision: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+    ] });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) return;
+    expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
+    const merged = store.commitIntegrationRun({ run, operations: [
+      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: bId, expectedRevision: 1 }, { knowledgeId: bId, expectedRevision: 1 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+    ] });
     expect(merged.ok).toBe(true);
-    if (!merged.ok) return;
-    expect(merged.rejected).toHaveLength(1);
-    expect(merged.rejected[0]!.reason).toContain("cannot absorb itself");
     expect(store.getKnowledge(aId)!.status).toBe("active");
     expect(store.getKnowledge(bId)!.status).toBe("merged");
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 1 });
@@ -564,39 +560,44 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("cited facts must exist and supports must not be empty; marks bind to an existing revision", () => {
     const { s, factId } = seed();
-    const r = store.commitIntegrationRun({
-      run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [
-        { op: "new", handle: "$e1", author: "integration", text: "dangling", category: "term", scope: "project", supports: [999999], createdAt: integrationAt },
-        { op: "new", handle: "$e2", author: "integration", text: "empty", category: "term", scope: "project", supports: [], createdAt: integrationAt },
-        { op: "new", handle: "$e3", author: "integration", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
-      ],
-    });
+    const run = { kind: "integration" as const, sessionId: s.id, createdAt: integrationAt };
+    for (const [supports, problem] of [[ [999999], "F999999 does not exist" ], [ [], "must not be empty" ]] as const) {
+      const r = store.commitIntegrationRun({ run, operations: [
+        { op: "create", handle: "$e1", author: "integration", text: "invalid", category: "term", scope: "project", supports: [...supports], createdAt: integrationAt },
+      ] });
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.problems.join(" ")).toContain(problem);
+    }
+    const r = store.commitIntegrationRun({ run, operations: [
+      { op: "create", handle: "$e3", author: "integration", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
+    ] });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.rejected.map((x) => x.reason)).toEqual([expect.stringContaining("F999999 does not exist"), expect.stringContaining("must not be empty")]);
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
       operations: [{ op: "archive", knowledgeId: id, expectedRevision: 1, because: [999998], createdAt: integrationAt }],
     });
-    expect(archive.ok && archive.rejected).toHaveLength(1);
+    expect(archive.ok).toBe(false);
+    expect(store.getKnowledge(id)?.status).toBe("active");
     expect(() => store.addKnowledgeMark(id, 999, "verified", integrationAt)).toThrow("no revision 999");
     expect(store.addKnowledgeMark(id, 1, "verified", integrationAt).rev).toBe(1);
   });
 
-  test("an integration commit advances lastIntegratedFact in the same transaction, even with a rejected operation", () => {
+  test("an integration rejection rolls back knowledge and lastIntegratedFact; a foreign watermark is rejected", () => {
     const { s, factId } = seed();
     const r = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
       operations: [
-        { op: "new", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
-        { op: "edit", knowledgeId: 424242, expectedRevision: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+        { op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
+        { op: "update", knowledgeId: 424242, expectedRevision: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
       ],
       watermark: { sessionId: s.id, branch: "main", lastIntegratedFact: factId },
     });
-    expect(r.ok && r.rejected.length).toBe(1);
-    expect(store.getWatermark(s.id, "main")?.lastIntegratedFact).toBe(factId);
+    expect(r.ok).toBe(false);
+    expect(store.listVisibleKnowledge(s.id, store.getSession(s.id)!.projectId)).toEqual([]);
+    expect(store.getWatermark(s.id, "main")?.lastIntegratedFact ?? null).toBeNull();
     const foreign = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
       operations: [],

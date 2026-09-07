@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   category TEXT NOT NULL CHECK (category IN ('constraint','open','dispute','goal','mechanism','term','reference')),
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
   supports TEXT NOT NULL,
-  op TEXT NOT NULL CHECK (op IN ('new','edit','merge','archive')),
+  op TEXT NOT NULL CHECK (op IN ('create','update','merge','archive')),
   because TEXT,
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL
@@ -255,7 +255,7 @@ export type CommitRecordingResult =
 
 export type KnowledgeOperationInput =
   | {
-      op: "new";
+      op: "create";
       handle: string; // system-generated candidate label
       because?: number[];
       author: string;
@@ -266,7 +266,7 @@ export type KnowledgeOperationInput =
       createdAt: string;
     }
   | {
-      op: "edit";
+      op: "update";
       knowledgeId: number;
       expectedRevision: number;
       text: string;
@@ -299,9 +299,8 @@ export type KnowledgeOperationInput =
 export interface CommitIntegrationRunInput {
   run: RunInput; // sessionId required: knowledge ownership is derived from the run's session
   operations: KnowledgeOperationInput[];
-  atomic?: boolean;
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
-  finalizeResponse?: (result: { committed: CommittedKnowledgeOp[]; rejected: RejectedKnowledgeOp[] }) => string;
+  finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
   watermark?: { sessionId: number; branch: string; lastIntegratedFact: number };
 }
 
@@ -312,13 +311,8 @@ export interface CommittedKnowledgeOp {
   rev: number;
 }
 
-export interface RejectedKnowledgeOp {
-  op: KnowledgeOperationInput;
-  reason: string;
-}
-
 export type CommitIntegrationResult =
-  | { ok: true; runId: number; committed: CommittedKnowledgeOp[]; rejected: RejectedKnowledgeOp[] }
+  | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
   | { ok: false; runId: number; problems: string[] };
 
 export interface KnowledgeWithRevision {
@@ -824,8 +818,7 @@ export class Store {
   /**
    * Commit one integration run: the run record and its knowledge operations as one transaction.
    * An operation whose expected revision no longer matches the knowledge's current revision
-   * (someone else moved it since the Integrator read it) is rejected and recorded; the rest
-   * of the batch still commits.
+   * (someone else moved it since the Integrator read it) rolls back the batch and records failure.
    */
   commitIntegrationRun(input: CommitIntegrationRunInput): CommitIntegrationResult {
     try {
@@ -837,24 +830,18 @@ export class Store {
         }
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
-        const rejected: RejectedKnowledgeOp[] = [];
         for (const op of input.operations) {
           const outcome = this.applyKnowledgeOperation(op, runId, projectId);
           if (outcome.ok) committed.push(outcome.value);
-          else {
-            if (input.atomic) throw new Error(outcome.reason);
-            rejected.push({ op, reason: outcome.reason });
-          }
+          else throw new Error(outcome.reason);
         }
-        // The frozen range is integrated even when some operations were rejected: the run record
-        // holds the rejections, and a later integration re-reads those knowledge at their new revisions.
         if (input.watermark) {
           this.setWatermark(sessionId, input.watermark.branch, undefined, input.watermark.lastIntegratedFact);
         }
         if (input.finalizeResponse) {
-          this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed, rejected }), runId);
+          this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
         }
-        return { runId, committed, rejected };
+        return { runId, committed };
       });
       return { ok: true, ...result };
     } catch (err) {
@@ -884,19 +871,19 @@ export class Store {
     // Ownership follows scope: a global knowledge belongs to no project; anything narrower belongs to the run's project.
     const owner = (scope: KnowledgeScope): number | null => (scope === "global" ? null : projectId);
 
-    if (op.op === "new") {
-      const bad = this.checkCitedFacts("new", op.supports, op.because ?? []);
+    if (op.op === "create") {
+      const bad = this.checkCitedFacts("create", op.supports, op.because ?? []);
       if (bad) return { ok: false, reason: bad };
       const info = this.db.prepare("INSERT INTO knowledge (project_id, status, author, current_revision) VALUES (?, 'active', ?, 1)").run(
         owner(op.scope),
         op.author,
       );
       const knowledgeId = Number(info.lastInsertRowid);
-      this.insertRevision(knowledgeId, 1, op.text, op.category, op.scope, op.supports, "new", op.because ?? null, runId, op.createdAt);
-      return { ok: true, value: { op: "new", handle: op.handle, knowledgeId, rev: 1 } };
+      this.insertRevision(knowledgeId, 1, op.text, op.category, op.scope, op.supports, "create", op.because ?? null, runId, op.createdAt);
+      return { ok: true, value: { op: "create", handle: op.handle, knowledgeId, rev: 1 } };
     }
 
-    if (op.op === "edit") {
+    if (op.op === "update") {
       const knowledge = this.getKnowledge(op.knowledgeId);
       if (!knowledge || knowledge.status !== "active" || knowledge.currentRevision !== op.expectedRevision) {
         return { ok: false, reason: this.conflictReason(op.knowledgeId, op.expectedRevision, knowledge) };
@@ -904,9 +891,9 @@ export class Store {
       const bad = this.checkCitedFacts(`edit K${op.knowledgeId}`, op.supports, op.because);
       if (bad) return { ok: false, reason: bad };
       const nextRev = knowledge.currentRevision + 1;
-      this.insertRevision(op.knowledgeId, nextRev, op.text, op.category, op.scope, op.supports, "edit", op.because, runId, op.createdAt);
+      this.insertRevision(op.knowledgeId, nextRev, op.text, op.category, op.scope, op.supports, "update", op.because, runId, op.createdAt);
       this.db.prepare("UPDATE knowledge SET current_revision = ?, project_id = ? WHERE id = ?").run(nextRev, owner(op.scope), op.knowledgeId);
-      return { ok: true, value: { op: "edit", knowledgeId: op.knowledgeId, rev: nextRev } };
+      return { ok: true, value: { op: "update", knowledgeId: op.knowledgeId, rev: nextRev } };
     }
 
     if (op.op === "merge") {
@@ -1134,8 +1121,4 @@ export class Store {
     this.db.prepare(`INSERT INTO watermarks (session_id, branch, last_recorded_turn, last_integrated_fact) VALUES (?, ?, ?, ?)
        ON CONFLICT (session_id, branch) DO UPDATE SET last_recorded_turn = excluded.last_recorded_turn, last_integrated_fact = excluded.last_integrated_fact`).run(sessionId, branch, lastRecordedTurn ?? existing?.lastRecordedTurn ?? null, lastIntegratedFact ?? existing?.lastIntegratedFact ?? null);
   }
-}
-
-export function openStore(path: string): Store {
-  return new Store(path);
 }
