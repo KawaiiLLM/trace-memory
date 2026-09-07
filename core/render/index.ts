@@ -4,7 +4,7 @@ import type { KnowledgeWithRevision } from "../store/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
 
 type Budgets = TraceMemoryConfig["render"];
-export interface TurnOptions { tool?: number; full?: boolean; cap?: number }
+export interface TurnOptions { tool?: number; full?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 // Token estimate (ruled, grilling Q12; no tokenizer dependency): 0.75 per CJK character, 0.25 per
@@ -48,10 +48,7 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
     const body: string[] = [];
     const field = (label: string, text: string, head: number, tail: number) => {
       if (!text) return;
-      const capHead = options.cap === undefined ? head : Math.floor(options.cap * head / (head + tail || 1));
-      const capTail = options.cap === undefined ? tail : options.cap - capHead;
-      const preview = options.full && options.cap === undefined ? text
-        : cut(text, capHead, capTail);
+      const preview = options.full ? text : cut(text, head, tail);
       if (preview !== text) omitted = true;
       body.push(`${label}:\n${preview}`);
     };
@@ -77,7 +74,7 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
     lines.push(`[T${turn.id}#t${call.ordinal}] tool=${call.name} status=${call.status} omitted=${omitted}`, ...body);
     if (omitted) {
       omittedCalls++;
-      receipts.push(`expand: T${turn.id} tool=${call.ordinal} full`);
+      receipts.push(`expand: trace({"address":"T${turn.id}","tool":${call.ordinal},"full":true})`);
     }
   }
   if (turn.assistantText !== null) lines.push(`[Source entry id: T${turn.id}#assistant]\n${turn.assistantText}`);
@@ -92,7 +89,7 @@ export function finish(rendered: Rendered): string {
 export function renderFact(fact: Fact, relations: FactRelation[]): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
-  return [`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.text}${edges.length ? ` · ${edges.join(" · ")}` : ""}`,
+  return [`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}${fact.text}${edges.length ? ` · ${edges.join(" · ")}` : ""}`,
     ...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
     `  source: ${fact.source.join(", ")}`].join("\n");
 }

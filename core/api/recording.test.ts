@@ -10,19 +10,23 @@ let directory: string;
 let memory: ReturnType<typeof TraceMemory>;
 let sessionId: number;
 let calls: RecordingAgentInput[];
-let script: ((input: RecordingAgentInput) => Promise<RunAgentResult>)[];
+type ScriptResult = RunAgentResult & { noteInput?: unknown };
+let script: ((input: RecordingAgentInput) => Promise<ScriptResult>)[];
 const time = "2026-08-16 02:54";
 const request = { system: "actual host system", messages: [{ role: "user", content: "actual provider input" }], tools: [] };
-const success = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request, usage: { tokens: 12 } });
-const fact = (extra = {}) => ({ category: "observation", actor: "agent", text: memories.base, timestamp: time, source: ["T1#assistant"], ...extra });
-const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts });
+const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: batches.length ? { facts: batches.flatMap((b) => b.facts) } : undefined, request, usage: { tokens: 12 } });
+const fact = (extra = {}) => ({ category: "observation", actor: "agent", text: memories.base, source: ["T1#assistant"], ...extra });
+const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#assistant" ? [`T${turnId}#assistant`] : f.source })) });
 function open(config: ConfigOverride = {}) {
   memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
     const input = raw as RecordingAgentInput;
     calls.push(input);
     const next = script.shift();
     if (!next) throw new Error("unexpected model call");
-    return next(input);
+    const result = await next(input);
+    if (result.request !== undefined) input.reportRequest(result.request);
+    if (result.noteInput !== undefined) input.tools.find((t) => t.name === "note")!.execute(result.noteInput);
+    return result;
   }, config);
 }
 beforeEach(() => {
@@ -39,8 +43,8 @@ function turn(parentTurnId: number | null = null, index = 0) {
 }
 const recording = (headTurnId: number, branch = "main") => memory.record({ sessionId, branch, headTurnId, model: "fake-model", mode: "subagent" });
 function deferred() {
-  let resolve!: (result: RunAgentResult) => void;
-  const promise = new Promise<RunAgentResult>((r) => { resolve = r; });
+  let resolve!: (result: ScriptResult) => void;
+  const promise = new Promise<ScriptResult>((r) => { resolve = r; });
   script.push(async () => promise);
   return resolve;
 }
@@ -84,7 +88,7 @@ test("switching branch while pending preserves the old delivery and excludes the
   expect(memory.store.getWatermark(sessionId, "old")?.lastRecordedTurn).toBe(old.id);
   expect(memory.store.getWatermark(sessionId, "new")?.lastRecordedTurn).toBe(sibling.id);
   expect(memory.store.listPendingDeliveries(sessionId, "old").map((d) => d.branch)).toEqual(["old"]);
-  expect(memory.store.listPendingDeliveries(sessionId, "new").map((d) => d.branch)).toEqual(["new"]);
+  expect(memory.store.listPendingDeliveries(sessionId, "new")).toEqual([]);
   expect(calls[1]!.input).not.toContain(`[S${sessionId}/T${old.id}]`);
   expect(memory.store.getRun(2)?.branch).toBe("old");
 });
@@ -125,7 +129,7 @@ for (const [label, changes, problem] of [
   ["malformed handle", { support: [["$x", "weak"]] }, "target"],
   ["relation shape", { support: ["F1"] }, "expected [target, strength]"],
   ["embedded id", { text: "See F101" }, "must not embed"],
-  ["event prefix", { category: "event" }, "must start"],
+  ["event status", { category: "event" }, "status"],
 ] as const) test(`bounces ${label} with problems and only a run record`, async () => {
   const t = turn(), output = [batch(t.id, [fact(changes)])];
   script.push(async () => success(output));
@@ -135,16 +139,19 @@ for (const [label, changes, problem] of [
   expect(result.problems.join("\n")).toContain(problem);
   unchanged();
   const run = memory.store.getRun(result.runId)!;
-  expect(run.outcome).toBe("failure");
-  expect(JSON.parse(run.response!).output).toBe(JSON.stringify(output));
+  expect(run.outcome).toBe("bounced");
+  expect(JSON.parse(run.response!).toolCalls[0].input).toEqual({ facts: output.flatMap((b) => b.facts) });
   expect(JSON.parse(run.response!).problems).toEqual(result.problems);
 });
 
-test("invalid JSON bounces; a successful reply without provider request fails", async () => {
+test("final text is never parsed; a successful reply without provider request fails", async () => {
   const t = turn(); script.push(async () => ({ outcome: "success", output: "[", request }));
-  expect((await recording(t.id)).outcome).toBe("bounced"); unchanged();
+  expect((await recording(t.id)).outcome).toBe("success");
+  expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
+  const next = turn(t.id);
   script.push(async () => ({ outcome: "success", output: "[]" }));
-  expect((await recording(t.id)).outcome).toBe("failure"); unchanged();
+  expect((await recording(next.id)).outcome).toBe("failure");
+  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
 });
 
 test("model cannot write to a late turn outside the frozen range", async () => {
@@ -159,7 +166,7 @@ test("empty output recordings the range; compactions cannot acquire facts", asyn
   expect((await recording(t.id)).outcome).toBe("bounced"); unchanged();
   script.push(async () => success([])); await recording(t.id);
   expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
+  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(0);
 });
 
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
@@ -193,13 +200,13 @@ test("fixture turn golden and recording input use identical rendering with recei
   script.push(async (input) => {
     const rendered = memory.trace("T1"), [content, receipts] = rendered.split("\n\nReceipts:\n");
     expect(input.input).toContain(content!); expect(input.input.endsWith(receipts!)).toBe(true);
-    expect(input.trace("T1 tool=2 full")).toBe(memory.trace("T1 tool=2 full"));
+    expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
     return success([]);
   });
   const result = await memory.record({ sessionId, branch: "main", headTurnId: first.id, mode: "subagent" });
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].address).toBe("T1 tool=2 full");
-  expect(() => calls[0]!.trace("T1")).toThrow("finished");
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).fetched[0].input).toEqual({ address: "T1", tool: 2, full: true });
+  expect(calls[0]!.tools[0]!.execute({ address: "T1" })).toContain("finished");
 });
 
 test("fixture fact goldens include quote, sources and both relation directions across turns", async () => {
@@ -213,17 +220,14 @@ test("fixture fact goldens include quote, sources and both relation directions a
   expect([1, 2, 3].map((id) => memory.trace(`F${id}`)).join("\n\n")).toBe(golden("facts"));
 });
 
-test("full expands selected calls; cap preserves user text and counts omitted lines", () => {
+test("full expands selected calls; cap is the listing budget and address flags are rejected", () => {
   const t = turn();
-  const full = memory.trace(`T${t.id} tool=2 full`);
+  const full = memory.trace(`T${t.id}`, { tool: 2, full: true });
   expect(full).toContain(JSON.parse(fixture[0]!.calls[1]!.result!).stdout);
   expect(full).toContain("tool=Bash status=success omitted=false");
-  const capped = memory.trace(`T${t.id} tool=2 full cap=0`);
-  expect(capped).toContain(t.userPrompt!); expect(capped).toContain(t.assistantText!);
-  expect(capped).toContain("[omitted 2 lines,");
-  expect(capped.indexOf("Receipts:")).toBeGreaterThan(capped.indexOf(t.assistantText!));
-  expect(() => memory.trace("T1 tool=99")).toThrow("does not exist");
-  expect(() => memory.trace("T1 cap=-1")).toThrow("invalid trace option");
+  expect(memory.trace(`T${t.id}`, { cap: 1 })).toContain("cursor=");
+  expect(() => memory.trace("T1", { tool: 99 })).toThrow("does not exist");
+  expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");
 });
 
 test("raw exceeding the episodic budget is retained, while older facts are dropped", async () => {
@@ -250,7 +254,7 @@ test("stdout keeps head and tail; stderr keeps tail; reports keep head and tail"
   expect(rendered).toContain("report:\na\n\n[omitted 1 lines, 6 characters]\nc");
   expect(rendered).toContain("Search /fixture\n[omitted 12 characters of result]");
   expect(rendered).not.toContain("hidden match");
-  expect(memory.trace(`T${t.id} tool=3 full`)).toContain("hidden match");
+  expect(memory.trace(`T${t.id}`, { tool: 3, full: true })).toContain("hidden match");
 });
 
 test("knowledge budgets keep protected categories and omit whole later categories", async () => {
@@ -270,10 +274,10 @@ test("knowledge budgets keep protected categories and omit whole later categorie
 });
 
 test("recent facts are ordered by timestamp freshness rather than insertion id", async () => {
-  const first = turn(); script.push(async () => success([batch(first.id, [
-    fact({ timestamp: "2026-08-16 03:00" }), fact({ timestamp: "2026-08-16 01:00" }),
-  ])])); await recording(first.id);
-  const second = turn(first.id, 1); script.push(async () => success([])); await recording(second.id);
+  const first = turn();
+  const later = memory.store.appendTurn({ sessionId, parentTurnId: first.id, kind: "turn", assistantText: "later", startedAt: "2026-08-16 03:00" });
+  script.push(async () => success([batch(later.id), batch(first.id)])); await recording(later.id);
+  const second = turn(later.id, 1); script.push(async () => success([])); await recording(second.id);
   expect(calls[1]!.input.indexOf("[F1]")).toBeLessThan(calls[1]!.input.indexOf("[F2]"));
 });
 
@@ -284,4 +288,30 @@ test("reopening the database preserves the run, facts, watermark and delivery", 
   expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(first.id);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
+});
+
+test("opening a pre-ticket-09 database migrates event status and run enums without losing facts or deliveries", async () => {
+  const t = turn();
+  const committed = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, branch: "main", createdAt: time },
+    facts: [{ turnId: t.id, category: "event", actor: "agent", text: "completed: tests passed", source: [`T${t.id}#assistant`], createdAt: time }],
+    watermark: { sessionId, branch: "main", lastRecordedTurn: t.id }, pendingDelivery: { sessionId, branch: "main" } });
+  expect(committed.ok).toBe(true);
+  const before = memory.trace("F1");
+  // Reconstruct the previous persisted layout through the facade's store, then reopen it.
+  const db = memory.store.db;
+  db.exec("PRAGMA foreign_keys = OFF");
+  const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'runs'").get() as { sql: string }).sql;
+  db.exec(sql.replace('CREATE TABLE runs', 'CREATE TABLE old_runs').replace(",'manual'", "").replace(",'bounced'", ""));
+  db.exec("INSERT INTO old_runs SELECT * FROM runs; DROP TABLE runs; ALTER TABLE old_runs RENAME TO runs; ALTER TABLE facts DROP COLUMN status;");
+  memory.close(); open();
+  expect(memory.trace("F1")).toBe(before);
+  expect(memory.store.getFact(1)).toMatchObject({ text: "tests passed", status: "completed" });
+  expect(memory.search("passed", "facts")).toContain("completed: tests passed");
+  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
+  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
+  const note = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id })[2]!;
+  expect(note.execute({ facts: [{ ...fact(), category: "bad" }] })).toContain("rejected:");
+  expect(note.execute({ facts: [fact()] })).toContain("F2");
+  expect(memory.store.listRuns(sessionId).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["manual", "bounced"], ["manual", "success"]]);
+  expect(memory.store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
 });

@@ -4,23 +4,24 @@ import type { Store, KnowledgeWithRevision } from "../store/index.ts";
 import { freezeRecording } from "../recording/index.ts";
 import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
 
-export interface ListingOptions { cap?: number; cursor?: string }
+export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 export type MarkInput = { sessionId: number; project: string; source?: "marker" | "mark" }
   | { knowledgeId: number; kind: "verified" | "flagged" | "clear" };
 
-export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string) => string) {
-  const cursors = new Map<string, { lines: string[]; footer: string; cap: number }>();
+export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
+  const cursors = new Map<string, { lines: string[]; footer: string; cap: number; owner: string }>();
   const page = (lines: string[], options: ListingOptions = {}, footer = ""): string => {
+    const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
-    if (options.cursor && !saved) throw new Error("unknown or expired cursor");
+    if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
     if (saved) { lines = saved.lines; footer = saved.footer; }
     const receipts = footer ? [footer] : [];
     if (lines.length > cap) {
       const cursor = randomUUID();
-      cursors.set(cursor, { lines: lines.slice(cap), footer, cap });
+      cursors.set(cursor, { lines: lines.slice(cap), footer, cap, owner });
       receipts.push(`cursor=${cursor}`);
     }
     if (options.cursor) cursors.delete(options.cursor);
@@ -41,19 +42,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   const trace = (address: string, options: ListingOptions = {}): string => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
-    const listing = /^(.*) cap=(\d+)$/.exec(address);
-    if (listing && !/^(?:S\d+\/)?T\d+(?:\s|$)/.test(address)) {
-      address = listing[1]!; options = { ...options, cap: Number(listing[2]) };
-    }
     const targets = address.split(",").map((a) => a.trim());
-    if (targets.length > 1) return page(targets.flatMap((a) => trace(a, { cap: Number.MAX_SAFE_INTEGER }).split("\n")), options);
+    if (targets.length > 1) return page(targets.flatMap((a) => trace(a, { ...options, cap: Number.MAX_SAFE_INTEGER }).split("\n")), options);
     const s = /^S([1-9]\d*)$/.exec(address);
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
     let project = store.findProjectByName(address);
     while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
     if (project) return page([...store.listVisibleKnowledge(0, project.id).map(knowledgeLine),
       ...store.listProjectFacts(project.id).map((f) => factLine(f.id))].map(listingLine), options);
-    const result = expand(address);
+    const result = expand(address, options);
     return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
   };
   return {

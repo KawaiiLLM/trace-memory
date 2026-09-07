@@ -56,8 +56,6 @@ export default function (pi: ExtensionAPI) {
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; verified?: string; notified?: boolean } = {};
-  const traceTool: Tool = { name: "trace", description: "Fetch the full text of a cut tool call by its expansion address (for example `T12 tool=2 full`), or any memory address.",
-    parameters: { type: "object", properties: { address: { type: "string" } }, required: ["address"], additionalProperties: false } as unknown as Tool["parameters"] };
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as RecordingAgentInput | IntegrationAgentInput;
     const callContext = ctx;
@@ -113,16 +111,16 @@ export default function (pi: ExtensionAPI) {
           const reply = await complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
             { messages: [] }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
               sessionId: callPiId,
-              onPayload() { request = snapshot(candidate); return snapshot(candidate); } });
+              onPayload() { request = snapshot(candidate); if (input.kind === "recording") input.reportRequest(request); return snapshot(candidate); } });
           if (verification && typeof reply.usage?.cacheRead === "number") verification.cache_read = reply.usage.cacheRead;
-          return { outcome: reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success",
+          return { outcome: reply.stopReason === "aborted" ? "cancelled" : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" : "success",
             output: text(reply), usage: reply.usage, request, mode, verification };
         }
       }
       // Subagent mode: a fresh call. A recording may fetch cut evidence through the trace tool (spec,
       // overflow policy); like pi-om's observer, the host executes the call and continues.
       let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
-        ...(input.kind === "recording" ? { tools: [traceTool] } : {}) };
+        ...(input.kind === "recording" ? { tools: input.tools.map(({ execute: _execute, ...definition }) => definition as unknown as Tool) } : {}) };
       if (continuation) {
         // The candidate round handed its conversation back through the core; nothing is kept here.
         const prior = continuation.response.state as { conversation: Conversation; reply: Reply } | undefined;
@@ -131,17 +129,19 @@ export default function (pi: ExtensionAPI) {
       }
       let reply: Reply;
       for (let round = 0; ; round++) {
-        reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); } });
+        reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); if (input.kind === "recording") input.reportRequest(request); } });
         const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
-        if (input.kind !== "recording" || reply.stopReason !== "toolUse" || !calls.length || round >= 8) break;
+        if (input.kind !== "recording" || reply.stopReason !== "toolUse" || !calls.length) break;
+        if (round >= 16) throw new Error("tool rounds exceeded"); // a run that never stops is a failure, not an empty batch
         const results = calls.map(call => {
           let content: string, isError = false;
-          try { content = input.trace(String(call.arguments.address ?? "")); } catch (error) { content = String(error); isError = true; }
+          try { const tool = input.tools.find((t) => t.name === call.name);
+            content = tool ? tool.execute(call.arguments) : `rejected: unknown tool ${call.name}`; isError = content.includes("rejected:"); } catch (error) { content = String(error); isError = true; }
           return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError, timestamp: Date.now() };
         });
         conversation = { ...conversation, messages: [...conversation.messages, reply, ...results] };
       }
-      const outcome = reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success";
+      const outcome = reply.stopReason === "aborted" ? "cancelled" : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" : "success";
       const state = input.kind === "integration" && input.round === "candidate" && outcome === "success"
         ? { conversation: structuredClone(conversation), reply: structuredClone(reply) } : undefined;
       return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason, ...(state ? { state } : {}) };

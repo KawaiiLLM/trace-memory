@@ -1,3 +1,5 @@
+import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
+export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope, type MarkInput } from "./read.ts";
 export type { ListingOptions, SearchScope, MarkInput } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
@@ -7,7 +9,6 @@ import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDi
 export { tokens } from "../render/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
 import { openStore, type Store } from "../store/index.ts";
-import type { RunOutcome } from "../model/index.ts";
 
 import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
 export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
@@ -77,7 +78,7 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
 // ---- runAgent contract (spec.md: Contracts, Run record contract) ----
 
 export interface RunAgentResult {
-  outcome: RunOutcome;
+  outcome: "success" | "failure" | "cancelled";
   output: unknown;
   usage?: unknown;
   request?: unknown;
@@ -96,6 +97,7 @@ export interface TraceMemory {
   readonly store: Store;
   readonly config: TraceMemoryConfig;
   close(): void;
+  tools(context: ToolContext): ToolDefinition[];
   record(input: RecordInput): Promise<RecordResult>;
   integrate(input: IntegrateInput): Promise<IntegrateResult>;
   /** Committed lineage facts and unrecorded raw, without consuming deliveries or dropping facts. */
@@ -116,7 +118,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const cfg = mergeConfig(DEFAULT_CONFIG, config);
 
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);
-  const trace = (address: string): string => {
+  const trace = (address: string, display: ListingOptions = {}): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
     const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target ?? "");
@@ -126,16 +128,19 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           (to !== undefined && to < from!)) throw invalid();
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
+      const visible = (rev: number) => display.sessionId === undefined || store.isKnowledgeVisible(id!, display.sessionId, rev);
+      const history = store.listKnowledgeRevisions(id!).filter((r) => visible(r.rev));
       const revision = (rev: number) => {
+        if (!visible(rev)) throw new Error("knowledge revision is not visible in this session");
         const value = store.getKnowledgeRevision(id!, rev);
         if (!value) throw new Error(`knowledge K${id} has no revision ${rev}`);
         return value;
       };
       if (to !== undefined) return renderKnowledgeDiff(revision(from!), revision(to),
-        store.listKnowledgeRevisions(id!).filter((r) => r.rev > from! && r.rev <= to));
+        history.filter((r) => r.rev > from! && r.rev <= to));
       if (from !== undefined) return renderKnowledgeTrace({ knowledge, revision: revision(from) }, undefined, [], store.listKnowledgeMarks(id!));
       return renderKnowledgeTrace({ knowledge, revision: revision(knowledge.currentRevision) },
-        store.listKnowledgeRevisions(id!), store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!));
+        history, store.listKnowledgeLinks(id!).filter((l) => display.sessionId === undefined || store.isKnowledgeVisible(l.toKnowledge, display.sessionId, l.toRev)), store.listKnowledgeMarks(id!));
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {
@@ -146,7 +151,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const { id, depth } = pending.pop()!;
         const fact = store.getFact(id);
         if (!fact) throw new Error(`fact F${id} does not exist`);
-        const relations = store.listFactRelations(id);
+        const relations = store.listFactRelations(id).filter((r) => display.sessionId === undefined || [r.fromFact, r.toFact].every((id) => {
+          const fact = store.getFact(id)!; return store.getSession(store.getTurn(fact.turnId)!.sessionId)?.projectId === store.getSession(display.sessionId!)?.projectId;
+        }));
         // Later facts have larger allocated IDs; stored edges point newer -> older.
         const children = relations.filter((r) => r.toFact === id && r.fromFact > id && r.kind === "negate" && r.strength === "strong");
         steps.push({ fact, relations, depth, terminal: children.length === 0 });
@@ -164,13 +171,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)$/.exec(target ?? "");
     if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
     const sessionOfAddress = turnMatch[1] === undefined ? undefined : Number(turnMatch[1]);
-    const options: TurnOptions = {};
-    for (const flag of flags) {
-      if (flag === "full") options.full = true;
-      else if (/^tool=[1-9]\d*$/.test(flag)) options.tool = Number(flag.slice(5));
-      else if (/^cap=\d+$/.test(flag) && Number.isSafeInteger(Number(flag.slice(4)))) options.cap = Number(flag.slice(4));
-      else throw new Error(`invalid trace option: ${flag}`);
-    }
+    if (flags.length) throw new Error("invalid trace address: use tool and full parameters");
+    const options: TurnOptions = { tool: display.tool, full: display.full };
     const turn = store.getTurn(Number(turnMatch[2]));
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
@@ -184,13 +186,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     store,
     config: cfg,
     close: () => store.close(),
+    tools: (context) => bindTools(store, read, context).tools,
     record: async (input) => {
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
       if (inFlightRecordings.has(key)) return { outcome: "dropped" };
       inFlightRecordings.add(key);
       try {
         const frozen = freezeRecording(store, input, cfg);
-        return await runRecording(store, frozen, runAgent, cfg, read.trace);
+        return await runRecording(store, frozen, runAgent, cfg, (context, run) => bindTools(store, read, context, run));
       } finally { inFlightRecordings.delete(key); }
     },
     integrate: async (input) => {

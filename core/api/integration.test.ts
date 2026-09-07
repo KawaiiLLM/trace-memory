@@ -199,7 +199,7 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
     expect(run.outcome).toBe(expected === "bounced" ? "failure" : expected);
     expect(JSON.parse(run.response!).problems).toEqual(result.problems);
     if (["throw", "abort", "missing request"].includes(bad)) expect(run.request).toBeNull();
-    else audit(result.runId, round === "final" ? 1 : 0, run.outcome);
+    else audit(result.runId, round === "final" ? 1 : 0, run.outcome as RunAgentResult["outcome"]);
     if (round === "final") audit(result.runId - 1, 0);
     expect(memory.store.getRun(result.runId + 1)).toBeNull();
     expect(calls).toHaveLength(round === "final" ? 2 : 1);

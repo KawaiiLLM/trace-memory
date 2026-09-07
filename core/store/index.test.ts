@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openStore, Store } from "./index.ts";
+import { TraceMemory } from "../api/index.ts";
+type Store = TraceMemory["store"];
+const openStore = (path: string) => TraceMemory(path, async () => ({ outcome: "success", output: "", request: {} })).store;
 
 let dir: string;
 let dbPath: string;

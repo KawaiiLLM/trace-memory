@@ -2,7 +2,8 @@ core/ is host-agnostic: it must not import any host SDK.
 
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
-- recording/    build recording input, parse output, validate, commit.
+- recording/    freeze input, provide tools, record the last provider request and final text.
+- api/tools.ts  four bound model-facing tools; atomic note validation and commit.
 - integration/  build integration input (NEAR / CLOSER hints), parse output, accounting, apply new/edit/merge/delete.
 - render/  one renderer for recording input, compaction tail, branch summary, trace; XML injection blocks.
 - prompts/ recording.md, integration.md — versioned prompt texts (from simulation v7).
@@ -33,23 +34,43 @@ The recording result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per database/session/branch across façade
 instances in this process. No automatic retry or feedback call follows a bounce.
-An empty JSON array is valid and advances the watermark; omitted turn objects
-mean zero facts. Returned turn objects must be unique and in frozen range order.
-Compaction turns cannot acquire facts. Local handles count across the entire
-batch; the store resolves them. Existing fact relations must target the session's
-fact pool frozen at start, including facts left out of the context budget.
+Stopping normally without submitting is a zero-fact success: advance the frozen
+watermark without a delivery. An uncorrected rejected submission is `bounced`
+and advances nothing. Failure/cancellation before commit also advances nothing.
+A committed batch keeps outcome `success` even if the provider subsequently
+fails or is cancelled; the trailing problem is recorded without undoing business
+writes (user ruling 2026-09-07).
 
-`runAgent` receives `RecordingAgentInput`: prompt text and SHA-256 hash, rendered
-`input`, session, branch, range, read knowledge revisions, model, mode and a `trace`
-callback for fetching evidence. The host maps these into a provider request and
-returns that exact JSON-serializable request. Successful results without a
-request fail; thrown failures have a null request because none is available.
-The `runs.request` column stores only the provider request. The existing
-`runs.response` column holds `{ output, usage, readKnowledgeRevisions, fetched,
-problems }`; `output` preserves the returned string or parsed JSON value.
-Fetches record both address and returned text. Exceptions named `AbortError`
-count as cancellation. The default model value `session` is a host-resolved
-alias; hosts should pass their actual model identifier for exact auditing.
+`runAgent` receives `RecordingAgentInput` with the four `tools` definitions:
+`trace`, `search`, `note`, `memory`. Each has a name, description, JSON-schema
+parameters, and synchronous `execute(input): string`. Hosts execute calls and
+continue the provider conversation until it stops. `reportRequest(request)`
+reports each exact provider request before tool execution; the returned `request`
+is the last request sent. Final text is audit content, never parsed for facts.
+`runs.response` holds final text, usage, frozen read knowledge revisions, fetched
+trace evidence, the tool-call input/result sequence, problems and committed IDs.
+
+`tools(context)` also binds these definitions to a main agent with
+`{kind: "manual", sessionId, branch, currentTurnId}`, or to a Recording context
+with `{kind: "recording", sessionId, branch, range: {from, to},
+readKnowledgeRevisions}`. `note({facts})` validates every item and commits nothing
+on any rejection; a corrected whole batch may be resubmitted. Success returns
+`results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
+`rejected: <reason>`. A Recording binding commits at most one batch. The batch,
+run record, frozen watermark and nonempty delivery commit in one transaction.
+Manual writes commit immediately as a `manual` run with the tool input/result
+as request/response and enter only that branch's Integration range. They do not
+advance Recording. `memory` rejects with `not implemented until ticket 10`.
+
+Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen range
+(Recording) or calling session (manual). Time is the first source turn's
+`started_at`; timestamps from the model are rejected. Event facts require
+`status` (completed, reported, dispatched, attempted); other categories reject
+status. Text has no completion prefix; the shared renderer supplies it. Relations
+retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
+Existing databases gain the status column and manual/bounced run values on open;
+legacy event text prefixes are moved to status while retaining rendered content.
+
 The recording config chooses branch/subagent mode; provider prefix verification
 remains the host's responsibility.
 
@@ -65,10 +86,9 @@ carry source addresses; tools use `[T<n>#t<n>] tool=… status=… omitted=…`.
 Receipts follow all content, including assistant text, and list omitted calls
 (including partially omitted calls) and expansion addresses.
 
-`trace("T1 tool=2 full cap=100")` accepts a tool ordinal, optional full expansion,
-and a nonnegative integer cap. The cap applies to each tool text field, split
-in its configured head/tail proportion; it takes precedence over `full`.
-Without a cap, `full` removes standard cuts and expands read/write payloads.
+`trace("T1", {tool: 2, full: true})` selects a tool ordinal and removes standard
+cuts, including read/write payloads. The optional listing cap paginates the
+rendered lines; it never becomes a tool-output token cap.
 Filtering keeps other calls' metadata and counted omission markers. User and
 assistant text are always uncut. Cuts occur at whole-line boundaries, including
 stdout, stderr and reports; an oversized single line can be omitted entirely.
@@ -269,21 +289,26 @@ including other branches. Receipts follow both XML blocks.
 
 `search(query, scope = "all", { sessionId?, cap?, cursor? })` uses FTS5 query
 syntax over fact text and all knowledge revisions, including historical revisions.
-Search is database-wide; the injection visibility rule does not restrict explicit
-address lookup. Raw scope requires a session and uses literal substring LIKE
-(including tool names, inputs and results); `%` and `_` are escaped. Each hit is
+Bound tools restrict facts/raw to the session's project, and knowledge to global,
+project and the caller's own session scope (including visible history). Unbound
+facade reads remain available to hosts. Raw uses literal substring LIKE
+(including tool names, inputs and results); `%` and `_` are escaped. `all` in a
+bound search includes raw as well as facts and knowledge. Each hit is
 one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
 Results order facts by id, then knowledge id/revision; raw orders turns by id.
 Every search page states that no hit does not mean absent.
 
 `trace` additionally accepts session addresses, exact project names, comma lists,
 and `{ cap?, cursor? }`. Projects list global/project knowledge and project facts;
-sessions list turns. Listing caps count output lines, default 100. `cap=n` in
-listing addresses is equivalent; on a single turn it retains its existing tool
-field budget meaning. Receipts carry `cursor=<opaque string>`; continue through
-`trace("cursor=…")` or a listing's cursor option. Cursors freeze rendered output,
-are single-use, and last only for this facade instance. User/assistant text is
-never shortened by pagination; further pages retain the remaining lines.
+sessions list turns. Listing caps count output lines, default 100. Tool input is
+`trace({address, tool?, full?, cursor?, cap?})` or
+`search({query, layer?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
+Display options are parameters, never address flags. The per-output cap flag is
+removed; cap is the listing budget. Expansion hints use the trace parameter form.
+`F<n>..` is navigation through later strong negations, including every intermediate
+fact and branching; its terminal sentence is not a current-conclusion claim.
+Cursors freeze rendered output, are single-use, belong to this facade instance
+and calling session/project, and preserve the remaining lines on later pages.
 
 `mark({ knowledgeId, kind: "verified" | "flagged" | "clear" })` replaces or clears
 only the current revision's mark; historical marks remain on their revisions.

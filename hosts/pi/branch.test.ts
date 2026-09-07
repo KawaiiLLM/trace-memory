@@ -148,9 +148,10 @@ test("an in-flight branch request keeps its captured body across a tree switch a
 });
 
 test("a model switch during the integration candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false });
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false });
   disposers.push(h.dispose);
   await h.emit("session_start");
+  h.provider(async c => recordingFact(c));
   let release!: () => void;
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
     const body = await options!.onPayload!({}, model) as branch.Body;
@@ -166,7 +167,8 @@ test("a model switch during the integration candidate round does not redirect or
   release(); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
-  expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test", "test"]);
+  expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test"]);
+  expect((h.requests[0] as { model: { id: string } }).model.id).toBe("test");
   expect(JSON.parse(runs[1]!.response!).verification.passed).toBe(true);
 });
 
@@ -181,25 +183,25 @@ test("the verifier independently rejects extra appends and provider option chang
 
 const integrationOutput = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
 test("17:01 settle is branch-capable: candidate appends to the captured prefix, final replays the candidate reply plus the feedback on that request", async () => {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, integrationModel: "fake/ignored" });
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, integrationModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
+  h.provider(async c => recordingFact(c));
   const sent: branch.Body[] = [];
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
     const body = await options!.onPayload!({}, model) as branch.Body;
     sent.push(structuredClone(body));
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
     if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(integrationOutput);
-    const address = /S(\d+)\/T(\d+)/.exec(last)!;
-    return reply(JSON.stringify([{ turn: address[0], title: "Package manager", topic: "tooling", facts: [
-      { category: "observation", actor: "user", text: "用 pnpm，不要 npm", timestamp: "2026-09-07T00:00:00Z", source: [`T${address[2]}#user`] } ] }]));
+    return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.emit("before_provider_request", { payload: payload() });
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(0); expect(complete).toHaveBeenCalledTimes(3);
+  expect(h.requests).toHaveLength(2); expect(complete).toHaveBeenCalledTimes(2);
+  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const prompt = readFileSync(new URL("../../core/prompts/integration.md", import.meta.url), "utf8");
-  const [candidate, final] = sent.slice(1) as { messages: { role: string; content: string }[] }[];
+  const [candidate, final] = sent as { messages: { role: string; content: string }[] }[];
   expect(candidate!.messages.slice(0, -1)).toEqual(payload().messages);
   expect(candidate!.messages.at(-1)!.content.startsWith(prompt + "\n\nRange: F1..F1")).toBe(true);
   expect(final!.messages.slice(0, -2)).toEqual(candidate!.messages);
@@ -220,7 +222,7 @@ test("integration branch mode without a capture falls back to subagent for both 
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(integrationOutput) : recordingFact(c));
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
-  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(3);
+  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(4);
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"], ["subagent", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");

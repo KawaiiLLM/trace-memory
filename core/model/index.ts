@@ -43,14 +43,17 @@ export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
 export const KNOWLEDGE_OPS = ["new", "edit", "merge", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
 
-export const RUN_KINDS = ["recording", "integration"] as const;
+export const RUN_KINDS = ["recording", "integration", "manual"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
-export const RUN_OUTCOMES = ["success", "failure", "cancelled"] as const;
+export const RUN_OUTCOMES = ["success", "failure", "cancelled", "bounced"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 
 export const KNOWLEDGE_MARK_KINDS = ["verified", "flagged"] as const;
 export type KnowledgeMarkKind = (typeof KNOWLEDGE_MARK_KINDS)[number];
+
+export const EVENT_STATUSES = ["completed", "reported", "dispatched", "attempted"] as const;
+export type EventStatus = (typeof EVENT_STATUSES)[number];
 
 export const EVENT_PREFIXES = ["completed:", "reported:", "dispatched:", "attempted:"] as const;
 
@@ -101,6 +104,7 @@ export interface Fact {
   actor: Actor;
   text: string;
   quote: string | null;
+  status?: EventStatus | null;
   source: string[];
   createdAt: string;
 }
@@ -213,17 +217,10 @@ export interface RecordingFactInput {
   actor: Actor;
   text: string;
   quote?: string;
-  timestamp: string;
+  status?: EventStatus;
   source: string[]; // raw addresses, e.g. "T812#user", "T812#t3"
   support?: RecordingRelationInput[];
   negate?: RecordingRelationInput[];
-}
-
-export interface RecordingTurnBatch {
-  turn: string; // "S<session>/T<turn>"
-  title: string;
-  topic: string;
-  facts: RecordingFactInput[];
 }
 
 function validateRelationList(
@@ -255,7 +252,7 @@ function validateRelationList(
   return out;
 }
 
-function validateRecordingFact(path: string, raw: unknown, problems: string[]): RecordingFactInput | null {
+export function validateRecordingFact(path: string, raw: unknown, problems: string[]): RecordingFactInput | null {
   if (typeof raw !== "object" || raw === null) {
     problems.push(`${path}: expected an object`);
     return null;
@@ -274,12 +271,15 @@ function validateRecordingFact(path: string, raw: unknown, problems: string[]): 
     if (EMBEDDED_ID_RE.test(f.text)) {
       problems.push(`${path}.text: must not embed a fact or knowledge id; ids live only in relation fields`);
     }
-    if (f.category === "event" && !EVENT_PREFIXES.some((p) => (f.text as string).startsWith(p))) {
-      problems.push(`${path}.text: an event fact must start with one of ${EVENT_PREFIXES.join("|")}`);
+    if (EVENT_PREFIXES.some((p) => (f.text as string).startsWith(p))) {
+      problems.push(`${path}.text: completion prefix belongs in status`);
     }
   }
-  if (!isNonEmptyString(f.timestamp)) {
-    problems.push(`${path}.timestamp: expected a non-empty string`);
+  for (const key of Object.keys(f)) {
+    if (!["category", "actor", "text", "quote", "source", "support", "negate", "status"].includes(key)) problems.push(`${path}.${key}: unexpected field`);
+  }
+  if (f.category === "event" ? !EVENT_STATUSES.includes(f.status as EventStatus) : f.status !== undefined) {
+    problems.push(`${path}.status: required for event, forbidden otherwise; expected ${EVENT_STATUSES.join("|")}`);
   }
   if (!isStringArray(f.source) || f.source.length === 0) {
     problems.push(`${path}.source: expected a non-empty array of address strings`);
@@ -295,53 +295,11 @@ function validateRecordingFact(path: string, raw: unknown, problems: string[]): 
     actor: f.actor as Actor,
     text: f.text as string,
     quote: f.quote as string | undefined,
-    timestamp: f.timestamp as string,
+    status: f.status as EventStatus | undefined,
     source: (f.source as string[]) ?? [],
     support,
     negate,
   };
-}
-
-/** Validate one recording run's full JSON output: an array of per-turn fact batches. */
-export function validateRecordingOutput(raw: unknown): ValidationResult<RecordingTurnBatch[]> {
-  const problems: string[] = [];
-  if (!Array.isArray(raw)) {
-    return { problems: ["recording output must be a JSON array"], value: null };
-  }
-  const batches: RecordingTurnBatch[] = [];
-  raw.forEach((item, i) => {
-    const path = `[${i}]`;
-    if (typeof item !== "object" || item === null) {
-      problems.push(`${path}: expected an object`);
-      return;
-    }
-    const obj = item as Record<string, unknown>;
-    if (typeof obj.turn !== "string" || !/^S\d+\/T\d+$/.test(obj.turn)) {
-      problems.push(`${path}.turn: expected "S<session>/T<turn>", got ${JSON.stringify(obj.turn)}`);
-    }
-    if (!isNonEmptyString(obj.title)) {
-      problems.push(`${path}.title: expected a non-empty string`);
-    }
-    if (!isNonEmptyString(obj.topic)) {
-      problems.push(`${path}.topic: expected a non-empty string`);
-    }
-    if (!Array.isArray(obj.facts)) {
-      problems.push(`${path}.facts: expected an array`);
-      return;
-    }
-    const facts: RecordingFactInput[] = [];
-    obj.facts.forEach((f, j) => {
-      const fact = validateRecordingFact(`${path}.facts[${j}]`, f, problems);
-      if (fact) facts.push(fact);
-    });
-    batches.push({
-      turn: (obj.turn as string) ?? "",
-      title: (obj.title as string) ?? "",
-      topic: (obj.topic as string) ?? "",
-      facts,
-    });
-  });
-  return { problems, value: batches };
 }
 
 // ---- Integration output (core/prompts/integration.md) ----

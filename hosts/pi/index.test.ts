@@ -57,10 +57,11 @@ test("recording through runAgent commits the exact provider request, prompt, mod
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
-  expect(JSON.parse(run.request!)).toEqual(h.requests[0]);
+  expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
+  expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
-  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace"]);
+  expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   expect(JSON.parse(run.response!).usage).toEqual(usage);
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
@@ -150,10 +151,10 @@ test("integration waits for a turn stop after facts arrive and final replays can
   const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output) : recordingFact(c));
   await h.turn();
-  expect(h.requests).toHaveLength(1); // No post-recording completion trigger.
+  expect(h.requests).toHaveLength(2); // Only the recording tool loop; no Integration trigger.
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(3);
-  const candidate = h.conversations[1]!, final = h.conversations[2]!;
+  expect(h.requests).toHaveLength(4);
+  const candidate = h.conversations[2]!, final = h.conversations[3]!;
   expect(final.systemPrompt).toBe(candidate.systemPrompt);
   expect(final.messages.slice(0, 1)).toEqual(candidate.messages);
   expect(final.messages[1]).toEqual(reply(output));
@@ -161,7 +162,7 @@ test("integration waits for a turn stop after facts arrive and final replays can
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
   expect(runs.map(r => r.model)).toEqual(["fake/Integrator", "fake/Integrator"]);
-  expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests[2]);
+  expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests[3]);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
@@ -173,7 +174,7 @@ test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) wait
   const shutdown = h.emit("session_shutdown", { reason }).then(() => { closed = true; });
   await h.drain(); expect(closed).toBe(false);
   release(recordingFact(h.conversations[0]!)); await shutdown;
-  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success"); expect(h.requests).toHaveLength(1);
+  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success"); expect(h.requests).toHaveLength(2);
   await expect(h.emit("session_start")).rejects.toThrow(/not open/); // Pi re-runs the factory; this instance is dead.
 });
 
@@ -209,9 +210,9 @@ test("integration in-flight duplicates cannot erase the candidate continuation",
   let release!: (value: Reply) => void;
   h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : reply(output));
   await h.emit("agent_settled"); await h.emit("agent_settled");
-  expect(h.requests).toHaveLength(2);
-  release(reply(output)); await h.drain();
   expect(h.requests).toHaveLength(3);
+  release(reply(output)); await h.drain();
+  expect(h.requests).toHaveLength(4);
   expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success", "success"]);
 });
 
@@ -413,10 +414,10 @@ test.each([true, false])("08:53 premise: a branch note (%s) waits until a note r
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   h.provider(async c => recordingFact(c));
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(branchMode ? 1 : 2);
+  expect(h.requests).toHaveLength(branchMode ? 2 : 4);
   expect((await h.prompt("third"))?.message?.content).toContain("recorded");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(branchMode ? 2 : 3);
+  expect(h.requests).toHaveLength(branchMode ? 4 : 6);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
 });
 
@@ -424,20 +425,20 @@ test("spec overflow policy: a subagent recording fetches cut evidence through th
   const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, recordingModel: "fake/recorder" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
-  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1 tool=1 full" } };
+  const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", tool: 1, full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : recordingFact(c));
   await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations).toHaveLength(2);
+  expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
   expect(result.toolCallId).toBe("call-1"); expect(result.isError).toBe(false);
-  expect(result.content[0]!.text).toBe(h.memory.trace("T1 tool=1 full"));
+  expect(result.content[0]!.text).toBe(h.memory.trace("T1", { tool: 1, full: true }));
   expect(result.content[0]!.text).toContain("x".repeat(5000));
-  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace"]);
+  expect(h.conversations[1]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
-  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1 tool=1 full", content: h.memory.trace("T1 tool=1 full") }]);
-  expect(JSON.parse(run.request!)).toEqual(h.requests[1]);
+  expect(JSON.parse(run.response!).fetched).toEqual([{ address: "T1", input: { address: "T1", tool: 1, full: true }, content: h.memory.trace("T1", { tool: 1, full: true }) }]);
+  expect(JSON.parse(run.request!)).toEqual(h.requests[2]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
@@ -451,6 +452,6 @@ test("an integration call carries no tools; a recording tool call for a bad addr
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
   await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.slice(2).map(c => c.tools)).toEqual([undefined, undefined]);
+  expect(h.conversations.slice(3).map(c => c.tools)).toEqual([undefined, undefined]);
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"], ["integration", "success"]]);
 });

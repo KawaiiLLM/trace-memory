@@ -24,10 +24,11 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
       complete: async (selected: unknown, conversation: Conversation, options: any) => {
         conversations.push(structuredClone(conversation));
-        const payload = { providerSpecific: true, model: selected, system: conversation.systemPrompt, messages: structuredClone(conversation.messages), tools: [] };
+        const payload = { providerSpecific: true, model: selected, system: conversation.systemPrompt, messages: structuredClone(conversation.messages), tools: structuredClone(conversation.tools ?? []) };
         await options.onPayload(payload);
         requests.push(structuredClone(payload));
         payload.providerSpecific = false; // The saved request must not alias provider state.
+        if (conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
         return provider(conversation);
       } },
   } as unknown as ExtensionContext;
@@ -51,8 +52,8 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
 export function recordingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  return reply(JSON.stringify([{ turn: address[0], title: "Package manager", topic: "tooling", facts: [
-    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", timestamp: "2026-09-07T00:00:00Z", source: [`T${address[2]}#user`] },
-  ] }]));
+  if (conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
+  return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "note-1", name: "note", arguments: { facts: [
+    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${address[2]}#user`] },
+  ] } }] };
 }
-

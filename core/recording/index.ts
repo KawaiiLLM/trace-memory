@@ -1,7 +1,9 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { validateRecordingOutput, type Fact, type Turn } from "../model/index.ts";
-import type { Store, FactCommitInput, RunInput } from "../store/index.ts";
+import { type Fact, type Turn } from "../model/index.ts";
+import type { Store, RunInput } from "../store/index.ts";
+import type { bindTools } from "../api/tools.ts";
+import type { ToolDefinition, ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { finish, renderFact, renderTurn, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
@@ -28,7 +30,8 @@ export interface RecordingAgentInput {
   input: string;
   /** Frozen full context for a host fallback after branch verification fails. */
   subagentInput: string;
-  trace: (address: string) => string;
+  tools: ToolDefinition[];
+  reportRequest: (request: unknown) => void;
 }
 export type RecordResult =
   | { outcome: "dropped" | "empty" }
@@ -62,7 +65,7 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
 
 export async function runRecording(
   store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
-  config: TraceMemoryConfig, trace: (address: string) => string,
+  config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
 ): Promise<RecordResult> {
   const { sessionId, branch, turns, knowledge, facts, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
@@ -82,61 +85,39 @@ export async function runRecording(
   const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
     "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
   const input = mode === "branch" ? `Range: ${range.from}..${range.to}` : subagentInput;
-  const fetched: { address: string; content: string }[] = [];
-  let fetching = true;
-  const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range, readKnowledgeRevisions: structuredClone(readKnowledgeRevisions), model, mode,
-    prompt, promptHash, subagentInput, input, trace: (address) => {
-      if (!fetching) throw new Error("recording run has finished");
-      const content = trace(address); fetched.push({ address, content }); return content;
-    } };
   const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, createdAt: new Date().toISOString() };
+  const binding = tools({ kind: "recording", sessionId, branch, range, readKnowledgeRevisions }, run);
+  const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range,
+    readKnowledgeRevisions: structuredClone(readKnowledgeRevisions), model, mode, prompt, promptHash,
+    subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) {
     result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
       output: error instanceof Error ? error.message : String(error) };
-  } finally { fetching = false; }
+  } finally { binding.close(); }
   run.mode = result.mode ?? mode;
-  run.request = result.request === undefined ? null : JSON.stringify(result.request);
-  const record = (problems: string[]) => {
-    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, fetched, problems,
-      ...(result.verification !== undefined ? { verification: result.verification } : {}),
-      ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
-  };
-  const fail = (outcome: "failure" | "cancelled" | "bounced", problems: string[]): RecordResult => {
-    record(problems);
-    return { outcome, problems, runId: store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id };
-  };
-  if (result.outcome !== "success") return fail(result.outcome, [String(result.output ?? result.outcome)]);
-  if (result.request === undefined || result.request === null) return fail("failure", ["runAgent must return the exact provider request"]);
-  let parsed: unknown;
-  try { parsed = typeof result.output === "string" ? JSON.parse(result.output) : result.output; }
-  catch (error) { return fail("bounced", [`invalid JSON: ${String(error)}`]); }
-  const validated = validateRecordingOutput(parsed);
-  if (validated.problems.length || !validated.value) return fail("bounced", validated.problems);
-  const problems: string[] = [], commits: FactCommitInput[] = [];
-  let prior = -1;
-  for (const batch of validated.value) {
-    const index = turns.findIndex(({ turn }) => address(turn.id) === batch.turn);
-    if (index < 0 || index <= prior) { problems.push(`${batch.turn}: turn must occur once, in frozen range order`); continue; }
-    prior = index;
-    const { turn } = turns[index]!;
-    if (turn.kind === "compaction" && batch.facts.length) problems.push(`${batch.turn}: compaction turns cannot have facts`);
-    for (const fact of batch.facts) {
-      for (const relation of [...(fact.support ?? []), ...(fact.negate ?? [])]) {
-        const n = Number(relation.target.slice(1));
-        if (relation.target.startsWith("$") ? n < 1 || n > commits.length : !facts.some((f) => f.id === n)) {
-          problems.push(`${batch.turn}: invalid relation target ${relation.target}; expected an existing fact or earlier local handle`);
-        }
-      }
-      commits.push({ ...fact, turnId: turn.id, createdAt: fact.timestamp });
-    }
+  if (result.request !== undefined) run.request = JSON.stringify(result.request);
+  const problems = binding.committed
+    ? (result.outcome === "success" ? (result.request == null ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
+    : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
+    : result.request === undefined || result.request === null ? ["runAgent must return the exact provider request"] : binding.problems;
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions,
+    toolCalls: binding.sequence, fetched: binding.fetched, problems,
+    ...(result.verification !== undefined ? { verification: result.verification } : {}),
+    ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
+  if (binding.committed) {
+    store.updateRun(binding.committed.runId, { ...run, outcome: "success" });
+    return { outcome: "success", ...binding.committed };
   }
-  if (problems.length) return fail("bounced", problems);
-  record([]);
-  const committed = store.commitRecordingRun({ run, facts: commits,
-    watermark: { sessionId, branch, lastRecordedTurn: turns.at(-1)!.turn.id }, pendingDelivery: { sessionId, branch } });
-  return committed.ok ? { outcome: "success", runId: committed.runId, facts: committed.facts }
-    : { outcome: "bounced", runId: committed.runId, problems: committed.problems };
+  if (problems.length) {
+    const outcome = result.outcome !== "success" ? result.outcome
+      : result.request === undefined || result.request === null ? "failure" : "bounced";
+    return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
+  }
+  const committed = store.commitRecordingRun({ run, facts: [],
+    watermark: { sessionId, branch, lastRecordedTurn: turns.at(-1)!.turn.id } });
+  return committed.ok ? { outcome: "success", runId: committed.runId, facts: [] }
+    : { outcome: "failure", runId: committed.runId, problems: committed.problems };
 }

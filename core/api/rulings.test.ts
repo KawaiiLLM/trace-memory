@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type RecordingAgentInput, type RunAgentResult } from "./index.ts";
-import { tokens } from "../render/index.ts";
+import { tokens } from "./index.ts";
 
 let directory: string;
 let memory: TraceMemory;
@@ -71,3 +71,69 @@ test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does no
 
 // 09:43 "sessions of one project integrate separately": pinned in core/api/integration.test.ts,
 // "each session settles only its own branch facts and shares already-settled context".
+
+// User, 2026-09-07: “mark可以合并掉，最终4个工具，trace search和两个分别操作事实和记忆。主agent允许用，但无需提示用，本身不是它的职责”
+// User, 2026-09-07: “工具名叫note和memory”.
+test("2026-09-07: four tools, no other model-facing surface", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  expect(tools.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
+  for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
+  for (const tool of tools.slice(2)) expect(tool.description).toContain("runs are the normal writers");
+  expect(tools[3]!.execute({ operations: [{ op: "create" }, { op: "archive" }], skipped: [] })).toContain("not implemented until ticket 10");
+});
+
+// “if any fails, the result lists each item's outcome in order ... and nothing is written.”
+test("2026-09-07: a rejected item writes nothing", () => {
+  const { s, t } = session();
+  const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!;
+  const fact = { category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] };
+  const rejected = JSON.parse(note.execute({ facts: [fact, { ...fact, actor: "tool" }] }));
+  expect(rejected.results[0]).toBe("ok"); expect(rejected.results[1]).toContain("rejected:");
+  expect(memory.store.listSessionFacts(s.id)).toEqual([]);
+  const corrected = JSON.parse(note.execute({ facts: [fact, { ...fact, support: [["$1", "strong"]] }] }));
+  expect(corrected.results).toEqual(["ok: F1", "ok: F2"]);
+  expect(memory.trace("F2")).toContain("support F1 strong");
+});
+
+// “A Recording run commits at most one batch.”
+test("2026-09-07: one batch per run", async () => {
+  const { s, t } = session(); memory.close();
+  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as RecordingAgentInput;
+    input.reportRequest({ round: 1 });
+    const note = input.tools[2]!;
+    const batch = { facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] };
+    expect(note.execute(batch)).toContain("F1");
+    expect(memory.store.getRun(1)?.outcome).toBe("success");
+    expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
+    expect(memory.store.getWatermark(s.id, "main")?.lastRecordedTurn).toBe(t.id);
+    expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
+    expect(note.execute(batch)).toContain("already committed");
+    return { outcome: "success", output: "Done", request: { round: 2 } };
+  });
+  expect((await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(memory.store.listSessionFacts(s.id)).toHaveLength(1);
+  const run = memory.store.getRun(1)!;
+  expect(JSON.parse(run.request!)).toEqual({ round: 2 });
+  expect(JSON.parse(run.response!).toolCalls.map((c: { result: string }) => c.result)).toHaveLength(2);
+});
+
+// “a run whose last submission was rejected and never corrected ... is bounced ... watermark does not move”.
+test("2026-09-07: bounced is not empty", async () => {
+  const { s, t } = session(); memory.close();
+  let reject = true;
+  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    if (reject) (raw as RecordingAgentInput).tools[2]!.execute({ facts: [{ category: "invalid" }] });
+    return { outcome: "success", output: "No more text", request: {} };
+  });
+  const input = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  expect((await memory.record(input)).outcome).toBe("bounced");
+  expect(memory.store.getRun(1)?.outcome).toBe("bounced");
+  expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls[0].input).toEqual({ facts: [{ category: "invalid" }] });
+  expect(memory.store.getWatermark(s.id, "main")).toBeNull();
+  reject = false;
+  expect(await memory.record(input)).toMatchObject({ outcome: "success", facts: [] });
+  expect(memory.store.getWatermark(s.id, "main")?.lastRecordedTurn).toBe(t.id);
+  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+});

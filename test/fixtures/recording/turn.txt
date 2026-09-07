@@ -51,5 +51,5 @@ That's it — you spotted a real swap. Recording it:
 
 Receipts:
 T1: 2 omitted calls (including partial calls)
-expand: T1 tool=1 full
-expand: T1 tool=2 full
+expand: trace({"address":"T1","tool":1,"full":true})
+expand: trace({"address":"T1","tool":2,"full":true})

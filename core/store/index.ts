@@ -14,6 +14,7 @@ import type {
   KnowledgeScope,
   Fact,
   FactCategory,
+  EventStatus,
   FactRelation,
   KnowledgeMark,
   KnowledgeMarkKind,
@@ -75,6 +76,7 @@ CREATE TABLE IF NOT EXISTS facts (
   actor TEXT NOT NULL CHECK (actor IN ('user','agent')),
   text TEXT NOT NULL,
   quote TEXT,
+  status TEXT CHECK (status IN ('completed','reported','dispatched','attempted')),
   source TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -120,7 +122,7 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
 
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('recording','integration')),
+  kind TEXT NOT NULL CHECK (kind IN ('recording','integration','manual')),
   session_id INTEGER REFERENCES sessions(id),
   branch TEXT,
   range_from TEXT,
@@ -130,7 +132,7 @@ CREATE TABLE IF NOT EXISTS runs (
   mode TEXT,
   request TEXT,
   response TEXT,
-  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced')),
   created_at TEXT NOT NULL
 );
 
@@ -232,6 +234,7 @@ export interface FactCommitInput {
   actor: Actor;
   text: string;
   quote?: string | null;
+  status?: EventStatus | null;
   source: string[];
   createdAt: string;
   support?: RecordingRelationTarget[];
@@ -241,6 +244,7 @@ export interface FactCommitInput {
 export interface CommitRecordingRunInput {
   run: RunInput; // sessionId required: every turn, watermark, and delivery must belong to it
   facts: FactCommitInput[];
+  responseForFacts?: (ids: number[]) => string;
   watermark?: { sessionId: number; branch: string; lastRecordedTurn: number };
   pendingDelivery?: { sessionId: number; branch: string | null };
 }
@@ -363,6 +367,7 @@ function toFact(row: any): Fact {
     actor: row.actor,
     text: row.text,
     quote: row.quote,
+    status: row.status ?? null,
     source: JSON.parse(row.source),
     createdAt: row.created_at,
   };
@@ -419,6 +424,34 @@ export class Store {
     // SQLITE_BUSY at once, without the busy handler, when a writer is already active.
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA_SQL);
+    this.migrateNoteTools();
+  }
+
+  private migrateNoteTools(): void {
+    const columns = this.db.prepare("PRAGMA table_info(facts)").all() as { name: string }[];
+    const runs = this.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'runs'").get() as { sql: string };
+    const addStatus = !columns.some((c) => c.name === "status"), rebuildRuns = !runs.sql.includes("'manual'");
+    if (!addStatus && !rebuildRuns) return;
+    this.db.exec("PRAGMA foreign_keys = OFF");
+    try {
+      this.transaction(() => {
+        if (addStatus) {
+          this.db.exec("ALTER TABLE facts ADD COLUMN status TEXT CHECK (status IN ('completed','reported','dispatched','attempted'))");
+          for (const status of ["completed", "reported", "dispatched", "attempted"]) {
+            this.db.prepare("UPDATE facts SET status = ?, text = substr(text, ?) WHERE category = 'event' AND text LIKE ?")
+              .run(status, status.length + 3, `${status}: %`);
+          }
+          this.db.exec("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')");
+        }
+        if (rebuildRuns) {
+          const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'runs'").get() as { seq: number } | undefined;
+          const schema = SCHEMA_SQL.slice(SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS runs ("), SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS knowledge_marks"));
+          this.db.exec(schema.replace("runs (", "runs_ticket09 ("));
+          this.db.exec("INSERT INTO runs_ticket09 SELECT * FROM runs; DROP TABLE runs; ALTER TABLE runs_ticket09 RENAME TO runs;");
+          if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = 'runs'").run(sequence.seq);
+        }
+      });
+    } finally { this.db.exec("PRAGMA foreign_keys = ON"); }
   }
 
   close(): void {
@@ -562,6 +595,15 @@ export class Store {
     return this.getRun(this.insertRun(input))!;
   }
 
+  updateRun(id: number, input: RunInput & { outcome: RunOutcome }): void {
+    const previous = this.getRun(id);
+    if (!previous) throw new Error(`run ${id} does not exist`);
+    const factIds = JSON.parse(previous.response ?? "{}").factIds;
+    const response = JSON.parse(input.response ?? "{}");
+    this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
+      .run(input.request ?? null, JSON.stringify({ ...response, ...(factIds ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+  }
+
   getRun(id: number): Run | null {
     const row = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(id);
     return row ? toRun(row) : null;
@@ -599,7 +641,7 @@ export class Store {
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
           }
-          const info = this.db.prepare("INSERT INTO facts (turn_id, category, actor, text, quote, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(f.turnId, f.category, f.actor, f.text, f.quote ?? null, JSON.stringify(f.source), f.createdAt);
+          const info = this.db.prepare("INSERT INTO facts (turn_id, category, actor, text, quote, status, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(f.turnId, f.category, f.actor, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt);
           batchIds.push(Number(info.lastInsertRowid));
         }
         const resolve = (target: string, batchIndex: number): number => {
@@ -634,13 +676,13 @@ export class Store {
           }
         });
         let response: Record<string, unknown>;
-        try { const parsed = JSON.parse(input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
+        try { const parsed = JSON.parse(input.responseForFacts?.(batchIds) ?? input.run.response ?? "{}"); response = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : { output: parsed }; }
         catch { response = { output: input.run.response }; }
         this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ ...response, factIds: batchIds }), runId);
         if (input.watermark) {
           this.setWatermark(input.watermark.sessionId, input.watermark.branch, input.watermark.lastRecordedTurn, undefined);
         }
-        if (input.pendingDelivery) {
+        if (input.pendingDelivery && batchIds.length) {
           this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
         }
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
@@ -728,6 +770,18 @@ export class Store {
    * is the session_id of the run that created its first revision (knowledge carry no session
    * column of their own; the schema in spec.md does not give them one).
    */
+  isKnowledgeVisible(id: number, sessionId: number, rev?: number): boolean {
+    const knowledge = this.getKnowledge(id), session = this.getSession(sessionId);
+    if (!knowledge || !session) return false;
+    const revision = this.getKnowledgeRevision(id, rev ?? knowledge.currentRevision);
+    if (!revision) return false;
+    if (revision.scope === "global") return true;
+    if (knowledge.projectId !== session.projectId) return false;
+    if (revision.scope === "project") return true;
+    const origin = this.getKnowledgeRevision(id, 1)?.runId;
+    return origin != null && this.getRun(origin)?.sessionId === sessionId;
+  }
+
   listVisibleKnowledge(sessionId: number, projectId: number): KnowledgeWithRevision[] {
     const rows = this.db
       .prepare(
@@ -1021,17 +1075,23 @@ export class Store {
     if (scope === "raw") {
       if (sessionId === undefined || !this.getSession(sessionId)) throw new Error("raw search requires an existing sessionId");
       const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
-      return (this.db.prepare(`SELECT t.id FROM turns t WHERE t.session_id = ? AND
+      return (this.db.prepare(`SELECT t.id FROM turns t JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? AND
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
-        .all(sessionId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+        .all(this.getSession(sessionId)!.projectId, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     }
     const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT rowid AS id FROM facts_fts WHERE facts_fts MATCH ? ORDER BY rowid").all(query) as { id: number }[]).map((r) => `F${r.id}`);
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT r.knowledge_id, r.rev FROM knowledge_revisions_fts f
       JOIN knowledge_revisions r ON r.id = f.rowid WHERE knowledge_revisions_fts MATCH ? ORDER BY r.knowledge_id, r.rev`)
       .all(query) as { knowledge_id: number; rev: number }[]).map((r) => `K${r.knowledge_id}@${r.rev}`);
-    return [...facts, ...knowledge];
+    const visible = [...facts, ...knowledge].filter((address) => {
+      if (sessionId === undefined) return true;
+      if (address.startsWith("K")) { const [id, rev] = address.slice(1).split("@").map(Number); return this.isKnowledgeVisible(id!, sessionId, rev); }
+      const fact = this.getFact(Number(address.slice(1)))!;
+      return this.getSession(this.getTurn(fact.turnId)!.sessionId)?.projectId === this.getSession(sessionId)?.projectId;
+    });
+    return scope === "all" && sessionId !== undefined ? [...visible, ...this.searchAddresses(query, "raw", sessionId)] : visible;
   }
 
   // -- watermarks --
@@ -1044,8 +1104,11 @@ export class Store {
       UNION
       SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
       WHERE t.session_id = ?
-    ) SELECT f.* FROM facts f JOIN lineage l ON f.turn_id = l.id ORDER BY f.id`)
-      .all(sessionId, branch, sessionId).map(toFact);
+    ) SELECT f.* FROM facts f WHERE (f.turn_id IN (SELECT id FROM lineage)
+        AND f.id NOT IN (SELECT j.value FROM runs r, json_each(CASE WHEN json_valid(r.response) THEN r.response ELSE '{}' END, '$.factIds') j WHERE r.kind = 'manual'))
+      OR f.id IN (SELECT j.value FROM runs r, json_each(CASE WHEN json_valid(r.response) THEN r.response ELSE '{}' END, '$.factIds') j
+        WHERE r.kind = 'manual' AND r.session_id = ? AND r.branch = ?) ORDER BY f.id`)
+      .all(sessionId, branch, sessionId, sessionId, branch).map(toFact);
   }
 
   listIntegratedProjectFacts(projectId: number): Fact[] {
