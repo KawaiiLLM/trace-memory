@@ -103,7 +103,10 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
   const usage = (response.usage ?? null) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null;
   const calls = (Array.isArray(response.toolCalls) ? response.toolCalls : []) as { name: string; input?: unknown; result?: string }[];
   const counts = new Map<string, number>(); for (const c of calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
-  const problems = (Array.isArray(response.problems) ? response.problems : []) as string[];
+  const problems = (Array.isArray(response.problems) ? response.problems as string[] : [])
+    .concat(Array.isArray(response.results) ? (response.results as unknown[]).filter((r): r is string => typeof r === "string" && r.startsWith("rejected:")) : [])
+    .concat(typeof run.response === "string" && run.response.startsWith("rejected:") ? [run.response] : []);
+  if (!problems.length && run.outcome !== "success") problems.push(`no problem text recorded; response: ${cut(run.response ?? "", 40, 0)}`);
   const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
     `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
     `  model ${run.model ?? "?"}  mode ${run.mode ?? "?"}`,

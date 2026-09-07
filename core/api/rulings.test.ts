@@ -663,3 +663,14 @@ test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw
   expect(full).toContain("request (preview"); expect(full).toContain("response (preview");
   expect(() => memory.trace("R999")).toThrow("does not exist");
 });
+
+test("2026-09-07: R<n> shows the rejection reason of a manual write instead of claiming no problems", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "bad source", source: ["T999#user"] }] });
+  const run = memory.store.listRuns(s.id).at(-1)!;
+  expect(run.outcome).toBe("bounced");
+  const summary = memory.trace(`R${run.id}`);
+  expect(summary).not.toContain("problems: none");
+  expect(summary).toMatch(/problems: .*(invalid source|rejected)/);
+});

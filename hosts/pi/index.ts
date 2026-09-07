@@ -256,10 +256,12 @@ export default function (pi: ExtensionAPI) {
         // The nearest recorded ancestor, whichever branch recorded it; integration progress from the source.
         const recorded = memory.store.lastRecordedAncestor(saved.sessionId, state.head);
         const source = memory.store.getWatermark(saved.sessionId, saved.branch);
-        // Integration progress carries over only when the source's recorded turn is on the new path: then every
-        // integrated fact is on it too. Forked earlier, the common facts are integrated again (commits that cite
-        // off-path facts do not apply here), rather than skipped.
-        const integrated = source?.lastRecordedTurn && source.lastRecordedTurn === recorded ? source.lastIntegratedFact ?? undefined : undefined;
+        // Integration progress carries over only when every fact the source integrated lies on the new path
+        // (manual facts can be integrated before their turn is recorded, so the recording watermark proves
+        // nothing). Otherwise the common facts are integrated again rather than skipped.
+        const integrated = source?.lastIntegratedFact && memory.store.listBranchFacts(saved.sessionId, saved.branch)
+          .filter(f => f.id <= source.lastIntegratedFact!)
+          .every(f => memory.store.factOnPath(f, { sessionId: saved.sessionId!, headTurnId: state.head! })) ? source.lastIntegratedFact : undefined;
         if (recorded || integrated) memory.store.setWatermark(saved.sessionId, state.branch, recorded ?? undefined, integrated);
       }
     } else {
