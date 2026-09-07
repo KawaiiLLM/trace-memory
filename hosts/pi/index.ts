@@ -205,14 +205,23 @@ export default function (pi: ExtensionAPI) {
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
+  // Footer status item (user ruling 2026-09-07): one indicator in Pi theme colours — dim ○ idle,
+  // accent ● recording running, success ● integration running, warning ● paused or committed with
+  // problems, error ● the last run failed — then today's plugin spend as ☉ $x.xx, reset daily.
+  const activity = { running: new Set<"recording" | "integration">(), last: "ok" as "ok" | "warning" | "error" };
   const showSpend = (context: ExtensionContext) => {
-    if (!state?.sessionId || !context.ui?.setStatus) return;
-    const s = memory.spend(state.sessionId);
-    context.ui.setStatus("trace-memory", `mem ${s.runs.recording + s.runs.integration + s.runs.manual} runs $${s.cost.toFixed(3)}`);
+    if (!context.ui?.setStatus) return;
+    const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
+    const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
+    const indicator = activity.running.has("recording") ? paint("accent", "●") : activity.running.has("integration") ? paint("success", "●")
+      : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    context.ui.setStatus("trace-memory", `${indicator} ☉ $${memory.spend({ since: dayStart.toISOString() }).cost.toFixed(2)}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
-    showSpend(context);
     const r = result as { outcome?: string; problems?: string[] } | undefined;
+    activity.last = r?.outcome === "failure" || r?.outcome === "cancelled" ? "error" : r?.outcome === "bounced" || r?.problems?.length ? "warning" : "ok";
+    showSpend(context);
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
   const recording = (input: Parameters<typeof memory.record>[0]) => {
@@ -348,20 +357,23 @@ export default function (pi: ExtensionAPI) {
     }
     const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
     const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
-    const background = (promise: Promise<unknown>) => {
-      pending.add(promise);
-      void promise.then(result => reportProblems(result, context), error => { showSpend(context); context.ui.notify(String(error), "error"); }).finally(() => pending.delete(promise));
+    const background = (kind: "recording" | "integration", promise: Promise<unknown>) => {
+      pending.add(promise); activity.running.add(kind); showSpend(context);
+      void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })
+        .finally(() => { pending.delete(promise); activity.running.delete(kind); showSpend(context); });
     };
     const recordingLaunch = launch("recording");
     // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is
     // already in the conversation. A result committed after this prompt started is not delivered
     // until the next prompt, so the recording waits for that prompt's turn stop.
     const undelivered = memory.store.listPendingDeliveries(sessionId, branch).length > 0;
-    if ((answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens) && !(recordingLaunch.mode === "branch" && undelivered))
-      background(recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
+    const due = answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens;
+    if (due && recordingLaunch.mode === "branch" && undelivered) { activity.last = "warning"; showSpend(context); } // paused until the next prompt delivers
+    if (due && !(recordingLaunch.mode === "branch" && undelivered))
+      background("recording", recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
     const count = memory.store.listBranchFacts(sessionId, branch, head).filter(f => f.id > (watermark?.lastIntegratedFact ?? 0)).length;
     if (count >= memory.config.integration.triggerUnintegratedFacts)
-      background(memory.integrate({ sessionId, branch, headTurnId: head, ...launch("integration") }));
+      background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...launch("integration") }));
   });
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);

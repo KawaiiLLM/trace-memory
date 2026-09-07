@@ -672,14 +672,14 @@ test("the plugin's spend is a footer status item updated after every run, and th
   const h = host({ "recording.triggerAnsweredTurns": 1 });
   h.provider(async c => recordingFact(c));
   await h.turn();
-  expect(h.statuses.get("trace-memory")).toMatch(/^mem 1 runs \$\d+\.\d{3}$/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> ☉ \$\d+\.\d{2}$/); // idle, today's spend
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ recording: 1, integration: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
+  expect(h.memory.spend({ since: new Date(Date.now() - 60_000).toISOString() }).runs.recording).toBe(1);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");
   expect(result.summary.usage).toMatchObject({ input: expect.any(Number), output: expect.any(Number), cost: expect.any(Object) });
-  expect(h.statuses.get("trace-memory")).toMatch(/^mem 2 runs/);
 });
 
 test("the state entry pointing at a new turn is written only after Pi persisted the user message, so a rewind before that message drops it", async () => {
@@ -709,4 +709,20 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
   const run = h.memory.store.listRuns(1).at(-1)!;
   expect(run.rangeFrom).toBe("S1/T3"); // T1 is not recorded again
   expect(h.memory.store.getTurn(3)!.parentTurnId).toBe(1);
+});
+
+test("the footer indicator follows activity: accent while recording runs, error after a failed run, warning after a committed-with-problems run, dim idle", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.prompt(); await h.answer(); await h.emit("agent_settled");
+  expect(h.statuses.get("trace-memory")).toMatch(/^<accent>●<\/accent> ☉/); // recording in flight
+  release(recordingFact(h.conversations[0]!)); await h.drain();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> ☉/);
+  h.provider(async () => { throw new Error("offline"); });
+  await h.turn();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<error>●<\/error> ☉/);
+  h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return recordingFact(c); }, { autoStop: false });
+  await h.turn();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> ☉/);
 });

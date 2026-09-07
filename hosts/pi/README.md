@@ -415,16 +415,26 @@ injection, session-knowledge isolation, shared duplicate visibility, deferred re
 completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
-## Spend in the footer
+## Footer status item
 
 Background runs never enter Pi's session totals: Pi only counts entries of the
 session file (assistant messages, tool results and summaries carrying usage).
-The host therefore publishes its own footer status item through
-`ctx.ui.setStatus("trace-memory", "mem <runs> runs $<cost>")`, the shape the
-ponytail extension uses, updated at session start and after every run; a
-statusline extension renders it as one segment. `/trace` prints the breakdown
-by run kind. The one cost Pi does count is the recording performed before a
-tree switch, whose usage rides on the branch summary.
+The host therefore publishes one footer status item through
+`ctx.ui.setStatus("trace-memory", …)`, the shape the ponytail extension uses,
+which a statusline extension renders as a segment:
+
+```text
+<indicator> ☉ $12.34
+```
+
+The indicator uses Pi theme colours: dim `○` idle, accent `●` a Recording run in
+flight, success `●` an Integration run in flight, warning `●` a branch Recording
+paused until the next prompt delivers or the last run committed with problems,
+error `●` the last run failed. The amount is the plugin's spend since local
+midnight across all sessions, at the model's configured API rates (Pi's own
+cost formula), so it resets daily. `/trace` prints the session's breakdown by
+run kind. The one cost Pi does count is the Recording performed before a tree
+switch, whose usage rides on the branch summary.
 
 ## Known limits
 

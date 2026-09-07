@@ -969,6 +969,9 @@ export class Store {
   listRuns(sessionId: number): Run[] {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
+  listRunsSince(createdAt: string): Run[] {
+    return this.db.prepare("SELECT * FROM runs WHERE created_at >= ? ORDER BY id").all(createdAt).map(toRun);
+  }
 
   listWatermarks(sessionId: number): Watermark[] {
     return (this.db.prepare("SELECT branch FROM watermarks WHERE session_id = ? ORDER BY branch").all(sessionId) as { branch: string }[])

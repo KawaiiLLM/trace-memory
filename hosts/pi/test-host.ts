@@ -20,7 +20,8 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   const model = { provider: "fake", id: "test", api: "openai-completions" };
   const statuses = new Map<string, string | undefined>();
-  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text) },
+  const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+      theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` } },
     sessionManager: { getSessionId: () => "pi-test", getBranch: () => entries, getEntries: () => allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,

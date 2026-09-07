@@ -52,10 +52,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
-  const spend = (sessionId: number) => {
-    session(sessionId);
+  const spend = (scope: number | { since: string }) => {
+    if (typeof scope === "number") session(scope);
     const totals = { runs: { recording: 0, integration: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    for (const run of store.listRuns(sessionId)) {
+    for (const run of typeof scope === "number" ? store.listRuns(scope) : store.listRunsSince(scope.since)) {
       totals.runs[run.kind]++;
       let usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
       try { usage = JSON.parse(run.response ?? "{}").usage ?? null; } catch { usage = null; }
