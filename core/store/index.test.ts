@@ -48,7 +48,7 @@ describe("schema", () => {
       "knowledge_marks",
       "pending_deliveries",
       "watermarks",
-      "idx_knowledge_project_status",
+      "idx_knowledge_project",
       "idx_runs_session",
     ]) {
       expect(names).toContain(expected);
@@ -287,7 +287,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
 
     // the knowledge itself still holds the round-2 text, untouched by the rejected round-3 edit
     const finalKnowledge = store.getKnowledgeWithRevision(knowledgeId)!;
-    expect(finalKnowledge.revision.rev).toBe(2);
+    expect(finalKnowledge.revision.id).toBe(2);
     expect(finalKnowledge.revision.text).toBe("The project uses pnpm exclusively.");
   });
 });
@@ -349,10 +349,14 @@ describe("visibility rule", () => {
 
     // A knowledge item's project is the project of the session that integrated it; only global knowledge have none.
     function newKnowledge(scope: "session" | "project" | "global", sessionId: number, text: string) {
+      const turn = store.appendTurn({ sessionId, kind: "turn", startedAt: "2026-01-01T00:01:00Z" });
+      const evidence = store.commitRecordingRun({ run: { kind: "recording", sessionId, createdAt: "2026-01-01T00:01:00Z" }, facts: [
+        { turnId: turn.id, category: "observation", actor: "user", text: "context fact", source: [`T${turn.id}#user`], createdAt: "2026-01-01T00:01:00Z" } ] });
+      if (!evidence.ok) throw new Error("fixture evidence failed");
       const r = store.commitIntegrationRun({
         run: { kind: "integration", sessionId, createdAt: "2026-01-01T00:01:00Z" },
         operations: [
-          { op: "create", handle: "$e1", author: "integration", text, category: "term", scope, supports: [factId], createdAt: "2026-01-01T00:01:00Z" },
+          { op: "create", handle: "$e1", author: "integration", text, category: "term", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
         ],
       });
       if (!r.ok) throw new Error("setup failed");
@@ -425,10 +429,10 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   const integrationAt = "2026-01-01T00:01:00Z";
 
   test.each([
-    ["revision", "knowledge_revisions", "knowledge_id, rev, text, category, scope, supports, op, created_at"],
+    ["revision", "knowledge_revisions", "id, knowledge_id, parent_id, text, category, scope, supports, op, created_at"],
     ["tool ordinal", "tool_calls", "turn_id, ordinal, name, status"],
     ["turn ordinal", "turns", "session_id, ordinal, kind, started_at"],
-    ["revision mark", "knowledge_marks", "knowledge_id, rev, kind, created_at"],
+    ["revision mark", "knowledge_marks", "knowledge_id, commit_id, kind, created_at"],
   ])("database rejects a duplicate %s", (_name, table, columns) => {
     const { s, t, factId } = seed();
     const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
@@ -465,22 +469,24 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
 
   test("knowledge origin survives another session's edit and project moves without revision-one ownership", () => {
     const { p, s, factId } = seed(), peer = makeSession(p.id);
+    const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: integrationAt });
+    const recorded = store.commitRecordingRun({ run: { kind: "recording", sessionId: peer.id, createdAt: integrationAt },
+      facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "private term", source: [`T${turn.id}#user`], createdAt: integrationAt }] });
+    if (!recorded.ok) throw new Error("setup failed");
+    const peerFact = recorded.facts[0]!.id;
     const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
       operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: integrationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.commitIntegrationRun({ run: { kind: "integration", sessionId: peer.id, createdAt: integrationAt },
-      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "private term", category: "term", scope: "session", supports: [factId], because: [factId], createdAt: integrationAt }] }).ok).toBe(true);
-    store.db.exec("UPDATE knowledge_revisions SET run_id = NULL WHERE rev = 1");
-    const target = store.declareProject(s.id, "destination", "mark");
+      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: integrationAt }] }).ok).toBe(true);
+    const target = store.declareProject(peer.id, "destination", "mark");
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
     store.mergeProject(target.id, survivor.id);
     store.close(); store = new Store(dbPath);
-    expect(store.db.prepare("SELECT origin_session_id FROM knowledge WHERE id = ?").get(id)).toEqual({ origin_session_id: s.id });
-    expect(store.isKnowledgeVisible(id, s.id)).toBe(true);
-    expect(store.isKnowledgeVisible(id, peer.id)).toBe(false);
-    expect(store.listVisibleKnowledge(s.id, survivor.id).map(e => e.knowledge.id)).toEqual([id]);
-    expect(store.listVisibleKnowledge(peer.id, p.id)).toEqual([]);
+    expect(store.getKnowledge(id)?.originSessionId).toBe(s.id);
+    expect(store.currentCommit(id, store.knowledgePath(peer.id)).map(r => r.id)).toEqual([2]);
+    expect(store.currentCommit(id, store.knowledgePath(s.id)).map(r => r.id)).toEqual([1]);
   });
 
   test("a scope change moves the knowledge's ownership, so it stays visible after reopening", () => {
@@ -491,7 +497,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
-    expect(store.getKnowledge(id)!.projectId).toBeNull();
+    expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     const edited = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
       operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
@@ -523,11 +529,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (rejected.ok) return;
     expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
     const merged = store.commitIntegrationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: bId, expectedRevision: 1 }, { knowledgeId: bId, expectedRevision: 1 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: bId, expectedRevision: 2 }, { knowledgeId: bId, expectedRevision: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
     ] });
     expect(merged.ok).toBe(true);
-    expect(store.getKnowledge(aId)!.status).toBe("active");
-    expect(store.getKnowledge(bId)!.status).toBe("merged");
+    expect(store.currentCommit(aId)[0]?.op).toBe("merge");
+    expect(store.currentCommit(bId)[0]?.op).toBeUndefined();
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 1 });
   });
 
@@ -597,9 +603,9 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       operations: [{ op: "archive", knowledgeId: id, expectedRevision: 1, because: [999998], createdAt: integrationAt }],
     });
     expect(archive.ok).toBe(false);
-    expect(store.getKnowledge(id)?.status).toBe("active");
-    expect(() => store.addKnowledgeMark(id, 999, "verified", integrationAt)).toThrow("no revision 999");
-    expect(store.addKnowledgeMark(id, 1, "verified", integrationAt).rev).toBe(1);
+    expect(store.currentCommit(id)[0]?.op).toBe("create");
+    expect(() => store.addKnowledgeMark(id, 999, "verified", integrationAt)).toThrow("no commit 999");
+    expect(store.addKnowledgeMark(id, 1, "verified", integrationAt).commitId).toBe(1);
   });
 
   test("an integration rejection rolls back knowledge and lastIntegratedFact; a foreign watermark is rejected", () => {

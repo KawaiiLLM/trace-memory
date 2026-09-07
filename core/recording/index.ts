@@ -57,7 +57,7 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
   const index = watermark == null ? -1 : ancestry.findIndex((t) => t.id === watermark);
   if (watermark != null && index < 0) throw new Error("branch watermark is not an ancestor of its head; use a new branch identity");
   const turns = ancestry.slice(index + 1).map((turn) => ({ turn, calls: store.listToolCalls(turn.id) }));
-  const knowledge = store.listVisibleKnowledge(session.id, session.projectId);
+  const knowledge = store.listCurrentKnowledge({ sessionId: session.id, headTurnId: input.headTurnId });
   const facts = store.listSessionFacts(session.id);
   return { sessionId: session.id, branch: input.branch, turns, knowledge, facts,
     model: input.model ?? "session", mode: input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent") };
@@ -71,7 +71,7 @@ export async function runRecording(
   if (!turns.length) return { outcome: "empty" };
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
-  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.rev }));
+  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.id }));
   const raw = turns.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
   const rawText = raw.map((r) => r.content).join("\n\n");
   const receipts = raw.flatMap((r) => r.receipts);

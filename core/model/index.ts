@@ -37,8 +37,6 @@ export type RelationStrength = (typeof RELATION_STRENGTHS)[number];
 export const KNOWLEDGE_SCOPES = ["session", "project", "global"] as const;
 export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 
-export const KNOWLEDGE_STATUSES = ["active", "merged", "archived"] as const;
-export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
 
 export const KNOWLEDGE_OPS = ["create", "update", "merge", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
@@ -118,16 +116,15 @@ export interface FactRelation {
 
 export interface Knowledge {
   id: number;
-  projectId: number | null; // null only for scope=global
-  status: KnowledgeStatus;
+  projectId: number | null; // stable identity attribution; each commit carries its scope
+  originSessionId: number;
   author: string;
-  currentRevision: number;
 }
 
 export interface KnowledgeRevision {
   id: number;
   knowledgeId: number;
-  rev: number;
+  parentId: number | null;
   text: string;
   category: KnowledgeCategory;
   scope: KnowledgeScope;
@@ -164,7 +161,7 @@ export interface Run {
 
 export interface KnowledgeMark {
   knowledgeId: number;
-  rev: number;
+  commitId: number;
   kind: KnowledgeMarkKind;
   createdAt: string;
 }

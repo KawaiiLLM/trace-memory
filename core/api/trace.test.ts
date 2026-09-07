@@ -38,7 +38,7 @@ afterEach(() => memory.close());
 test("current knowledge and historical snapshot include evidence and revision metadata", () => {
   const id = create();
   edit(id, 1, "use blue tiles now", { category: "constraint", scope: "global", supports: [2, 3] });
-  expect(memory.trace(`K${id}`)).toBe(`[K1@2] [constraint/global] use blue tiles now\n  supports: F2, F3\n  status: active\nRevisions:\n  K1@1 create ${time} because: none\n  K1@2 update ${time} because: F2`);
+  expect(memory.trace(`K${id}`)).toBe(`[K1@2] [constraint/global] use blue tiles now\n  supports: F2, F3\nRevisions:\n  K1@1 create ${time} because: none\n  K1@2 update ${time} because: F2`);
   expect(memory.trace(`K${id}@1`)).toBe(`[K1@1] [reference/project] use red tiles now\n  supports: F1\n  K1@1 create ${time} because: none`);
 });
 
@@ -75,13 +75,13 @@ test("Chinese token edits preserve surrounding characters from the simulation fi
 
 test("merged knowledge retain their snapshot and frozen survivor revision; archives show the archive revision", () => {
   const absorbed = create("absorbed"), survivor = create("survivor");
-  integration({ op: "merge", intoKnowledgeId: survivor, intoExpectedRevision: 1, absorb: [{ knowledgeId: absorbed, expectedRevision: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], because: [3], createdAt: time });
-  edit(survivor, 2, "later survivor");
-  expect(memory.trace(`K${absorbed}`)).toContain("[K1@1] [reference/project] absorbed\n  supports: F1\n  status: merged\n  merged_into: K2@2 (from K1@1)");
+  integration({ op: "merge", intoKnowledgeId: survivor, intoExpectedRevision: 2, absorb: [{ knowledgeId: absorbed, expectedRevision: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], because: [3], createdAt: time });
+  edit(survivor, 3, "later survivor");
+  expect(memory.trace(`K${absorbed}`)).toContain("[K1@1] [reference/project] absorbed\n  supports: F1\n  merged_into: K2@3 (from K1@1)");
   expect(memory.trace(`K${absorbed}@1`)).not.toContain("later survivor");
-  integration({ op: "archive", knowledgeId: survivor, expectedRevision: 3, because: [4], createdAt: time });
-  expect(memory.trace(`K${survivor}`)).toContain("[K2@4] [reference/project] later survivor\n  supports: F1\n  status: archived");
-  expect(memory.trace(`K${survivor}@4`)).toContain(`K2@4 archive ${time} because: F4`);
+  integration({ op: "archive", knowledgeId: survivor, expectedRevision: 4, because: [4], createdAt: time });
+  expect(memory.trace(`K${survivor}`)).toContain("[K2@5] [reference/project] \n  supports: ");
+  expect(memory.trace(`K${survivor}@5`)).toContain(`K2@5 archive ${time} because: F4`);
 });
 
 test("negation walk branches, repeats shared descendants, excludes weak and support edges, and ends every branch", () => {

@@ -151,14 +151,14 @@ test("reads return every knowledge item while injection still applies the scope 
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
-  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@1]`); // reads are unrestricted
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@${id}]`); // reads are unrestricted
   const hits = search!.execute({ query: "knowledge", layer: "knowledge" });
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(hits).toContain(`[K${id}@`);
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", knowledgeId: 3, expectedRevision: 1, because: [1], createdAt: "later" },
+    { op: "archive", knowledgeId: 3, expectedRevision: 3, because: [1], createdAt: "later" },
   ] });
-  expect(trace!.execute({ address: "K3@1" })).toContain("owner 1 scope session");
-  expect(trace!.execute({ address: "K3" })).toContain("archived");
+  expect(trace!.execute({ address: "K3@3" })).toContain("owner 1 scope session");
+  expect(trace!.execute({ address: "K3" })).toContain("archive");
 });

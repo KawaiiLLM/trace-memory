@@ -9,7 +9,7 @@ import { freezeRecording, runRecording, type RecordInput, type RecordResult } fr
 import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens } from "../render/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
-import { Store } from "../store/index.ts";
+import { Store, type KnowledgePath } from "../store/index.ts";
 
 import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
 export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
@@ -109,7 +109,7 @@ export interface TraceMemory {
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   compact(sessionId: number, branch?: string, headTurnId?: number): string;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
-  inject(target: number | { projectId: number }): string;
+  inject(target: number | { projectId: number } | KnowledgePath): string;
   /** Pending recording results for this session and branch, rendered once and marked delivered; "" when none. */
   /** Pending recording results for this session and branch, rendered but not consumed; "" when none. */
   deliver(sessionId: number, branch?: string | null): { text: string; runIds: number[] };
@@ -117,7 +117,7 @@ export interface TraceMemory {
   confirmDelivery(runIds: number[]): void;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
-  mark(knowledgeId: number, kind: "verified" | "flagged" | "clear"): string;
+  mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
   status(sessionId: number): string;
 }
@@ -130,25 +130,31 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const trace = (address: string, display: ListingOptions = {}): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
-    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target ?? "");
+    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K[1-9]\d*@)?([1-9]\d*))?)?(\.\.)?$/.exec(target ?? "");
     if (knowledgeMatch) {
-      const [id, from, to] = knowledgeMatch.slice(1).map((n) => n === undefined ? undefined : Number(n));
+      const [id, from, to] = knowledgeMatch.slice(1, 4).map((n) => n === undefined ? undefined : Number(n));
       if (flags.length || [id, from, to].some((n) => n !== undefined && !Number.isSafeInteger(n)) ||
-          (to !== undefined && to < from!)) throw invalid();
+          (to !== undefined && to < from!) || (from !== undefined && knowledgeMatch[4])) throw invalid();
+      if (target?.includes("..K") && !target.includes(`..K${id}@`)) throw invalid();
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
       // Reads are unrestricted (user ruling 2026-09-07); the scope rule applies to injection and Integration.
       const history = store.listKnowledgeRevisions(id!);
       const revision = (rev: number) => {
         const value = store.getKnowledgeRevision(id!, rev);
-        if (!value) throw new Error(`knowledge K${id} has no revision ${rev}`);
+        if (!value) throw new Error(`knowledge K${id} has no revision ${rev}; address does not exist`);
         return value;
       };
       if (to !== undefined) return renderKnowledgeDiff(revision(from!), revision(to),
-        history.filter((r) => r.rev > from! && r.rev <= to));
+        history.filter((r) => r.id > from! && r.id <= to));
       if (from !== undefined) return renderKnowledgeTrace({ knowledge, revision: revision(from) }, undefined, [], store.listKnowledgeMarks(id!));
-      return renderKnowledgeTrace({ knowledge, revision: revision(knowledge.currentRevision) },
-        history, store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!));
+      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, undefined, display.headTurnId);
+      const tips = store.currentCommit(id!, path);
+      if (knowledgeMatch[4]) return history.map(r => renderKnowledgeTrace({ knowledge, revision: r }, undefined,
+        store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!))).join("\n");
+      return tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") +
+        renderKnowledgeTrace({ knowledge, revision: r }, history, store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!))).join("\n") ||
+        `K${id}: no current commit on this path\n` + history.map(r => renderKnowledgeTrace({ knowledge, revision: r }, history, store.listKnowledgeLinks(id!))).join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

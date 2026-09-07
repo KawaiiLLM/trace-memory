@@ -59,13 +59,13 @@ test("injection stays byte-identical across a no-op recording and has no XML att
 
 test("visibility includes global, own project and own session only, excluding inactive knowledge", () => {
   const { s, f } = populated(), peer = session(s.projectId), foreign = session();
-  const own = knowledge(s.id, f.id, "open", "session"), other = knowledge(peer.id, f.id, "open", "session");
-  const outside = knowledge(foreign.id, f.id), global = knowledge(foreign.id, f.id, "goal", "global");
+  const own = knowledge(s.id, f.id, "open", "session"), other = knowledge(peer.id, recording(peer.id, turn(peer.id).id).facts[0]!.id, "open", "session");
+  const outside = knowledge(foreign.id, recording(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time },
-    operations: [{ op: "archive", knowledgeId: archived, expectedRevision: 1, because: [f.id], createdAt: time }] });
+    operations: [{ op: "archive", knowledgeId: archived, expectedRevision: archived, because: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), memory.compact(s.id)]) {
-    expect(block).toContain(`[K${own}@1]`); expect(block).toContain(`[K${global}@1]`);
+    expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}@`);
   }
 });
@@ -86,7 +86,7 @@ test("category order, chronological ties, whole trailing category omissions; lin
   for (const tag of tags.slice(0, 3)) expect(limited).toContain(`<${tag}>`);
   for (const tag of tags.slice(3)) { expect(limited).not.toContain(`<${tag}>`); expect(limited).toContain(`1 ${tag} knowledge; expand:`); }
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</knowledge>"));
-  for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@1]`);
+  for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
 });
 
 test("compaction retains oversized raw with standard tool cuts and receipts outside XML", () => {
@@ -164,21 +164,21 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
   memory.mark(e, "flagged"); expect(memory.inject(s.id)).toContain("· flagged");
-  memory.mark(e, "verified"); expect(memory.store.listKnowledgeMarks(e).filter((m) => m.rev === 2)).toHaveLength(1);
+  memory.mark(e, "verified"); expect(memory.store.listKnowledgeMarks(e).filter((m) => m.commitId === 2)).toHaveLength(1);
   memory.mark(e, "clear"); expect(memory.inject(s.id)).not.toContain("verified");
-  expect(memory.store.listKnowledgeMarks(e).map((m) => m.rev)).toEqual([1]);
+  expect(memory.store.listKnowledgeMarks(e).map((m) => m.commitId)).toEqual([1]);
 });
 
 test("literal search finds facts, historical knowledge and raw across projects", () => {
   const s = session(), t = turn(s.id, "needle raw"), n = recording(s.id, t.id, "needle fact");
   const e = knowledge(s.id, n.facts[0]!.id, "goal", "project", "needle knowledge");
   expect(memory.search("needle", "facts")).toContain("[F1]"); expect(memory.search("needle", "facts")).not.toContain("[K");
-  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@1]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
-  const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@1]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
+  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
+  const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
   memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
     op: "update", knowledgeId: e, expectedRevision: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@1]`);
+  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "toolonly", result: "literal%_", status: "success" });
@@ -214,7 +214,7 @@ test.each([
       const k = knowledge(owner.id, f.id, "reference", "project", content);
       if (content.includes(query)) { // both projects: reads are unrestricted (ruling 2026-09-07)
         expected.facts.push(`[F${f.id}]`);
-        expected.knowledge.push(`[K${k}@1]`);
+        expected.knowledge.push(`[K${k}@${k}]`);
         expected.raw.push(`[S${owner.id}/T${t.id}]`);
       }
     }
@@ -277,14 +277,14 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   expect(memory.store.listProjectFacts(project.id).map((f) => f.id)).toEqual([f.id]);
   expect(memory.store.getKnowledge(e)!.projectId).toBe(project.id);
   const peer = session(project.id);
-  expect(memory.inject(peer.id)).toContain(`[K${e}@1]`); expect(memory.inject(peer.id)).not.toContain(`[K${own}@1]`);
+  expect(memory.inject(peer.id)).toContain(`[K${e}@${e}]`); expect(memory.inject(peer.id)).not.toContain(`[K${own}@${own}]`);
   memory.declareProject(s.id, "ignored marker", "marker");
   expect(memory.store.getSession(s.id)!.projectId).toBe(project.id);
   expect(memory.store.findProjectByName("ignored marker")).toBeNull();
   memory.declareProject(s.id, "next");
   expect(memory.store.getSession(peer.id)!.projectId).toBe(project.id);
   expect(memory.store.getProject(project.id)!.mergedInto).toBeNull();
-  expect(memory.inject(s.id)).toContain(`[K${own}@1]`);
+  expect(memory.inject(s.id)).toContain(`[K${own}@${own}]`);
 });
 
 test("default listing caps continue all hits and freeze the remaining search results", () => {
@@ -329,13 +329,13 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
   const run = { sessionId: s.id, kind: "integration" as const, createdAt: time };
   memory.store.commitIntegrationRun({ run, operations: [{ op: "update", knowledgeId: a, expectedRevision: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoExpectedRevision: 1, absorb: [{ knowledgeId: c, expectedRevision: 1 }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "archive", knowledgeId: b, expectedRevision: 2, because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoExpectedRevision: b, absorb: [{ knowledgeId: c, expectedRevision: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run, operations: [{ op: "archive", knowledgeId: b, expectedRevision: 5, because: [1], createdAt: time }] });
   const hits = memory.search("pnpm", "knowledge");
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: historical; current: K${a}@2`);
-  expect(hits).toContain(`note: merged into K${b}@2`);
+  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: historical; current: K${a}@4`);
+  expect(hits).toContain(`note: merged into K${b}@5`);
   expect(hits).toContain("note: archived");
-  const current = memory.search("for installs", "knowledge").split("\n").find((l) => l.startsWith(`[K${a}@2]`))!;
+  const current = memory.search("for installs", "knowledge").split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
   expect(current).not.toContain("note:"); // the current revision carries no note
 });
 
@@ -346,8 +346,9 @@ test("reads resolve any existing address: another session's history, current rev
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;
-  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).toContain(`[K${k}@1]`);
+  expect(memory.search("shared-then-private", "knowledge", { sessionId: peer.id })).toContain(`[K${k}@${k}]`);
   expect(trace.execute({ address: `K${k}@1` })).toContain("shared-then-private goal");
-  expect(trace.execute({ address: `K${k}` })).toContain("private goal now");
+  expect(trace.execute({ address: `K${k}` })).toContain("shared-then-private goal");
+  expect(trace.execute({ address: `K${k}@2` })).toContain("private goal now");
   expect(trace.execute({ address: `K${k}@3` })).toContain("does not exist");
 });

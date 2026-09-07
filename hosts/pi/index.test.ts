@@ -254,7 +254,7 @@ test("knowledge are injected once per session, only once something exists; later
   expect((await h.prompt())?.message?.content ?? "").not.toContain("<knowledge>"); // empty store: no block at all
   await h.answer();
   const p = h.memory.store.getSession(1)!.projectId;
-  const t = h.memory.store.appendTurn({ sessionId: 1, kind: "turn", startedAt: "2026-09-06T00:00:00Z" });
+  const t = h.memory.store.getTurn(1)!;
   const recorded = h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
     facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
@@ -315,7 +315,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
     expect(commit.ok).toBe(true);
   };
   seed(1, 1, ["project", "session"]);
-  const sessionRevision = store.getKnowledgeRevision(2, 1);
+  const sessionRevision = store.getKnowledgeRevision(2, 2);
   const target = store.createProject({ name: "named", declaredBy: "mark" });
   const peer = store.createSession({ host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
@@ -334,7 +334,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.getKnowledge(1)!.projectId).toBe(target.id);
   expect(store.getKnowledge(3)!.projectId).toBe(target.id);
   expect(store.listVisibleKnowledge(1, target.id).map(v => v.knowledge.id)).toEqual([1, 2, 3]);
-  expect(store.getKnowledgeRevision(2, 1)).toEqual(sessionRevision);
+  expect(store.getKnowledgeRevision(2, 2)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
   expect(h.memory.inject(1)).toContain("仅当前会话");
   // The declaration re-injects at the next prompt through the usual path, so the model sees the new project's knowledge.

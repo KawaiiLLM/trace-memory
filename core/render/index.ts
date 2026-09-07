@@ -108,18 +108,17 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
 }
 
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
-  return `[K${knowledge.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 const revisionLine = (r: KnowledgeRevision): string =>
-  `  K${r.knowledgeId}@${r.rev} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
+  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
 const revisionSummary = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Revisions:\n${revisions.map(revisionLine).join("\n")}` : "Revisions: none";
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, revisions?: KnowledgeRevision[], links: KnowledgeLink[] = [], marks: KnowledgeMark[] = []): string {
-  return [renderKnowledge(value, marks.filter((m) => m.rev === value.revision.rev)), ...(revisions ? [
-    `  status: ${value.knowledge.status}`,
+  return [renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id)), ...(revisions ? [
     ...links.map((l) => `  ${l.kind}: K${l.toKnowledge}@${l.toRev} (from K${l.fromKnowledge}@${l.fromRev})`),
     revisionSummary(revisions),
   ] : [revisionLine(value.revision)])].join("\n");
@@ -155,7 +154,7 @@ function diffText(before: string, after: string): string {
 }
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[]): string {
-  return [`[K${a.knowledgeId}@${a.rev}..${b.rev}]`, `  text: ${diffText(a.text, b.text)}`,
+  return [`[K${a.knowledgeId}@${a.id}..${b.id}]`, `  text: ${diffText(a.text, b.text)}`,
     `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),

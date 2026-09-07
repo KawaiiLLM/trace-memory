@@ -10,7 +10,7 @@ export interface ToolDefinition {
   execute(input: unknown): string;
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
-  | { kind: "recording" | "integration"; sessionId: number; branch: string; range: { from: string; to: string };
+  | { kind: "recording" | "integration"; sessionId: number; branch: string; headTurnId?: number | null; range: { from: string; to: string };
       readKnowledgeRevisions: { knowledgeId: number; rev: number }[] };
 type Reads = { trace(address: string, options?: ListingOptions): string;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
@@ -24,7 +24,7 @@ const factSchema = { ...object({ category: { enum: FACT_CATEGORIES }, actor: { e
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
-const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*$" };
+const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*(@[1-9][0-9]*)?$" };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "merge", "archive"] }, id: knowledgeId,
   absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, text: { type: "string", minLength: 1 },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: factId, minItems: 1 },
@@ -66,7 +66,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
   if (context.kind === "integration" && !review) throw new Error("Integration tools require the frozen review context supplied by integrate()");
-  const memory = bindMemory(store, session.id, run, review);
+  const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId }
+    : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]) }
+    : review!.frozen.path;
+  const memory = bindMemory(store, session.id, run, review, path);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
@@ -76,6 +79,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const existingFact = (id: number) => !!store.getFact(id);
   const checkAddress = (address: string) => {
     for (const target of address.split(",").map((a) => a.trim())) {
+      if (/^K/.test(target)) continue; // The façade validates commit, diff and tree addresses.
       const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target);
       if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);
       const missing = () => new Error(`address does not exist: ${target}`);
@@ -159,12 +163,13 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       checkAddress(input.address);
       if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
       if (input.full !== undefined && typeof input.full !== "boolean") throw new Error("full must be boolean");
-      const content = read.trace(input.address, { ...input as ListingOptions, sessionId: session.id });
+      const content = read.trace(input.address, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
+      memory.reread(input.address);
       fetched.push({ address: input.address, input: structuredClone(input), content }); return content;
     }),
     definition("search", (input) => {
       if (typeof input.query !== "string") throw new Error("query must be a string");
-      return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id });
+      return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
     }),
     definition("note", note),
     definition("memory", input => context.kind === "recording" ? "rejected: memory is not the writer for a recording run" : memory.execute(input)),

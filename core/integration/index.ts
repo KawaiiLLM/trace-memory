@@ -14,7 +14,7 @@ const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionSta
 
 export type { IntegrationDiagnostic } from "./commit.ts";
 
-export interface IntegrateInput { sessionId: number; branch: string; model?: string; mode?: "branch" | "subagent" }
+export interface IntegrateInput { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
 export interface IntegrationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
 export interface IntegrationAgentInput {
@@ -45,7 +45,8 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
   const after = store.getWatermark(session.id, input.branch)?.lastIntegratedFact ?? 0;
   const facts = store.listProjectFacts(session.projectId);
   const rangeFacts = store.listBranchFacts(session.id, input.branch).filter((f) => f.id > after).sort((a, b) => a.id - b.id);
-  const knowledge = store.listVisibleKnowledge(session.id, session.projectId);
+  const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
+  const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
   const reminders: string[] = [];
@@ -60,7 +61,7 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
         "Cited fact:", lines.get(edge.toFact)!, "Negating fact:", lines.get(fact.id)!].join("\n"));
     }
   }
-  return { projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listIntegratedProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
+  return { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listIntegratedProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
     knowledge, lines, reminders, model: input.model ?? "session",
     mode: input.mode ?? (config.integration.subagentModeDefault ? "subagent" : "branch"), threshold: config.integration.nearThreshold };
 }
@@ -83,7 +84,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const { sessionId, branch, rangeFacts, context, knowledge, lines, reminders, model, mode, threshold } = frozen;
   if (!rangeFacts.length) return { outcome: "empty" };
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
-  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.rev }));
+  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.id }));
   const rangeText = rangeFacts.map((f) => lines.get(f.id)!).join("\n");
   const episodic = budgetFacts(rangeText, context, (f) => lines.get(f.id)!, config.render.episodicBlockTokens, "range");
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
@@ -94,11 +95,13 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
   const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeRevisions, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
-  const binding = bind({ kind: "integration", sessionId, branch, range, readKnowledgeRevisions }, run, { frozen, feedback: (batch) => {
+  const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}` +
+    (knowledge.filter(k => k.knowledge.id === item.knowledge.id).length > 1 ? `@${item.revision.id}` : "");
+  const binding = bind({ kind: "integration", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeRevisions }, run, { frozen, feedback: (batch) => {
   const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
-    .map(({ knowledge, revision }) => ({ candidate: c.id, knowledge: `K${knowledge.id}`, score: similarity(c.text, revision.text) }))
+    .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
-  const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderKnowledge(knowledge.find((e) => `K${e.knowledge.id}` === p.knowledge)!)}`);
+  const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderKnowledge(knowledge.find((e) => label(e) === p.knowledge)!)}`);
   const closer = knowledge.filter(({ revision }) => revision.category === "open" || revision.category === "goal").flatMap((knowledge) =>
     rangeFacts.map((fact) => ({ fact, score: similarity(knowledge.revision.text, fact.text) }))
       .filter((p) => p.score >= threshold).sort((a, b) => b.score - a.score)

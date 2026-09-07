@@ -100,7 +100,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
     expect(call.input).not.toContain(`[F${late}]`); expect(call.input).not.toContain(`[F${foreign}]`);
     expect(call.input).not.toContain(`inbound negate F${late}`); expect(call.input).not.toContain(`[K${e}@2]`);
   }
-  expect(calls[1]!.input).toContain(`[K${e}@1]`);
+  expect(calls[1]!.input).toContain(`[K${e}@${e}]`);
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(current);
@@ -111,14 +111,14 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   const cited = fact(), unrelatedFact = fact(memories.observation), other = session();
   const ids = [knowledge([cited]), knowledge([cited], { text: memories.observation }), knowledge([cited], { scope: "session" }),
     knowledge([cited], { scope: "global", sessionId: other })];
-  const excluded = [knowledge([unrelatedFact]), knowledge([cited], { scope: "session", sessionId: other })];
+  const excluded = [knowledge([unrelatedFact]), knowledge([fact(memories.base, { sessionId: other })], { scope: "session", sessionId: other })];
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
   const foreignSession = session(foreignProject);
-  excluded.push(knowledge([cited], { sessionId: foreignSession }));
+  excluded.push(knowledge([fact(memories.base, { sessionId: foreignSession })], { sessionId: foreignSession }));
   ids.push(knowledge([cited], { scope: "global", sessionId: foreignSession }));
   const archived = knowledge([cited]);
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "archive", knowledgeId: archived,
-    expectedRevision: 1, because: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
+    expectedRevision: archived, because: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
   watermark(unrelatedFact);
   const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
   const weak = fact(memories.interpretation, { negate: [{ target: `F${cited}`, strength: "weak" }] });
@@ -126,7 +126,7 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   const traces = ids.map((id) => memory.trace(`K${id}`)); queue(empty, empty);
   expect((await integration()).outcome).toBe("success");
   const reminder = calls[0]!.input.split("Negated-evidence reminder (review cues only; no status derived):\n\n")[1]!.split("\n\nReceipts:")[0]!;
-  for (const id of ids) expect(reminder.match(new RegExp(`\\[K${id}@1\\]`, "g"))).toHaveLength(2);
+  for (const id of ids) expect(reminder.match(new RegExp(`\\[K${id}@${id}\\]`, "g"))).toHaveLength(2);
   for (const id of excluded) expect(reminder).not.toContain(`[K${id}@`);
   expect(reminder.match(/Recorded negation strength: strong/g)).toHaveLength(ids.length);
   expect(reminder.match(/Recorded negation strength: weak/g)).toHaveLength(ids.length);
@@ -153,7 +153,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   expect(second.input.endsWith(section)).toBe(true);
   expect(second.input.split(section)).toHaveLength(2);
   const closer = second.input.split("CLOSER:\n\n")[1]!.split(section)[0]!;
-  expect(closer).toContain(`[K${e}@1]`); expect(closer).toContain(`[K${goal}@1]`); expect(closer).toContain(memory.trace(`F${f}`));
+  expect(closer).toContain(`[K${e}@${e}]`); expect(closer).toContain(`[K${goal}@${goal}]`); expect(closer).toContain(memory.trace(`F${f}`));
   expect(calls[0]!.mode).toBe("subagent"); expect(calls[0]!.model).toBe("session");
   audit(result.runId, 1);
 });
@@ -170,7 +170,7 @@ for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"]
   const before = memory.trace(`K${e}`); queue(candidate, output);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.unansweredNear).toHaveLength(["unchanged", "archive"].includes(resolution) ? 1 : 0);
-  expect(memory.store.getKnowledge(e)?.currentRevision).toBe(["update", "merge", "archive"].includes(resolution) ? 2 : 1);
+  expect(memory.store.currentCommit(e)[0]?.id).toBe(["update", "merge", "archive"].includes(resolution) ? 4 : 1);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(f);
   expect(calls).toHaveLength(2);
 });
@@ -299,7 +299,7 @@ for (const operation of ["update", "archive", "merge"] as const) test(`accountin
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
-  expect(memory.store.getKnowledge(e)?.status).toBe(operation === "archive" ? "archived" : operation === "merge" ? "merged" : "active");
+  expect(memory.store.currentCommit(e)[0]?.op).toBe(operation === "archive" ? "archive" : operation === "merge" ? undefined : "update");
 });
 
 test("a target that moved on bounces the whole batch, audits the rejection and preserves the watermark", async () => {
@@ -312,7 +312,7 @@ test("a target that moved on bounces the whole batch, audits the rejection and p
     expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
   resolve(output); const result = await pending;
   if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
-  expect(result.problems.join(" ")).toContain("expected revision 1, current revision is 2");
+  expect(result.problems.join(" ")).toContain("current: K1@2");
   expect(memory.store.getKnowledge(e + 1)).toBeNull();
   expect(audit(result.runId, 1, "bounced").toolCalls.at(-1).result).toContain("rejected:");
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
@@ -325,12 +325,12 @@ test("merge records survivor revision, absorbed links, and trace history", async
   const output = { ...empty, operations: [{ op: "merge", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`], because: [`F${b}`] }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, rev: 2 }]);
-  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([{ fromKnowledge: absorbed, fromRev: 1, kind: "merged_into", toKnowledge: survivor, toRev: 2 }]);
-  expect(memory.trace(`K${absorbed}`)).toContain(`K${survivor}@2`);
+  expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, rev: 3 }]);
+  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([{ fromKnowledge: absorbed, fromRev: 2, kind: "merged_into", toKnowledge: survivor, toRev: 3 }]);
+  expect(memory.trace(`K${absorbed}`)).toContain(`K${survivor}@3`);
   expect(memory.trace(`K${survivor}`)).toContain("merge");
-  expect(memory.trace(`K${survivor}@1..2`)).toContain(`F${b}`);
-  expect(memory.store.getKnowledgeRevision(survivor, 2)?.because).toEqual([b]);
+  expect(memory.trace(`K${survivor}@1..3`)).toContain(`F${b}`);
+  expect(memory.store.getKnowledgeRevision(survivor, 3)?.because).toEqual([b]);
 });
 
 test("numbers, token overage and unanswered NEAR are diagnostics, never gates", async () => {
@@ -360,7 +360,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
   resolve(output); const result = await pending;
   expect(result.outcome).toBe("bounced");
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
-  expect(memory.store.getKnowledge(e)?.currentRevision).toBe(1);
+  expect(memory.store.currentCommit(e)[0]?.id).toBe(1);
 });
 
 test("each session settles only its own branch facts and shares already-settled context", async () => {
@@ -459,10 +459,12 @@ test("exactly 200 estimated tokens is accepted without a length diagnostic", asy
 
 test("narrowing another session's global knowledge cannot conceal an uncited fact", async () => {
   const f = fact(), e = knowledge([f], { scope: "global", sessionId: session() });
-  const output = { ...empty, operations: [{ op: "update", ...updateOutput(e, f).operations[0], scope: "session" }] };
+  const other = fact(memories.observation, { actor: "agent" });
+  const output = { ...empty, operations: [{ op: "update", ...updateOutput(e, other).operations[0], scope: "session" }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
+  expect(memory.store.currentCommit(e, memory.store.knowledgePath(sessionId))[0]?.scope).toBe("session");
 });
 
 

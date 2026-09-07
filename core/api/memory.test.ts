@@ -55,7 +55,7 @@ for (const mode of ["failure", "cancelled", "throw", "abort"] as const) test(`In
   });
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("commit is success");
-  expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
+  expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
   expect(memory.store.getWatermark(1, "main")?.lastIntegratedFact).toBe(1);
   const run = memory.store.getRun(result.runId)!;
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.response!).problems).toEqual(["late provider error"]);
@@ -105,14 +105,14 @@ test("manual memory reuses current revisions and refuses inactive or duplicate m
   const merge = { ...create, op: "merge", id: "K1", absorb: ["K2"] };
   for (const absorb of [["K1"], ["K2", "K2"], ["K999"], []]) {
     expect(write.execute({ operations: [{ ...merge, absorb }], skipped: [] })).toContain("rejected:");
-    expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
-    expect(memory.store.getKnowledge(2)?.status).toBe("active");
+    expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
+    expect(memory.store.currentCommit(2)[0]?.op).toBe("create");
   }
   write.execute({ operations: [merge], skipped: [] });
   expect(write.execute({ operations: [{ ...create, op: "update", id: "K2" }], skipped: [] })).toContain("rejected:");
-  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1" }], skipped: [] })).committed[0].rev).toBe(3);
+  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1" }], skipped: [] })).committed[0].rev).toBe(4);
   write.execute({ operations: [{ op: "archive", id: "K1", because: ["F1"] }], skipped: [] });
-  expect(memory.store.getKnowledge(1)?.status).toBe("archived");
+  expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
   expect(memory.trace("K1")).toContain("archive");
 });
 
@@ -128,8 +128,8 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: ["F1"] });
-  expect(memory.store.getKnowledge(1)?.status).toBe("archived");
-  expect(memory.store.getKnowledgeRevision(2, 1)?.supports).toEqual([2]);
+  expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
+  expect(memory.store.getKnowledgeRevision(2, 3)?.supports).toEqual([2]);
 });
 
 test("inserting an archive before a retained create cannot erase its unanswered NEAR", async () => {
@@ -157,6 +157,6 @@ test("2026-09-07: an audit update that fails after the commit is reported, not t
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.problems).toEqual(["audit update failed after commit: Error: disk full"]);
-  expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
+  expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
   expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
 });

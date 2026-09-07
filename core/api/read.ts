@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
-import type { Store, KnowledgeWithRevision } from "../store/index.ts";
+import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import { freezeRecording } from "../recording/index.ts";
 import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
 
-export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number }
+export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
@@ -31,12 +31,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return value;
   };
   const factLine = (id: number) => renderFact(store.getFact(id)!, store.listFactRelations(id));
-  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value, store.listKnowledgeMarks(value.knowledge.id).filter((m) => m.rev === value.revision.rev));
-  const knowledgeFor = (projectId: number, sessionId = 0) => {
-    const active = budgetKnowledge(store.listVisibleKnowledge(sessionId, projectId), config.render.knowledgeBlockTokens, knowledgeLine);
+  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value, store.listKnowledgeMarks(value.knowledge.id).filter((m) => m.commitId === value.revision.id));
+  const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null) => {
+    const active = budgetKnowledge(store.listVisibleKnowledge(sessionId, projectId, headTurnId), config.render.knowledgeBlockTokens, knowledgeLine);
     return { content: renderKnowledgeBlock(active.groups), receipts: active.receipts };
   };
-  const knowledge = (id: number) => knowledgeFor(session(id).projectId, id);
+  const knowledge = (id: number, headTurnId?: number | null) => knowledgeFor(session(id).projectId, id, headTurnId);
   const trace = (address: string, options: ListingOptions = {}): string => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
@@ -55,7 +55,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     trace,
     // Knowledge are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
-    inject: (target: number | { projectId: number }): string => {
+    inject: (target: number | { projectId: number } | KnowledgePath): string => {
+      if (typeof target === "object" && "sessionId" in target) return finish(knowledge(target.sessionId, target.headTurnId));
       if (typeof target === "object") {
         // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
         if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
@@ -71,7 +72,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.
     confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
-      const block = knowledge(sessionId);
+      const block = knowledge(sessionId, store.knowledgePath(sessionId, branch, headTurnId).headTurnId);
       const after = store.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;
       const turns = headTurnId === undefined ? store.listTurns(sessionId).filter((t) => t.id > after)
         : freezeRecording(store, { sessionId, branch, headTurnId }, config).turns.map((t) => t.turn);
@@ -98,10 +99,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         const [id, rev] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
         // A hit on history or on a retired item must not read like a current rule.
-        const status = knowledge.status === "merged"
-          ? (() => { const link = store.listKnowledgeLinks(id!).find((l) => l.kind === "merged_into"); return link ? `merged into K${link.toKnowledge}@${link.toRev}` : "merged"; })()
-          : knowledge.status === "archived" ? "archived"
-          : rev !== knowledge.currentRevision ? `historical; current: K${id}@${knowledge.currentRevision}` : "";
+        const current = store.currentCommit(id!, options.sessionId === undefined ? null : store.knowledgePath(options.sessionId, undefined, options.headTurnId));
+        const link = store.listKnowledgeLinks(id!).find(l => l.fromRev === rev && l.kind === "merged_into");
+        const status = current.some(r => r.id === rev) ? (current.find(r => r.id === rev)!.op === "archive" ? "archived" : "")
+          : link ? `merged into K${link.toKnowledge}@${link.toRev}`
+          : current.some(r => r.op === "archive") ? "archived"
+          : `historical; current: ${current.map(r => `K${id}@${r.id}`).join(", ") || "none"}`;
         return knowledgeLine({ knowledge, revision: store.getKnowledgeRevision(id!, rev!)! }) + (status ? `\n  note: ${status}` : "");
       }).map(listingLine);
       return page(lines, options, "Search uses literal substring search. No hit does not mean absent.");
@@ -110,10 +113,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const project = store.declareProject(sessionId, name, source);
       return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
     },
-    mark: (knowledgeId: number, kind: "verified" | "flagged" | "clear"): string => {
+    mark: (address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string => {
       if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");
-      const rev = store.setKnowledgeMark(knowledgeId, kind, new Date().toISOString());
-      return `K${knowledgeId}@${rev}: ${kind}`;
+      const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(typeof address === "number" ? `K${address}` : address);
+      if (!match) throw new Error("invalid knowledge address");
+      const id = Number(match[1]);
+      const tips = match[2] ? [store.getKnowledgeRevision(id, Number(match[2]))].filter(r => r !== null) : store.currentCommit(id, path ?? null);
+      if (tips.length !== 1) throw new Error(`K${id}: ${tips.length ? "several tips; specify a commit" : "no current commit"}`);
+      const commitId = store.mark(tips[0]!.id, kind, new Date().toISOString());
+      return `K${id}@${commitId}: ${kind}`;
     },
     status: (sessionId: number): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId), watermarks = store.listWatermarks(sessionId);

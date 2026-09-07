@@ -97,15 +97,13 @@ CREATE TABLE IF NOT EXISTS knowledge (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   origin_session_id INTEGER REFERENCES sessions(id),
   project_id INTEGER REFERENCES projects(id),
-  status TEXT NOT NULL CHECK (status IN ('active','merged','archived')) DEFAULT 'active',
-  author TEXT NOT NULL,
-  current_revision INTEGER NOT NULL DEFAULT 1
+  author TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_revisions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id),
-  rev INTEGER NOT NULL,
+  parent_id INTEGER REFERENCES knowledge_revisions(id),
   text TEXT NOT NULL,
   category TEXT NOT NULL CHECK (category IN ('constraint','open','dispute','goal','mechanism','term','reference')),
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
@@ -114,7 +112,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   because TEXT,
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
-  UNIQUE (knowledge_id, rev)
+  UNIQUE (knowledge_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_links (
@@ -124,8 +122,8 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
   to_knowledge INTEGER NOT NULL,
   to_rev INTEGER NOT NULL,
   PRIMARY KEY (from_knowledge, from_rev, kind, to_knowledge, to_rev),
-  FOREIGN KEY (from_knowledge, from_rev) REFERENCES knowledge_revisions(knowledge_id, rev),
-  FOREIGN KEY (to_knowledge, to_rev) REFERENCES knowledge_revisions(knowledge_id, rev)
+  FOREIGN KEY (from_knowledge, from_rev) REFERENCES knowledge_revisions(knowledge_id, id),
+  FOREIGN KEY (to_knowledge, to_rev) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -146,10 +144,10 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE TABLE IF NOT EXISTS knowledge_marks (
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id),
-  rev INTEGER NOT NULL,
+  commit_id INTEGER NOT NULL UNIQUE REFERENCES knowledge_revisions(id),
   kind TEXT NOT NULL CHECK (kind IN ('verified','flagged')),
   created_at TEXT NOT NULL,
-  UNIQUE (knowledge_id, rev)
+  FOREIGN KEY (knowledge_id, commit_id) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS pending_deliveries (
@@ -167,7 +165,7 @@ CREATE TABLE IF NOT EXISTS watermarks (
   PRIMARY KEY (session_id, branch)
 );
 
-CREATE INDEX IF NOT EXISTS idx_knowledge_project_status ON knowledge(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_knowledge_project ON knowledge(project_id);
 CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
 `;
 
@@ -292,7 +290,11 @@ export type KnowledgeOperationInput =
       createdAt: string;
     };
 
+export type KnowledgePath = { sessionId: number; headTurnId: number | null };
+export interface KnowledgeFilter { scope?: KnowledgeScope; projectId?: number }
+
 export interface CommitIntegrationRunInput {
+  path?: KnowledgePath | null;
   run: RunInput; // sessionId required: knowledge ownership is derived from the run's session
   operations: KnowledgeOperationInput[];
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
@@ -366,14 +368,14 @@ function toFact(row: any): Fact {
 }
 
 function toKnowledge(row: any): Knowledge {
-  return { id: row.id, projectId: row.project_id, status: row.status, author: row.author, currentRevision: row.current_revision };
+  return { id: row.id, projectId: row.project_id, originSessionId: row.origin_session_id, author: row.author };
 }
 
 function toKnowledgeRevision(row: any): KnowledgeRevision {
   return {
     id: row.id,
     knowledgeId: row.knowledge_id,
-    rev: row.rev,
+    parentId: row.parent_id,
     text: row.text,
     category: row.category,
     scope: row.scope,
@@ -701,15 +703,14 @@ export class Store {
     return row ? toKnowledge(row) : null;
   }
 
-  getKnowledgeWithRevision(id: number): KnowledgeWithRevision | null {
-    const knowledge = this.getKnowledge(id);
-    if (!knowledge) return null;
-    const revision = this.getKnowledgeRevision(id, knowledge.currentRevision)!;
-    return { knowledge, revision };
+  getKnowledgeWithRevision(id: number, path: KnowledgePath | null = null): KnowledgeWithRevision | null {
+    const tips = this.currentCommit(id, path);
+    if (tips.length > 1) throw new Error(`K${id}: several tips; use ${tips.map(r => `K${id}@${r.id}`).join(", ")}`);
+    return tips.length ? { knowledge: this.getKnowledge(id)!, revision: tips[0]! } : null;
   }
 
-  getKnowledgeRevision(knowledgeId: number, rev: number): KnowledgeRevision | null {
-    const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? AND rev = ?").get(knowledgeId, rev);
+  getKnowledgeRevision(knowledgeId: number, commitId: number): KnowledgeRevision | null {
+    const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? AND id = ?").get(knowledgeId, commitId);
     return row ? toKnowledgeRevision(row) : null;
   }
 
@@ -722,61 +723,112 @@ export class Store {
   }
 
   listKnowledgeRevisions(knowledgeId: number): KnowledgeRevision[] {
-    return this.db
-      .prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? ORDER BY rev ASC")
-      .all(knowledgeId)
-      .map(toKnowledgeRevision);
+    return this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? ORDER BY id").all(knowledgeId).map(toKnowledgeRevision);
   }
 
-  /**
-   * Knowledge visible to a session: global knowledge, this project's project-scope knowledge,
-   * and this session's own session-scope knowledge. A session-scope knowledge's owning session
-   * is its immutable origin_session_id.
-   */
-  isKnowledgeVisible(id: number, sessionId: number, rev?: number): boolean {
-    const knowledge = this.getKnowledge(id), session = this.getSession(sessionId);
-    if (!knowledge || !session) return false;
-    const revision = this.getKnowledgeRevision(id, rev ?? knowledge.currentRevision);
-    if (!revision) return false;
+  pathTurns(path: KnowledgePath): Set<number> {
+    if (!this.getSession(path.sessionId)) throw new Error(`session S${path.sessionId} does not exist`);
+    const ids = new Set<number>();
+    let id = path.headTurnId;
+    while (id !== null) {
+      const turn = this.getTurn(id);
+      if (!turn || turn.sessionId !== path.sessionId || ids.has(id)) throw new Error("invalid path ancestry");
+      ids.add(id); id = turn.parentTurnId;
+    }
+    return ids;
+  }
+
+  /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
+  knowledgePath(sessionId: number, branch?: string, headTurnId?: number | null): KnowledgePath {
+    if (headTurnId !== undefined) return { sessionId, headTurnId };
+    if (branch === undefined) return { sessionId, headTurnId: this.listTurns(sessionId).at(-1)?.id ?? null };
+    const recorded = this.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;
+    const manual = this.listRuns(sessionId).filter(r => r.kind === "manual" && r.branch === branch)
+      .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0));
+    return { sessionId, headTurnId: Math.max(recorded, ...manual) || null };
+  }
+
+  private admits(revision: KnowledgeRevision, sessionId: number): boolean {
     if (revision.scope === "global") return true;
-    if (knowledge.projectId !== session.projectId) return false;
-    if (revision.scope === "project") return true;
-    return !!this.db.prepare("SELECT 1 FROM knowledge WHERE id = ? AND origin_session_id = ?").get(id, sessionId);
+    const origin = revision.runId === null ? null : this.getRun(revision.runId)?.sessionId;
+    if (revision.scope === "session") return origin === sessionId;
+    return origin != null && this.getSession(origin)?.projectId === this.getSession(sessionId)?.projectId;
   }
 
-  listVisibleKnowledge(sessionId: number, projectId: number): KnowledgeWithRevision[] {
-    const rows = this.db
-      .prepare(
-        `SELECT e.*, r.id AS rev_id, r.rev AS rev_rev, r.text AS rev_text, r.category AS rev_category,
-                r.scope AS rev_scope, r.supports AS rev_supports, r.op AS rev_op, r.because AS rev_because,
-                r.run_id AS rev_run_id, r.created_at AS rev_created_at
-         FROM knowledge e
-         JOIN knowledge_revisions r ON r.knowledge_id = e.id AND r.rev = e.current_revision
-         WHERE e.status = 'active'
-           AND (
-             r.scope = 'global'
-             OR (r.scope = 'project' AND e.project_id = ?)
-             OR (r.scope = 'session' AND e.project_id = ? AND e.origin_session_id = ?)
-           )
-         ORDER BY e.id ASC`,
-      )
-      .all(projectId, projectId, sessionId) as any[];
-    return rows.map((row) => ({
-      knowledge: toKnowledge(row),
-      revision: toKnowledgeRevision({
-        id: row.rev_id,
-        knowledge_id: row.id,
-        rev: row.rev_rev,
-        text: row.rev_text,
-        category: row.rev_category,
-        scope: row.rev_scope,
-        supports: row.rev_supports,
-        op: row.rev_op,
-        because: row.rev_because,
-        run_id: row.rev_run_id,
-        created_at: row.rev_created_at,
-      }),
-    }));
+  /** All citations from the reader's own session constrain applicability, including because. */
+  private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
+    const turns = path ? this.pathTurns(path) : null;
+    const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
+    const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
+    for (const link of this.db.prepare("SELECT from_rev, to_rev FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_rev: number; to_rev: number }[]) {
+      parents.get(link.to_rev)!.push(link.from_rev);
+    }
+    const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
+      (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
+      (!path || (this.admits(r, path.sessionId) &&
+      [...r.supports, ...(r.because ?? [])].every(id => {
+        const fact = this.getFact(id)!;
+        return this.getTurn(fact.turnId)!.sessionId !== path.sessionId || turns!.has(fact.turnId);
+      }))));
+    const superseded = new Set<number>();
+    // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
+    for (const r of applicable) {
+      const pending = [...parents.get(r.id)!];
+      while (pending.length) {
+        const id = pending.pop()!;
+        if (superseded.has(id)) continue;
+        superseded.add(id); pending.push(...parents.get(id)!);
+      }
+    }
+    return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+  }
+
+  currentCommit(knowledgeId: number, path: KnowledgePath | null = null): KnowledgeRevision[] {
+    return this.currentSet(path).filter(k => k.knowledge.id === knowledgeId).map(k => k.revision);
+  }
+
+  listCurrentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}): KnowledgeWithRevision[] {
+    return this.currentSet(path, filter.projectId).filter(({ revision: r }) => r.op !== "archive" &&
+      (!filter.scope || r.scope === filter.scope));
+  }
+
+  isKnowledgeVisible(id: number, sessionId: number, commitId?: number): boolean {
+    return commitId === undefined ? this.currentCommit(id, this.knowledgePath(sessionId)).length > 0
+      : !!this.getKnowledgeRevision(id, commitId) && this.admits(this.getKnowledgeRevision(id, commitId)!, sessionId);
+  }
+
+  listVisibleKnowledge(sessionId: number, projectId: number, headTurnId?: number | null): KnowledgeWithRevision[] {
+    return sessionId ? this.listCurrentKnowledge(this.knowledgePath(sessionId, undefined, headTurnId))
+      : this.listCurrentKnowledge(null, { projectId });
+  }
+
+  citationProblem(ids: number[], scope: KnowledgeScope, path: KnowledgePath): string | null {
+    const turns = this.pathTurns(path), projectId = this.getSession(path.sessionId)!.projectId;
+    for (const id of ids) {
+      const fact = this.getFact(id);
+      if (!fact) return `cited fact F${id} does not exist`;
+      const sessionId = this.getTurn(fact.turnId)!.sessionId;
+      if (sessionId === path.sessionId) {
+        if (!turns.has(fact.turnId)) return `F${id}: record an adoption fact on this path first`;
+      } else if (scope === "session" || (scope === "project" && this.getSession(sessionId)!.projectId !== projectId)) {
+        return `F${id}: not an available fact for ${scope} scope`;
+      }
+    }
+    return null;
+  }
+
+  baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null): string | null {
+    const current = this.currentCommit(knowledgeId, path);
+    if (current.some(r => r.id === base && r.op !== "archive")) return null;
+    const descendants = new Set((this.db.prepare(`WITH RECURSIVE
+      edges(parent, child) AS (
+        SELECT parent_id, id FROM knowledge_revisions WHERE parent_id IS NOT NULL
+        UNION SELECT from_rev, to_rev FROM knowledge_links WHERE kind = 'merged_into'
+      ), descendants(id) AS (
+        SELECT ? UNION SELECT e.child FROM edges e JOIN descendants d ON e.parent = d.id
+      ) SELECT id FROM descendants`).all(base) as { id: number }[]).map(r => r.id));
+    const tips = this.currentSet(path).filter(k => k.knowledge.id === knowledgeId || descendants.has(k.revision.id));
+    return `K${knowledgeId}@${base}: target moved on or is inactive; current: ${tips.map(k => `K${k.knowledge.id}@${k.revision.id}`).join(", ") || "none (inapplicable)"}; re-read and resubmit`;
   }
 
   /**
@@ -795,7 +847,7 @@ export class Store {
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
         for (const op of input.operations) {
-          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId);
+          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, input.path === undefined ? this.knowledgePath(sessionId) : input.path);
           if (outcome.ok) committed.push(outcome.value);
           else throw new Error(outcome.reason);
         }
@@ -818,132 +870,53 @@ export class Store {
     }
   }
 
-  /** Every fact an operation cites must exist; the text's evidence (supports) must not be empty. */
-  private checkCitedFacts(op: string, supports: number[] | null, because: number[]): string | null {
-    if (supports && supports.length === 0) return `${op}: supports must not be empty`;
-    for (const id of [...(supports ?? []), ...because]) {
-      if (!this.getFact(id)) return `${op}: cited fact F${id} does not exist`;
-    }
-    return null;
-  }
-
-  private applyKnowledgeOperation(
-    op: KnowledgeOperationInput,
-    runId: number,
-    projectId: number,
-    sessionId: number,
-  ): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
-    // Ownership follows scope: a global knowledge belongs to no project; anything narrower belongs to the run's project.
-    const owner = (scope: KnowledgeScope): number | null => (scope === "global" ? null : projectId);
-
-    if (op.op === "create") {
-      const bad = this.checkCitedFacts("create", op.supports, op.because ?? []);
+  private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
+    sessionId: number, path: KnowledgePath | null): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
+    if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
+    if (op.op === "merge") op = { ...op, absorb: op.absorb.filter((a, i, all) => all.findIndex(b => b.knowledgeId === a.knowledgeId && b.expectedRevision === a.expectedRevision) === i) };
+    const targets = op.op === "create" ? [] : op.op === "merge"
+      ? [{ knowledgeId: op.intoKnowledgeId, expectedRevision: op.intoExpectedRevision }, ...op.absorb]
+      : [{ knowledgeId: op.knowledgeId, expectedRevision: op.expectedRevision }];
+    const seen = new Set<number>();
+    for (const target of targets) {
+      const bad = this.baseProblem(target.knowledgeId, target.expectedRevision, path);
       if (bad) return { ok: false, reason: bad };
-      const info = this.db.prepare("INSERT INTO knowledge (project_id, origin_session_id, status, author, current_revision) VALUES (?, ?, 'active', ?, 1)").run(
-        owner(op.scope),
-        sessionId,
-        op.author,
-      );
-      const knowledgeId = Number(info.lastInsertRowid);
-      this.insertRevision(knowledgeId, 1, op.text, op.category, op.scope, op.supports, "create", op.because ?? null, runId, op.createdAt);
-      return { ok: true, value: { op: "create", handle: op.handle, knowledgeId, rev: 1 } };
+      if (seen.has(target.expectedRevision)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
+      seen.add(target.expectedRevision);
     }
-
-    if (op.op === "update") {
-      const knowledge = this.getKnowledge(op.knowledgeId);
-      if (!knowledge || knowledge.status !== "active" || knowledge.currentRevision !== op.expectedRevision) {
-        return { ok: false, reason: this.conflictReason(op.knowledgeId, op.expectedRevision, knowledge) };
-      }
-      const bad = this.checkCitedFacts(`edit K${op.knowledgeId}`, op.supports, op.because);
-      if (bad) return { ok: false, reason: bad };
-      const nextRev = knowledge.currentRevision + 1;
-      this.insertRevision(op.knowledgeId, nextRev, op.text, op.category, op.scope, op.supports, "update", op.because, runId, op.createdAt);
-      this.db.prepare("UPDATE knowledge SET current_revision = ?, project_id = ? WHERE id = ?").run(nextRev, owner(op.scope), op.knowledgeId);
-      return { ok: true, value: { op: "update", knowledgeId: op.knowledgeId, rev: nextRev } };
-    }
-
-    if (op.op === "merge") {
-      const into = this.getKnowledge(op.intoKnowledgeId);
-      if (!into || into.status !== "active" || into.currentRevision !== op.intoExpectedRevision) {
-        return { ok: false, reason: this.conflictReason(op.intoKnowledgeId, op.intoExpectedRevision, into) };
-      }
-      const absorb = op.absorb.filter((a, i, all) => all.findIndex((b) => b.knowledgeId === a.knowledgeId) === i);
-      if (absorb.length === 0) return { ok: false, reason: `merge into K${op.intoKnowledgeId}: nothing to absorb` };
-      if (absorb.some((a) => a.knowledgeId === op.intoKnowledgeId)) {
-        return { ok: false, reason: `merge into K${op.intoKnowledgeId}: a knowledge item cannot absorb itself` };
-      }
-      for (const a of absorb) {
-        const absorbed = this.getKnowledge(a.knowledgeId);
-        if (!absorbed || absorbed.status !== "active" || absorbed.currentRevision !== a.expectedRevision) {
-          return { ok: false, reason: this.conflictReason(a.knowledgeId, a.expectedRevision, absorbed) };
-        }
-      }
-      const bad = this.checkCitedFacts(`merge into K${op.intoKnowledgeId}`, op.supports, op.because);
-      if (bad) return { ok: false, reason: bad };
-      const nextRev = into.currentRevision + 1;
-      this.insertRevision(op.intoKnowledgeId, nextRev, op.text, op.category, op.scope, op.supports, "merge", op.because, runId, op.createdAt);
-      this.db.prepare("UPDATE knowledge SET current_revision = ?, project_id = ? WHERE id = ?").run(nextRev, owner(op.scope), op.intoKnowledgeId);
-      for (const a of absorb) {
-        this.db.prepare("UPDATE knowledge SET status = 'merged' WHERE id = ?").run(a.knowledgeId);
-        this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_rev, kind, to_knowledge, to_rev) VALUES (?, ?, 'merged_into', ?, ?)").run(
-          a.knowledgeId,
-          a.expectedRevision,
-          op.intoKnowledgeId,
-          nextRev,
-        );
-      }
-      return { ok: true, value: { op: "merge", knowledgeId: op.intoKnowledgeId, rev: nextRev } };
-    }
-
-    // op.op === "archive"
-    const knowledge = this.getKnowledge(op.knowledgeId);
-    if (!knowledge || knowledge.status !== "active" || knowledge.currentRevision !== op.expectedRevision) {
-      return { ok: false, reason: this.conflictReason(op.knowledgeId, op.expectedRevision, knowledge) };
-    }
-    const bad = this.checkCitedFacts(`archive K${op.knowledgeId}`, null, op.because);
+    if (op.op === "merge" && !op.absorb.length) return { ok: false, reason: "merge: nothing to absorb" };
+    const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.expectedRevision)! : null;
+    const scope = op.op === "archive" ? prior!.scope : op.scope;
+    const supports = op.op === "archive" ? [] : op.supports;
+    if (op.op !== "archive" && !supports.length) return { ok: false, reason: "supports must not be empty" };
+    const citations = [...supports, ...(op.because ?? [])];
+    const bad = this.citationProblem(citations, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
-    const prior = this.getKnowledgeRevision(op.knowledgeId, knowledge.currentRevision)!;
-    const nextRev = knowledge.currentRevision + 1;
-    this.insertRevision(op.knowledgeId, nextRev, prior.text, prior.category, prior.scope, prior.supports, "archive", op.because, runId, op.createdAt);
-    this.db.prepare("UPDATE knowledge SET current_revision = ?, status = 'archived' WHERE id = ?").run(nextRev, op.knowledgeId);
-    return { ok: true, value: { op: "archive", knowledgeId: op.knowledgeId, rev: nextRev } };
+    const knowledgeId = op.op === "create" ? Number(this.db.prepare(
+      "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
+    ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
+    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, because, run_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
+      op.op === "archive" ? prior!.category : op.category, scope, JSON.stringify(supports), op.op,
+      JSON.stringify(op.because ?? []), runId, op.createdAt);
+    const commitId = Number(info.lastInsertRowid);
+    if (op.op === "merge") for (const parent of op.absorb) {
+      this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_rev, kind, to_knowledge, to_rev) VALUES (?, ?, 'merged_into', ?, ?)")
+        .run(parent.knowledgeId, parent.expectedRevision, knowledgeId, commitId);
+    }
+    return { ok: true, value: { op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, rev: commitId } };
   }
 
-  private conflictReason(knowledgeId: number, expected: number, actual: Knowledge | null): string {
-    if (!actual) return `knowledge K${knowledgeId} does not exist`;
-    if (actual.status !== "active") return `knowledge K${knowledgeId} is ${actual.status}, not active`;
-    return `knowledge K${knowledgeId} moved: expected revision ${expected}, current revision is ${actual.currentRevision}`;
-  }
-
-  private insertRevision(
-    knowledgeId: number,
-    rev: number,
-    text: string,
-    category: KnowledgeCategory,
-    scope: KnowledgeScope,
-    supports: number[],
-    op: KnowledgeOp,
-    because: number[] | null,
-    runId: number,
-    createdAt: string,
-  ): void {
-    this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, rev, text, category, scope, supports, op, because, run_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, rev, text, category, scope, JSON.stringify(supports), op, because ? JSON.stringify(because) : null, runId, createdAt);
-  }
-
-  // -- marks --
-
-  addKnowledgeMark(knowledgeId: number, rev: number, kind: KnowledgeMarkKind, createdAt: string): KnowledgeMark {
-    if (!this.getKnowledgeRevision(knowledgeId, rev)) throw new Error(`knowledge K${knowledgeId} has no revision ${rev}`);
-    this.db.prepare("INSERT INTO knowledge_marks (knowledge_id, rev, kind, created_at) VALUES (?, ?, ?, ?)").run(knowledgeId, rev, kind, createdAt);
-    return { knowledgeId, rev, kind, createdAt };
+  // -- marks: each row belongs to one immutable commit --
+  addKnowledgeMark(knowledgeId: number, commitId: number, kind: KnowledgeMarkKind, createdAt: string): KnowledgeMark {
+    if (!this.getKnowledgeRevision(knowledgeId, commitId)) throw new Error(`knowledge K${knowledgeId} has no commit ${commitId}`);
+    this.db.prepare("INSERT INTO knowledge_marks (knowledge_id, commit_id, kind, created_at) VALUES (?, ?, ?, ?)").run(knowledgeId, commitId, kind, createdAt);
+    return { knowledgeId, commitId, kind, createdAt };
   }
 
   listKnowledgeMarks(knowledgeId: number): KnowledgeMark[] {
-    return this.db
-      .prepare("SELECT * FROM knowledge_marks WHERE knowledge_id = ? ORDER BY created_at ASC")
-      .all(knowledgeId)
-      .map((row: any) => ({ knowledgeId: row.knowledge_id, rev: row.rev, kind: row.kind, createdAt: row.created_at }));
+    return this.db.prepare("SELECT * FROM knowledge_marks WHERE knowledge_id = ? ORDER BY created_at ASC").all(knowledgeId)
+      .map((row: any) => ({ knowledgeId: row.knowledge_id, commitId: row.commit_id, kind: row.kind, createdAt: row.created_at }));
   }
 
   // -- pending deliveries --
@@ -996,21 +969,18 @@ export class Store {
       while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
       if (prior === "undeclared" && session.projectId !== target.id) this.mergeProject(session.projectId, target.id);
       this.db.prepare("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?").run(target.id, source, sessionId);
-      // Session knowledge travel with their creating session even when leaving a declared project.
-      this.db.prepare(`UPDATE knowledge SET project_id = ? WHERE id IN (
-        SELECT e.id FROM knowledge e JOIN knowledge_revisions r ON r.knowledge_id = e.id AND r.rev = e.current_revision
-        WHERE r.scope = 'session' AND e.origin_session_id = ?)`).run(target.id, sessionId);
       return target;
     });
   }
 
-  setKnowledgeMark(knowledgeId: number, kind: KnowledgeMarkKind | "clear", time: string): number {
+  mark(commitId: number, kind: KnowledgeMarkKind | "clear", time = new Date().toISOString()): number {
     return this.transaction(() => {
-      const knowledge = this.getKnowledge(knowledgeId);
-      if (!knowledge) throw new Error(`knowledge K${knowledgeId} does not exist`);
-      this.db.prepare("DELETE FROM knowledge_marks WHERE knowledge_id = ? AND rev = ?").run(knowledgeId, knowledge.currentRevision);
-      if (kind !== "clear") this.addKnowledgeMark(knowledgeId, knowledge.currentRevision, kind, time);
-      return knowledge.currentRevision;
+      const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE id = ?").get(commitId);
+      if (!row) throw new Error(`knowledge commit ${commitId} does not exist`);
+      const revision = toKnowledgeRevision(row);
+      this.db.prepare("DELETE FROM knowledge_marks WHERE commit_id = ?").run(commitId);
+      if (kind !== "clear") this.addKnowledgeMark(revision.knowledgeId, commitId, kind, time);
+      return commitId;
     });
   }
 
@@ -1036,9 +1006,9 @@ export class Store {
         .all(pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT id FROM facts WHERE text LIKE ? ESCAPE '\\' ORDER BY id").all(pattern) as { id: number }[]).map((r) => `F${r.id}`);
-    const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, rev FROM knowledge_revisions
-      WHERE text LIKE ? ESCAPE '\\' ORDER BY knowledge_id, rev`)
-      .all(pattern) as { knowledge_id: number; rev: number }[]).map((r) => `K${r.knowledge_id}@${r.rev}`);
+    const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
+      WHERE text LIKE ? ESCAPE '\\' ORDER BY knowledge_id, id`)
+      .all(pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 
