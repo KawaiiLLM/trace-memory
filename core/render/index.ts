@@ -95,6 +95,30 @@ export function renderSources(turn: Turn, calls: ToolCall[]): string {
   ].join(" | ");
 }
 
+/** A run record as a human summary; `full` adds the tool rounds and previews of the raw request and response. */
+export function renderRun(run: { id: number; kind: string; outcome: string; sessionId: number | null; branch: string | null; rangeFrom: string | null; rangeTo: string | null; model: string | null; mode: string | null; request: string | null; response: string | null; createdAt: string },
+  factIds: number[], commits: { knowledgeId: number; id: number; op: string }[], full = false): string {
+  let response: Record<string, unknown> = {};
+  try { response = JSON.parse(run.response ?? "{}") ?? {}; } catch { response = {}; }
+  const usage = (response.usage ?? null) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null;
+  const calls = (Array.isArray(response.toolCalls) ? response.toolCalls : []) as { name: string; input?: unknown; result?: string }[];
+  const counts = new Map<string, number>(); for (const c of calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
+  const problems = (Array.isArray(response.problems) ? response.problems : []) as string[];
+  const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
+    `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
+    `  model ${run.model ?? "?"}  mode ${run.mode ?? "?"}`,
+    `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op})`)].join(", ") || "nothing"}`,
+    `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost $${(usage?.cost?.total ?? 0).toFixed(4)}`,
+    `  tools: ${[...counts].map(([n, k]) => `${n} ×${k}`).join(", ") || "none"}`,
+    `  problems: ${problems.length ? problems.join("; ") : "none"}`];
+  if (full) {
+    for (const [i, c] of calls.entries()) lines.push(`  tool ${i + 1} ${c.name}`, `    input: ${cut(string(c.input), 120, 40)}`, `    result: ${cut(String(c.result ?? ""), 120, 40)}`);
+    lines.push(`  request (preview, ${(run.request ?? "").length} characters):`, cut(run.request ?? "", 200, 80),
+      `  response (preview, ${(run.response ?? "").length} characters):`, cut(run.response ?? "", 200, 80));
+  } else if (calls.length || run.request) lines.push(`  (trace R${run.id} with full for tool rounds and raw request/response previews)`);
+  return lines.join("\n");
+}
+
 export function finish(rendered: Rendered): string {
   return rendered.content + (rendered.receipts.length ? `\n\nReceipts:\n${rendered.receipts.join("\n")}` : "");
 }

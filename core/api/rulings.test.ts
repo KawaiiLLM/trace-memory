@@ -649,3 +649,17 @@ test("16b: every raw source of a multi-source fact constrains carry, current and
   expect(memory.branchSummary(c.sessionId, c.branch, c.headTurnId)).toContain(`[F${fact}]`);
   expect(memory.inject(c)).toContain("[K1@2]");
 });
+
+test("2026-09-07: R<n> renders a run as a summary, full adds tool rounds and raw previews, a missing run is rejected", async () => {
+  const { s, t } = session();
+  calls.length = 0;
+  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const run = memory.store.listRuns(s.id).at(-1)!;
+  const summary = memory.trace(`R${run.id}`);
+  expect(summary.split("\n")[0]).toBe(`R${run.id} recording ${run.outcome} ${run.createdAt}`);
+  expect(summary).toContain(`S${s.id} / branch main`); expect(summary).toContain("usage:"); expect(summary).toContain("problems:");
+  expect(summary).not.toContain("request (preview");
+  const full = memory.trace(`R${run.id}`, { full: true });
+  expect(full).toContain("request (preview"); expect(full).toContain("response (preview");
+  expect(() => memory.trace("R999")).toThrow("does not exist");
+});

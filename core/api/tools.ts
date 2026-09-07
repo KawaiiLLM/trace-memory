@@ -80,6 +80,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const existingFact = (id: number) => !!store.getFact(id);
   const checkAddress = (address: string) => {
     for (const target of address.split(",").map((a) => a.trim())) {
+      const run = /^R([1-9]\d*)$/.exec(target);
+      if (run) { if (!store.getRun(Number(run[1]))) throw new Error(`address does not exist: ${target}`); continue; }
       if (/^K/.test(target)) continue; // The façade validates commit, diff and tree addresses.
       const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$/.exec(target);
       if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);

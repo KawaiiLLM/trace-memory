@@ -415,6 +415,15 @@ injection, session-knowledge isolation, shared duplicate visibility, deferred re
 completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
+## Run records
+
+Every Recording, Integration and manual write leaves a row in `runs` with the
+exact last provider request, the final output, summed usage, the tool-call
+sequence, fetches and problems. `trace R<n>` renders a run as a summary (kind,
+outcome, range, model, mode, what it created, usage, cost, tool counts,
+problems); `full` adds each tool round and cut previews of the raw request and
+response. `/trace runs [n]` lists the session's last n runs.
+
 ## Footer status item
 
 Background runs never enter Pi's session totals: Pi only counts entries of the

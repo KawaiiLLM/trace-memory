@@ -441,6 +441,12 @@ export default function (pi: ExtensionAPI) {
         state.injected = false; save(); // the new project's knowledge is injected at the next prompt through the usual path
         context.ui.notify(marked, "info"); return;
       }
+      if (parts[0] === "runs") {
+        if (!state.sessionId) throw new Error("A session requires an assistant reply");
+        const limit = Math.max(1, Number(parts[1] ?? 10) || 10);
+        const runs = memory.store.listRuns(state.sessionId).slice(-limit).reverse();
+        context.ui.notify(runs.length ? runs.map(r => memory.trace(`R${r.id}`).split("\n")[0]!).join("\n") : "Trace Memory: no runs yet.", "info"); return;
+      }
       if (parts[0] === "mark") {
         if (!/^K[1-9]\d*(?:@[1-9]\d*)?$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n>@<commit> verified|flagged|clear");
         context.ui.notify(memory.mark(parts[1]!, parts[2] as "verified" | "flagged" | "clear", state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info"); return;

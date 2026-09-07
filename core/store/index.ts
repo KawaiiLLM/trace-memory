@@ -969,6 +969,12 @@ export class Store {
   listRuns(sessionId: number): Run[] {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
+  listFactsByRun(runId: number): Fact[] {
+    return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
+  }
+  listCommitsByRun(runId: number): KnowledgeRevision[] {
+    return this.db.prepare("SELECT * FROM knowledge_revisions WHERE run_id = ? ORDER BY id").all(runId).map(toKnowledgeRevision);
+  }
   listRunsSince(createdAt: string): Run[] {
     return this.db.prepare("SELECT * FROM runs WHERE created_at >= ? ORDER BY id").all(createdAt).map(toRun);
   }

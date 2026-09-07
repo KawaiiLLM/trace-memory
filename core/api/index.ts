@@ -6,7 +6,7 @@ export type { ListingOptions, SearchScope } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
 import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
-import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens } from "../render/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
 import { Store, type KnowledgePath } from "../store/index.ts";
@@ -197,6 +197,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
       return renderFact(fact, store.listFactRelations(fact.id));
+    }
+    const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
+    if (runMatch) {
+      if (flags.length) throw new Error("invalid trace address: use the full parameter");
+      const run = store.getRun(Number(runMatch[1]));
+      if (!run) throw new Error(`run ${target} does not exist`);
+      return renderRun(run, store.listFactsByRun(run.id).map((f) => f.id), store.listCommitsByRun(run.id), display.full === true);
     }
     const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(user|assistant|t[1-9]\d*))?$/.exec(target ?? "");
     if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
