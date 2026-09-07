@@ -91,6 +91,8 @@ export interface RunAgentResult {
   mode?: "branch" | "subagent";
   verification?: unknown;
   fallbackReason?: string;
+  /** Transient provider errors retried by the host before this reply, in order. */
+  retries?: { attempt: number; error: string }[];
 
 }
 

@@ -815,3 +815,33 @@ test("a transient provider error is retried with Pi's policy before the run is f
   await h.turn(); await new Promise(r => setTimeout(r, 50)); await h.drain();
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure"); expect(calls).toBe(1);
 });
+
+test("a retry re-sends the same request: a stream error after a tool round does not duplicate the tool result, failed attempts count in usage and retries are recorded", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, retry: { baseDelayMs: 1 } });
+  let calls = 0;
+  h.provider(async c => {
+    calls++;
+    if (calls === 1) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "trace-1", name: "trace", arguments: { address: "T1" } }] };
+    if (calls === 2) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" };
+    return recordingFact(c);
+  }, { autoStop: true });
+  await h.turn(); await new Promise(r => setTimeout(r, 40)); await h.drain();
+  const failed = h.conversations[1]!, retried = h.conversations[2]!;
+  expect(retried.messages).toEqual(failed.messages); // the same request, not a re-appended one
+  expect(retried.messages.filter(m => m.role === "toolResult")).toHaveLength(1);
+  const run = h.memory.store.listRuns(1)[0]!, response = JSON.parse(run.response!);
+  expect(run.outcome).toBe("success");
+  expect(response.usage.input).toBe(usage.input * h.conversations.length); // every attempt that returned usage counts, the failed one included
+  expect(response.retries).toEqual([{ attempt: 1, error: "fetch failed" }]);
+});
+
+test("the footer shows the warning indicator while a retry waits", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, retry: { baseDelayMs: 60 } });
+  let calls = 0;
+  h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return recordingFact(c); });
+  await h.turn(); // the first attempt failed, the retry is sleeping
+  expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> 🧠/);
+  await new Promise(r => setTimeout(r, 120)); await h.drain();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> 🧠/);
+  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");
+});

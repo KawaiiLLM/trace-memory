@@ -107,7 +107,8 @@ export async function runRecording(
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits,
     toolCalls: binding.sequence, fetched: binding.fetched, problems,
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
-    ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
+    ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
+    ...(result.retries?.length ? { retries: result.retries } : {}) });
   if (binding.committed) {
     // The batch is committed; a failure while completing the audit record is reported, not a business failure.
     const after = [...problems];

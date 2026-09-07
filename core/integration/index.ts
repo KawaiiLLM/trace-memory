@@ -120,7 +120,8 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null ? ["runAgent must return the exact provider request"] : binding.memory.problems;
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
-    ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
+    ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
+    ...(result.retries?.length ? { retries: result.retries } : {}) });
   if (committed) {
     const after = [...problems];
     try { store.updateRun(committed.runId, { ...run, outcome: "success" }); }

@@ -81,7 +81,8 @@ function retrySettings(cwd: string) {
   type Retry = { enabled?: boolean; maxRetries?: number; baseDelayMs?: number; provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number } };
   const read = (path: string): Retry => { try { return (JSON.parse(readFileSync(path, "utf8")) as { retry?: Retry }).retry ?? {}; } catch { return {}; } };
   const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-  const retry: Retry = { ...read(join(agentDir, "settings.json")), ...read(join(cwd, ".pi", "settings.json")) };
+  const global = read(join(agentDir, "settings.json")), project = read(join(cwd, ".pi", "settings.json"));
+  const retry: Retry = { ...global, ...project, provider: { ...global.provider, ...project.provider } }; // nested like Pi's own merge
   return { policy: { enabled: retry.enabled ?? true, maxRetries: retry.maxRetries ?? 3, baseDelayMs: retry.baseDelayMs ?? 2000 },
     provider: { timeoutMs: retry.provider?.timeoutMs, maxRetries: retry.provider?.maxRetries, maxRetryDelayMs: retry.provider?.maxRetryDelayMs ?? 60000 } };
 }
@@ -118,15 +119,20 @@ export default function (pi: ExtensionAPI) {
       // own compaction and branch-summary calls): transient provider errors back off and retry;
       // tool execution and commits happen only after a reply, so a retry never repeats a write.
       const retry = retrySettings(callContext.cwd);
-      const converse = async (send: (suffix: Conversation["messages"]) => Promise<Reply>) => {
+      // `prepare` builds one round's request context exactly once (suffix appended, base fixed) and
+      // returns the send; the retry helper re-sends that same request, never a re-appended one.
+      const converse = async (prepare: (suffix: Conversation["messages"]) => () => Promise<Reply>) => {
         let suffix: Conversation["messages"] = [], rounds = 0, usage: unknown, reply: Reply;
+        const retries: { attempt: number; error: string }[] = [];
         const cap = memory.config[input.kind].maxToolRounds; // 0 = unlimited (spec: the model is called again until it stops)
         for (;;) {
-          reply = await retryAssistantCall(() => send(suffix), retry.policy, undefined, {
-            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { activity.last = "warning"; showSpend(callContext);
+          const produce = prepare(suffix);
+          reply = await retryAssistantCall(async () => { const r = await produce(); usage = addUsage(usage, r.usage); return r; }, retry.policy, undefined, {
+            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { retries.push({ attempt, error: message }); activity.retrying = true; showSpend(callContext);
               callContext.ui.notify(`Trace Memory: ${input.kind} retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s: ${message}`, "warning"); },
+            onRetryAttemptStart: () => { activity.retrying = false; showSpend(callContext); },
+            onRetryFinished: () => { activity.retrying = false; showSpend(callContext); },
           });
-          usage = addUsage(usage, reply.usage);
           const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
           if (reply.stopReason !== "toolUse" || !calls.length) break;
           if (cap && ++rounds > cap) throw new Error(`tool rounds exceeded (${cap})`); // over budget is a failure, not an empty batch
@@ -139,7 +145,7 @@ export default function (pi: ExtensionAPI) {
           const feedback = input.kind === "integration" ? results.flatMap(r => { const f = reviewMessage(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
           suffix = [reply, ...results, ...feedback];
         }
-        return { reply, usage };
+        return { reply, usage, retries };
       };
       const outcomeOf = (reply: Reply) => reply.stopReason === "aborted" ? "cancelled" as const : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" as const : "success" as const;
       // A stream that died mid-reply reports its error, not the partial text it managed to produce.
@@ -174,35 +180,39 @@ export default function (pi: ExtensionAPI) {
         const auth = await registry.getApiKeyAndHeaders(model);
         if (!auth.ok) throw new Error(auth.error);
         const key = messageKey(model.api);
-        const { reply, usage } = await converse(suffix => complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-          { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider,
-            onPayload(native) {
-              // The installed adapter serializes only the new suffix (native tool ids, thinking
-              // signatures). Its cache markers are stripped so rounds add none to the captured
-              // prefix's own; the session id stays so routing and connection reuse are unchanged.
-              const append = suffix.length ? stripCacheControl((native as Body)[key]) : [];
-              if (!Array.isArray(append)) throw new Error("Missing native branch continuation messages");
-              if (suffix.length) {
-                const previous = candidate!;
-                candidate = appendNativeRequest(previous, model.api, append);
-                const checked = verifyNativeRequest(previous, candidate, model.api, append);
-                verification!.rounds.push(checked);
-                if (!checked.passed) { verification!.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
-              }
-              request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
-            } }));
+        const { reply, usage, retries } = await converse(suffix => {
+          const previous = candidate!; // this round's base, fixed before any attempt: a retry rebuilds the same request
+          let verified = false;
+          return () => complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
+            { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider,
+              onPayload(native) {
+                // The installed adapter serializes only the new suffix (native tool ids, thinking
+                // signatures). Its cache markers are stripped so rounds add none to the captured
+                // prefix's own; the session id stays so routing and connection reuse are unchanged.
+                const append = suffix.length ? stripCacheControl((native as Body)[key]) : [];
+                if (!Array.isArray(append)) throw new Error("Missing native branch continuation messages");
+                if (suffix.length) {
+                  candidate = appendNativeRequest(previous, model.api, append);
+                  const checked = verifyNativeRequest(previous, candidate, model.api, append);
+                  if (!verified) { verification!.rounds.push(checked); verified = true; }
+                  if (!checked.passed) { verification!.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
+                }
+                request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
+              } });
+        });
         if (verification && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number") verification.cache_read = (usage as { cacheRead: number }).cacheRead;
-        return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification };
+        return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, ...(retries.length ? { retries } : {}) };
         }
       }
       // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
       let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
         tools: toolDefinitions as unknown as Tool[] };
-      const { reply, usage } = await converse(suffix => {
-        conversation = { ...conversation, messages: [...conversation.messages, ...suffix] };
-        return registry.complete(model, conversation, { ...retry.provider, onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
+      const { reply, usage, retries } = await converse(suffix => {
+        conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round
+        const fixed = conversation;
+        return () => registry.complete(model, fixed, { ...retry.provider, onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
       });
-      return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason };
+      return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason, ...(retries.length ? { retries } : {}) };
     } catch (error) {
       return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }
@@ -230,13 +240,13 @@ export default function (pi: ExtensionAPI) {
   // Footer status item (user ruling 2026-09-07): one indicator in Pi theme colours — dim ○ idle,
   // accent ● recording running, success ● integration running, warning ● paused or committed with
   // problems, error ● the last run failed — then today's plugin spend as ☉ $x.xx, reset daily.
-  const activity = { running: new Map<"recording" | "integration", number>(), last: "ok" as "ok" | "warning" | "error" };
+  const activity = { running: new Map<"recording" | "integration", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
   const runningKind = (kind: "recording" | "integration") => (activity.running.get(kind) ?? 0) > 0;
   const showSpend = (context: ExtensionContext) => {
     if (!context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const indicator = runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
+    const indicator = activity.retrying ? paint("warning", "●") : runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
     // Fixed reading (user ruling 2026-09-07): trace = the main agent's trace calls on this branch;
     // memory = applicable current knowledge / facts on this branch; $ = this session's cumulative spend.

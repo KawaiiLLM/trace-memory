@@ -318,3 +318,20 @@ test.each(["openai-responses", "openai-codex-responses"] as const)("%s branch ro
   }
   expect(JSON.parse(h.run().response!).verification.rounds).toEqual(h.sent.slice(1).map((body, i) => expect.objectContaining({ passed: true, capturedHash: branch.hash(h.sent[i]), requestHash: branch.hash(body) })));
 });
+
+test("a branch retry after a tool round re-sends the same request built from the same base", async () => {
+  const h = await setup();
+  vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
+    const native = { messages: convertMessages({ ...model, input: ["text"] } as never, conversation, {} as never) };
+    h.sent.push(structuredClone(await options!.onPayload!(native, model) as branch.Body));
+    const n = h.sent.length;
+    if (n === 1) return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "call-1", name: "trace", arguments: { address: "T1" } }] };
+    if (n === 2) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" };
+    return reply("done");
+  });
+  await h.capture(); await h.turn(); await new Promise(r => setTimeout(r, 40)); await h.drain();
+  expect(h.sent).toHaveLength(3);
+  expect(h.sent[2]).toEqual(h.sent[1]); // the retried request equals the failed one: no second copy of the tool result
+  expect((h.sent[2]!.messages as unknown[]).length).toBe((h.sent[0]!.messages as unknown[]).length + 2);
+  expect(JSON.parse(h.run().response!).retries).toEqual([{ attempt: 1, error: "fetch failed" }]);
+});
