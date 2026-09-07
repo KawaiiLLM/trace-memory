@@ -6,7 +6,7 @@ core/ is host-agnostic: it must not import any host SDK.
 - api/tools.ts  four bound model-facing tools; atomic note validation and commit.
 - integration/  build Integration input and NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
 - render/  one renderer for recording input, compaction tail, branch summary, trace; XML injection blocks.
-- prompts/ recording.md, integration.md — versioned prompt texts (from simulation v7).
+- prompts/ recording.md, integration.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Recorder descends from pi-observational-memory's observer prompt, the Integrator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call).
 

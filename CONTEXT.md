@@ -13,8 +13,9 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 
 ## Relations (annotations, never derived state)
 
-- **Support** — an affirmative response from a newer fact to an older one. *Strong* only when the user explicitly adopts; *weak* for everything else, including agent agreement, an answer to a question, and execution completed.
-- **Negate** — opposition from a newer fact to an older one. *Strong*: withdrawn, vetoed, found wrong, a new state overturning the old. *Weak*: doubt, objection, inconsistent evidence.
+- **Support** — a newer fact affirms an older one: adoption, approval, agreement, an answer, a restatement, execution of a ruling.
+- **Negate** — a newer fact opposes or invalidates an older one: withdrawal, veto, found wrong, a new state overturning the old, doubt, objection, evidence that does not fit.
+- **Strength** — the Recorder's confidence that the relation holds: *strong* when the raw states it, *weak* when inferred or partial. Who acted is carried by the fact's category and actor, not by the strength.
 - No fact is ever hidden or retired by a relation. Relations show the Integrator the shape; the Integrator judges.
 - **Dispute** — the Integrator's judgment that two accounts of the same object under the same conditions coexist without a ruling. A category of knowledge, not a relation.
 
