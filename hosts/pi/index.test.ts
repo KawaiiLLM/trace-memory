@@ -748,13 +748,15 @@ test("a branch forked before the source's last integration re-integrates the com
   expect(h.memory.store.listBranchFacts(1, branch, 3).map(f => f.id)).toContain(1);
 });
 
-test("a dropped duplicate trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+test("a dropped duplicate Integration trigger neither ends the running indicator nor changes the last outcome", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
   let release!: (value: Reply) => void;
-  h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.prompt(); await h.answer(); await h.emit("agent_settled");
-  await h.emit("agent_settled"); await h.drain(); // duplicate: the core drops it
-  expect(h.statuses.get("trace-memory")).toMatch(/^<accent>●<\/accent> ☉/); // the first run is still in flight
-  release(recordingFact(h.conversations[0]!)); await h.drain();
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? new Promise(resolve => { release = resolve; }) : recordingFact(c));
+  await h.turn(); // F1 recorded
+  await h.emit("agent_settled"); await h.drain(); // Integration starts and waits for the model
+  expect(h.statuses.get("trace-memory")).toMatch(/^<success>●<\/success> ☉/);
+  await h.emit("agent_settled"); await h.drain(); // duplicate trigger: the core drops it at once
+  expect(h.statuses.get("trace-memory")).toMatch(/^<success>●<\/success> ☉/); // the first run is still in flight
+  release(integrationReply()); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> ☉/);
 });
