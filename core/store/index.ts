@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS turns (
   user_prompt TEXT,
   assistant_text TEXT,
   started_at TEXT NOT NULL,
-  ended_at TEXT
+  ended_at TEXT,
+  UNIQUE (session_id, ordinal)
 );
 
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -66,11 +67,13 @@ CREATE TABLE IF NOT EXISTS tool_calls (
   name TEXT NOT NULL,
   input TEXT,
   result TEXT,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  UNIQUE (turn_id, ordinal)
 );
 
 CREATE TABLE IF NOT EXISTS facts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL REFERENCES runs(id),
   turn_id INTEGER NOT NULL REFERENCES turns(id),
   category TEXT NOT NULL CHECK (category IN ('question','proposal','decision','observation','interpretation','event')),
   actor TEXT NOT NULL CHECK (actor IN ('user','agent')),
@@ -78,7 +81,8 @@ CREATE TABLE IF NOT EXISTS facts (
   quote TEXT,
   status TEXT CHECK (status IN ('completed','reported','dispatched','attempted')),
   source TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  source_time TEXT NOT NULL,
+  CHECK ((status IS NOT NULL) = (category = 'event'))
 );
 
 CREATE TABLE IF NOT EXISTS fact_relations (
@@ -91,6 +95,7 @@ CREATE TABLE IF NOT EXISTS fact_relations (
 
 CREATE TABLE IF NOT EXISTS knowledge (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  origin_session_id INTEGER REFERENCES sessions(id),
   project_id INTEGER REFERENCES projects(id),
   status TEXT NOT NULL CHECK (status IN ('active','merged','archived')) DEFAULT 'active',
   author TEXT NOT NULL,
@@ -108,7 +113,8 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   op TEXT NOT NULL CHECK (op IN ('create','update','merge','archive')),
   because TEXT,
   run_id INTEGER REFERENCES runs(id),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  UNIQUE (knowledge_id, rev)
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_links (
@@ -117,7 +123,9 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
   kind TEXT NOT NULL CHECK (kind IN ('merged_into','split_from')),
   to_knowledge INTEGER NOT NULL,
   to_rev INTEGER NOT NULL,
-  PRIMARY KEY (from_knowledge, from_rev, kind, to_knowledge, to_rev)
+  PRIMARY KEY (from_knowledge, from_rev, kind, to_knowledge, to_rev),
+  FOREIGN KEY (from_knowledge, from_rev) REFERENCES knowledge_revisions(knowledge_id, rev),
+  FOREIGN KEY (to_knowledge, to_rev) REFERENCES knowledge_revisions(knowledge_id, rev)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -140,7 +148,8 @@ CREATE TABLE IF NOT EXISTS knowledge_marks (
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id),
   rev INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('verified','flagged')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  UNIQUE (knowledge_id, rev)
 );
 
 CREATE TABLE IF NOT EXISTS pending_deliveries (
@@ -151,10 +160,10 @@ CREATE TABLE IF NOT EXISTS pending_deliveries (
 );
 
 CREATE TABLE IF NOT EXISTS watermarks (
-  session_id INTEGER NOT NULL,
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
   branch TEXT NOT NULL,
-  last_recorded_turn INTEGER,
-  last_integrated_fact INTEGER,
+  last_recorded_turn INTEGER REFERENCES turns(id),
+  last_integrated_fact INTEGER REFERENCES facts(id),
   PRIMARY KEY (session_id, branch)
 );
 
@@ -365,7 +374,7 @@ function toFact(row: any): Fact {
     quote: row.quote,
     status: row.status ?? null,
     source: JSON.parse(row.source),
-    createdAt: row.created_at,
+    createdAt: row.source_time,
   };
 }
 
@@ -420,34 +429,6 @@ export class Store {
     // SQLITE_BUSY at once, without the busy handler, when a writer is already active.
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA_SQL);
-    this.migrateNoteTools();
-  }
-
-  private migrateNoteTools(): void {
-    const columns = this.db.prepare("PRAGMA table_info(facts)").all() as { name: string }[];
-    const runs = this.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'runs'").get() as { sql: string };
-    const addStatus = !columns.some((c) => c.name === "status"), rebuildRuns = !runs.sql.includes("'manual'");
-    if (!addStatus && !rebuildRuns) return;
-    this.db.exec("PRAGMA foreign_keys = OFF");
-    try {
-      this.transaction(() => {
-        if (addStatus) {
-          this.db.exec("ALTER TABLE facts ADD COLUMN status TEXT CHECK (status IN ('completed','reported','dispatched','attempted'))");
-          for (const status of ["completed", "reported", "dispatched", "attempted"]) {
-            this.db.prepare("UPDATE facts SET status = ?, text = substr(text, ?) WHERE category = 'event' AND text LIKE ?")
-              .run(status, status.length + 3, `${status}: %`);
-          }
-          this.db.exec("INSERT INTO facts_fts(facts_fts) VALUES ('rebuild')");
-        }
-        if (rebuildRuns) {
-          const sequence = this.db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'runs'").get() as { seq: number } | undefined;
-          const schema = SCHEMA_SQL.slice(SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS runs ("), SCHEMA_SQL.indexOf("CREATE TABLE IF NOT EXISTS knowledge_marks"));
-          this.db.exec(schema.replace("runs (", "runs_ticket09 ("));
-          this.db.exec("INSERT INTO runs_ticket09 SELECT * FROM runs; DROP TABLE runs; ALTER TABLE runs_ticket09 RENAME TO runs;");
-          if (sequence) this.db.prepare("UPDATE sqlite_sequence SET seq = max(seq, ?) WHERE name = 'runs'").run(sequence.seq);
-        }
-      });
-    } finally { this.db.exec("PRAGMA foreign_keys = ON"); }
   }
 
   close(): void {
@@ -566,14 +547,14 @@ export class Store {
 
   listSessionFacts(sessionId: number): Fact[] {
     return this.db.prepare(
-      "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.created_at DESC, f.id DESC",
+      "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.source_time DESC, f.id DESC",
     ).all(sessionId).map(toFact);
   }
 
   listProjectFacts(projectId: number): Fact[] {
     return this.db.prepare(
       `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
-       JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.created_at DESC, f.id DESC`,
+       JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`,
     ).all(projectId).map(toFact);
   }
 
@@ -594,10 +575,10 @@ export class Store {
   updateRun(id: number, input: RunInput & { outcome: RunOutcome }): void {
     const previous = this.getRun(id);
     if (!previous) throw new Error(`run ${id} does not exist`);
-    const factIds = JSON.parse(previous.response ?? "{}").factIds;
+    const factIds = (this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id) as { id: number }[]).map((f) => f.id);
     const response = JSON.parse(input.response ?? "{}");
     this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
-      .run(input.request ?? null, JSON.stringify({ ...response, ...(factIds ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+      .run(input.request ?? null, JSON.stringify({ ...response, ...(previous.kind === "recording" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
   }
 
   getRun(id: number): Run | null {
@@ -637,7 +618,7 @@ export class Store {
           if (!turn || turn.sessionId !== sessionId) {
             throw new Error(`turn T${f.turnId} does not belong to session S${sessionId}`);
           }
-          const info = this.db.prepare("INSERT INTO facts (turn_id, category, actor, text, quote, status, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(f.turnId, f.category, f.actor, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt);
+          const info = this.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(runId, f.turnId, f.category, f.actor, f.text, f.quote ?? null, f.status ?? null, JSON.stringify(f.source), f.createdAt);
           batchIds.push(Number(info.lastInsertRowid));
         }
         const resolve = (target: string, batchIndex: number): number => {
@@ -763,8 +744,7 @@ export class Store {
   /**
    * Knowledge visible to a session: global knowledge, this project's project-scope knowledge,
    * and this session's own session-scope knowledge. A session-scope knowledge's owning session
-   * is the session_id of the run that created its first revision (knowledge carry no session
-   * column of their own; the schema in spec.md does not give them one).
+   * is its immutable origin_session_id.
    */
   isKnowledgeVisible(id: number, sessionId: number, rev?: number): boolean {
     const knowledge = this.getKnowledge(id), session = this.getSession(sessionId);
@@ -774,8 +754,7 @@ export class Store {
     if (revision.scope === "global") return true;
     if (knowledge.projectId !== session.projectId) return false;
     if (revision.scope === "project") return true;
-    const origin = this.getKnowledgeRevision(id, 1)?.runId;
-    return origin != null && this.getRun(origin)?.sessionId === sessionId;
+    return !!this.db.prepare("SELECT 1 FROM knowledge WHERE id = ? AND origin_session_id = ?").get(id, sessionId);
   }
 
   listVisibleKnowledge(sessionId: number, projectId: number): KnowledgeWithRevision[] {
@@ -786,13 +765,11 @@ export class Store {
                 r.run_id AS rev_run_id, r.created_at AS rev_created_at
          FROM knowledge e
          JOIN knowledge_revisions r ON r.knowledge_id = e.id AND r.rev = e.current_revision
-         LEFT JOIN knowledge_revisions r1 ON r1.knowledge_id = e.id AND r1.rev = 1
-         LEFT JOIN runs run1 ON run1.id = r1.run_id
          WHERE e.status = 'active'
            AND (
              r.scope = 'global'
              OR (r.scope = 'project' AND e.project_id = ?)
-             OR (r.scope = 'session' AND e.project_id = ? AND run1.session_id = ?)
+             OR (r.scope = 'session' AND e.project_id = ? AND e.origin_session_id = ?)
            )
          ORDER BY e.id ASC`,
       )
@@ -831,7 +808,7 @@ export class Store {
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
         for (const op of input.operations) {
-          const outcome = this.applyKnowledgeOperation(op, runId, projectId);
+          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId);
           if (outcome.ok) committed.push(outcome.value);
           else throw new Error(outcome.reason);
         }
@@ -867,6 +844,7 @@ export class Store {
     op: KnowledgeOperationInput,
     runId: number,
     projectId: number,
+    sessionId: number,
   ): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
     // Ownership follows scope: a global knowledge belongs to no project; anything narrower belongs to the run's project.
     const owner = (scope: KnowledgeScope): number | null => (scope === "global" ? null : projectId);
@@ -874,8 +852,9 @@ export class Store {
     if (op.op === "create") {
       const bad = this.checkCitedFacts("create", op.supports, op.because ?? []);
       if (bad) return { ok: false, reason: bad };
-      const info = this.db.prepare("INSERT INTO knowledge (project_id, status, author, current_revision) VALUES (?, 'active', ?, 1)").run(
+      const info = this.db.prepare("INSERT INTO knowledge (project_id, origin_session_id, status, author, current_revision) VALUES (?, ?, 'active', ?, 1)").run(
         owner(op.scope),
+        sessionId,
         op.author,
       );
       const knowledgeId = Number(info.lastInsertRowid);
@@ -1033,8 +1012,7 @@ export class Store {
       // Session knowledge travel with their creating session even when leaving a declared project.
       this.db.prepare(`UPDATE knowledge SET project_id = ? WHERE id IN (
         SELECT e.id FROM knowledge e JOIN knowledge_revisions r ON r.knowledge_id = e.id AND r.rev = e.current_revision
-        JOIN knowledge_revisions first ON first.knowledge_id = e.id AND first.rev = 1 JOIN runs run ON run.id = first.run_id
-        WHERE r.scope = 'session' AND run.session_id = ?)`).run(target.id, sessionId);
+        WHERE r.scope = 'session' AND e.origin_session_id = ?)`).run(target.id, sessionId);
       return target;
     });
   }
@@ -1052,11 +1030,7 @@ export class Store {
   deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): string {
     return this.transaction(() => {
       const pending = this.listPendingDeliveries(sessionId, branch);
-      const facts = pending.flatMap((p) => {
-        const ids = JSON.parse(this.getRun(p.runId)!.response ?? "{}").factIds;
-        if (!Array.isArray(ids)) throw new Error(`recording run ${p.runId} lacks committed fact IDs; delivery preserved`);
-        return ids.map((id: number) => this.getFact(id)!);
-      });
+      const facts = pending.flatMap((p) => this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(p.runId).map(toFact));
       const text = render(facts);
       for (const p of pending) this.clearPendingDelivery(p.runId, new Date().toISOString());
       return text;
@@ -1096,10 +1070,9 @@ export class Store {
       UNION
       SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
       WHERE t.session_id = ?
-    ) SELECT f.* FROM facts f WHERE (f.turn_id IN (SELECT id FROM lineage)
-        AND f.id NOT IN (SELECT j.value FROM runs r, json_each(CASE WHEN json_valid(r.response) THEN r.response ELSE '{}' END, '$.factIds') j WHERE r.kind = 'manual'))
-      OR f.id IN (SELECT j.value FROM runs r, json_each(CASE WHEN json_valid(r.response) THEN r.response ELSE '{}' END, '$.factIds') j
-        WHERE r.kind = 'manual' AND r.session_id = ? AND r.branch = ?) ORDER BY f.id`)
+    ) SELECT f.* FROM facts f JOIN runs r ON r.id = f.run_id
+      WHERE (r.kind != 'manual' AND f.turn_id IN (SELECT id FROM lineage))
+        OR (r.kind = 'manual' AND r.session_id = ? AND r.branch = ?) ORDER BY f.id`)
       .all(sessionId, branch, sessionId, sessionId, branch).map(toFact);
   }
 

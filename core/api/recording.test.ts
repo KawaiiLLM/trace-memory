@@ -289,29 +289,3 @@ test("reopening the database preserves the run, facts, watermark and delivery", 
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
 });
-
-test("opening a pre-ticket-09 database migrates event status and run enums without losing facts or deliveries", async () => {
-  const t = turn();
-  const committed = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId, branch: "main", createdAt: time },
-    facts: [{ turnId: t.id, category: "event", actor: "agent", text: "completed: tests passed", source: [`T${t.id}#assistant`], createdAt: time }],
-    watermark: { sessionId, branch: "main", lastRecordedTurn: t.id }, pendingDelivery: { sessionId, branch: "main" } });
-  expect(committed.ok).toBe(true);
-  const before = memory.trace("F1");
-  // Reconstruct the previous persisted layout through the facade's store, then reopen it.
-  const db = memory.store.db;
-  db.exec("PRAGMA foreign_keys = OFF");
-  const sql = (db.prepare("SELECT sql FROM sqlite_master WHERE name = 'runs'").get() as { sql: string }).sql;
-  db.exec(sql.replace('CREATE TABLE runs', 'CREATE TABLE old_runs').replace(",'manual'", "").replace(",'bounced'", ""));
-  db.exec("INSERT INTO old_runs SELECT * FROM runs; DROP TABLE runs; ALTER TABLE old_runs RENAME TO runs; ALTER TABLE facts DROP COLUMN status;");
-  memory.close(); open();
-  expect(memory.trace("F1")).toBe(before);
-  expect(memory.store.getFact(1)).toMatchObject({ text: "tests passed", status: "completed" });
-  expect(memory.search("passed", "facts")).toContain("completed: tests passed");
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
-  const note = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id })[2]!;
-  expect(note.execute({ facts: [{ ...fact(), category: "bad" }] })).toContain("rejected:");
-  expect(note.execute({ facts: [fact()] })).toContain("F2");
-  expect(memory.store.listRuns(sessionId).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["manual", "bounced"], ["manual", "success"]]);
-  expect(memory.store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-});

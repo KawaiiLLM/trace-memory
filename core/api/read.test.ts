@@ -131,6 +131,26 @@ test("pending delivery is exact to its run and branch, consumed once, including 
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
 });
 
+test("delivery and branch facts use run ownership independently of audit JSON", () => {
+  const s = session(), t = turn(s.id);
+  const first = recording(s.id, t.id, "recorded", "main", true);
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
+    facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
+  const manual = memory.store.listRuns(s.id).at(-1)!;
+  memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
+  expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["recorded"]);
+  expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["manual"]);
+  expect(memory.deliver(s.id)).toContain("recorded");
+  for (const run of [memory.store.getRun(first.runId)!, manual]) {
+    memory.store.updateRun(run.id, { ...run, response: "{}" });
+    const ids = (memory.store.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(run.id) as { id: number }[]).map(f => f.id);
+    expect(JSON.parse(memory.store.getRun(run.id)!.response!).factIds).toEqual(ids);
+  }
+  const empty = memory.store.recordRun({ sessionId: s.id, kind: "manual", createdAt: time, outcome: "success", response: "{}" });
+  memory.store.updateRun(empty.id, empty);
+  expect(JSON.parse(memory.store.getRun(empty.id)!.response!)).toEqual({});
+});
+
 test("marks bind to current revision, replace its mark, clear it, and do not carry into an edit", () => {
   const { s, f, e } = populated();
   expect(memory.mark(e, "verified")).toBe(`K${e}@1: verified`);
@@ -231,12 +251,12 @@ test("default listing caps continue all hits and freeze the remaining search res
   expect(last).not.toContain("cursor=");
 });
 
-test("a legacy delivery without fact ownership is preserved on render failure", () => {
-  const s = session();
-  const run = memory.store.recordRun({ sessionId: s.id, branch: "main", kind: "recording", outcome: "success", createdAt: time, response: "{}" });
-  memory.store.addPendingDelivery(run.id, s.id, "main");
-  expect(() => memory.deliver(s.id)).toThrow("lacks committed fact IDs");
+test("a delivery is preserved on render failure", () => {
+  const s = session(), t = turn(s.id);
+  recording(s.id, t.id, "pending fact", "main", true);
+  expect(() => memory.store.deliver(s.id, "main", () => { throw new Error("render failed"); })).toThrow("render failed");
   expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
+  expect(memory.deliver(s.id)).toContain("pending fact");
 });
 
 test("first-prompt injection by project needs no session: global and project knowledge, no deliveries", () => {

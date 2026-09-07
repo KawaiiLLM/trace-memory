@@ -76,6 +76,8 @@ test("source time follows the first source, including tool sources; all sources 
   const note = memory.tools(manual(1, 2))[2]!;
   expect(note.execute({ facts: [fact("T2#t1", { source: ["T2#t1", "T1#user"] })] })).toContain("F1");
   expect(memory.store.getFact(1)).toMatchObject({ turnId: 2, createdAt: "later source time" });
+  expect(memory.store.db.prepare("SELECT f.source_time, r.kind, r.created_at FROM facts f JOIN runs r ON r.id = f.run_id WHERE f.id = 1").get())
+    .toEqual({ source_time: "later source time", kind: "manual", created_at: memory.store.getRun(1)!.createdAt });
   expect(note.execute({ facts: [fact("T1#user", { source: ["T1#user", "T999#assistant"] })] })).toContain("rejected:");
   expect(memory.store.listSessionFacts(1)).toHaveLength(1);
 });

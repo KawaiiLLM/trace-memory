@@ -123,7 +123,8 @@ describe("commitRecordingRun: local handle resolution", () => {
           turnId: t.id,
           category: "event",
           actor: "agent",
-          text: "completed: switched the lockfile to pnpm",
+          status: "completed",
+          text: "switched the lockfile to pnpm",
           source: ["T1#t1"],
           createdAt: "2026-01-01T00:00:02Z",
           support: [{ target: "$1", strength: "weak" }],
@@ -465,6 +466,65 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     return { p, s, t, factId: recorded.facts[0]!.id };
   }
   const integrationAt = "2026-01-01T00:01:00Z";
+
+  test.each([
+    ["revision", "knowledge_revisions", "knowledge_id, rev, text, category, scope, supports, op, created_at"],
+    ["tool ordinal", "tool_calls", "turn_id, ordinal, name, status"],
+    ["turn ordinal", "turns", "session_id, ordinal, kind, started_at"],
+    ["revision mark", "knowledge_marks", "knowledge_id, rev, kind, created_at"],
+  ])("database rejects a duplicate %s", (_name, table, columns) => {
+    const { s, t, factId } = seed();
+    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: integrationAt }] });
+    if (!made.ok) throw new Error("setup failed");
+    store.appendToolCall({ turnId: t.id, name: "bash", status: "success" });
+    store.addKnowledgeMark(made.committed[0]!.knowledgeId, 1, "verified", integrationAt);
+    expect(() => store.db.exec(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${table} LIMIT 1`)).toThrow(/UNIQUE constraint failed/);
+  });
+
+  test.each([["event", null], ["decision", "completed"]])("database rejects category %s with status %s", (category, status) => {
+    const { factId } = seed();
+    expect(() => store.db.prepare("UPDATE facts SET category = ?, status = ? WHERE id = ?").run(category, status, factId)).toThrow(/CHECK constraint failed/);
+  });
+
+  test("database enforces fact ownership, knowledge origin, link revisions and watermark references", () => {
+    const { s, factId } = seed();
+    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: integrationAt }] });
+    if (!made.ok) throw new Error("setup failed");
+    const id = made.committed[0]!.knowledgeId;
+    expect(() => store.db.exec("UPDATE facts SET run_id = NULL")).toThrow(/NOT NULL constraint failed/);
+    for (const sql of [
+      "UPDATE facts SET run_id = 999999",
+      "UPDATE knowledge SET origin_session_id = 999999",
+      `INSERT INTO knowledge_links VALUES (${id}, 999, 'merged_into', ${id}, 1)`,
+      `INSERT INTO knowledge_links VALUES (${id}, 1, 'merged_into', ${id}, 999)`,
+      "INSERT INTO watermarks VALUES (999999, 'main', NULL, NULL)",
+      `INSERT INTO watermarks VALUES (${s.id}, 'main', 999999, NULL)`,
+      `INSERT INTO watermarks VALUES (${s.id}, 'main', NULL, 999999)`,
+    ]) expect(() => store.db.exec(sql)).toThrow(/FOREIGN KEY constraint failed/);
+    expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  test("knowledge origin survives another session's edit and project moves without revision-one ownership", () => {
+    const { p, s, factId } = seed(), peer = makeSession(p.id);
+    const made = store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
+      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: integrationAt }] });
+    if (!made.ok) throw new Error("setup failed");
+    const id = made.committed[0]!.knowledgeId;
+    expect(store.commitIntegrationRun({ run: { kind: "integration", sessionId: peer.id, createdAt: integrationAt },
+      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "private term", category: "term", scope: "session", supports: [factId], because: [factId], createdAt: integrationAt }] }).ok).toBe(true);
+    store.db.exec("UPDATE knowledge_revisions SET run_id = NULL WHERE rev = 1");
+    const target = store.declareProject(s.id, "destination", "mark");
+    const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
+    store.mergeProject(target.id, survivor.id);
+    store.close(); store = new Store(dbPath);
+    expect(store.db.prepare("SELECT origin_session_id FROM knowledge WHERE id = ?").get(id)).toEqual({ origin_session_id: s.id });
+    expect(store.isKnowledgeVisible(id, s.id)).toBe(true);
+    expect(store.isKnowledgeVisible(id, peer.id)).toBe(false);
+    expect(store.listVisibleKnowledge(s.id, survivor.id).map(e => e.knowledge.id)).toEqual([id]);
+    expect(store.listVisibleKnowledge(peer.id, p.id)).toEqual([]);
+  });
 
   test("a scope change moves the knowledge's ownership, so it stays visible after reopening", () => {
     const { p, s, factId } = seed();
