@@ -1,4 +1,4 @@
-import type { IntegrationOutput } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
 import type { KnowledgeOperationInput, RunInput, Store } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import type { freezeIntegration, NearPair } from "./index.ts";
@@ -7,95 +7,89 @@ export type IntegrationDiagnostic =
   | { kind: "unsupported_numbers"; knowledge: string; numbers: string[] }
   | { kind: "over_200_tokens"; knowledge: string; tokens: number }
   | { kind: "unanswered_near"; pairs: NearPair[] }
-  | { kind: "lost_citations"; facts: string[] };
-
-// Compare whole numeric lexemes, including grouped thousands and decimal fractions.
+  | { kind: "uncited_facts" | "lost_citations"; facts: string[] };
 const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
-export function commitFinal(store: Store, frozen: ReturnType<typeof freezeIntegration>, output: IntegrationOutput,
-  run: RunInput, unansweredNear: NearPair[]) {
-  const problems: string[] = [], diagnostics: IntegrationDiagnostic[] = [];
-  const evidence = new Map(frozen.facts.map((f) => [f.id, f]));
-  const end = frozen.rangeFacts.at(-1)!.id;
-  const reads = new Map(frozen.knowledge.map(({ knowledge, revision }) => [knowledge.id, revision]));
-  const touched = new Set<number>(), handles = new Set<string>();
-  const id = (address: string) => {
-    const value = Number(address.slice(1));
-    if (!/^[KF][1-9]\d*$/.test(address) || !Number.isSafeInteger(value)) problems.push(`invalid address: ${address}`);
-    return value;
+/** Validate the complete batch before writes, including every merge participant. */
+export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
+  frozen?: ReturnType<typeof freezeIntegration>) {
+  const results: string[] = [], operations: KnowledgeOperationInput[] = [];
+  const batch = raw as MemoryBatch;
+  const projectId = store.getSession(sessionId)!.projectId;
+  const knowledge = frozen?.knowledge ?? store.listVisibleKnowledge(sessionId, projectId);
+  const evidence = new Map((frozen?.facts ?? store.listProjectFacts(projectId)).map(f => [f.id, f]));
+  const touched = new Set<number>();
+  if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
+    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as IntegrationDiagnostic[] };
+  }
+  const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {
+    if (!Array.isArray(raw) || (nonempty && !raw.length)) { errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : "")); return []; }
+    return raw.map(address => {
+      const id = typeof address === "string" && /^F[1-9]\d*$/.test(address) ? Number(address.slice(1)) : NaN;
+      if (!Number.isSafeInteger(id) || !evidence.has(id)) errors.push(`${address}: not an available fact of this project (range or earlier)`);
+      return id;
+    });
   };
-  const facts = (addresses: string[]) => addresses.map((address) => {
-    const value = id(address);
-    if (!evidence.has(value) || value > end) problems.push(`${address}: not an available fact of this project (range or earlier)`);
-    return value;
+  batch.operations.forEach((raw, index) => {
+    const errors: string[] = [];
+    const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
+    const op = value.op;
+    if (!["create", "update", "merge", "archive"].includes(op)) errors.push("invalid op");
+    const keys = ["op", "because", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope", "supports"] : [])];
+    for (const key of Object.keys(value)) if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
+    const because = facts(value.because, errors);
+    const target = (address: unknown) => {
+      const id = typeof address === "string" && /^K[1-9]\d*$/.test(address) ? Number(address.slice(1)) : NaN;
+      const read = knowledge.find(k => k.knowledge.id === id), current = Number.isSafeInteger(id) ? store.getKnowledge(id) : null;
+      if (!Number.isSafeInteger(id) || !read) errors.push(`${address}: knowledge was not read as visible and active`);
+      else if (!current || current.status !== "active" || current.currentRevision !== read.revision.rev) errors.push(`${address}: expected revision ${read.revision.rev}, current revision is ${current?.currentRevision}; target moved on or is inactive`);
+      if (touched.has(id)) errors.push(`${address}: duplicate operation target`);
+      touched.add(id);
+      return { knowledgeId: id, expectedRevision: read?.revision.rev ?? 0 };
+    };
+    const dest = op !== "create" ? target(value.id) : undefined;
+    const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length ? value.absorb.map(target) : (errors.push("merge must absorb at least one knowledge item"), [])) : [];
+    if (op !== "archive") {
+      if (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)) errors.push("text: expected non-empty text without fact or knowledge ids");
+      if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
+      if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
+    }
+    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: op === "archive" ? [] : facts(value.supports, errors, true), because, createdAt: run.createdAt };
+    if (!errors.length) operations.push(op === "create" ? { op: "new", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
+      : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoExpectedRevision: dest!.expectedRevision, absorb, ...content }
+      : op === "archive" ? { op: "archive", ...dest!, because, createdAt: run.createdAt } : { op: "edit", ...dest!, ...content });
+    results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
-  const target = (address: string) => {
-    const knowledgeId = id(address), read = reads.get(knowledgeId);
-    if (!read) problems.push(`${address}: knowledge was not read as visible and active`);
-    if (touched.has(knowledgeId)) problems.push(`${address}: duplicate operation target`);
-    touched.add(knowledgeId);
-    return { knowledgeId, expectedRevision: read?.rev ?? 0 };
-  };
-  const content = (value: Omit<IntegrationOutput["new"][number], "handle">) => ({ text: value.text, scope: value.scope,
-    category: value.category, supports: facts(value.supports), createdAt: run.createdAt });
-  const operations: KnowledgeOperationInput[] = [];
-  for (const value of output.new) {
-    if (!/^\$e[1-9]\d*$/.test(value.handle) || !Number.isSafeInteger(Number(value.handle.slice(2))) || handles.has(value.handle)) {
-      problems.push(`${value.handle}: invalid or duplicate candidate handle`);
+  const declined = new Set<number>();
+  for (const skipped of batch.skipped) {
+    const errors: string[] = [];
+    if (!skipped || typeof skipped !== "object" || Array.isArray(skipped)) errors.push("invalid skipped item");
+    else {
+      const ids = facts([skipped.fact], errors);
+      if (Object.keys(skipped).some(k => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
+      if (!frozen?.rangeFacts.some(f => f.id === ids[0])) errors.push("skipped fact must belong to this run's range");
+      if (declined.has(ids[0]!)) errors.push("duplicate skipped fact");
+      declined.add(ids[0]!);
     }
-    handles.add(value.handle);
-    operations.push({ op: "new", handle: value.handle, author: run.model ?? "session", ...content(value) });
+    results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   }
-  for (const value of output.edit) operations.push({ op: "edit", ...target(value.id), ...content(value), because: facts(value.because) });
-  for (const value of output.merge) {
-    const into = target(value.into);
-    if (!value.absorb.length) problems.push(`${value.into}: merge must absorb at least one knowledge item`);
-    operations.push({ op: "merge", intoKnowledgeId: into.knowledgeId, intoExpectedRevision: into.expectedRevision,
-      absorb: value.absorb.map(target), ...content(value), because: facts(value.because) });
-  }
-  for (const value of output.delete) operations.push({ op: "archive", ...target(value.id), because: facts(value.because), createdAt: run.createdAt });
-  const declined = new Set(facts(output.not_admitted.map((value) => value.id)));
-  for (const ack of output.near_ack) {
-    if (!reads.has(id(ack.knowledge))) problems.push(`${ack.knowledge}: NEAR acknowledgement names an unread knowledge`);
-  }
-  // Remove all affected snapshots before adding replacements; archives and absorbed knowledge cite nothing.
-  const resulting = new Set(frozen.knowledge.filter(({ knowledge }) => !touched.has(knowledge.id)).flatMap(({ revision }) => revision.supports));
+  const diagnostics: IntegrationDiagnostic[] = [];
   for (const op of operations) {
     if (op.op === "archive") continue;
-    if (op.scope === "session" && op.op !== "new") {
-      const knowledgeId = op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId;
-      const creation = store.getKnowledgeRevision(knowledgeId, 1);
-      if (!creation?.runId || store.getRun(creation.runId)?.sessionId !== frozen.sessionId) continue;
-    }
-    for (const fact of op.supports) resulting.add(fact);
+    const label = op.op === "new" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
+    const cited = new Set(op.supports.flatMap(id => numbers(`${evidence.get(id)!.text}\n${evidence.get(id)!.quote ?? ""}`)));
+    const unsupported = [...new Set(numbers(op.text))].filter(n => !cited.has(n));
+    if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: label, numbers: unsupported });
+    if (tokens(op.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: label, tokens: tokens(op.text) });
   }
-  const uncited = frozen.rangeFacts.filter((f) => (f.actor === "user" || f.category === "question") && !resulting.has(f.id) && !declined.has(f.id));
-  if (uncited.length) problems.push(`uncited facts: ${uncited.map((f) => `F${f.id}`).join(", ")}`);
-  const response = JSON.parse(run.response!);
-  if (problems.length) {
-    const runId = store.recordRun({ ...run, outcome: "failure", response: JSON.stringify({ ...response, problems }) }).id;
-    return { outcome: "bounced" as const, runId, problems };
-  }
-  for (const op of operations) {
-    if (op.op === "archive") continue;
-    const knowledge = op.op === "new" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
-    const cited = new Set(op.supports.flatMap((id) => {
-      const fact = evidence.get(id)!;
-      return numbers(`${fact.text}\n${fact.quote ?? ""}`);
-    }));
-    const unsupported = [...new Set(numbers(op.text))].filter((n) => !cited.has(n));
-    if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge, numbers: unsupported });
-    if (tokens(op.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge, tokens: tokens(op.text) });
-  }
-  if (unansweredNear.length) diagnostics.push({ kind: "unanswered_near", pairs: unansweredNear });
-  const result = store.commitIntegrationRun({ run, operations,
-    watermark: { sessionId: frozen.sessionId, branch: frozen.branch, lastIntegratedFact: end },
-    finalizeResponse: ({ committed, rejected }) => {
-      const actual = new Set(store.listVisibleKnowledge(frozen.sessionId, frozen.projectId).flatMap(({ revision }) => revision.supports));
-      const lost = [...new Set(rejected.flatMap(({ op }) => op.op === "archive" ? [] : op.supports))].filter((id) => resulting.has(id) && !actual.has(id));
-      if (lost.length) diagnostics.push({ kind: "lost_citations", facts: lost.map((id) => `F${id}`) });
-      return JSON.stringify({ ...response, committed, rejected, diagnostics });
-    } });
-  if (!result.ok) return { outcome: "failure" as const, runId: result.runId, problems: result.problems };
-  return { outcome: "success" as const, runId: result.runId, committed: result.committed, rejected: result.rejected, diagnostics };
+  return { results, operations, batch, diagnostics };
+}
+
+/** Called after application inside the same immediate transaction. */
+export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[]): IntegrationDiagnostic[] {
+  const projectId = store.getSession(sessionId)!.projectId;
+  const cited = new Set(store.listVisibleKnowledge(sessionId, projectId).flatMap(k => k.revision.supports));
+  const skipped = new Set(batch.skipped.map(s => s.fact));
+  const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));
+  return uncited.length ? [{ kind: "uncited_facts", facts: uncited.map(f => `F${f.id}`) }] : [];
 }

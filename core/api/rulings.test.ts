@@ -80,7 +80,7 @@ test("2026-09-07: four tools, no other model-facing surface", () => {
   expect(tools.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   for (const tool of tools) { expect(tool.parameters.type).toBe("object"); expect(typeof tool.execute).toBe("function"); }
   for (const tool of tools.slice(2)) expect(tool.description).toContain("runs are the normal writers");
-  expect(tools[3]!.execute({ operations: [{ op: "create" }, { op: "archive" }], skipped: [] })).toContain("not implemented until ticket 10");
+  expect(tools[3]!.execute({ operations: [{ op: "create" }, { op: "archive" }], skipped: [] })).toContain("rejected:");
 });
 
 // “if any fails, the result lists each item's outcome in order ... and nothing is written.”
@@ -136,4 +136,91 @@ test("2026-09-07: bounced is not empty", async () => {
   expect(await memory.record(input)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.getWatermark(s.id, "main")?.lastRecordedTurn).toBe(t.id);
   expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+});
+
+function memoryWriter() {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
+  const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F2"] };
+  return { s, t, write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
+}
+
+test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
+  const { create, write } = memoryWriter();
+  write([create]);
+  const update = { ...create, op: "update", id: "K1" };
+  for (const operation of [create, update, { ...update, op: "merge", absorb: ["K2"] }, { op: "archive", id: "K1", because: [] }]) {
+    const { because: _because, ...missing } = operation;
+    expect(write([missing]).results[0]).toContain("rejected:");
+  }
+  const wrong = [{ ...create, id: "K1" }, { ...create, absorb: ["K1"] }, { ...update, absorb: ["K2"] },
+    ...["text", "category", "scope", "supports", "absorb"].map(key => ({ op: "archive", id: "K1", because: [], [key]: key === "supports" || key === "absorb" ? [] : "x" })),
+    { ...create, handle: "$e1" }, { ...create, status: "active" }];
+  for (const operation of wrong) {
+    const result = write([create, operation]);
+    expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("inapplicable field");
+    expect(memory.store.getKnowledge(2)).toBeNull();
+  }
+  for (const key of ["text", "category", "scope", "supports"]) {
+    const incomplete = { ...update } as Record<string, unknown>; delete incomplete[key];
+    expect(write([incomplete]).results[0]).toContain("rejected:");
+  }
+});
+
+test("2026-09-07: supports replaces, history keeps the old set", () => {
+  const { create, write, s } = memoryWriter();
+  const created = write([create]);
+  expect(created.results).toEqual(["ok"]);
+  expect(memory.store.getKnowledgeRevision(1, 1)).toMatchObject({ supports: [1], because: [2] });
+  write([{ ...create, op: "update", id: "K1", text: "Avoid npm", supports: ["F2"], because: ["F1"] }]);
+  expect(memory.store.getKnowledgeRevision(1, 2)).toMatchObject({ supports: [2], because: [1] });
+  expect(memory.store.getKnowledgeRevision(1, 1)?.supports).toEqual([1]);
+  expect(memory.trace("K1@1..2")).toContain("F2");
+  const runs = memory.store.listRuns(s.id);
+  expect(runs.at(-1)).toMatchObject({ kind: "manual", outcome: "success", branch: "main", rangeFrom: "S1/T1", rangeTo: "S1/T1" });
+  expect(JSON.parse(runs.at(-1)!.request!).operations[0].op).toBe("update");
+  expect(JSON.parse(runs.at(-1)!.response!).results).toEqual(["ok"]);
+});
+
+test("2026-09-07: merge atomic", () => {
+  const { create, write } = memoryWriter(); write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]);
+  const merge = { ...create, op: "merge", id: "K1", absorb: ["K2"], supports: ["F1", "F2"] };
+  expect(write([merge, { op: "archive", id: "K999", because: [] }]).results[1]).toContain("rejected:");
+  expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
+  expect(memory.store.getKnowledge(2)?.status).toBe("active");
+  expect(memory.store.listKnowledgeLinks(2)).toEqual([]);
+  expect(write([merge]).results).toEqual(["ok"]);
+  expect(memory.store.getKnowledge(2)).toMatchObject({ status: "merged", currentRevision: 1 });
+  expect(memory.store.listKnowledgeLinks(2)).toEqual([{ fromKnowledge: 2, fromRev: 1, kind: "merged_into", toKnowledge: 1, toRev: 2 }]);
+  expect(memory.trace("K2")).toContain("Avoid npm"); expect(memory.trace("K2")).toContain("K1@2");
+});
+
+test("2026-09-07: second submission commits, first does not", async () => {
+  const { create, s } = memoryWriter(); memory.close();
+  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as import("./index.ts").IntegrationAgentInput;
+    const batch = { operations: [create], skipped: [{ fact: "F2", because: "Already expressed." }] };
+    input.reportRequest({ messages: ["first"] });
+    const tool = input.tools[3]!;
+    expect(tool.execute({ operations: [{ ...create, id: "K1" }], skipped: [] })).toContain("rejected:");
+    const first = JSON.parse(tool.execute(batch));
+    expect(first.feedback).toMatchObject({ role: "user" });
+    expect(first.feedback.content).toContain("NEAR:"); expect(first.feedback.content).toContain("CLOSER:");
+    expect(first.feedback.content).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
+    expect(memory.store.getKnowledge(1)).toBeNull();
+    expect(memory.store.getWatermark(s.id, "main")?.lastIntegratedFact ?? null).toBeNull();
+    input.reportRequest({ messages: ["first", first.feedback] });
+    expect(JSON.parse(tool.execute(batch)).committed).toHaveLength(1);
+    expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
+    expect(memory.store.getWatermark(s.id, "main")?.lastIntegratedFact).toBe(2);
+    expect(tool.execute(batch)).toContain("already committed");
+    return { outcome: "failure", output: "provider failed after commit", request: { messages: ["last"] } };
+  });
+  const result = await memory.integrate({ sessionId: s.id, branch: "main" });
+  if (result.outcome !== "success") throw new Error("committed run must stay successful");
+  const run = memory.store.getRun(result.runId)!;
+  expect(run.outcome).toBe("success"); expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
+  expect(JSON.parse(run.response!).problems).toEqual(["provider failed after commit"]);
+  expect(JSON.parse(run.response!).toolCalls).toHaveLength(4);
 });

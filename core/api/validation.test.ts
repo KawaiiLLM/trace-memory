@@ -1,9 +1,10 @@
+import { memoryBatch } from "../../test/memory-batch.ts";
 import { describe, expect, test } from "vitest";
-import { TraceMemory } from "./index.ts";
+import { TraceMemory, type IntegrationAgentInput } from "./index.ts";
 
 // These former model-unit cases now drive the host's actual Integration seam.
-async function validateIntegrationOutput(output: unknown) {
-  const memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } }), { integration: { nearThreshold: 1 } });
+async function checkMemoryBatch(output: unknown) {
+  const memory = TraceMemory(":memory:", async raw => { const input = raw as IntegrationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(memoryBatch(output)); tool.execute(memoryBatch(output)); return { outcome: "success", output: "done", request: { fake: true } }; }, { integration: { nearThreshold: 1 } });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
@@ -16,13 +17,13 @@ async function validateIntegrationOutput(output: unknown) {
     const result = await memory.integrate({ sessionId: s.id, branch: "main" });
     const run = memory.store.listRuns(s.id).at(-1)!;
     const audit = JSON.parse(run.response!);
-    return { problems: "problems" in result ? result.problems : [], value: result.outcome === "success" ? JSON.parse(audit.output) : null };
+    return { problems: "problems" in result ? result.problems : [], value: result.outcome === "success" ? audit.toolCalls.at(-1).input : null };
   } finally { memory.close(); }
 }
 
-describe("validateIntegrationOutput", async () => {
+describe("checkMemoryBatch", async () => {
   test("accepts a well-formed round with all sections", async () => {
-    const { problems, value } = await validateIntegrationOutput({
+    const { problems, value } = await checkMemoryBatch({
       new: [{ handle: "$e1", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] }],
       edit: [{ id: "K5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"], because: ["F3"] }],
       merge: [{ into: "K4", absorb: ["K6"], text: "Merged text.", scope: "project", category: "constraint", supports: ["F2", "F3"], because: ["F4"] }],
@@ -32,66 +33,66 @@ describe("validateIntegrationOutput", async () => {
       over_budget: false,
     });
     expect(problems).toEqual([]);
-    expect(value!.new).toHaveLength(1);
-    expect(value!.merge[0]!.absorb).toEqual(["K6"]);
+    expect(value!.operations.filter((op: any) => op.op === "create")).toHaveLength(1);
+    expect(value!.operations.find((op: any) => op.op === "merge")!.absorb).toEqual(["K6"]);
   });
 
   test("accepts a round with sections omitted", async () => {
-    const { problems, value } = await validateIntegrationOutput({});
+    const { problems, value } = await checkMemoryBatch({});
     expect(problems).toEqual([]);
-    expect(value).toEqual({}); // The facade audit preserves the exact submitted object.
+    expect(value).toEqual({ operations: [], skipped: [] }); // The facade audit preserves the exact submitted object.
   });
 
   test("rejects a non-object top level", async () => {
-    const { problems, value } = await validateIntegrationOutput([]);
+    const { problems, value } = await checkMemoryBatch([]);
     expect(value).toBeNull();
     expect(problems.length).toBeGreaterThan(0);
   });
 
   test("rejects a malformed new-knowledge handle", async () => {
-    const { problems } = await validateIntegrationOutput({ new: [{ handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"] }] });
+    const { problems } = await checkMemoryBatch({ new: [{ handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"] }] });
     expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems } = await validateIntegrationOutput({ new: [{ handle: "$e1", text: "x", scope: "team", category: "term", supports: ["F1"] }] });
+    const { problems } = await checkMemoryBatch({ new: [{ handle: "$e1", text: "x", scope: "team", category: "term", supports: ["F1"] }] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems } = await validateIntegrationOutput({ new: [{ handle: "$e1", text: "x", scope: "project", category: "recording", supports: ["F1"] }] });
+    const { problems } = await checkMemoryBatch({ new: [{ handle: "$e1", text: "x", scope: "project", category: "recording", supports: ["F1"] }] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems } = await validateIntegrationOutput({ new: [{ handle: "$e1", text: "x", scope: "project", category: "term", supports: ["K1"] }] });
-    expect(problems.some((p) => p.includes("supports"))).toBe(true);
+    const { problems } = await checkMemoryBatch({ new: [{ handle: "$e1", text: "x", scope: "project", category: "term", supports: ["K1"] }] });
+    expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
   test("rejects a knowledge item id embedded in knowledge text", async () => {
-    const { problems } = await validateIntegrationOutput({ new: [{ handle: "$e1", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"] }] });
-    expect(problems.some((p) => p.includes("embed"))).toBe(true);
+    const { problems } = await checkMemoryBatch({ new: [{ handle: "$e1", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"] }] });
+    expect(problems.some((p) => p.includes("text"))).toBe(true);
   });
 
   test("rejects a malformed edit id", async () => {
-    const { problems } = await validateIntegrationOutput({ edit: [{ id: "5", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }] });
-    expect(problems.some((p) => p.includes("id"))).toBe(true);
+    const { problems } = await checkMemoryBatch({ edit: [{ id: "5", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }] });
+    expect(problems.some((p) => p.includes("visible"))).toBe(true);
   });
 
   test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
-    const { problems } = await validateIntegrationOutput({
+    const { problems } = await checkMemoryBatch({
       merge: [{ into: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }],
     });
-    expect(problems.some((p) => p.includes("absorb"))).toBe(true);
+    expect(problems.some((p) => p.includes("not-an-id"))).toBe(true);
   });
 
   test("accepts a near_ack naming a candidate handle and a knowledge item", async () => {
-    const { problems } = await validateIntegrationOutput({ near_ack: [{ candidate: "$e2", knowledge: "K4", because: "different conditions" }] });
+    const { problems } = await checkMemoryBatch({ operations: [], skipped: [{ fact: "F1", because: "different conditions" }] });
     expect(problems).toEqual([]);
   });
 
   test("rejects a near_ack with a malformed candidate", async () => {
-    const { problems } = await validateIntegrationOutput({ near_ack: [{ candidate: "e2", knowledge: "K4", because: "x" }] });
-    expect(problems.some((p) => p.includes("candidate"))).toBe(true);
+    const { problems } = await checkMemoryBatch({ operations: [], skipped: [], near_ack: [{ candidate: "e2", knowledge: "K4", because: "x" }] });
+    expect(problems.some((p) => p.includes("memory expects"))).toBe(true);
   });
 });

@@ -191,9 +191,7 @@ export interface ValidationResult<T> {
 }
 
 const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, recording.md
-const LOCAL_KNOWLEDGE_HANDLE_RE = /^\$e\d+$/; // $e<n>, integration.md
 const FACT_ID_RE = /^F\d+$/;
-const KNOWLEDGE_ID_RE = /^K\d+$/;
 // A bare fact or knowledge id embedded in prose text; ids belong only in relation/supports fields.
 const EMBEDDED_ID_RE = /\b[FK]\d+\b/;
 
@@ -302,201 +300,18 @@ export function validateRecordingFact(path: string, raw: unknown, problems: stri
   };
 }
 
-// ---- Integration output (core/prompts/integration.md) ----
-
-export interface IntegrationNewKnowledgeInput {
-  handle: string; // "$e<n>"
-  text: string;
-  scope: KnowledgeScope;
-  category: KnowledgeCategory;
-  supports: string[]; // "F<id>"
-}
-
-export interface IntegrationEditKnowledgeInput {
-  id: string; // "K<id>"
-  text: string;
-  scope: KnowledgeScope;
-  category: KnowledgeCategory;
-  supports: string[];
+// ---- Memory tool input ----
+export interface MemoryOperation {
+  op: "create" | "update" | "merge" | "archive";
+  id?: string;
+  absorb?: string[];
+  text?: string;
+  category?: KnowledgeCategory;
+  scope?: KnowledgeScope;
+  supports?: string[];
   because: string[];
 }
-
-export interface IntegrationMergeKnowledgeInput {
-  into: string; // "K<id>"
-  absorb: string[]; // "K<id>"[]
-  text: string;
-  scope: KnowledgeScope;
-  category: KnowledgeCategory;
-  supports: string[];
-  because: string[];
-}
-
-export interface IntegrationDeleteKnowledgeInput {
-  id: string; // "K<id>"
-  because: string[];
-}
-
-export interface IntegrationNotAdmittedInput {
-  id: string; // "F<id>"
-  because: string;
-}
-
-export interface IntegrationNearAckInput {
-  candidate: string; // "$e<n>" or "K<id>"
-  knowledge: string; // "K<id>"
-  because: string;
-}
-
-export interface IntegrationOutput {
-  new: IntegrationNewKnowledgeInput[];
-  edit: IntegrationEditKnowledgeInput[];
-  merge: IntegrationMergeKnowledgeInput[];
-  delete: IntegrationDeleteKnowledgeInput[];
-  not_admitted: IntegrationNotAdmittedInput[];
-  near_ack: IntegrationNearAckInput[];
-  over_budget: boolean;
-}
-
-function asArray(path: string, value: unknown, problems: string[]): unknown[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) {
-    problems.push(`${path}: expected an array`);
-    return [];
-  }
-  return value;
-}
-
-function checkText(path: string, text: unknown, problems: string[]): void {
-  if (!isNonEmptyString(text)) {
-    problems.push(`${path}: expected a non-empty string`);
-  } else if (EMBEDDED_ID_RE.test(text)) {
-    problems.push(`${path}: must not embed a fact or knowledge id`);
-  }
-}
-
-function checkScope(path: string, v: unknown, problems: string[]): void {
-  if (!KNOWLEDGE_SCOPES.includes(v as KnowledgeScope)) {
-    problems.push(`${path}: expected one of ${KNOWLEDGE_SCOPES.join("|")}, got ${JSON.stringify(v)}`);
-  }
-}
-
-function checkCategory(path: string, v: unknown, problems: string[]): void {
-  if (!KNOWLEDGE_CATEGORIES.includes(v as KnowledgeCategory)) {
-    problems.push(`${path}: expected one of ${KNOWLEDGE_CATEGORIES.join("|")}, got ${JSON.stringify(v)}`);
-  }
-}
-
-function checkFactIdArray(path: string, v: unknown, problems: string[], nonEmpty = false): string[] {
-  if (!isStringArray(v) || !v.every((s) => FACT_ID_RE.test(s))) {
-    problems.push(`${path}: expected an array of "F<id>"`);
-    return [];
-  }
-  if (nonEmpty && v.length === 0) {
-    problems.push(`${path}: must cite at least one fact`);
-  }
-  return v;
-}
-
-function checkKnowledgeId(path: string, v: unknown, problems: string[]): void {
-  if (typeof v !== "string" || !KNOWLEDGE_ID_RE.test(v)) {
-    problems.push(`${path}: expected "K<id>", got ${JSON.stringify(v)}`);
-  }
-}
-
-/** Validate one integration round's full JSON output (either round; shape is identical). */
-export function validateIntegrationOutput(raw: unknown): ValidationResult<IntegrationOutput> {
-  const problems: string[] = [];
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { problems: ["integration output must be a JSON object"], value: null };
-  }
-  const obj = raw as Record<string, unknown>;
-
-  const newKnowledge: IntegrationNewKnowledgeInput[] = asArray("new", obj.new, problems).map((item, i) => {
-    const p = `new[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    if (typeof it.handle !== "string" || !LOCAL_KNOWLEDGE_HANDLE_RE.test(it.handle)) {
-      problems.push(`${p}.handle: expected "$e<n>", got ${JSON.stringify(it.handle)}`);
-    }
-    checkText(`${p}.text`, it.text, problems);
-    checkScope(`${p}.scope`, it.scope, problems);
-    checkCategory(`${p}.category`, it.category, problems);
-    const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
-    return { handle: it.handle as string, text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports };
-  });
-
-  const editKnowledge: IntegrationEditKnowledgeInput[] = asArray("edit", obj.edit, problems).map((item, i) => {
-    const p = `edit[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkKnowledgeId(`${p}.id`, it.id, problems);
-    checkText(`${p}.text`, it.text, problems);
-    checkScope(`${p}.scope`, it.scope, problems);
-    checkCategory(`${p}.category`, it.category, problems);
-    const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
-    const because = checkFactIdArray(`${p}.because`, it.because, problems);
-    return { id: it.id as string, text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports, because };
-  });
-
-  const mergeKnowledge: IntegrationMergeKnowledgeInput[] = asArray("merge", obj.merge, problems).map((item, i) => {
-    const p = `merge[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkKnowledgeId(`${p}.into`, it.into, problems);
-    const absorb = asArray(`${p}.absorb`, it.absorb, problems) as unknown[];
-    absorb.forEach((a, k) => checkKnowledgeId(`${p}.absorb[${k}]`, a, problems));
-    checkText(`${p}.text`, it.text, problems);
-    checkScope(`${p}.scope`, it.scope, problems);
-    checkCategory(`${p}.category`, it.category, problems);
-    const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
-    const because = checkFactIdArray(`${p}.because`, it.because, problems);
-    return { into: it.into as string, absorb: absorb as string[], text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports, because };
-  });
-
-  const deleteKnowledge: IntegrationDeleteKnowledgeInput[] = asArray("delete", obj.delete, problems).map((item, i) => {
-    const p = `delete[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkKnowledgeId(`${p}.id`, it.id, problems);
-    const because = checkFactIdArray(`${p}.because`, it.because, problems);
-    return { id: it.id as string, because };
-  });
-
-  const notAdmitted: IntegrationNotAdmittedInput[] = asArray("not_admitted", obj.not_admitted, problems).map((item, i) => {
-    const p = `not_admitted[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    if (typeof it.id !== "string" || !FACT_ID_RE.test(it.id)) {
-      problems.push(`${p}.id: expected "F<id>", got ${JSON.stringify(it.id)}`);
-    }
-    if (!isNonEmptyString(it.because)) {
-      problems.push(`${p}.because: expected a non-empty string`);
-    }
-    return { id: it.id as string, because: it.because as string };
-  });
-
-  const nearAck: IntegrationNearAckInput[] = asArray("near_ack", obj.near_ack, problems).map((item, i) => {
-    const p = `near_ack[${i}]`;
-    const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    if (typeof it.candidate !== "string" || !(LOCAL_KNOWLEDGE_HANDLE_RE.test(it.candidate) || KNOWLEDGE_ID_RE.test(it.candidate))) {
-      problems.push(`${p}.candidate: expected "$e<n>" or "K<id>", got ${JSON.stringify(it.candidate)}`);
-    }
-    checkKnowledgeId(`${p}.knowledge`, it.knowledge, problems);
-    if (!isNonEmptyString(it.because)) {
-      problems.push(`${p}.because: expected a non-empty string`);
-    }
-    return { candidate: it.candidate as string, knowledge: it.knowledge as string, because: it.because as string };
-  });
-
-  if (obj.over_budget !== undefined && typeof obj.over_budget !== "boolean") {
-    problems.push(`over_budget: expected a boolean when present`);
-  }
-
-  return {
-    problems,
-    value: {
-      new: newKnowledge,
-      edit: editKnowledge,
-      merge: mergeKnowledge,
-      delete: deleteKnowledge,
-      not_admitted: notAdmitted,
-      near_ack: nearAck,
-      over_budget: obj.over_budget === true,
-    },
-  };
+export interface MemoryBatch {
+  operations: MemoryOperation[];
+  skipped: { fact: string; because: string }[];
 }

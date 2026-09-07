@@ -1,7 +1,8 @@
+import type { bindTools } from "../api/tools.ts";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { validateIntegrationOutput, type Fact, type IntegrationOutput } from "../model/index.ts";
-import { commitFinal, type IntegrationDiagnostic } from "./commit.ts";
+import { type Fact, type MemoryBatch } from "../model/index.ts";
+import { type IntegrationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, RejectedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { finish, renderKnowledge, renderFact, budgetKnowledge, budgetFacts } from "../render/index.ts";
@@ -18,7 +19,6 @@ export interface IntegrationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
 export interface IntegrationAgentInput {
   kind: "integration";
-  round: "candidate" | "final";
   sessionId: number;
   branch: string;
   range: IntegrationRange;
@@ -28,12 +28,13 @@ export interface IntegrationAgentInput {
   prompt: string;
   promptHash: string;
   input: string;
-  continuation?: { request: unknown; response: RunAgentResult; message: { role: "user"; content: string } };
+  tools: import("../api/tools.ts").ToolDefinition[];
+  reportRequest(request: unknown): void;
 }
 export type IntegrateResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
-  | { outcome: "success"; runId: number; candidateRunId: number; output: IntegrationOutput;
+  | { outcome: "success"; runId: number; output: MemoryBatch;
       committed: CommittedKnowledgeOp[]; rejected: RejectedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
       range: IntegrationRange; readKnowledgeRevisions: { knowledgeId: number; rev: number }[]; unansweredNear: NearPair[] };
 
@@ -75,14 +76,10 @@ function similarity(a: string, b: string): number {
   const union = left.size + right.size - intersection;
   return union ? intersection / union : 0;
 }
-const candidates = (output: IntegrationOutput) => [
-  ...output.new.map((e) => ({ id: e.handle, text: e.text })),
-  ...output.edit.map((e) => ({ id: e.id, text: e.text })),
-  ...output.merge.map((e) => ({ id: e.into, text: e.text })),
-];
+const candidates = (output: MemoryBatch) => output.operations.flatMap((op, i) => op.op === "archive" ? [] : [{ id: op.op === "create" ? `$e${i + 1}` : op.id!, text: op.text! }]);
 
 export async function runIntegration(store: Store, frozen: ReturnType<typeof freezeIntegration>, runAgent: RunAgent,
-  config: TraceMemoryConfig): Promise<IntegrateResult> {
+  config: TraceMemoryConfig, bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review: import("./memory.ts").MemoryReview) => ReturnType<typeof bindTools>): Promise<IntegrateResult> {
   const { sessionId, branch, rangeFacts, context, knowledge, lines, reminders, model, mode, threshold } = frozen;
   if (!rangeFacts.length) return { outcome: "empty" };
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
@@ -96,36 +93,9 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     "Already-integrated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
   const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeRevisions, model, mode, prompt, promptHash };
-  async function attempt(round: "candidate" | "final", input: string, continuation?: IntegrationAgentInput["continuation"]) {
-    const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
-      promptHash, model, mode, createdAt: new Date().toISOString() };
-    let result: RunAgentResult;
-    try { result = await runAgent(structuredClone({ ...base, round, input, ...(continuation ? { continuation } : {}) })); }
-    catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
-      output: error instanceof Error ? error.message : String(error) }; }
-    run.mode = result.mode ?? mode;
-    run.request = result.request === undefined ? null : JSON.stringify(result.request);
-    let outcome: "success" | "failure" | "cancelled" | "bounced" = result.outcome;
-    let problems: string[] = [], output: IntegrationOutput | null = null;
-    if (outcome !== "success") problems = [String(result.output ?? outcome)];
-    else if (result.request == null) { outcome = "failure"; problems = ["runAgent must return the exact provider request"]; }
-    else {
-      try {
-        const validated = validateIntegrationOutput(typeof result.output === "string" ? JSON.parse(result.output) : result.output);
-        problems = validated.problems; output = validated.value;
-      } catch (error) { problems = [`invalid JSON: ${String(error)}`]; }
-      if (problems.length || !output) outcome = "bounced";
-    }
-    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, problems, round,
-      ...(result.verification !== undefined ? { verification: result.verification } : {}),
-      ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
-    const runId = round === "final" && outcome === "success" ? 0
-      : store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id;
-    return { outcome, runId, problems, output, result, run };
-  }
-  const candidate = await attempt("candidate", initial);
-  if (candidate.outcome !== "success") return { outcome: candidate.outcome, runId: candidate.runId, problems: candidate.problems };
-  const near: NearPair[] = candidates(candidate.output!).flatMap((c) => knowledge
+  const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
+  const binding = bind({ kind: "integration", sessionId, branch, range, readKnowledgeRevisions }, run, { frozen, feedback: (batch) => {
+  const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
     .map(({ knowledge, revision }) => ({ candidate: c.id, knowledge: `K${knowledge.id}`, score: similarity(c.text, revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
   const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderKnowledge(knowledge.find((e) => `K${e.knowledge.id}` === p.knowledge)!)}`);
@@ -135,15 +105,30 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
       .map((p) => `${renderKnowledge(knowledge)}\nJaccard ${p.score}\n${lines.get(p.fact.id)!}`));
   const feedback = ["System-generated review guidance; not a human ruling or adoption evidence.",
     "NEAR:", nearText.join("\n\n") || "none", "CLOSER:", closer.join("\n\n") || "none"].join("\n\n") + "\n" + checklist;
-  const final = await attempt("final", feedback, { request: candidate.result.request, response: candidate.result,
-    message: { role: "user", content: feedback } });
-  if (final.outcome !== "success") return { outcome: final.outcome, runId: final.runId, problems: final.problems };
-  const output = final.output!;
-  const surviving = new Set(candidates(output).map((c) => c.id));
-  const unansweredNear = near.filter((p) => surviving.has(p.candidate) &&
-    !output.edit.some((e) => e.id === p.knowledge) && !output.merge.some((e) => e.into === p.knowledge) &&
-    !output.near_ack.some((ack) => ack.candidate === p.candidate && ack.knowledge === p.knowledge));
-  const applied = commitFinal(store, frozen, output, final.run, unansweredNear);
-  if (applied.outcome !== "success") return applied;
-  return { ...applied, candidateRunId: candidate.runId, output, range, readKnowledgeRevisions, unansweredNear };
+    return { text: feedback, near };
+  } });
+  let result: RunAgentResult;
+  try { result = await runAgent({ ...structuredClone(base), input: initial, tools: binding.tools, reportRequest: binding.reportRequest }); }
+  catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: error instanceof Error ? error.message : String(error) }; }
+  binding.close();
+  run.mode = result.mode ?? mode;
+  if (result.request != null) run.request = JSON.stringify(result.request);
+  const committed = binding.memory.committed;
+  const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null ? ["runAgent must return the exact provider request"] : binding.memory.problems;
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, toolCalls: binding.sequence, fetched: binding.fetched,
+    candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, rejected: committed.rejected, diagnostics: committed.diagnostics } : {}),
+    ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
+  if (committed) {
+    store.updateRun(committed.runId, { ...run, outcome: "success" });
+    return { outcome: "success", ...committed, range, readKnowledgeRevisions };
+  }
+  const outcome = result.outcome !== "success" ? result.outcome : result.request == null || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
+  if (outcome !== "success") {
+    const runId = binding.memory.failure?.runId ?? store.recordRun({ ...run, outcome }).id;
+    if (binding.memory.failure) store.updateRun(runId, { ...run, outcome });
+    return { outcome, runId, problems };
+  }
+  const empty = store.commitIntegrationRun({ run, operations: [], watermark: { sessionId, branch, lastIntegratedFact: rangeFacts.at(-1)!.id } });
+  return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], unansweredNear: [], range, readKnowledgeRevisions }
+    : { outcome: "failure", runId: empty.runId, problems: empty.problems };
 }

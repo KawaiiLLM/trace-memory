@@ -256,7 +256,8 @@ export type CommitRecordingResult =
 export type KnowledgeOperationInput =
   | {
       op: "new";
-      handle: string; // "$e<n>", resolvable within `committed` below
+      handle: string; // system-generated candidate label
+      because?: number[];
       author: string;
       text: string;
       category: KnowledgeCategory;
@@ -298,6 +299,7 @@ export type KnowledgeOperationInput =
 export interface CommitIntegrationRunInput {
   run: RunInput; // sessionId required: knowledge ownership is derived from the run's session
   operations: KnowledgeOperationInput[];
+  atomic?: boolean;
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[]; rejected: RejectedKnowledgeOp[] }) => string;
   watermark?: { sessionId: number; branch: string; lastIntegratedFact: number };
@@ -839,7 +841,10 @@ export class Store {
         for (const op of input.operations) {
           const outcome = this.applyKnowledgeOperation(op, runId, projectId);
           if (outcome.ok) committed.push(outcome.value);
-          else rejected.push({ op, reason: outcome.reason });
+          else {
+            if (input.atomic) throw new Error(outcome.reason);
+            rejected.push({ op, reason: outcome.reason });
+          }
         }
         // The frozen range is integrated even when some operations were rejected: the run record
         // holds the rejections, and a later integration re-reads those knowledge at their new revisions.
@@ -880,14 +885,14 @@ export class Store {
     const owner = (scope: KnowledgeScope): number | null => (scope === "global" ? null : projectId);
 
     if (op.op === "new") {
-      const bad = this.checkCitedFacts("new", op.supports, []);
+      const bad = this.checkCitedFacts("new", op.supports, op.because ?? []);
       if (bad) return { ok: false, reason: bad };
       const info = this.db.prepare("INSERT INTO knowledge (project_id, status, author, current_revision) VALUES (?, 'active', ?, 1)").run(
         owner(op.scope),
         op.author,
       );
       const knowledgeId = Number(info.lastInsertRowid);
-      this.insertRevision(knowledgeId, 1, op.text, op.category, op.scope, op.supports, "new", null, runId, op.createdAt);
+      this.insertRevision(knowledgeId, 1, op.text, op.category, op.scope, op.supports, "new", op.because ?? null, runId, op.createdAt);
       return { ok: true, value: { op: "new", handle: op.handle, knowledgeId, rev: 1 } };
     }
 

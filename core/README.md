@@ -4,7 +4,7 @@ core/ is host-agnostic: it must not import any host SDK.
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
 - recording/    freeze input, provide tools, record the last provider request and final text.
 - api/tools.ts  four bound model-facing tools; atomic note validation and commit.
-- integration/  build integration input (NEAR / CLOSER hints), parse output, accounting, apply new/edit/merge/delete.
+- integration/  build Integration input and NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
 - render/  one renderer for recording input, compaction tail, branch summary, trace; XML injection blocks.
 - prompts/ recording.md, integration.md — versioned prompt texts (from simulation v7).
 
@@ -60,7 +60,7 @@ on any rejection; a corrected whole batch may be resubmitted. Success returns
 run record, frozen watermark and nonempty delivery commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Integration range. They do not
-advance Recording. `memory` rejects with `not implemented until ticket 10`.
+advance Recording. `memory` writes knowledge with the uniform batch contract below.
 
 Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen range
 (Recording) or calling session (manual). Time is the first source turn's
@@ -177,85 +177,57 @@ rendered size consumes the episodic budget before context. Knowledge follow the
 recording category budget policy. Reminders and feedback are unbudgeted so every
 matching visible knowledge and both relation strengths remain available.
 
-The host receives `IntegrationAgentInput` with `round: candidate|final`. Candidate
-`input` contains the frozen context. Final `input` is the feedback text; its
-`continuation` carries the prior exact provider `request`, full `response`
-(`RunAgentResult`), and one `{ role: "user", content }` message with that same
-text. Continue the candidate conversation and append this message once; do not
-append `input` again. The host chooses the provider-specific continuation form.
-The checklist is the exact body between the prompt's second-round heading and
-the next heading, preserving Markdown quote markers and boundary whitespace.
-The prompt itself mentions NEAR/CLOSER in both calls; computed hints appear only
-in the final call. Default model is the host-resolved `session` alias; default
-mode is `subagent`, controlled by `integration.subagentModeDefault` or the call.
+The host receives one `IntegrationAgentInput` with frozen `input`, the four bound
+`tools`, and `reportRequest`. It executes tool calls and extends the same conversation
+until the provider stops. `reportRequest` captures each exact provider request before
+execution; the final returned request is the last one sent.
 
-Lexical matching uses sets of adjacent Unicode characters after lowercasing
-and removing everything except letters and numbers. Empty bigram sets score
-zero. NEAR includes every visible active knowledge at or above
-`integration.nearThreshold` (default `0.28`), sorted by descending Jaccard score with
-knowledge-id ties; there is no top-k cap. Edit/merge targets exclude themselves.
-CLOSER applies the same threshold to range facts for every visible open/goal,
-with fact-id ties. Both searches include knowledge omitted by the initial budget.
+`memory({operations, skipped})` accepts one operation shape: `op`, `id`, `absorb`,
+`text`, `category`, `scope`, `supports`, `because`. `because` is always an array of
+triggering fact addresses. Create/update/merge require complete resulting text,
+category, scope and non-empty supports; supports replaces the old set. Create forbids
+id; update/archive/merge require it. Merge alone requires absorb. Archive permits
+only op, id and because. Inapplicable and unknown fields are rejected. Skipped items
+are `{fact, because}` with a range fact and a non-empty explanation.
 
-Success returns the validated `output`, final `runId`, `candidateRunId`, frozen
-`range` (inclusive `from`/`to` addresses and exact `facts`), read revisions, and
-`unansweredNear`. These are the original feedback pairs whose candidate identity
-remains in the final output and whose neighbour is neither edited, merged into,
-nor acknowledged by that exact candidate/knowledge pair. Withdrawn candidates have
-no remaining pair; archiving a neighbour is not one of the prompt's answers.
-Changed text under the same identity retains its review obligation. No new
-neighbour search or third round follows the final output.
+The first valid batch writes nothing. Its tool result contains ordered item results
+and `feedback: {role: "user", content}`. The host appends this feedback once as a user
+message after the tool result. Content combines the system-generated guidance line,
+NEAR, CLOSER, and the exact body between the prompt's second-round heading and the
+next heading. The second valid batch commits; invalid batches can be corrected and
+resubmitted without a further review round. A third submission is already committed.
+Stopping after the first valid batch is bounced and preserves the candidate. Normal
+stopping without any submission succeeds with zero knowledge and advances the range.
 
-Every model attempt records the exact provider request, raw output, usage,
-read revisions, problems, and round. Bounces return problems and record failure;
-there is no automatic retry. Missing requests and thrown errors follow recording's
-failure/cancellation policy. Successful candidate records survive final failure.
-Final success applies integration (ticket 03c). Deduplication is per database,
-session and branch across facades in this process. Other sessions and branches
-remain independent while either round is pending. `dropped` creates no record.
+Lexical matching uses Unicode character bigram Jaccard after removing punctuation
+and whitespace. NEAR includes all visible active neighbours at or above
+`integration.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
+range facts near each open/goal item. Budget omissions do not limit either search.
+Update or merge answers NEAR; archiving a neighbour does not. Initial create review
+obligations remain conservatively while creates remain in the final batch, so
+reordering operations cannot silently discard a warning. No acknowledgement field
+or third review round exists.
 
-## Integration commit contract (ticket 03c)
+Targets must match the visible active revisions frozen at run start; manual calls
+use current revisions. Every item is checked before writing and every participant
+is rechecked in the immediate transaction. Any rejection writes no operations.
+The survivor revision, merged status and links, run record and frozen Integration
+watermark commit together; absorbed items retain their own last revision. No pending
+delivery is created. Supports and because cite project facts available at start.
 
-The final output resolves knowledge targets against frozen visible active revisions.
-Supports, because, and not-admitted addresses must be project facts present at
-freeze time with IDs no greater than the frozen range end (including facts from
-other sessions and budget-omitted context). The same rule applies to not_admitted;
-valid earlier facts may be declined without changing the range. Missing,
-foreign, or later facts and unread knowledge bounce. Duplicate new handles,
-repeated operation targets (including absorbed knowledge), self-merges and empty
-merges bounce rather than depending on array order. Operations apply in
-new/edit/merge/delete order; delete maps to the store's archive operation.
-New knowledge items use the selected model identifier as their author.
+Accounting runs on actual visible knowledge after applying the batch inside that
+transaction, including concurrent changes to untouched knowledge. Uncited user facts
+and questions missing from skipped yield `uncited_facts`. Other diagnostics are
+`unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
+numeric lexemes against supporting facts' text and quotes; because is not evidence.
+All diagnostics commit and derive no fact or knowledge status.
 
-Accounting projects the complete final operations onto the frozen visible knowledge
-set, removing archived and absorbed knowledge and replacing edited supports.
-Resulting session scope retains the knowledge's original creating session, matching
-the store's visibility contract. Every user fact and every question in range
-must remain cited or have a not_admitted reason. Because is change rationale,
-not a support citation. Accounting failures list uncited fact addresses and
-write only the final failure record; there is no third model call.
-
-Success adds `committed`, `rejected`, and `diagnostics` to the 03b result fields.
-Committed operations carry `op`, `knowledgeId`, `rev`, and `handle` for new knowledge;
-rejections carry the resolved operation and its reason. The final record's
-response includes these same arrays. Revision conflicts reject only their
-operation, including the whole merge if any participant moved. The run record,
-revisions, merge links, diagnostics and this session/branch's lastIntegratedFact
-advance to the frozen range end in one transaction, preserving lastRecordedTurn.
-No pending delivery is created. Candidate records survive transaction failure.
-
-Diagnostics are structured objects: `unsupported_numbers` (knowledge identity and
-numbers), `over_200_tokens` (knowledge identity and estimated tokens),
-`unanswered_near` (03b pairs), and `lost_citations` (fact addresses). Number and
-length checks cover all proposed new/edit/merge texts, even rejected operations;
-new knowledge identities use their local handles. Numeric matching compares exact
-ASCII digit lexemes with internal decimal/grouping separators against supports'
-text and quote, without numeric normalization; because does not count as evidence.
-The length threshold is strictly greater than 200 using render.tokens, resolving
-the stale 200-character wording in Further Notes. Lost citations include any
-fact supported in the proposed resulting set by a rejected operation but absent
-from all actual resulting visible knowledge, including earlier and agent facts.
-They do not bounce or undo the watermark. These checks derive no knowledge status.
+One run record retains tool inputs/results, candidate, fetched evidence, exact last
+request, final output, usage, read revisions and problems. Once committed, business
+outcome is success even if the provider later fails or is cancelled; trailing errors
+only append problems. Before commit, failure/cancellation advances nothing; an
+uncorrected rejection or first-only submission ends bounced. Run deduplication is
+per database/session/branch across facades in this process.
 
 The fixture `test/fixtures/integration.json` copies K2 from v7m's first Integration output and its
 supporting facts F2/F35 from facts.jsonl. Chinese memory content is preserved;
@@ -310,9 +282,9 @@ fact and branching; its terminal sentence is not a current-conclusion claim.
 Cursors freeze rendered output, are single-use, belong to this facade instance
 and calling session/project, and preserve the remaining lines on later pages.
 
-`mark({ knowledgeId, kind: "verified" | "flagged" | "clear" })` replaces or clears
+`mark(knowledgeId, kind)` (`verified` | `flagged` | `clear`) replaces or clears
 only the current revision's mark; historical marks remain on their revisions.
-`mark({ sessionId, project, source?: "marker" | "mark" })` declares attribution;
+`declareProject(sessionId, name, source?: "marker" | "mark")` declares attribution;
 source defaults to `mark`. Hosts report marker files through this same path.
 A persisted session mark wins over subsequent markers. The additive
 `sessions.project_declaration` column defaults existing sessions to `marker`;

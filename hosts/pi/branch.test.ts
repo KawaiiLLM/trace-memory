@@ -1,8 +1,9 @@
+import { convertMessages } from "@earendil-works/pi-ai/api/openai-completions";
 import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { complete } from "@earendil-works/pi-ai/compat";
 import * as branch from "./branch.ts";
-import { host as createHost, reply, usage, recordingFact } from "./test-host.ts";
+import { host as createHost, reply, usage, recordingFact, integrationReply } from "./test-host.ts";
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ complete: vi.fn() }));
 const disposers: (() => Promise<void>)[] = [];
@@ -154,10 +155,11 @@ test("a model switch during the integration candidate round does not redirect or
   h.provider(async c => recordingFact(c));
   let release!: () => void;
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
-    const body = await options!.onPayload!({}, model) as branch.Body;
+    const body = await options!.onPayload!({ messages: convertMessages({ ...model, input: ["text"] } as never, _conversation, {} as never) }, model) as branch.Body;
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
     if (/Range: F/.test(last)) await new Promise<void>(resolve => { release = resolve; });
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(integrationOutput);
+    if ((body.messages as { role: string }[]).filter(m => m.role === "tool").length >= 2) return reply("Done.");
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
     return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.emit("before_provider_request", { payload: payload() });
@@ -166,10 +168,10 @@ test("a model switch during the integration candidate round does not redirect or
   h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-integration.
   release(); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
-  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
-  expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test"]);
+  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"]]);
+  expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test", "test"]);
   expect((h.requests[0] as { model: { id: string } }).model.id).toBe("test");
-  expect(JSON.parse(runs[1]!.response!).verification.passed).toBe(true);
+  expect(JSON.parse(runs[0]!.response!).verification.passed).toBe(true);
 });
 
 test("the verifier independently rejects extra appends and provider option changes", () => {
@@ -181,7 +183,7 @@ test("the verifier independently rejects extra appends and provider option chang
   expect(branch.verifyRequest(original, request, "openai-completions", "instruction").passed).toBe(false);
 });
 
-const integrationOutput = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
+const integrationOutput = integrationReply();
 test("17:01 settle is branch-capable: candidate appends to the captured prefix, final replays the candidate reply plus the feedback on that request", async () => {
   const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, integrationModel: "fake/ignored" });
   disposers.push(h.dispose);
@@ -189,44 +191,47 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
   h.provider(async c => recordingFact(c));
   const sent: branch.Body[] = [];
   vi.mocked(complete).mockImplementation(async (model, _conversation, options) => {
-    const body = await options!.onPayload!({}, model) as branch.Body;
+    const body = await options!.onPayload!({ messages: convertMessages({ ...model, input: ["text"] } as never, _conversation, {} as never) }, model) as branch.Body;
     sent.push(structuredClone(body));
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(integrationOutput);
+    if ((body.messages as { role: string }[]).filter(m => m.role === "tool").length >= 2) return reply("Done.");
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
     return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.emit("before_provider_request", { payload: payload() });
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(2); expect(complete).toHaveBeenCalledTimes(2);
+  expect(h.requests).toHaveLength(2); expect(complete).toHaveBeenCalledTimes(3);
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const prompt = readFileSync(new URL("../../core/prompts/integration.md", import.meta.url), "utf8");
   const [candidate, final] = sent as { messages: { role: string; content: string }[] }[];
   expect(candidate!.messages.slice(0, -1)).toEqual(payload().messages);
   expect(candidate!.messages.at(-1)!.content.startsWith(prompt + "\n\nRange: F1..F1")).toBe(true);
-  expect(final!.messages.slice(0, -2)).toEqual(candidate!.messages);
-  expect(final!.messages.at(-2)).toEqual({ role: "assistant", content: integrationOutput });
+  expect(final!.messages.slice(0, -3)).toEqual(candidate!.messages);
+  expect(final!.messages.at(-3)).toMatchObject({ role: "assistant", tool_calls: [{ type: "function", function: { name: "memory", arguments: JSON.stringify(integrationOutput.content[0]!.type === "toolCall" ? integrationOutput.content[0]!.arguments : {}) } }] });
+  expect(final!.messages.at(-2)).toMatchObject({ role: "tool", tool_call_id: "memory-1" });
   expect(final!.messages.at(-1)!.role).toBe("user");
   expect(final!.messages.at(-1)!.content).toContain("NEAR:");
   expect(final!.messages.at(-1)!.content).toContain("This is the final round.");
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
-  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
-  expect(JSON.parse(runs[1]!.request!)).toEqual(final);
-  expect(JSON.parse(runs[1]!.response!).verification).toMatchObject({ passed: true, capturedHash: branch.hash(candidate), requestHash: branch.hash(final) });
+  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"]]);
+  expect(JSON.parse(runs[0]!.request!)).toEqual(sent[2]);
+  expect((sent[2]!.messages as unknown[]).slice(0, -2)).toEqual(final!.messages);
+  expect(JSON.parse(runs[0]!.response!).verification).toMatchObject({ passed: true, capturedHash: branch.hash(payload()), requestHash: branch.hash(candidate) });
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(0);
 });
 
 test("integration branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
   const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, recordingModel: "fake/recorder", integrationModel: "fake/Integrator" });
   disposers.push(h.dispose);
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(integrationOutput) : recordingFact(c));
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? integrationOutput : recordingFact(c));
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
-  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(4);
+  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(5);
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
-  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"], ["subagent", "fake/test", "success"]]);
+  expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");
-  expect(JSON.parse(runs[1]!.response!).fallbackReason).toContain("not a branch request");
+  expect(JSON.parse(runs[0]!.response!).toolCalls).toHaveLength(2);
   expect(h.notices.filter(n => n.includes("integration fell back"))).toHaveLength(1);
 });
 

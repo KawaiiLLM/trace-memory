@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, recordingFact, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, recordingFact, integrationReply, usage, type Reply } from "./test-host.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -13,7 +13,7 @@ function host(...args: Parameters<typeof createHost>) {
 
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
-  expect([...h.tools.keys()]).toEqual(["trace", "search", "mark"]);
+  expect([...h.tools.keys()]).toEqual(["trace", "search"]);
   for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
@@ -85,7 +85,7 @@ test("first prompt injects project/global knowledge without allocating a session
   expect(h.memory.store.getSession(2)).toBeNull();
   await h.answer();
   expect(h.memory.store.projectDeclaration(2)).toBe("marker");
-  await h.tools.get("mark").execute("id", { input: { project: "override" } });
+  await h.commands.get("trace").handler("project override", h.ctx);
   await h.emit("session_start");
   expect(h.memory.status(2)).toContain("override (mark)");
   expect(h.requests).toHaveLength(0);
@@ -148,21 +148,21 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
 
 test("integration waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, integrationModel: "fake/Integrator" });
-  const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output) : recordingFact(c));
+  const output = integrationReply();
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output : recordingFact(c));
   await h.turn();
   expect(h.requests).toHaveLength(2); // Only the recording tool loop; no Integration trigger.
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(4);
+  expect(h.requests).toHaveLength(5);
   const candidate = h.conversations[2]!, final = h.conversations[3]!;
   expect(final.systemPrompt).toBe(candidate.systemPrompt);
   expect(final.messages.slice(0, 1)).toEqual(candidate.messages);
-  expect(final.messages[1]).toEqual(reply(output));
-  expect(final.messages).toHaveLength(3); expect(final.messages[2]!.role).toBe("user");
+  expect(final.messages[1]).toEqual(output);
+  expect(final.messages).toHaveLength(4); expect(final.messages[2]!.role).toBe("toolResult"); expect(final.messages[3]!.role).toBe("user");
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
-  expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
-  expect(runs.map(r => r.model)).toEqual(["fake/Integrator", "fake/Integrator"]);
-  expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests[3]);
+  expect(runs.map(r => r.outcome)).toEqual(["success"]);
+  expect(runs.map(r => r.model)).toEqual(["fake/Integrator"]);
+  expect(JSON.parse(runs[0]!.request!)).toEqual(h.requests[4]);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
@@ -206,14 +206,14 @@ test("provider failures retain captured request and do not advance a watermark",
 test("integration in-flight duplicates cannot erase the candidate continuation", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
   h.provider(async c => recordingFact(c)); await h.turn();
-  const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
+  const output = integrationReply();
   let release!: (value: Reply) => void;
-  h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : reply(output));
+  h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : output);
   await h.emit("agent_settled"); await h.emit("agent_settled");
   expect(h.requests).toHaveLength(3);
-  release(reply(output)); await h.drain();
-  expect(h.requests).toHaveLength(4);
-  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success", "success"]);
+  release(output); await h.drain();
+  expect(h.requests).toHaveLength(5);
+  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
 });
 
 test("knowledge are injected once per session, only once something exists; later prompts carry only deliveries", async () => {
@@ -259,7 +259,7 @@ test("mark persists in host state across tree restoration without merging marker
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "peer";
   await h.emit("session_start"); await h.turn();
   const shared = h.memory.store.getSession(2)!.projectId;
-  await h.tools.get("mark").execute("id", { input: { project: "override" } });
+  await h.commands.get("trace").handler("project override", h.ctx);
   expect(h.entries.at(-1).data.project).toBe("override");
   expect(h.entries.at(-1).data.projectId).toBe(h.memory.store.getSession(2)!.projectId);
   await h.emit("session_tree");
@@ -291,7 +291,8 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
-  const marked = await h.tools.get("mark").execute("id", { input: { project: "named" } });
+  await h.commands.get("trace").handler("project named", h.ctx);
+  const marked = { content: [{ text: h.notices.at(-1)! }] };
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
   expect(store.listProjectFacts(own)).toEqual([]);
   expect(store.listProjectFacts(target.id)).toHaveLength(2);
@@ -301,7 +302,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.listVisibleKnowledge(1, target.id).map(v => v.knowledge.id)).toEqual([1, 2, 3]);
   expect(store.getKnowledgeRevision(2, 1)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
-  expect(marked.content[0].text).toContain(h.memory.inject(1));
+  expect(marked.content[0]!.text).toContain(h.memory.inject(1));
   expect(h.memory.inject(1)).toContain("仅当前会话");
 });
 
@@ -387,7 +388,7 @@ test("a tool-call-only first assistant reply allocates the session before mark e
   const h = host(); await h.prompt();
   await h.emit("message_end", { message: { role: "assistant", content: [{ type: "toolCall", id: "m", name: "mark", arguments: { input: { project: "named" } } }] } });
   expect(h.memory.store.getSession(1)).not.toBeNull();
-  await h.tools.get("mark").execute("m", { input: { project: "named" } });
+  await h.commands.get("trace").handler("project named", h.ctx);
   expect(h.memory.status(1)).toContain("named (mark)");
 });
 
@@ -399,7 +400,7 @@ test("removing a marker before first reply cannot turn its shared project into a
   await h.emit("session_start"); await h.prompt();
   unlinkSync(join(h.dir, ".trace-memory")); await h.answer();
   expect(h.memory.store.getSession(2)!.projectId).not.toBe(shared);
-  await h.tools.get("mark").execute("m", { input: { project: "override" } });
+  await h.commands.get("trace").handler("project override", h.ctx);
   expect(h.memory.store.getSession(1)!.projectId).toBe(shared);
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
@@ -445,13 +446,13 @@ test("spec overflow policy: a subagent recording fetches cut evidence through th
 test("an integration call carries no tools; a recording tool call for a bad address returns an error result and the recording still completes", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, "integration.triggerUnintegratedFacts": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
-  const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output)
+  const output = integrationReply();
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
     : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : recordingFact(c));
   await h.turn();
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
   await h.emit("agent_settled"); await h.drain();
-  expect(h.conversations.slice(3).map(c => c.tools)).toEqual([undefined, undefined]);
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"], ["integration", "success"]]);
+  expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 3 }, () => ["trace", "search", "note", "memory"]));
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"]]);
 });

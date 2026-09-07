@@ -32,3 +32,57 @@ test("real pi-ai serialization sends the preserved body and reports cache reads"
     expect(JSON.parse(run.response!).verification).toMatchObject({ passed: true, cache_read: 12 });
   } finally { await h.dispose(); vi.unstubAllGlobals(); }
 });
+
+test("real Anthropic Integration tool continuation preserves signed thinking and the captured prefix", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 99, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false });
+  const sent: Record<string, any>[] = [];
+  const batch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+    sent.push(JSON.parse(String(init.body)));
+    const round = sent.length, tool = round <= 2;
+    const events = [
+      { type: "message_start", message: { id: `msg_${round}`, type: "message", role: "assistant", model: "claude-test", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
+      ...(tool ? [
+        { type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "Review evidence" } },
+        { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: `signed-${round}` } },
+        { type: "content_block_stop", index: 0 },
+        { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: `tool_${round}`, name: "memory", input: {} } },
+        { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: JSON.stringify(batch) } },
+        { type: "content_block_stop", index: 1 },
+      ] : [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done" } },
+        { type: "content_block_stop", index: 0 },
+      ]),
+      { type: "message_delta", delta: { stop_reason: tool ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: 10 } },
+      { type: "message_stop" },
+    ];
+    return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  }));
+  try {
+    h.ctx.model = { ...h.ctx.model!, provider: "anthropic", id: "claude-test", api: "anthropic-messages", name: "Test", baseUrl: "https://fake.invalid", reasoning: true, input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 10000, maxTokens: 1000 };
+    await h.turn();
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
+    tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+    const captured = { model: "claude-test", stream: true, max_tokens: 1000, thinking: { type: "enabled", budget_tokens: 500 }, system: "Exact signed-thinking prefix", messages: [{ role: "user", content: "Original" }],
+      tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.parameters })) };
+    await h.emit("before_provider_request", { payload: captured });
+    await h.emit("agent_settled"); await h.emit("session_shutdown");
+    const run = h.memory.store.listRuns(1).find(r => r.kind === "integration")!;
+    expect(run.outcome, run.response ?? "").toBe("success");
+    expect(sent).toHaveLength(3);
+    for (const body of sent) {
+      expect(body.system).toEqual(captured.system); expect(body.tools).toEqual(captured.tools); expect(body.thinking).toEqual(captured.thinking);
+      expect(body.messages.slice(0, captured.messages.length)).toEqual(captured.messages);
+    }
+    const replay = sent[1]!.messages.find((m: any) => m.role === "assistant");
+    expect(replay.content).toContainEqual({ type: "thinking", thinking: "Review evidence", signature: "signed-1" });
+    expect(replay.content).toContainEqual({ type: "tool_use", id: "tool_1", name: "memory", input: batch });
+    expect(sent[1]!.messages.at(-1).role).toBe("user");
+    expect(JSON.stringify(sent[1]!.messages.at(-1))).toContain("NEAR:");
+    expect(JSON.parse(run.request!)).toEqual(sent[2]);
+    expect(JSON.parse(run.response!).toolCalls).toHaveLength(2);
+  } finally { await h.dispose(); vi.unstubAllGlobals(); }
+});

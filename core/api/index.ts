@@ -1,7 +1,7 @@
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope, type MarkInput } from "./read.ts";
-export type { ListingOptions, SearchScope, MarkInput } from "./read.ts";
+import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";
+export type { ListingOptions, SearchScope } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
 import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
@@ -85,8 +85,7 @@ export interface RunAgentResult {
   mode?: "branch" | "subagent";
   verification?: unknown;
   fallbackReason?: string;
-  /** Host-owned continuation state of an integration candidate, handed back inside the final round's `continuation.response`; never stored. */
-  state?: unknown;
+
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -109,7 +108,8 @@ export interface TraceMemory {
   deliver(sessionId: number, branch?: string | null): string;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
-  mark(input: MarkInput): string;
+  mark(knowledgeId: number, kind: "verified" | "flagged" | "clear"): string;
+  declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
   status(sessionId: number): string;
 }
 
@@ -204,7 +204,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       inFlightIntegrations.add(key);
       try {
         const frozen = freezeIntegration(store, input, cfg);
-        return await runIntegration(store, frozen, runAgent, cfg);
+        return await runIntegration(store, frozen, runAgent, cfg, (context, run, review) => bindTools(store, read, context, run, review));
       } finally { inFlightIntegrations.delete(key); }
     },
     ...read,

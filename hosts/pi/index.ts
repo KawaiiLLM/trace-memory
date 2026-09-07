@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { Tool, ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -47,6 +47,11 @@ function marker(cwd: string): string | undefined {
   }
 }
 
+function reviewMessage(result: string): string | undefined {
+  try { const value = JSON.parse(result); return value.feedback?.role === "user" ? value.feedback.content : undefined; }
+  catch { return undefined; }
+}
+
 export default function (pi: ExtensionAPI) {
   const { flat, core } = configuration();
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
@@ -67,7 +72,6 @@ export default function (pi: ExtensionAPI) {
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
-    const continuation = input.kind === "integration" ? input.continuation : undefined;
     let request: unknown = null;
     let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
     let fallbackReason: string | undefined;
@@ -81,11 +85,7 @@ export default function (pi: ExtensionAPI) {
           // verified candidate request plus the candidate reply replayed and the feedback message;
           // it depends on nothing the main session changes after the candidate was sent.
           let prefix: Body, appended: Appended[];
-          if (continuation) {
-            if (continuation.response.mode !== "branch" || !continuation.request) throw new Error("Candidate round was not a branch request");
-            prefix = continuation.request as Body;
-            appended = [{ role: "assistant", text: String(continuation.response.output) }, { role: "user", text: continuation.message.content }];
-          } else {
+          {
             const captured = session.capture;
             if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
             if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
@@ -108,11 +108,34 @@ export default function (pi: ExtensionAPI) {
           mode = "branch";
           const auth = await registry.getApiKeyAndHeaders(model);
           if (!auth.ok) throw new Error(auth.error);
-          const reply = await complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-            { messages: [] }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env,
-              sessionId: callPiId,
-              onPayload() { request = snapshot(candidate); if (input.kind === "recording") input.reportRequest(request); return snapshot(candidate); } });
-          if (verification && typeof reply.usage?.cacheRead === "number") verification.cache_read = reply.usage.cacheRead;
+          let reply: Reply;
+          const prefix = candidate;
+          const key = model.api === "openai-responses" || model.api === "openai-codex-responses" ? "input" : "messages";
+          let suffix: Conversation["messages"] = [];
+          for (let round = 0; ; round++) {
+            reply = await complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
+              { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId,
+                onPayload(native) {
+                  // Let the installed adapter preserve thinking signatures and native tool IDs.
+                  // Only its serialized suffix is appended; captured settings and tools stay exact.
+                  const append = suffix.length ? (native as Body)[key] : [];
+                  if (!Array.isArray(append)) throw new Error("Missing native branch continuation messages");
+                  candidate = { ...prefix, [key]: [...prefix[key] as unknown[], ...append] };
+                  request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
+                } });
+            if (verification && typeof reply.usage?.cacheRead === "number") verification.cache_read = reply.usage.cacheRead;
+            const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
+            if (input.kind !== "integration" || reply.stopReason !== "toolUse" || !calls.length) break;
+            if (round >= 16) throw new Error("tool rounds exceeded");
+            const results = calls.map(call => {
+              const content = input.tools.find(t => t.name === call.name)?.execute(call.arguments) ?? `rejected: unknown tool ${call.name}`;
+              return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: content.includes("rejected:"), timestamp: Date.now() };
+            });
+            suffix = [...suffix, reply, ...results, ...results.flatMap(r => {
+              const feedback = reviewMessage(r.content[0]!.text);
+              return feedback ? [{ role: "user" as const, content: feedback, timestamp: Date.now() }] : [];
+            })];
+          }
           return { outcome: reply.stopReason === "aborted" ? "cancelled" : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" : "success",
             output: text(reply), usage: reply.usage, request, mode, verification };
         }
@@ -120,18 +143,12 @@ export default function (pi: ExtensionAPI) {
       // Subagent mode: a fresh call. A recording may fetch cut evidence through the trace tool (spec,
       // overflow policy); like pi-om's observer, the host executes the call and continues.
       let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
-        ...(input.kind === "recording" ? { tools: input.tools.map(({ execute: _execute, ...definition }) => definition as unknown as Tool) } : {}) };
-      if (continuation) {
-        // The candidate round handed its conversation back through the core; nothing is kept here.
-        const prior = continuation.response.state as { conversation: Conversation; reply: Reply } | undefined;
-        if (!prior) throw new Error("Missing integration candidate conversation");
-        conversation = { ...prior.conversation, messages: [...prior.conversation.messages, prior.reply, { ...continuation.message, timestamp: Date.now() }] };
-      }
+        tools: input.tools.map(({ execute: _execute, ...definition }) => definition as unknown as Tool) };
       let reply: Reply;
       for (let round = 0; ; round++) {
-        reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); if (input.kind === "recording") input.reportRequest(request); } });
+        reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
         const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
-        if (input.kind !== "recording" || reply.stopReason !== "toolUse" || !calls.length) break;
+        if (reply.stopReason !== "toolUse" || !calls.length) break;
         if (round >= 16) throw new Error("tool rounds exceeded"); // a run that never stops is a failure, not an empty batch
         const results = calls.map(call => {
           let content: string, isError = false;
@@ -139,12 +156,10 @@ export default function (pi: ExtensionAPI) {
             content = tool ? tool.execute(call.arguments) : `rejected: unknown tool ${call.name}`; isError = content.includes("rejected:"); } catch (error) { content = String(error); isError = true; }
           return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError, timestamp: Date.now() };
         });
-        conversation = { ...conversation, messages: [...conversation.messages, reply, ...results] };
+        conversation = { ...conversation, messages: [...conversation.messages, reply, ...results, ...results.flatMap(r => { const feedback = input.kind === "integration" ? reviewMessage(r.content[0]!.text) : undefined; return feedback ? [{ role: "user" as const, content: feedback, timestamp: Date.now() }] : []; })] };
       }
       const outcome = reply.stopReason === "aborted" ? "cancelled" : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" : "success";
-      const state = input.kind === "integration" && input.round === "candidate" && outcome === "success"
-        ? { conversation: structuredClone(conversation), reply: structuredClone(reply) } : undefined;
-      return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason, ...(state ? { state } : {}) };
+      return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason };
     } catch (error) {
       return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }
@@ -192,7 +207,7 @@ export default function (pi: ExtensionAPI) {
     current = undefined;
     if (state.sessionId) {
       const name = marker(ctx.cwd);
-      if (name) memory.mark({ sessionId: state.sessionId, project: name, source: "marker" });
+      if (name) memory.declareProject(state.sessionId, name, "marker");
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       if (memory.store.projectDeclaration(state.sessionId) === "mark") state.project = memory.store.getProject(state.projectId)!.name;
     }
@@ -248,7 +263,7 @@ export default function (pi: ExtensionAPI) {
       if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
         ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
       state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: current.started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared" }).id;
-      if (name) memory.mark({ sessionId: state.sessionId, project: name, source: "marker" });
+      if (name) memory.declareProject(state.sessionId, name, "marker");
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       append();
     }
@@ -328,20 +343,19 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({ name: "search", label: "Search", description: "Search stored memory. No hit does not mean absent.",
     parameters: schema({ query: { type: "string" }, scope: { enum: ["facts", "knowledge", "all", "raw"] } }, ["query"]),
     async execute(_id, raw) { const args = raw as { query: string; scope?: SearchScope }; return result(memory.search(args.query, args.scope, { sessionId: state.sessionId })); } });
-  pi.registerTool({ name: "mark", label: "Mark", description: "Declare the current project or mark a knowledge item revision.",
-    parameters: schema({ input: { anyOf: [schema({ project: { type: "string" } }, ["project"]), schema({ knowledgeId: { type: "integer", minimum: 1 }, kind: { enum: ["verified", "flagged", "clear"] } }, ["knowledgeId", "kind"])] } }, ["input"]),
-    async execute(_id, raw) {
-      const args = raw as { input: { project: string } | Exclude<MarkInput, { project: string }> };
-      if ("project" in args.input && !state.sessionId) throw new Error("A session requires an assistant reply");
-      const marked = memory.mark("project" in args.input ? { project: args.input.project, sessionId: state.sessionId!, source: "mark" } : args.input as MarkInput);
-      if ("project" in args.input) {
-        state.projectId = memory.store.getSession(state.sessionId!)!.projectId;
-        state.project = memory.store.getProject(state.projectId)!.name;
-        save();
-        return result(`${marked}\n\n${memory.inject(state.sessionId!)}`);
-      }
-      return result(marked);
-    } });
   pi.registerCommand("trace", { description: "Read Trace Memory status without running extraction.",
-    async handler(_args, context) { context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });
+    async handler(args, context) {
+      const parts = args.trim().split(/\s+/);
+      if (parts[0] === "project") {
+        if (!state.sessionId) throw new Error("A session requires an assistant reply");
+        const marked = memory.declareProject(state.sessionId, parts.slice(1).join(" "));
+        state.projectId = memory.store.getSession(state.sessionId)!.projectId;
+        state.project = memory.store.getProject(state.projectId)!.name; save();
+        context.ui.notify(`${marked}\n\n${memory.inject(state.sessionId)}`, "info"); return;
+      }
+      if (parts[0] === "mark") {
+        if (!/^K[1-9]\d*$/.test(parts[1] ?? "") || parts.length !== 3) throw new Error("Use /trace mark K<n> verified|flagged|clear");
+        context.ui.notify(memory.mark(Number(parts[1]!.slice(1)), parts[2] as "verified" | "flagged" | "clear"), "info"); return;
+      }
+      context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });
 }

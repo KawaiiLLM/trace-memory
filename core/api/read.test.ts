@@ -133,7 +133,7 @@ test("pending delivery is exact to its run and branch, consumed once, including 
 
 test("marks bind to current revision, replace its mark, clear it, and do not carry into an edit", () => {
   const { s, f, e } = populated();
-  expect(memory.mark({ knowledgeId: e, kind: "verified" })).toBe(`K${e}@1: verified`);
+  expect(memory.mark(e, "verified")).toBe(`K${e}@1: verified`);
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
   const edit = memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
@@ -141,9 +141,9 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
-  memory.mark({ knowledgeId: e, kind: "flagged" }); expect(memory.inject(s.id)).toContain("· flagged");
-  memory.mark({ knowledgeId: e, kind: "verified" }); expect(memory.store.listKnowledgeMarks(e).filter((m) => m.rev === 2)).toHaveLength(1);
-  memory.mark({ knowledgeId: e, kind: "clear" }); expect(memory.inject(s.id)).not.toContain("verified");
+  memory.mark(e, "flagged"); expect(memory.inject(s.id)).toContain("· flagged");
+  memory.mark(e, "verified"); expect(memory.store.listKnowledgeMarks(e).filter((m) => m.rev === 2)).toHaveLength(1);
+  memory.mark(e, "clear"); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.store.listKnowledgeMarks(e).map((m) => m.rev)).toEqual([1]);
 });
 
@@ -200,17 +200,17 @@ test("status reports attribution, counts, every watermark, last runs and pending
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
   const s = session(undefined, "undeclared"), t = turn(s.id), n = recording(s.id, t.id), f = n.facts[0]!;
   const e = knowledge(s.id, f.id), own = knowledge(s.id, f.id, "open", "session");
-  expect(memory.mark({ sessionId: s.id, project: "declared" })).toContain("declared (mark)");
+  expect(memory.declareProject(s.id, "declared")).toContain("declared (mark)");
   const project = memory.store.findProjectByName("declared")!;
   expect(memory.store.getProject(s.projectId)!.mergedInto).toBe(project.id);
   expect(memory.store.listProjectFacts(project.id).map((f) => f.id)).toEqual([f.id]);
   expect(memory.store.getKnowledge(e)!.projectId).toBe(project.id);
   const peer = session(project.id);
   expect(memory.inject(peer.id)).toContain(`[K${e}@1]`); expect(memory.inject(peer.id)).not.toContain(`[K${own}@1]`);
-  memory.mark({ sessionId: s.id, project: "ignored marker", source: "marker" });
+  memory.declareProject(s.id, "ignored marker", "marker");
   expect(memory.store.getSession(s.id)!.projectId).toBe(project.id);
   expect(memory.store.findProjectByName("ignored marker")).toBeNull();
-  memory.mark({ sessionId: s.id, project: "next" });
+  memory.declareProject(s.id, "next");
   expect(memory.store.getSession(peer.id)!.projectId).toBe(project.id);
   expect(memory.store.getProject(project.id)!.mergedInto).toBeNull();
   expect(memory.inject(s.id)).toContain(`[K${own}@1]`);

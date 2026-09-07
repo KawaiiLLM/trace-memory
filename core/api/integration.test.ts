@@ -1,26 +1,37 @@
+import { memoryBatch } from "../../test/memory-batch.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type IntegrationAgentInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
+import { TraceMemory, type IntegrationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
 import memories from "../../test/fixtures/recording/facts.json";
 
+type IntegrationAgentInput = CoreInput & { round: "candidate" | "final"; request?: any; response?: RunAgentResult };
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
 let calls: IntegrationAgentInput[], script: ((input: IntegrationAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
 const empty = { new: [], edit: [], merge: [], delete: [], not_admitted: [], near_ack: [], over_budget: false };
-const success = (output: unknown, input: IntegrationAgentInput): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output === empty ? { ...empty, not_admitted: input.range.facts.map((f) => ({ id: `F${f.id}`, because: "Not retained in this test." })) } : output),
-  usage: { tokens: 12 }, request: { system: input.prompt, messages: [
-    ...((input.continuation?.request as { messages: unknown[] } | undefined)?.messages ?? []),
-    ...(input.continuation ? [{ role: "assistant", content: input.continuation.response.output }] : []),
-    { role: "user", content: input.input },
-  ], tools: [], hostField: input.round } });
+const success = (output: unknown, input: IntegrationAgentInput): RunAgentResult => ({ outcome: "success", output: output === empty ? { ...empty, not_admitted: input.range.facts.map(f => ({ id: `F${f.id}`, because: "Not retained in this test." })) } : output,
+  usage: { tokens: 12 }, request: input.request });
 function open(config: ConfigOverride = {}) {
   memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
-    const input = raw as IntegrationAgentInput; calls.push(input);
-    const next = script.shift(); if (!next) throw new Error("unexpected call");
-    return next(input);
+    let input = { ...raw as CoreInput, round: "candidate" as const } as IntegrationAgentInput;
+    const messages: any[] = [{ role: "user", content: input.input }];
+    for (;;) {
+      input.request = { system: input.prompt, messages: structuredClone(messages), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };
+      input.reportRequest(input.request); calls.push(input);
+      const next = script.shift(); if (!next) throw new Error("unexpected call");
+      const response = await next(input); input.response = response;
+      if (response.outcome !== "success" || response.request == null) return response;
+      const batch = memoryBatch(response.output);
+      const receipt = input.tools.find(t => t.name === "memory")!.execute(batch);
+      messages.push({ role: "assistant", toolCall: { name: "memory", arguments: batch } }, { role: "toolResult", content: receipt });
+      const parsed = JSON.parse(receipt);
+      if (!parsed.feedback) return { ...response, output: "done", request: input.request };
+      messages.push(parsed.feedback);
+      input = { ...input, round: "final", input: parsed.feedback.content };
+    }
   }, config);
 }
 const session = (project = projectId) => memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project }).id;
@@ -58,10 +69,10 @@ function deferred() {
   const promise = new Promise<unknown>((r) => { resolve = r; });
   script.push(async (input) => success(await promise, input)); return resolve;
 }
-function audit(runId: number, callIndex: number, outcome: "success" | "failure" | "cancelled" = "success") {
+function audit(runId: number, callIndex: number, outcome: "success" | "failure" | "cancelled" | "bounced" = "success") {
   const run = memory.store.getRun(runId)!;
   expect(run.outcome).toBe(outcome);
-  expect(JSON.parse(run.request!)).toEqual(success({}, calls[callIndex]!).request);
+  expect(JSON.parse(run.request!)).toEqual(calls[callIndex]!.request);
   expect(run.promptHash).toBe(createHash("sha256").update(calls[callIndex]!.prompt).digest("hex"));
   expect(JSON.parse(run.response!).readKnowledgeRevisions).toEqual(calls[callIndex]!.readKnowledgeRevisions);
   return JSON.parse(run.response!);
@@ -91,7 +102,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
     expect(call.input).not.toContain(`inbound negate F${late}`); expect(call.input).not.toContain(`[K${e}@2]`);
   }
   expect(calls[1]!.input).toContain(`[K${e}@1]`);
-  expect(audit(result.candidateRunId, 0).round).toBe("candidate"); expect(audit(result.runId, 1).round).toBe("final");
+  expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(current);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]);
@@ -129,12 +140,13 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   const f = fact(memories.knowledge), e = knowledge([f], { category: "open" }), goal = knowledge([f], { category: "goal" });
   const candidate = newOutput(f); queue(candidate, candidate);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.output).toEqual(candidate);
+  expect(result.output).toEqual(memoryBatch(candidate));
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
   expect(calls[0]!.input).not.toContain("NEAR:"); expect(calls[0]!.input).not.toContain("CLOSER:");
-  expect(calls[0]!.continuation).toBeUndefined();
-  const second = calls[1]!, firstResponse = success(candidate, calls[0]!);
-  expect(second.continuation).toEqual({ request: firstResponse.request, response: firstResponse, message: { role: "user", content: second.input } });
+  expect(calls[0]!.request.messages).toHaveLength(1);
+  const second = calls[1]!;
+  expect(second.request.messages.slice(0, 1)).toEqual(calls[0]!.request.messages);
+  expect(second.request.messages.at(-1)).toEqual({ role: "user", content: second.input });
   expect(second.input).toContain("NEAR:"); expect(second.input).toContain("CLOSER:");
   expect(second.input).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
   const prompt = readFileSync(new URL("../prompts/integration.md", import.meta.url), "utf8");
@@ -144,7 +156,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   const closer = second.input.split("CLOSER:\n\n")[1]!.split(section)[0]!;
   expect(closer).toContain(`[K${e}@1]`); expect(closer).toContain(`[K${goal}@1]`); expect(closer).toContain(memory.trace(`F${f}`));
   expect(calls[0]!.mode).toBe("subagent"); expect(calls[0]!.model).toBe("session");
-  audit(result.candidateRunId, 0); audit(result.runId, 1);
+  audit(result.runId, 1);
 });
 
 for (const resolution of ["edit", "merge", "ack", "withdraw", "wrong ack", "archive"] as const) test(`corrected final output: ${resolution}`, async () => {
@@ -159,7 +171,7 @@ for (const resolution of ["edit", "merge", "ack", "withdraw", "wrong ack", "arch
   if (resolution === "archive") output = { ...final, delete: [{ id: `K${e}`, because: [`F${f}`] }] };
   const before = memory.trace(`K${e}`); queue(candidate, output);
   const result = await integration(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toHaveLength(resolution === "wrong ack" || resolution === "archive" ? 1 : 0);
+  expect(result.unansweredNear).toHaveLength(["ack", "wrong ack", "archive"].includes(resolution) ? 1 : 0);
   expect(memory.store.getKnowledge(e)?.currentRevision).toBe(["edit", "merge", "archive"].includes(resolution) ? 2 : 1);
   expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(f);
   expect(calls).toHaveLength(2);
@@ -187,20 +199,19 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
       if (bad === "throw" || bad === "abort") { const error = new Error("stopped"); error.name = bad === "abort" ? "AbortError" : "Error"; throw error; }
       if (bad === "failure" || bad === "cancelled") return { ...success(empty, input), outcome: bad, output: "stopped" };
       if (bad === "missing request") return { outcome: "success", output: "{}" };
-      return { ...success(empty, input), output: bad === "json" ? "{" : JSON.stringify({ new: [{ handle: "$e1", category: "invalid" }] }) };
+      return { ...success(empty, input), output: bad === "json" ? "{" : { new: [{ handle: "$e1", category: "invalid" }] } };
     });
     const result = await integration();
     if (!("problems" in result)) throw new Error("expected failure");
     const expected = bad === "json" || bad === "shape" ? "bounced" : bad === "cancelled" || bad === "abort" ? "cancelled" : "failure";
     expect(result.outcome).toBe(expected); expect(result.problems.length).toBeGreaterThan(0);
-    if (bad === "json") expect(result.problems.join("\n")).toContain("invalid JSON");
-    if (bad === "shape") expect(result.problems.join("\n")).toContain("new[0].category");
+    if (bad === "json") expect(result.problems.join("\n")).toContain("memory expects");
+    if (bad === "shape") expect(result.problems.join("\n")).toContain("category");
     const run = memory.store.getRun(result.runId)!;
-    expect(run.outcome).toBe(expected === "bounced" ? "failure" : expected);
+    expect(run.outcome).toBe(expected);
     expect(JSON.parse(run.response!).problems).toEqual(result.problems);
-    if (["throw", "abort", "missing request"].includes(bad)) expect(run.request).toBeNull();
-    else audit(result.runId, round === "final" ? 1 : 0, run.outcome as RunAgentResult["outcome"]);
-    if (round === "final") audit(result.runId - 1, 0);
+    audit(result.runId, round === "final" ? 1 : 0, run.outcome as RunAgentResult["outcome"]);
+    if (round === "final") expect(JSON.parse(run.response!).candidate).toEqual(memoryBatch(success(empty, calls[0]!).output));
     expect(memory.store.getRun(result.runId + 1)).toBeNull();
     expect(calls).toHaveLength(round === "final" ? 2 : 1);
     expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
@@ -273,14 +284,14 @@ test("accounting bounces for user facts and agent questions, then accepts explic
   fact(memories.observation, { actor: "agent" });
   const output = { ...empty }; queue(output, output);
   const result = await integration();
-  expect(result.outcome).toBe("bounced");
-  if (result.outcome !== "bounced") throw new Error("expected bounce");
-  expect(result.problems).toEqual([`uncited facts: F${user}, F${question}`]);
-  expect(audit(result.runId, 1, "failure").problems).toEqual(result.problems);
+  if (result.outcome !== "success") throw new Error("expected diagnostic success");
+  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${user}`, `F${question}`] });
+  expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
   expect(memory.store.listVisibleKnowledge(sessionId, projectId)).toEqual([]);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBeNull();
-  queue(output, { ...output, not_admitted: decline(user, question) });
-  expect((await integration()).outcome).toBe("success");
+  const later = fact(); queue(output, { ...output, not_admitted: decline(later) });
+  const skipped = await integration();
+  if (skipped.outcome !== "success") throw new Error("expected success");
+  expect(skipped.diagnostics).toEqual([]);
 });
 
 for (const operation of ["edit", "delete", "merge"] as const) test(`accounting evaluates supports after ${operation}`, async () => {
@@ -289,12 +300,8 @@ for (const operation of ["edit", "delete", "merge"] as const) test(`accounting e
     ? { ...empty, delete: [{ id: `K${e}`, because: [`F${other}`] }] }
     : { ...empty, merge: [{ ...editOutput(survivor, other).edit[0], into: `K${survivor}`, absorb: [`K${e}`] }] };
   queue(output, output); const result = await integration();
-  expect(result.outcome).toBe("bounced");
-  if (result.outcome !== "bounced") throw new Error("expected bounce");
-  expect(result.problems).toContain(`uncited facts: F${f}`);
-  expect(memory.store.getKnowledge(e)?.currentRevision).toBe(1);
-  queue(output, { ...output, not_admitted: decline(f) });
-  const accepted = await integration(); expect(accepted.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected diagnostic success");
+  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
   expect(memory.store.getKnowledge(e)?.status).toBe(operation === "delete" ? "archived" : operation === "merge" ? "merged" : "active");
 });
 
@@ -307,16 +314,11 @@ test("a conflict rejects only its operation and records actual lost citations wi
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "edit", knowledgeId: e,
     expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
   resolve(output); const result = await pending;
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.committed).toEqual([{ op: "new", handle: "$e1", knowledgeId: e + 1, rev: 1 }]);
-  expect(result.rejected).toHaveLength(1);
-  expect(result.rejected[0]!.reason).toContain("expected revision 1, current revision is 2");
-  expect(result.diagnostics).toContainEqual({ kind: "lost_citations", facts: [`F${lost}`] });
-  const response = audit(result.runId, 1);
-  expect(response.diagnostics).toEqual(result.diagnostics); expect(response.rejected).toEqual(result.rejected);
-  expect(response.committed).toEqual(result.committed);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(kept);
-  expect(memory.store.getKnowledgeRevision(e + 1, 1)?.runId).toBe(result.runId);
+  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
+  expect(result.problems.join(" ")).toContain("expected revision 1, current revision is 2");
+  expect(memory.store.getKnowledge(e + 1)).toBeNull();
+  expect(audit(result.runId, 1, "bounced").toolCalls.at(-1).result).toContain("rejected:");
+  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
   expect(memory.trace(`F${lost}`)).toContain(memories.base);
 });
 
@@ -356,7 +358,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
   const output = bad === "unread knowledge" ? editOutput(unread, f)
     : bad === "duplicate target" ? { ...editOutput(e, f), delete: [{ id: `K${e}`, because: [] }] }
     : bad === "empty merge" ? { ...empty, merge: [{ ...editOutput(e, f).edit[0], into: `K${e}`, absorb: [] }] }
-    : bad === "duplicate handle" ? { ...newOutput(f), new: [...newOutput(f).new, ...newOutput(f).new] }
+    : bad === "duplicate handle" ? { operations: [{ ...memoryBatch(newOutput(f)).operations[0], handle: "$e1" }], skipped: [] }
     : newOutput(bad === "missing fact" ? 999999 : bad === "foreign fact" ? foreign : late);
   resolve(output); const result = await pending;
   expect(result.outcome).toBe("bounced");
@@ -422,16 +424,22 @@ test("conflict diagnostics exclude citations retained by another committed knowl
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "archive", knowledgeId: e,
     expectedRevision: 1, because: [old], createdAt: time }] });
   resolve(output); const result = await pending;
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.rejected).toHaveLength(1);
-  expect(result.diagnostics.some((d) => d.kind === "lost_citations")).toBe(false);
+  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
+  expect(result.problems.join(" ")).toContain("target moved on or is inactive");
+  expect(memory.store.getKnowledge(e + 1)).toBeNull();
+  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
+  // No operation commits; the entire batch remains available for a fresh run.
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });
 
 test("because addresses are resolved but do not satisfy accounting", async () => {
   const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([other]);
   const output = { ...empty, edit: [{ ...editOutput(e, other).edit[0], because: [`F${f}`] }] };
-  queue(output, output); expect((await integration()).outcome).toBe("bounced");
-  queue(output, { ...output, not_admitted: decline(f), edit: [{ ...output.edit[0], because: ["F999999"] }] });
+  queue(output, output); const first = await integration();
+  if (first.outcome !== "success") throw new Error("expected diagnostic success");
+  expect(first.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
+  fact();
+  queue(output, { ...output, edit: [{ ...output.edit[0], because: ["F999999"] }] });
   const bad = await integration();
   if (bad.outcome !== "bounced") throw new Error("expected bounce");
   expect(bad.problems.join(" ")).toContain("F999999");
@@ -456,8 +464,8 @@ test("narrowing another session's global knowledge cannot conceal an uncited fac
   const f = fact(), e = knowledge([f], { scope: "global", sessionId: session() });
   const output = { ...empty, edit: [{ ...editOutput(e, f).edit[0], scope: "session" }] };
   queue(output, output); const result = await integration();
-  if (result.outcome !== "bounced") throw new Error("expected bounce");
-  expect(result.problems).toContain(`uncited facts: F${f}`);
+  if (result.outcome !== "success") throw new Error("expected diagnostic success");
+  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
 });
 
 
@@ -485,7 +493,10 @@ test("rejected supports still cited by a committed operation are not lost", asyn
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "edit", knowledgeId: e,
     expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
   resolve(output); const result = await pending;
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.rejected).toHaveLength(1);
-  expect(result.diagnostics.some((d) => d.kind === "lost_citations")).toBe(false);
+  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
+  expect(result.problems.join(" ")).toContain("target moved on or is inactive");
+  expect(memory.store.getKnowledge(e + 1)).toBeNull();
+  expect(memory.store.getWatermark(sessionId, "main")?.lastIntegratedFact).toBe(old);
+  // No operation commits; the entire batch remains available for a fresh run.
+  expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });

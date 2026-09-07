@@ -1,4 +1,5 @@
-import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, validateRecordingFact, type Fact } from "../model/index.ts";
+import { bindMemory, type MemoryReview } from "../integration/memory.ts";
+import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateRecordingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput } from "../store/index.ts";
 import type { ListingOptions, SearchScope } from "./read.ts";
 
@@ -9,7 +10,7 @@ export interface ToolDefinition {
   execute(input: unknown): string;
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
-  | { kind: "recording"; sessionId: number; branch: string; range: { from: string; to: string };
+  | { kind: "recording" | "integration"; sessionId: number; branch: string; range: { from: string; to: string };
       readKnowledgeRevisions: { knowledgeId: number; rev: number }[] };
 type Reads = { trace(address: string, options?: ListingOptions): string;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
@@ -22,14 +23,25 @@ const factSchema = { ...object({ category: { enum: FACT_CATEGORIES }, actor: { e
   allOf: [{ if: { properties: { category: { const: "event" } } }, then: { required: ["status"] }, else: { not: { required: ["status"] } } }] };
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput) {
+const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
+const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*$" };
+const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "merge", "archive"] }, id: knowledgeId,
+  absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, text: { type: "string", minLength: 1 },
+  category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: factId, minItems: 1 },
+  because: { type: "array", items: factId } }, ["op", "because"]), allOf: [
+  { if: { properties: { op: { const: "create" } } }, then: { not: { required: ["id"] } }, else: { required: ["id"] } },
+  { if: { properties: { op: { const: "merge" } } }, then: { required: ["absorb"] }, else: { not: { required: ["absorb"] } } },
+  { if: { properties: { op: { const: "archive" } } }, then: { not: { anyOf: ["text", "category", "scope", "supports"].map(key => ({ required: [key] })) } }, else: { required: ["text", "category", "scope", "supports"] } },
+] };
+
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
   const allowed = new Set<number>();
   if (context.kind === "manual") {
     if (store.getTurn(context.currentTurnId)?.sessionId !== session.id) throw new Error("current turn must belong to the calling session");
-  } else {
+  } else if (context.kind === "recording") {
     const parse = (address: string) => {
       const m = /^S([1-9]\d*)\/T([1-9]\d*)$/.exec(address);
       if (!m || Number(m[1]) !== session.id) throw new Error("invalid frozen range");
@@ -46,7 +58,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const run: RunInput = metadata ?? { kind: context.kind, sessionId: session.id, branch: context.branch,
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
-  const sequence: { name: string; input: unknown; result: string }[] = [];
+  if (context.kind === "integration" && !review) throw new Error("Integration tools require the frozen review context supplied by integrate()");
+  const memory = bindMemory(store, session.id, run, review);
+  const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
   let problems: string[] = [];
@@ -63,6 +77,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     }
   };
   const note = (input: Record<string, unknown>): string => {
+    if (context.kind === "integration") return "rejected: note is not the writer for an integration run";
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
@@ -109,7 +124,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   };
   const definition = (name: ToolDefinition["name"], description: string, parameters: Record<string, unknown>, execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ name, description, parameters,
     execute: (raw) => {
-      if (closed) return "rejected: recording run has finished";
+      if (closed) return "rejected: run has finished";
       let result: string;
       try {
         if (name === "note" && committed) result = "rejected: already committed";
@@ -121,7 +136,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         }
       } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
-      if (context.kind === "manual" && name === "note" && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
+      if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "recording" ? { readKnowledgeRevisions: context.readKnowledgeRevisions } : {}) }) });
       return result;
     } });
@@ -139,8 +154,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id });
     }),
     definition("note", "Write one atomic facts batch. Recording runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", object({ facts: { type: "array", items: factSchema } }, ["facts"]), note),
-    definition("memory", "Write knowledge. Integration runs are the normal writers; main agents may write but have no memory duty. Not implemented until ticket 10.", object({ operations: { type: "array", items: { type: "object" } }, skipped: { type: "array", items: { type: "object" } } }, ["operations", "skipped"]), (input) => JSON.stringify({ results: (Array.isArray(input.operations) ? input.operations : [input]).map(() => "rejected: not implemented until ticket 10"), error: "not implemented until ticket 10" })),
+    definition("memory", "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately.", object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]), input => context.kind === "recording" ? "rejected: memory is not the writer for a recording run" : memory.execute(input)),
   ];
-  return { tools, sequence, fetched, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
+  return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
     reportRequest: (request: unknown) => { if (closed) throw new Error("recording run has finished"); run.request = JSON.stringify(request); } };
 }

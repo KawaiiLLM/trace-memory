@@ -21,7 +21,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 ## Scope and attribution
 
 - **Session** — one host conversation. Gets an id only once an assistant reply exists.
-- **Project** — the unit that shares knowledge. A session belongs to a project only by explicit declaration (a `.trace-memory` marker file found upward from cwd, or an in-session `mark(project=…)`; the in-session call wins). An undeclared session is its own project and may later be merged into another, retroactively.
+- **Project** — the unit that shares knowledge. A session belongs to a project only by explicit declaration (a `.trace-memory` marker file found upward from cwd, or an in-session `/trace project <name>`; the in-session declaration wins). An undeclared session is its own project and may later be merged into another, retroactively.
 - **Scope** of a knowledge item — `session` (holds only in that session), `project`, or `global` (about the user, the environment, general working method).
 
 ## Reading
@@ -31,11 +31,11 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Compaction** — instant replacement of the context with the injection block. No model call.
 - **Trace** — the tool that walks addresses: knowledge → its facts → the source turn; knowledge revisions (`K7@2`, `K7@2..4`); a fact's later strong negations (`F101..`). Also the project name.
 - **Search** — lexical lookup over facts and knowledge (and optionally a session's raw) returning addresses. No hit does not mean absent.
-- **Mark** — the main agent's only write: verified / flagged / clear on a knowledge item revision, or the session's project declaration.
+- **Mark** — the user's verified / flagged / clear annotation on a knowledge revision, applied through `/trace mark K<n> <kind>` and the façade. Project declaration is a separate user command.
 
 ## Process
 
-- **Accounting** — after each integration run, every user fact and every question in the range must be cited by a knowledge item or listed as not admitted with a reason.
+- **Accounting** — after each integration run, every user fact and every question in the range must be cited by a knowledge item or listed in `skipped` with a reason; missing accounting is a diagnostic.
 - **NEAR** — the lexically nearest existing knowledge shown for every new or edited knowledge; the Integrator must edit, merge, or state why the claim differs.
 - **CLOSER** — new facts lexically near each open or goal knowledge, shown as candidate closing evidence.
 - **Run record** — one record per recording or integration run holding the exact input sent to the model, the prompt version, the model, and the output. Knowledge revisions point at the run that produced them.

@@ -6,8 +6,6 @@ import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
-export type MarkInput = { sessionId: number; project: string; source?: "marker" | "mark" }
-  | { knowledgeId: number; kind: "verified" | "flagged" | "clear" };
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
   const cursors = new Map<string, { lines: string[]; footer: string; cap: number; owner: string }>();
@@ -99,14 +97,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }).map(listingLine);
       return page(lines, options, `${scope === "raw" ? "Raw search uses literal LIKE over turns and tool calls. " : "Search uses FTS5 over stored fact text and knowledge revisions. "}No hit does not mean absent.`);
     },
-    mark: (input: MarkInput): string => {
-      if ("project" in input) {
-        const project = store.declareProject(input.sessionId, input.project, input.source ?? "mark");
-        return `S${input.sessionId} project: ${project.name} (${store.projectDeclaration(input.sessionId)})`;
-      }
-      if (!["verified", "flagged", "clear"].includes(input.kind)) throw new Error("invalid mark kind");
-      const rev = store.setKnowledgeMark(input.knowledgeId, input.kind, new Date().toISOString());
-      return `K${input.knowledgeId}@${rev}: ${input.kind}`;
+    declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
+      const project = store.declareProject(sessionId, name, source);
+      return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
+    },
+    mark: (knowledgeId: number, kind: "verified" | "flagged" | "clear"): string => {
+      if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");
+      const rev = store.setKnowledgeMark(knowledgeId, kind, new Date().toISOString());
+      return `K${knowledgeId}@${rev}: ${kind}`;
     },
     status: (sessionId: number): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId), watermarks = store.listWatermarks(sessionId);

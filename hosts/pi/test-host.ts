@@ -29,6 +29,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
         requests.push(structuredClone(payload));
         payload.providerSpecific = false; // The saved request must not alias provider state.
         if (conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
+        if (conversation.messages.filter(m => m.role === "toolResult" && m.toolName === "memory").length >= 2) return reply("Done.");
         return provider(conversation);
       } },
   } as unknown as ExtensionContext;
@@ -57,3 +58,6 @@ export function recordingFact(conversation: Conversation) {
     { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${address[2]}#user`] },
   ] } }] };
 }
+
+export const integrationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+export const integrationReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory", arguments: integrationBatch }] });
