@@ -35,11 +35,14 @@ export interface TraceMemoryConfig {
     branchModeDefault: boolean;
     triggerAnsweredTurns: number;
     triggerTokens: number;
+    /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
+    maxToolRounds: number;
   };
   integration: {
     subagentModeDefault: boolean;
     triggerUnintegratedFacts: number;
     nearThreshold: number;
+    maxToolRounds: number;
   };
 }
 
@@ -58,11 +61,13 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     branchModeDefault: true,
     triggerAnsweredTurns: 5,
     triggerTokens: 50_000,
+    maxToolRounds: 0,
   },
   integration: {
     subagentModeDefault: true,
     triggerUnintegratedFacts: 50,
     nearThreshold: 0.28,
+    maxToolRounds: 0,
   },
 };
 

@@ -553,3 +553,18 @@ test("18:39: two memory submissions in one reply cannot skip the checklist; the 
   expect(calls).toHaveLength(3); // feedback, rejected, committed: the commit came from the request after the checklist
   expect(calls[2]).toContain("committed");
 });
+
+test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
+  const unlimited = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false });
+  let calls = 0;
+  const looping = (c: Parameters<typeof recordingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
+    ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "trace", arguments: { address: "T1" } }] } : recordingFact(c);
+  unlimited.provider(async c => looping(c)); await unlimited.turn();
+  expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
+  expect(unlimited.conversations.length).toBeGreaterThan(20);
+  const capped = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, "recording.maxToolRounds": 2 });
+  capped.provider(async c => looping(c)); await capped.turn();
+  const run = capped.memory.store.listRuns(1)[0]!;
+  expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
+  expect(capped.memory.store.getWatermark(1, "main")).toBeNull();
+});

@@ -104,12 +104,13 @@ export default function (pi: ExtensionAPI) {
       // append the Integration feedback, call the model again until it stops. Only sending differs.
       const converse = async (send: (suffix: Conversation["messages"]) => Promise<Reply>) => {
         let suffix: Conversation["messages"] = [], rounds = 0, usage: unknown, reply: Reply;
+        const cap = memory.config[input.kind].maxToolRounds; // 0 = unlimited (spec: the model is called again until it stops)
         for (;;) {
           reply = await send(suffix);
           usage = addUsage(usage, reply.usage);
           const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
           if (reply.stopReason !== "toolUse" || !calls.length) break;
-          if (++rounds > 16) throw new Error("tool rounds exceeded"); // a run that never stops is a failure, not an empty batch
+          if (cap && ++rounds > cap) throw new Error(`tool rounds exceeded (${cap})`); // over budget is a failure, not an empty batch
           const results = calls.map(call => {
             let content: string;
             try { content = input.tools.find(t => t.name === call.name)?.execute(call.arguments) ?? `rejected: unknown tool ${call.name}`; }

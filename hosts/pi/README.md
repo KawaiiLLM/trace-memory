@@ -23,7 +23,7 @@ chosen because this ticket permits settings or environment; the extension does
 not discover or modify Pi settings files. Example:
 
 ```sh
-export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerAnsweredTurns":5,"recording.triggerTokens":50000,"integration.triggerUnintegratedFacts":50}'
+export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerAnsweredTurns":5,"recording.triggerTokens":50000,"integration.triggerUnintegratedFacts":50,"recording.maxToolRounds":0,"integration.maxToolRounds":0}'
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
