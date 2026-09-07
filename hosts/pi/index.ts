@@ -208,18 +208,20 @@ export default function (pi: ExtensionAPI) {
   // Footer status item (user ruling 2026-09-07): one indicator in Pi theme colours — dim ○ idle,
   // accent ● recording running, success ● integration running, warning ● paused or committed with
   // problems, error ● the last run failed — then today's plugin spend as ☉ $x.xx, reset daily.
-  const activity = { running: new Set<"recording" | "integration">(), last: "ok" as "ok" | "warning" | "error" };
+  const activity = { running: new Map<"recording" | "integration", number>(), last: "ok" as "ok" | "warning" | "error" };
+  const runningKind = (kind: "recording" | "integration") => (activity.running.get(kind) ?? 0) > 0;
   const showSpend = (context: ExtensionContext) => {
     if (!context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const indicator = activity.running.has("recording") ? paint("accent", "●") : activity.running.has("integration") ? paint("success", "●")
+    const indicator = runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
     const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
     context.ui.setStatus("trace-memory", `${indicator} ☉ $${memory.spend({ since: dayStart.toISOString() }).cost.toFixed(2)}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
+    if (r?.outcome === "dropped") return; // a duplicate trigger says nothing about the run still in flight
     activity.last = r?.outcome === "failure" || r?.outcome === "cancelled" ? "error" : r?.outcome === "bounced" || r?.problems?.length ? "warning" : "ok";
     showSpend(context);
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
@@ -251,7 +253,11 @@ export default function (pi: ExtensionAPI) {
         // The nearest recorded ancestor, whichever branch recorded it; integration progress from the source.
         const recorded = memory.store.lastRecordedAncestor(saved.sessionId, state.head);
         const source = memory.store.getWatermark(saved.sessionId, saved.branch);
-        if (recorded || source?.lastIntegratedFact) memory.store.setWatermark(saved.sessionId, state.branch, recorded ?? undefined, source?.lastIntegratedFact ?? undefined);
+        // Integration progress carries over only when the source's recorded turn is on the new path: then every
+        // integrated fact is on it too. Forked earlier, the common facts are integrated again (commits that cite
+        // off-path facts do not apply here), rather than skipped.
+        const integrated = source?.lastRecordedTurn && source.lastRecordedTurn === recorded ? source.lastIntegratedFact ?? undefined : undefined;
+        if (recorded || integrated) memory.store.setWatermark(saved.sessionId, state.branch, recorded ?? undefined, integrated);
       }
     } else {
       const name = marker(ctx.cwd);
@@ -358,9 +364,9 @@ export default function (pi: ExtensionAPI) {
     const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
     const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
     const background = (kind: "recording" | "integration", promise: Promise<unknown>) => {
-      pending.add(promise); activity.running.add(kind); showSpend(context);
+      pending.add(promise); activity.running.set(kind, (activity.running.get(kind) ?? 0) + 1); showSpend(context);
       void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })
-        .finally(() => { pending.delete(promise); activity.running.delete(kind); showSpend(context); });
+        .finally(() => { pending.delete(promise); activity.running.set(kind, (activity.running.get(kind) ?? 1) - 1); showSpend(context); });
     };
     const recordingLaunch = launch("recording");
     // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is

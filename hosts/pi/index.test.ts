@@ -726,3 +726,35 @@ test("the footer indicator follows activity: accent while recording runs, error 
   await h.turn();
   expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> ☉/);
 });
+
+test("a branch forked before the source's last integration re-integrates the common facts instead of inheriting the progress", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.maxToolRounds": 4 });
+  // The fake Integrator submits once per round and stops after any rejection instead of resubmitting forever.
+  h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? recordingFact(c)
+    : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : integrationReply());
+  await h.turn(); // T1 → F1
+  const atT1 = [...h.entries];
+  await h.turn(); await h.emit("agent_settled"); await h.drain(); // T2 → F2; main integrated F1 while T2 was still being recorded
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+  expect(h.memory.store.getWatermark(1, "main")?.lastIntegratedFact).toBe(1);
+  h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
+  await h.emit("session_start");
+  await h.turn(); // T3 under T1
+  const branch = h.memory.store.listRuns(1).at(-1)!.branch!;
+  expect(h.memory.store.getWatermark(1, branch)?.lastRecordedTurn).toBe(3);
+  // main's progress was reached on a path through T2, so it is not copied: the fork integrated F1 again on its own.
+  const reintegration = h.memory.store.listRuns(1).find(r => r.kind === "integration" && r.branch === branch)!;
+  expect(reintegration).toMatchObject({ outcome: "success", rangeFrom: "F1" });
+  expect(h.memory.store.listBranchFacts(1, branch, 3).map(f => f.id)).toContain(1);
+});
+
+test("a dropped duplicate trigger neither ends the running indicator nor changes the last outcome", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.prompt(); await h.answer(); await h.emit("agent_settled");
+  await h.emit("agent_settled"); await h.drain(); // duplicate: the core drops it
+  expect(h.statuses.get("trace-memory")).toMatch(/^<accent>●<\/accent> ☉/); // the first run is still in flight
+  release(recordingFact(h.conversations[0]!)); await h.drain();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> ☉/);
+});

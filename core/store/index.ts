@@ -1050,7 +1050,8 @@ export class Store {
       SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
       WHERE t.session_id = ?
     ) SELECT f.* FROM facts f WHERE f.turn_id IN (SELECT id FROM lineage) ORDER BY f.id`)
-      .all(root, sessionId, sessionId).map(toFact);
+      .all(root, sessionId, sessionId).map(toFact)
+      .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root })); // every source on the path, not only the first
   }
 
   /** The nearest ancestor of the head (or the head itself) covered by a successful recording run's range, for a new branch's watermark. */

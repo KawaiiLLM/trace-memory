@@ -163,3 +163,10 @@ test("reads return every knowledge item while injection still applies the scope 
   expect(trace!.execute({ address: "K3@3" })).toContain("owner 1 scope session");
   expect(trace!.execute({ address: "K3" })).toContain("archive");
 });
+
+test("branch facts apply the full-source path rule: a fact citing a turn off the path stays out", () => {
+  memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, userPrompt: "second", startedAt: "now" });
+  memory.tools(manual(1, 2))[2]!.execute({ facts: [fact("T1#user", { source: ["T1#user", "T2#user"] })] });
+  expect(memory.store.listBranchFacts(1, "main", 2).map(f => f.id)).toEqual([1]);
+  expect(memory.store.listBranchFacts(1, "main", 1)).toEqual([]); // T2 is not on the path that ends at T1
+});
