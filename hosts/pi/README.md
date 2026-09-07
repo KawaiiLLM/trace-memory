@@ -3,8 +3,8 @@
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
 its exposed store. Recordings use verified branch mode by default; integration uses
-subagent mode. Threshold-triggered runs start at turn stop (`agent_settled`); tree navigation
-also finishes the abandoned branch recording.
+subagent mode. Each reconciled eligible entry completion checks both extraction queues.
+Compaction, shutdown and tree navigation launch neither phase.
 
 Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
@@ -23,7 +23,7 @@ chosen because this ticket permits settings or environment; the extension does
 not discover or modify Pi settings files. Example:
 
 ```sh
-export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerAnsweredTurns":5,"recording.triggerTokens":50000,"integration.triggerUnintegratedFacts":50,"recording.maxToolRounds":0,"integration.maxToolRounds":0}'
+export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerTokens":10000,"recording.batchTokens":50000,"integration.triggerUnintegratedFacts":50,"recording.maxToolRounds":0,"integration.maxToolRounds":0}'
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
@@ -38,8 +38,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.trig
   integration: the candidate round appends the integration prompt and input to the
   captured prefix, the final round appends the candidate reply (in the
   provider's native assistant shape) and the feedback message to the candidate
-  request. Tree navigation explicitly uses subagent mode with `recordingModel` for a
-  new recording.
+  request. Tree navigation launches no extraction.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
@@ -69,8 +68,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
   A branch Integration appends the range plus the exact list of facts to
   integrate, never the fact lines or the knowledge block again. The list is
-  explicit because batches are cut at turn boundaries, so not every address
-  between the range ends belongs to the batch. Anything the conversation does not
+  explicit because other paths and already-integrated facts can fall between the
+  range ends. Anything the conversation does not
   hold, a manual note or a fact dropped by a compaction budget, is fetched with
   `trace`.
 - Source identity is `(Trace Memory session, native session lineage, Pi entry id)`.
@@ -88,24 +87,32 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   are retained. `trace` with `full: true` retrieves the original tool argument and
   result strings, including fields outside command/stdout/stderr. Default explicit
   trace previews and pagination retain their existing protocol.
-- Only `agent_settled` checks extraction thresholds. Answered turns have recorded
-  assistant content; a tool-call-only assistant message also counts as a reply.
-  Slash commands without replies do not count. Token growth is the core's local
-  CJK/UTF-16 heuristic over stored prompts, assistant text, tool inputs and
-  results since the derived fully processed Turn boundary. It is not cumulative provider billing
-  usage, which would recount context on every tool iteration. Trigger settings
-  apply to this estimate, including raw that exceeds rendering budgets.
-- Integration counts only the current branch's facts that no Integration run on this path has taken.
-  A recording completion never triggers integration; new facts wait for the next
-  `agent_settled`. Calls are launched without awaiting them in that hook. The
-  facade drops duplicates. Quit/reload waits for pending runs before closing
-  SQLite; session replacement leaves them running against their frozen ranges.
+- Every eligible persisted entry completion checks the active branch's queues at
+  reconciliation; the unchanged native leaf-id guard keeps streaming updates O(1).
+  `recording.triggerTokens` defaults to **10,000 compressed-view tokens** measured
+  with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
+  entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
+- `recording.batchTokens` defaults to **50,000**: the oldest contiguous whole-entry
+  prefix, without Turn boundaries. Excess waits for another eligible completion.
+  The effective batch also reserves instructions, knowledge, tools, output and the
+  existing context: the host uses the model context window with a 15% estimation
+  margin and reserves its output limit. An oldest entry that cannot fit remains
+  pending with a capacity notification. Unknown model capacity also leaves work pending.
+  Native branch context is additional to the new-material budget and is never compressed.
+- `integration.triggerUnintegratedFacts` stays at **50**. Committed facts are eligible
+  immediately, even from partly recorded Turns. Selection takes applicable facts
+  without Turn grouping; path-aware per-fact progress is unchanged. There is no
+  first-Recording gate and no scalar fact cursor.
+- Worker completion starts nothing. A fresh eligible entry completion provides
+  the next opportunity; no timers or draining are added. Runs launch without awaiting
+  completion. The facade drops duplicates. Quit/reload preserves its existing wait
+  for in-flight runs before closing SQLite, and starts no flush.
 - Pi custom entries persist session/turn/branch references, using Pi's own
   `appendEntry` facility. Resuming restores the selected lineage. Returning to a
   branch tip reuses its name; selecting an earlier point creates a new branch.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
-  session on its first reply. The before-tree hook finishes recordings as described below.
+  session on its first reply. The before-tree hook returns a read-only summary as described below.
 - Compaction reconciles persisted source entries and returns `memory.compact(...)` as
   `compaction.summary`. `firstKeptEntryId: ""` retains no old Pi messages: the
   facade block replaces the context. Pi 0.85.0's context builder searches for
@@ -195,14 +202,13 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    “For this project use pnpm.”; “Do not use npm.”; “Keep code and comments in
    English.”; “Preserve the language of quoted conversation.”; “Please repeat
    those constraints.”; “What constraints are we following?”
-3. Run `/trace` after replies four, five and six. After four, expect no recording run.
-   After five, expect an asynchronous recording attempt, a watermark through turn
-   five on success, and possibly pending delivery. After six, expect the pending
-   delivery consumed if the recording finished before that prompt. If it finished
-   later, the next prompt consumes it. Invalid model output may bounce: inspect
-   status rather than assuming facts were committed.
+3. Run `/trace` after the replies. Short exchanges below 10,000 compressed-view
+   tokens produce no Recording. Continue with substantial conversation material
+   until an eligible completion reaches the threshold; inspect the resulting run's
+   entry audit and exact progress. Deliveries are confirmed only after a prompt
+   takes them and settles. Invalid model output may bounce; inspect the run result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
-   raw since the watermark, recent facts, and no compaction model request.
+   pending compressed Raw views, recent facts, and no compaction model request.
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
    its source turn. Expect the original conversation text and source addresses.
    The search/trace tools themselves are recorded as raw tool calls.
@@ -211,7 +217,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    and `response.usage` using the facade. Default integration requires 50
    unintegrated facts; six short turns need not produce any integration run. For a
    separate integration exercise set `integration.triggerUnintegratedFacts` to 1 and wait
-   for another turn stop after the recording commits.
+   for another eligible source entry completion after the Recording commits.
 
 Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
@@ -223,7 +229,8 @@ Branch mode inherits the latest captured provider request: system instructions,
 messages, the four tools already registered for the main agent, and all body
 options (cache controls, sampling and reasoning settings). Nothing is added to
 the tool list per run. The first request appends one user instruction: Recording
-uses the prompt and range-only input; Integration uses its prompt and full input.
+uses the prompt, range, head reply and frozen source index; Integration uses its
+prompt, range, exact fact list and reminders.
 Subsequent requests append native assistant/tool items and any Integration review
 message to the immediately preceding verified request.
 
@@ -231,9 +238,12 @@ message to the immediately preceding verified request.
 memory. It is never appended to the Pi session file. Session/tree restoration
 invalidates the capture; missing captures and model changes since capture fall
 back. Captures are the **last request**, not a reconstruction of the session:
-the assistant response to that request is not in its own input. The mandated
-single range-only append does not add that response. Live extraction quality
-for the final reply therefore needs human evaluation separately from identity.
+the assistant response to that request is not in its own input, so Recording
+appends the selected head reply. A selected user or tool source not captured in
+that prefix uses the existing subagent fallback. Persisted originals before the
+latest compaction or branch-summary boundary are conservatively excluded from
+capture coverage. As before, payload-rewriting extensions must run before this
+capture hook; native ancestry is not a proof against arbitrary later rewrites.
 
 `branch.ts` supports `anthropic-messages`, `openai-completions`, and
 `openai-responses` (including `openai-codex-responses`) payloads. Other APIs fall back with an explicit reason.
@@ -316,10 +326,10 @@ This is a human-run check, not an automated claim of live cache hits.
    }
    ```
 
-2. Enable branch mode and a one-turn trigger with an isolated database:
+2. Enable branch mode and a low compressed-token trigger with an isolated database:
 
    ```sh
-   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","recording.branchModeDefault":true,"recording.triggerAnsweredTurns":1}'
+   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","recording.branchModeDefault":true,"recording.triggerTokens":100}'
    node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
      --extension /private/tmp/trace-memory-manual/capture.ts \
      --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
@@ -386,19 +396,13 @@ This is a human-run check, not an automated claim of live cache hits.
 
 ## Attribution and tree navigation (ticket 07)
 
-`session_before_tree` flushes recorded assistant text and awaits the abandoned
-session/branch's pending recording, if any. It does not retry that run or extend its
-frozen range. With no pending recording it attempts one subagent recording through the
-captured head, regardless of normal thresholds. Failure or an unavailable model
-leaves the watermark unchanged. No integration is triggered by this hook.
-
-The only new core capability is the read `branchSummary(sessionId, branch,
-headTurnId)`. `compact` is unsuitable because it includes session-wide recent
-facts and applies a fact budget. The summary instead uses the same compressed entry views as Recording, after
-committed lineage facts and evidence-selected knowledge commits. All pending
-views are kept, including entries appended during a frozen run; reading the
-summary never consumes a delivery or calls a provider. The existing before-tree
-Recording trigger is retained in 17a; removing that trigger belongs to 17b.
+`session_before_tree` reconciles persisted source history and immediately returns
+`branchSummary(sessionId, branch, headTurnId)`. It launches neither Recording nor
+Integration, and does not await a worker. Committed lineage facts and evidence-selected
+knowledge commits precede the same pending compressed entry views used by Recording.
+Entries arriving during a frozen run remain in the summary. Reading it never
+consumes a delivery or calls a provider. Compaction and shutdown also launch nothing;
+pending work remains durable and the existing shutdown wait lets in-flight runs settle.
 
 The hook returns `{ summary: { summary: text } }`. Installed Pi **0.85.0**
 `dist/core/extensions/types.d.ts:481–510` declares `TreePreparation`,
@@ -476,8 +480,7 @@ The indicator uses Pi theme colours: dim `○` idle, accent `●` a Recording ru
 flight, success `●` an Integration run in flight, warning `●` a branch Recording
 paused until the next prompt delivers or the last run committed with problems,
 error `●` the last run failed. `/trace` prints the session's breakdown by run
-kind. The one cost Pi does count is the Recording performed before a tree
-switch, whose usage rides on the branch summary.
+kind. Tree switching contributes no extraction usage to Pi totals.
 
 ## Known limits
 
@@ -510,7 +513,10 @@ accepted 2026-09-08 branch-mode choice: its value is prefix reuse. The captured
 prefix is never rewritten or compressed. Its one appended user message still
 contains the Recording instruction, range, head reply and source index; the index
 contains only the frozen sources. Existing exact-prefix verification and fallback
-remain authoritative.
+remain authoritative. A capture that predates a selected user or tool source falls
+back to the same compressed subagent input; source previews are not evidence of
+full prefix coverage. Native request capacity is checked before each Recording
+provider call, including continuations, without rewriting the prefix.
 
 Recording freezes entry identities on the selected path, not whole Turns. A
 successful zero-fact run processes only its selected entries; later entries in
@@ -523,10 +529,11 @@ audit and applicable deliveries commit atomically. Rejected or failed work remai
 pending. A fork inherits processed shared entries and keeps its sibling entries
 out of the selected ancestry.
 
-The `watermarks` table and its setter are removed in place, with no migration or
-Turn-coverage translation. `getWatermark` is now a derived, fully processed Turn
-boundary used only to preserve the existing answered-Turn/raw-token triggers and
-Integration's whole-Turn batching until 17b. It never decides which entries a
-Recording consumes. Source-path membership is native ancestry, not a delivery
-queue. Attach reconciliation performs no model call; missing history is reported
-and retained originals remain readable in the database.
+The derived `getWatermark`/`listWatermarks` readers and the status watermark line
+are removed in 17b, along with the already-removed writable watermark table.
+Recording and Integration retain their exact per-entry/per-fact progress. Source-path
+membership is native ancestry, not a delivery queue. Attach reconciliation performs
+no model call; missing history is reported and retained originals remain readable.
+`recording.triggerAnsweredTurns` and every unknown setting are rejected explicitly.
+`recording.triggerTokens`, `recording.batchTokens` and both view limits accept only
+positive safe integers.

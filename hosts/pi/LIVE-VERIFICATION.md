@@ -5,7 +5,7 @@ The historical records below do not satisfy ticket 11 live acceptance.
 
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
-Set `recording.branchModeDefault: true`, `recording.triggerAnsweredTurns: 1`,
+Set `recording.branchModeDefault: true`, `recording.triggerTokens: 100`,
 `integration.triggerUnintegratedFacts: 1`; choose Integration mode explicitly
 (`integration.subagentModeDefault: false` exercises branch mode as well).
 

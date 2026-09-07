@@ -50,7 +50,7 @@ function deferred() {
 }
 function unchanged(branch = "main") {
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.store.getWatermark(sessionId, branch)).toBeNull();
+  expect(memory.store.listSourceEntries(sessionId).some(e => memory.store.entryRecorded(e.id))).toBe(false);
   expect(memory.store.listPendingDeliveries(sessionId, branch)).toEqual([]);
 }
 
@@ -63,13 +63,15 @@ test("a turn arriving during the model call waits for the next trigger", async (
   resolve(success([batch(first.id)]));
   const result = await pending;
   expect(result.outcome).toBe("success");
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(first.id);
+  expect(memory.store.sourcePath(sessionId, "main", first.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#user`], support: [["F1", "weak"]] })])]));
   await recording(second.id);
   expect(calls[1]!.input).toContain(second.userPrompt!);
   expect(calls[1]!.input).toContain("Recent facts (newest first):\n\n[F1]");
   expect(calls[1]!.input).not.toContain(first.userPrompt!);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(second.id);
+  expect(memory.store.sourcePath(sessionId, "main", second.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "main", second.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(2);
   expect(await recording(second.id)).toEqual({ outcome: "empty" });
   expect(calls).toHaveLength(2);
@@ -85,8 +87,10 @@ test("switching branch while pending preserves the old delivery and excludes the
   await memory.record(selection);
   resolve(success([batch(old.id)]));
   await pending;
-  expect(memory.store.getWatermark(sessionId, "old")?.lastRecordedTurn).toBe(old.id);
-  expect(memory.store.getWatermark(sessionId, "new")?.lastRecordedTurn).toBe(sibling.id);
+  expect(memory.store.sourcePath(sessionId, "old", old.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "old", old.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
+  expect(memory.store.sourcePath(sessionId, "new", sibling.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "new", sibling.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(sessionId, "old").map((d) => d.branch)).toEqual(["old"]);
   expect(memory.store.listPendingDeliveries(sessionId, "new")).toEqual([]);
   expect(calls[1]!.input).not.toContain(`[S${sessionId}/T${old.id}]`);
@@ -151,7 +155,8 @@ test("final text is never parsed; a successful reply without provider request fa
   const next = turn(t.id);
   script.push(async () => ({ outcome: "success", output: "[]" }));
   expect((await recording(next.id)).outcome).toBe("failure");
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(t.id);
+  expect(memory.store.sourcePath(sessionId, "main", t.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "main", t.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
 });
 
 test("model cannot write to a late turn outside the frozen range", async () => {
@@ -287,7 +292,8 @@ test("reopening the database preserves the run, facts, watermark and delivery", 
   const first = turn(); script.push(async () => success([batch(first.id)])); await recording(first.id);
   const traced = memory.trace("F1"); memory.close(); open();
   expect(memory.trace("F1")).toBe(traced);
-  expect(memory.store.getWatermark(sessionId, "main")?.lastRecordedTurn).toBe(first.id);
+  expect(memory.store.sourcePath(sessionId, "main", first.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
 });

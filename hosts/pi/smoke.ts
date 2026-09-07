@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { host, recordingFact } from "./test-host.ts";
 
-const h = host({ "recording.triggerAnsweredTurns": 1 });
+const h = host({ "recording.triggerTokens": 60 });
 try {
   assert.deepEqual([...h.tools.keys()], ["trace", "search", "note", "memory"]);
   h.provider(async conversation => recordingFact(conversation));
@@ -15,7 +15,7 @@ try {
   const facts = h.memory.store.listSessionFacts(1);
   assert.equal(facts.length, 1);
   assert.equal(facts[0]!.text, "用 pnpm，不要 npm");
-  assert.equal(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn, 1);
+  assert.ok(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryRecorded(e.id)));
   console.log(`Pi smoke passed on Node ${process.versions.node}: one recording run and one fact committed.`);
 } finally {
   await h.dispose();

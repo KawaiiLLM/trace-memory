@@ -169,15 +169,15 @@ Four checked-in goldens cover current knowledge, snapshot, diff, and negation wa
 
 ## Integration feedback host contract (ticket 03b)
 
-`integrate({ sessionId, branch, model?, mode? })` returns `empty` without a call
-when there are no facts of this session on this branch after its own
-`lastIntegratedFact`. Branch membership follows turn ancestry ending at the branch's
-`lastRecordedTurn`, derived from entry progress to preserve pre-17b batching. A branch
-without a recorded head has no integration range. Shared ancestors belong to both branches.
+`integrate({ sessionId, branch, headTurnId?, model?, mode? })` returns `empty`
+without a call when there are no applicable unintegrated committed facts on the
+selected path. Facts become eligible immediately, including on partly recorded
+Turns; there is no Turn grouping or first-Recording gate. Shared ancestors belong
+to both paths. Progress is the exact `integrated_facts` set with the existing path
+rule, never a maximum-id cursor. The fifty-fact threshold only triggers a run.
 The range freezes these facts in allocation-id order, visible active knowledge
-revisions (including budget omissions), relation lines, and reminders before the
-candidate call. Context remains project-wide: facts covered by their own
-session/branch integration watermarks, excluding the current range,
+revisions (including budget omissions), relation lines and reminders before the
+candidate call. Context remains project-wide: already-integrated facts outside the range,
 ordered by descending timestamp then id. All range facts are retained; their
 rendered size consumes the episodic budget before context. Knowledge follow the
 recording category budget policy. Reminders and feedback are unbudgeted so every
@@ -218,7 +218,7 @@ Targets must match the visible active revisions frozen at run start; manual call
 use current revisions. Every item is checked before writing and every participant
 is rechecked in the immediate transaction. Any rejection writes no operations.
 The survivor revision, merged status and links, run record and frozen Integration
-watermark commit together; absorbed items retain their own last revision. No pending
+fact membership commit together; absorbed items retain their own last revision. No pending
 delivery is created. Supports and because cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
@@ -296,7 +296,8 @@ new session-owned projects must use `createSession({ …, projectDeclaration:
 "undeclared" })`. Only undeclared projects merge via `mergeProject`; leaving a
 named project moves the declaring session and its session knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
-count, all branch watermarks, latest attempts by run id, and pending run count.
+count, latest attempts by run id, and pending delivery count. The derived Turn
+watermark readers and status line were removed by 17b.
 
 
 ## Branch summary read (ticket 07)
@@ -305,6 +306,6 @@ count, all branch watermarks, latest attempts by run id, and pending run count.
 block with the fixed other-branch reminder, facts whose raw evidence lies on the
 leaving path, commits selected by that evidence, and shared pending entry views.
 As in every block, tags delimit and content lines remain byte-identical. There is no fact budget or delivery
-consumption. The host awaits its frozen pending recording and passes the block
-unchanged as Pi's summary; later unprocessed entries remain Raw views. Injected messages
+consumption. The host passes the block immediately as Pi's summary, launching
+neither phase and awaiting no Recording; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.

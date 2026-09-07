@@ -268,7 +268,8 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
 test("status reports attribution, counts, every watermark, last runs and pending deliveries", () => {
   const { s, t } = populated(); recording(s.id, t.id, fixture.observation, "side", true);
   const status = memory.status(s.id);
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Watermark main: recorded T1; integrated 1/2 facts", "Watermark side: recorded T1; integrated 1/2 facts", "Last recording: run 3 success", "Last integration: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
+  expect(status).not.toContain("Watermark");
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last recording: run 3 success", "Last integration: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {

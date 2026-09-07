@@ -173,12 +173,6 @@ export interface PendingDelivery {
   deliveredAt: string | null;
 }
 
-export interface Watermark {
-  sessionId: number;
-  branch: string;
-  lastRecordedTurn: number | null;
-}
-
 // ---- Shared validation plumbing ----
 
 export interface ValidationResult<T> {

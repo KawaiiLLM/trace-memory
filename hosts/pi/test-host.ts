@@ -22,7 +22,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const requests: unknown[] = [], conversations: Conversation[] = [];
   let provider = async (_conversation: Conversation) => reply("[]");
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
-  const model = { provider: "fake", id: "test", api: "openai-completions" };
+  const model = { provider: "fake", id: "test", api: "openai-completions", contextWindow: 200_000, maxTokens: 8192 };
   const statuses = new Map<string, string | undefined>();
   const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s), setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
       theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` } },
@@ -84,9 +84,10 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
 export function recordingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
+  const source = /\[Source entry id: (T\d+#user)\]/.exec(input)?.[1] ?? `T${address[2]}#user`;
   if (conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "note-1", name: "note", arguments: { facts: [
-    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${address[2]}#user`] },
+    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [source] },
   ] } }] };
 }
 

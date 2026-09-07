@@ -26,7 +26,6 @@ import type {
   Session,
   ToolCall,
   Turn,
-  Watermark,
 } from "../model/index.ts";
 
 const SCHEMA_SQL = `
@@ -781,7 +780,11 @@ export class Store {
   knowledgePath(sessionId: number, branch?: string, headTurnId?: number | null): KnowledgePath {
     if (headTurnId !== undefined) return { sessionId, headTurnId };
     if (branch === undefined) return { sessionId, headTurnId: this.listTurns(sessionId).at(-1)?.id ?? null };
-    const recorded = this.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;
+    const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
+    if (native) return { sessionId, headTurnId: this.getSourceEntry((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0)?.turnId ?? null };
+    const member = this.db.prepare("SELECT s.turn_id FROM recorded_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
+    const recorded = Math.max(member?.turn_id ?? 0, ...this.listRuns(sessionId).filter(r => r.kind === "recording" && r.outcome === "success" && r.branch === branch)
+      .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0)));
     const manual = this.listRuns(sessionId).filter(r => r.kind === "manual" && r.branch === branch)
       .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0));
     return { sessionId, headTurnId: Math.max(recorded, ...manual) || null };
@@ -1019,11 +1022,6 @@ export class Store {
     return this.db.prepare("SELECT * FROM runs WHERE created_at >= ? ORDER BY id").all(createdAt).map(toRun);
   }
 
-  listWatermarks(sessionId: number): Watermark[] {
-    return (this.db.prepare("SELECT branch FROM source_paths WHERE session_id = ? UNION SELECT branch FROM runs WHERE session_id = ? AND kind = 'recording' AND outcome = 'success' ORDER BY branch").all(sessionId, sessionId) as { branch: string }[])
-      .map((r) => this.getWatermark(sessionId, r.branch)).filter((w): w is Watermark => w !== null);
-  }
-
   projectDeclaration(sessionId: number): string {
     return (this.db.prepare("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
   }
@@ -1085,9 +1083,7 @@ export class Store {
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 
-  // -- watermarks --
-
-  /** Branch facts follow the ancestry frozen by the latest successful recording. */
+  // -- path-aware fact progress --
   /** Facts on the branch's path: every fact whose turn lies on the ancestor chain of the head (given, or the branch's latest known turn), manual facts included. */
   listBranchFacts(sessionId: number, branch: string, headTurnId?: number | null): Fact[] {
     const root = headTurnId ?? this.knowledgePath(sessionId, branch).headTurnId;
@@ -1102,26 +1098,11 @@ export class Store {
       .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root })); // every source on the path, not only the first
   }
 
-  /**
-   * The next Integration batch of a branch: unintegrated facts of fully recorded turns (never the turn
-   * still being recorded, nothing before the first recording), taken in path order one whole turn at a
-   * time until the threshold is reached; the threshold is a trigger, the turn boundary is the cut
-   * (user ruling 2026-09-07).
-   */
-  integrationBatch(sessionId: number, branch: string, threshold: number): Fact[] {
-    const recorded = this.getWatermark(sessionId, branch)?.lastRecordedTurn ?? null;
-    if (!recorded) return [];
-    const path = { sessionId, headTurnId: recorded };
-    const facts = this.listBranchFacts(sessionId, branch, recorded).filter((f) => !this.integratedOnPath(f.id, path));
-    if (!facts.length) return [];
-    const order: number[] = [];
-    for (let id: number | null = recorded; id; id = this.getTurn(id)?.parentTurnId ?? null) order.unshift(id);
-    const batch: Fact[] = [];
-    for (const turnId of order) {
-      batch.push(...facts.filter((f) => f.turnId === turnId).sort((a, b) => a.id - b.id));
-      if (batch.length >= threshold) break;
-    }
-    return batch;
+  /** Committed facts are immediately eligible; progress is path-aware exact membership. */
+  integrationBatch(sessionId: number, branch: string, headTurnId?: number): Fact[] {
+    const path = this.knowledgePath(sessionId, branch, headTurnId);
+    const runs = new Map<number, boolean>();
+    return this.listBranchFacts(sessionId, branch, path.headTurnId).filter(f => !this.integratedOnPath(f.id, path, runs));
   }
 
   markIntegrated(factId: number, runId: number, projectId: number): void {
@@ -1143,26 +1124,6 @@ export class Store {
   listIntegratedProjectFacts(projectId: number): Fact[] {
     return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN integrated_facts i ON i.fact_id = f.id
       JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.id`).all(projectId).map(toFact);
-  }
-
-  /** Derived fully processed Turn boundary for unchanged Integration batching and trigger accounting. */
-  getWatermark(sessionId: number, branch: string): Watermark | null {
-    const runs = this.listRuns(sessionId).filter(r => r.kind === "recording" && r.outcome === "success" && r.branch === branch);
-    const last = runs.at(-1);
-    const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    const nativeIds: number[] = native ? JSON.parse(native.entry_ids) : [];
-    if (!last && !nativeIds.some(id => this.entryRecorded(id))) return null;
-    const member = this.db.prepare("SELECT s.turn_id FROM recorded_entries r JOIN source_entries s ON s.id = r.entry_id WHERE r.run_id = ? ORDER BY s.id DESC LIMIT 1").get(last?.id ?? 0) as { turn_id: number } | undefined;
-    const head = Number(nativeIds.length ? this.getSourceEntry(nativeIds.at(-1)!)!.turnId : last?.rangeTo?.split("/T")[1] ?? member?.turn_id);
-    if (!Number.isSafeInteger(head) || head < 1) return { sessionId, branch, lastRecordedTurn: null };
-    const path = [...this.pathTurns({ sessionId, headTurnId: head })].reverse();
-    let recorded: number | null = null;
-    for (const turnId of path) {
-      const entries = (native ? nativeIds.map(id => this.getSourceEntry(id)!) : this.listSourceEntries(sessionId)).filter(e => e.turnId === turnId);
-      if (entries.some(e => !this.entryRecorded(e.id))) break;
-      recorded = turnId;
-    }
-    return { sessionId, branch, lastRecordedTurn: recorded };
   }
 
   appendSourceEntry(input: SourceInput): SourceEntry {

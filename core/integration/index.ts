@@ -45,7 +45,7 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("integration requires a non-empty branch");
   const facts = store.listProjectFacts(session.projectId);
-  const rangeFacts = store.integrationBatch(session.id, input.branch, config.integration.triggerUnintegratedFacts);
+  const rangeFacts = store.integrationBatch(session.id, input.branch, input.headTurnId);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -95,8 +95,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     "Already-integrated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
   // In branch mode the fact lines and the active knowledge are already in the conversation, delivered
-  // after the runs that wrote them. The batch is listed fact by fact: whole recorded turns are cut at a
-  // turn boundary, so the addresses between `from` and `to` are not all in it.
+  // after the runs that wrote them. Exact membership excludes other paths and already-integrated facts.
   const branchInput = [`Range: ${range.from}..${range.to}`,
     `Facts to integrate: ${rangeFacts.map((f) => `F${f.id}`).join(", ")}`,
     `Negated-evidence reminder (review cues only; no status derived):\n${reminders.join("\n\n") || "none"}`].join("\n\n");

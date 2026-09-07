@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { TraceMemory, renderEntry, tokens, type RecordingAgentInput } from "../../core/api/index.ts";
 import { host, reply } from "./test-host.ts";
 
-const quiet = { "recording.triggerAnsweredTurns": 999, "recording.triggerTokens": 1_000_000_000 };
+const quiet = { "recording.triggerTokens": 1_000_000_000 };
 const rawOf = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nRecent facts")[0]!.split("\n\nReceipts:")[0]!;
 
 test("17a 2026-09-08: completion alone has no native identity; next safe boundary reconciles persisted entries", async () => {
@@ -91,7 +91,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(JSON.parse(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).results).toEqual([]);
     release();
     expect((await pending).outcome).toBe("success");
-    expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBeNull();
+    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
     const after = h.memory.pendingEntries(1, "main", 1);
     expect(after.map(e => e.role)).toEqual(["toolResult", "assistant"]);
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
@@ -113,7 +113,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
 });
 
 test("17a 2026-09-08: Recording, fallback, compaction and carry supply identical bounded entry bytes", async () => {
-  const h = host({ ...quiet, "recording.triggerAnsweredTurns": 1 });
+  const h = host(quiet);
   try {
     await h.prompt("HEAD " + "word ".repeat(30000) + " TAIL");
     await h.answer();
@@ -130,10 +130,16 @@ test("17a 2026-09-08: Recording, fallback, compaction and carry supply identical
     });
     await recorder.record({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); recorder.close();
     expect(rawOf(subagent)).toBe(expected.join("\n\n"));
-    await h.emit("agent_settled"); await h.drain(); // no captured prefix: the real host falls back
-    const sent = h.conversations[0]!.messages[0]!.content as string;
-    expect(rawOf(sent)).toBe(rawOf(subagent));
-    expect(JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).fallbackReason).toBeTruthy();
+    // A separate host with the normal trigger reattaches the same native fixture; attach itself is quiet.
+    const runner = host({ "recording.triggerTokens": 10000 });
+    runner.entries.push(...h.entries.filter(e => e.type === "message"));
+    runner.allEntries.push(...runner.entries);
+    await runner.emit("session_start");
+    runner.persist(reply("tick")); await runner.emit("agent_end"); await runner.drain();
+    const sent = runner.conversations[0]!.messages[0]!.content as string;
+    expect(rawOf(sent)).toContain(rawOf(subagent));
+    expect(JSON.parse(runner.memory.store.listRuns(1).at(-1)!.response!).fallbackReason).toBeTruthy();
+    await runner.dispose();
     expect(expected.every(view => tokens(view) <= 10000)).toBe(true);
   } finally { await h.dispose(); }
 });
@@ -220,14 +226,14 @@ test("17a 2026-09-08: shared-call fork results retain both originals through unr
 });
 
 test("17a 2026-09-08: thinking-only reply remains answered for the existing trigger but is not a source", async () => {
-  const h = host({ ...quiet, "recording.triggerAnsweredTurns": 1 });
+  const h = host(quiet);
   try {
     await h.prompt("question");
     await h.emit("message_end", { message: { ...reply(""), content: [{ type: "thinking", thinking: "private reasoning", thinkingSignature: "sig" }] } });
     await h.emit("agent_settled"); await h.drain();
-    expect(h.conversations).toHaveLength(1);
+    expect(h.conversations).toHaveLength(0); // answered-Turn trigger superseded 2026-09-08 by 17b
     expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toEqual(["user"]);
-    expect(h.conversations[0]!.messages[0]!.content).not.toContain("private reasoning");
+    expect(h.memory.compact(1, "main", 1)).not.toContain("private reasoning");
   } finally { await h.dispose(); }
 });
 

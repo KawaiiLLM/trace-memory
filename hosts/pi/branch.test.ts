@@ -12,8 +12,8 @@ afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose
 const payload = () => ({ model: "test", stream: true, temperature: 0.3, system: "System\n  exact 漢字 é",
   messages: [{ role: "user", content: "Raw  \ncontext" }, { role: "assistant", content: "Previous reply" }],
   tools: [{ type: "function", function: { name: "trace", parameters: { type: "object", properties: {} } } }] });
-async function setup() {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, recordingModel: "fake/ignored" });
+async function setup(triggerTokens = 60) {
+  const h = createHost({ "recording.triggerTokens": triggerTokens, recordingModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
   const sent: branch.Body[] = [];
@@ -22,8 +22,11 @@ async function setup() {
     sent.push(structuredClone(body));
     return reply("[]");
   });
-  const capture = (body = payload()) => h.emit("before_provider_request", { payload: body });
-  return { ...h, sent, capture, run: () => h.memory.store.listRuns(1).at(-1)! };
+  let captured: branch.Body = payload();
+  const capture = async (body: branch.Body = payload()) => { captured = structuredClone(body); await h.emit("before_provider_request", { payload: body }); };
+  const prompt: typeof h.prompt = async value => { const result = await h.prompt(value); await h.emit("before_provider_request", { payload: captured }); return result; };
+  const turn = async () => { await prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain(); };
+  return { ...h, uncapturedTurn: h.turn, prompt, turn, sent, capture, run: () => h.memory.store.listRuns(1).at(-1)! };
 }
 
 test("branch recording preserves prefix bytes, options and tools; record contains independent body hashes", async () => {
@@ -104,21 +107,21 @@ test.each([8192, 0, undefined])("cache reads %s are observations only", async ca
 test("capture invalidates on tree switch and cannot be inherited by a new Pi session", async () => {
   const h = await setup();
   await h.capture(); await h.turn();
-  await h.emit("session_tree"); await h.turn();
+  await h.emit("session_tree"); await h.uncapturedTurn();
   expect(h.run().mode).toBe("subagent");
   expect(JSON.parse(h.run().response!).fallbackReason).toContain("No current-branch");
   h.ctx.sessionManager.getSessionId = () => "new-session";
-  await h.emit("session_start"); await h.turn();
+  await h.emit("session_start"); await h.uncapturedTurn();
   expect(h.run().mode).toBe("subagent");
   expect(complete).toHaveBeenCalledTimes(1);
 });
 
 test("model change without a fresh capture falls back; explicit subagent never uses a capture", async () => {
   const h = await setup();
-  await h.capture(); h.ctx.model = { ...h.ctx.model!, id: "next" }; await h.turn();
+  await h.capture(); h.ctx.model = { ...h.ctx.model!, id: "next" }; await h.uncapturedTurn();
   expect(JSON.parse(h.run().response!).fallbackReason).toContain("model changed");
   expect(complete).not.toHaveBeenCalled();
-  const subagent = createHost({ "recording.branchModeDefault": false, "recording.triggerAnsweredTurns": 1, recordingModel: "fake/recorder" });
+  const subagent = createHost({ "recording.branchModeDefault": false, "recording.triggerTokens": 60, recordingModel: "fake/recorder" });
   disposers.push(subagent.dispose);
   await subagent.emit("before_provider_request", { payload: payload() }); await subagent.turn();
   expect(subagent.memory.store.listRuns(1)[0]).toMatchObject({ mode: "subagent", model: "fake/recorder" });
@@ -150,7 +153,7 @@ test("an in-flight branch request keeps its captured body across a tree switch a
 });
 
 test("a model switch during the integration candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false });
+  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false });
   disposers.push(h.dispose);
   await h.emit("session_start");
   h.provider(async c => recordingFact(c));
@@ -163,10 +166,10 @@ test("a model switch during the integration candidate round does not redirect or
     if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
     return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
-  await h.emit("before_provider_request", { payload: payload() });
-  await h.turn();
+  await h.prompt(); await h.emit("before_provider_request", { payload: payload() });
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
   await h.prompt(); // the recording's facts reach the conversation; only then may a branch Integrator read them
-  await h.emit("agent_settled"); await h.drain();
+  await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-integration.
   release(); await h.drain();
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
@@ -187,7 +190,7 @@ test("the verifier independently rejects extra appends and provider option chang
 
 const integrationOutput = integrationReply();
 test("17:01 settle is branch-capable: candidate appends to the captured prefix, final replays the candidate reply plus the feedback on that request", async () => {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, integrationModel: "fake/ignored" });
+  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, integrationModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
   h.provider(async c => recordingFact(c));
@@ -200,11 +203,11 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
     if (/Range: F/.test(last) || /NEAR:/.test(last)) return integrationOutput;
     return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
-  await h.emit("before_provider_request", { payload: payload() });
-  await h.turn();
+  await h.prompt(); await h.emit("before_provider_request", { payload: payload() });
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
   await h.prompt(); // the recording's facts reach the conversation first
-  await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(2); expect(complete).toHaveBeenCalledTimes(3);
+  await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
+  expect(h.requests).toHaveLength(4); expect(complete).toHaveBeenCalledTimes(3); // the new entry independently admits Recording too
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const prompt = readFileSync(new URL("../../core/prompts/integration.md", import.meta.url), "utf8");
   const [candidate, final] = sent as { messages: { role: string; content: string }[] }[];
@@ -225,13 +228,13 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
 });
 
 test("integration branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
-  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, recordingModel: "fake/recorder", integrationModel: "fake/Integrator" });
+  const h = createHost({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, recordingModel: "fake/recorder", integrationModel: "fake/Integrator" });
   disposers.push(h.dispose);
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? integrationOutput : recordingFact(c));
   await h.turn();
   await h.prompt(); // the recording's facts reach the conversation first
-  await h.emit("agent_settled"); await h.drain();
-  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(5);
+  await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
+  expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(7);
   const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");
@@ -257,7 +260,7 @@ test("capture with the four tools, run, verification passed, tools unchanged", a
 });
 
 test("branch Recording verifies every trace and note round against the previous request and stores the last request", async () => {
-  const h = await setup();
+  const h = await setup(1000);
   vi.mocked(complete).mockImplementation(async (model, conversation, options) => {
     const native = { messages: convertMessages({ ...model, input: ["text"] } as never, conversation, {} as never) };
     h.sent.push(structuredClone(await options!.onPayload!(native, model) as branch.Body));
@@ -266,7 +269,7 @@ test("branch Recording verifies every trace and note round against the previous 
   });
   await h.capture(); await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "read", input: {}, content: [{ type: "text", text: "full evidence".repeat(500) }], isError: false });
-  await h.emit("agent_settled"); await h.drain();
+  await h.capture(); await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
   expect(h.sent).toHaveLength(3);
   const run = h.run(), response = JSON.parse(run.response!);
   expect(run.outcome, run.response!).toBe("success");
@@ -296,7 +299,7 @@ test("a mutated branch tool round is rejected before sending and retains the las
   expect(h.run().outcome).toBe("failure");
   expect(JSON.parse(h.run().request!)).toEqual(h.sent[0]);
   expect(JSON.parse(h.run().response!).verification.rounds).toEqual([expect.objectContaining({ passed: false, differingPath: "$.tools.0" })]);
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn ?? null).toBeNull();
+  expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryRecorded(e.id))).toBe(false);
 });
 
 
@@ -310,7 +313,7 @@ test.each(["openai-responses", "openai-codex-responses"] as const)("%s branch ro
     const n = h.sent.length;
     return n <= 2 ? { ...reply(""), api, stopReason: "toolUse", content: [{ type: "toolCall", id: `call_${n}|fc_${n}`, name: "trace", arguments: { address: "T1" } }] } : { ...reply("Done"), api };
   });
-  await h.emit("before_provider_request", { payload: captured }); await h.turn();
+  await h.capture(captured); await h.turn();
   expect(h.sent).toHaveLength(3);
   expect(h.run().outcome).toBe("success");
   for (let i = 1; i < 3; i++) {

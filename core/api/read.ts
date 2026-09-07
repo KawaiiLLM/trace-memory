@@ -153,16 +153,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       return `K${id}@${commitId}: ${kind}`;
     },
     status: (sessionId: number): string => {
-      const s = session(sessionId), runs = store.listRuns(sessionId), watermarks = store.listWatermarks(sessionId);
+      const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);
-      const branches = [...new Set([...watermarks.map((w) => w.branch), ...runs.map((r) => r.branch)])];
+      const branches = [...new Set(runs.map((r) => r.branch))];
       return [`Session: S${sessionId}`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         `Spend: ${totals.runs.recording} recording, ${totals.runs.integration} integration, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
-        ...(watermarks.length ? [] : ["Watermarks: none"]),
-        ...watermarks.map((w) => { const facts = store.listBranchFacts(sessionId, w.branch, w.lastRecordedTurn);
-          return `Watermark ${w.branch}: recorded ${w.lastRecordedTurn ? `T${w.lastRecordedTurn}` : "none"}; integrated ${facts.filter((f) => store.integratedOnPath(f.id, { sessionId, headTurnId: w.lastRecordedTurn! })).length}/${facts.length} facts`; }),
         ...(["recording", "integration"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
         `Pending deliveries: ${branches.reduce((n, b) => n + store.listPendingDeliveries(sessionId, b).length, 0)}`].join("\n");
     },

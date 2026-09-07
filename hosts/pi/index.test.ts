@@ -22,37 +22,28 @@ test("smoke: the default extension loads and registers the Pi hooks, tools, and 
   expect(h.requests).toHaveLength(0);
 });
 
-test("five answered turns trigger only at stop, reset at the watermark, and slash commands do not count", async () => {
+test("2026-09-06 08:53 superseded 2026-09-08 (17b): five answered turns and 50K original Raw no longer trigger Recording", async () => {
   const h = host();
-  for (let i = 0; i < 4; i++) { await h.turn(); await h.commands.get("trace").handler("", h.ctx); }
-  expect(h.requests).toHaveLength(0);
-  await h.prompt(); await h.answer();
-  expect(h.requests).toHaveLength(0);
-  await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(1);
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(5);
-  await h.turn();
-  expect(h.requests).toHaveLength(1);
-  expect(h.memory.store.listTurns(1)).toHaveLength(6);
+  for (let i = 0; i < 10; i++) await h.turn();
+  await h.commands.get("trace").handler("", h.ctx);
+  expect(h.requests).toEqual([]);
+  expect(h.memory.pendingEntries(1, "main", 10)).toHaveLength(20);
 });
 
-test("50K raw context growth triggers recording, including tool results; no assistant means no answered turn", async () => {
+test("17b supersedes 50K raw growth: compressed tool views alone do not trigger; an unanswered Turn remains pending", async () => {
   const h = host();
   await h.prompt(); await h.answer();
-  // A run of one letter is priced at the default seven characters per token, so 400K characters is ~57K.
   await h.emit("tool_result", { toolName: "read", input: { path: "large.txt" }, content: [{ type: "text", text: "x".repeat(400_000) }], isError: false });
-  expect(h.requests).toHaveLength(0);
   await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(1);
+  expect(h.requests).toEqual([]);
   await h.prompt("/a-command-without-a-reply");
   await h.emit("session_before_compact", { preparation: { tokensBefore: 10 } });
-  await h.emit("agent_settled");
   expect(h.memory.store.listTurns(1).at(-1)?.assistantText).toBeNull();
-  expect(h.requests).toHaveLength(1);
+  expect(h.requests).toEqual([]);
 });
 
 test("recording through runAgent commits the exact provider request, prompt, model, usage and subagent mode", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c));
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -100,7 +91,7 @@ test("raw is incremental and compaction contains intermediate assistant text wit
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.emit("message_update", { message: reply("partial") });
   // 17a supersedes partial-source compaction: streaming content is never an entry view.
-  expect(h.memory.store.listTurns(1)[0]?.assistantText).toBe("");
+  expect(h.memory.store.listTurns(1)[0]?.assistantText).toBeNull();
   await h.emit("tool_result", { toolName: "bash", input: { command: "pwd" }, content: [{ type: "text", text: "result" }], isError: false });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 99, firstKeptEntryId: "old" } });
@@ -115,7 +106,7 @@ test("raw is incremental and compaction contains intermediate assistant text wit
 });
 
 test("pending delivery is injected once on its own branch", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -139,7 +130,7 @@ test("pending delivery is injected once on its own branch", async () => {
 });
 
 test("2026-09-07: deliveries and the first injection are confirmed at agent_settled with only the run ids that prompt took", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 }, "project-name");
+  const h = host({ "recording.triggerTokens": 60 }, "project-name");
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "marker" });
   const seed = store.createSession({ host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
@@ -157,7 +148,7 @@ test("2026-09-07: deliveries and the first injection are confirmed at agent_sett
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt("one"); await h.answer(); await h.emit("agent_settled"); await h.drain(); // recording A in flight
   await h.prompt("two"); // took nothing: A is not committed yet
-  release(recordingFact(h.conversations[0]!)); await h.drain(); // A commits during turn two
+  release(recordingFact(h.conversations.at(-1)!)); await h.drain(); // A commits during turn two
   h.provider(async c => recordingFact(c));
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.memory.store.listPendingDeliveries(h.memory.store.getSession(2) ? 2 : 1, "main").length).toBeGreaterThanOrEqual(1); // A's delivery was not confirmed by a turn that never showed it
@@ -166,7 +157,7 @@ test("2026-09-07: deliveries and the first injection are confirmed at agent_sett
 });
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
@@ -176,18 +167,19 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   h.entries.splice(0, h.entries.length, ...old);
   await h.emit("session_tree");
   release(recordingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(1);
+  expect(h.memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
 test("integration waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, integrationModel: "fake/Integrator" });
+  const h = host({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, integrationModel: "fake/Integrator" });
   const output = integrationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output : recordingFact(c));
   await h.turn();
   expect(h.requests).toHaveLength(2); // Only the recording tool loop; no Integration trigger.
-  await h.emit("agent_settled"); await h.drain();
+  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(5);
   const candidate = h.conversations[2]!, final = h.conversations[3]!;
   expect(final.systemPrompt).toBe(candidate.systemPrompt);
@@ -201,7 +193,7 @@ test("integration waits for a turn stop after facts arrive and final replays can
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -219,32 +211,29 @@ test("core contains no Pi imports and host imports core only through the facade"
   expect(readFileSync("hosts/pi/index.ts", "utf8").match(/from "\.\.\/\.\.\/core\/[^\"]+"/g)).toEqual(['from "../../core/api/index.ts"']);
 });
 
-test("token threshold uses growth since watermark, and Chinese is not priced as ASCII", async () => {
-  const h = host({ "recording.triggerTokens": 8 });
-  await h.prompt("一"); await h.answer("a"); await h.emit("agent_settled");
-  expect(h.requests).toHaveLength(0); // one hanzi, one line break, one word: three.
-  await h.prompt("一一一"); await h.answer("aaa"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(1); // five more, eight since the watermark.
-  await h.prompt("一"); await h.answer("a"); await h.emit("agent_settled");
-  expect(h.requests).toHaveLength(1); // three since the new watermark.
+test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
+  const h = host({ "recording.triggerTokens": 50 });
+  await h.prompt("一"); await h.answer("a"); await h.drain();
+  expect(h.requests).toHaveLength(1);
+  expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 
 test("provider failures retain captured request and do not advance a watermark", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async () => { throw new Error("provider unavailable"); });
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.request!)).toEqual(h.requests[0]);
-  expect(h.memory.store.getWatermark(1, "main")).toBeNull();
+  expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryRecorded(e.id))).toBe(false);
 });
 
 test("integration in-flight duplicates cannot erase the candidate continuation", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
+  const h = host({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1 });
   h.provider(async c => recordingFact(c)); await h.turn();
   const output = integrationReply();
   let release!: (value: Reply) => void;
   h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : output);
-  await h.emit("agent_settled"); await h.emit("agent_settled");
+  await h.answer("next completed source"); await h.emit("agent_settled"); await h.emit("agent_settled");
   expect(h.requests).toHaveLength(3);
   release(output); await h.drain();
   expect(h.requests).toHaveLength(5);
@@ -306,7 +295,7 @@ test("mark persists in host state across tree restoration without merging marker
 });
 
 test("declaring an own project moves facts and project knowledge, preserves session scope, and injects immediately", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c)); await h.turn();
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
@@ -344,7 +333,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
 });
 
 test("before-tree waits for a frozen pending recording and summarizes its facts plus later raw without delivering", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); const forkPoint = [...h.entries];
@@ -352,15 +341,16 @@ test("before-tree waits for a frozen pending recording and summarizes its facts 
   const tip = [...h.entries];
   let finished = false;
   const switching = h.emit("session_before_tree", { preparation: { userWantsSummary: true } }).then(r => { finished = true; return r; });
-  await h.drain(); expect(finished).toBe(false); expect(h.requests).toHaveLength(1);
-  release(recordingFact(h.conversations[0]!));
+  await h.drain(); expect(finished).toBe(true); expect(h.requests).toHaveLength(1);
   const result = await switching;
-  expect(result.summary.summary).toContain("[F1]");
+  expect(result.summary.summary).not.toContain("[F1]");
+  expect(result.summary.summary).toBe(h.memory.branchSummary(1, "main", 2));
+  release(recordingFact(h.conversations[0]!)); await h.drain();
   expect(result.summary.summary).toContain("later unrecorded raw");
   expect(result.summary.summary).toContain("later reply");
-  expect(result.summary.summary).toBe(h.memory.branchSummary(1, "main", 2));
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later unrecorded raw");
-  expect(h.memory.store.getWatermark(1, "main")!.lastRecordedTurn).toBe(1);
+  expect(h.memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   expect(h.memory.store.listRuns(1)[0]!.branch).toBe("main");
   h.entries.splice(0, h.entries.length, ...forkPoint); await h.emit("session_tree");
   const branch = h.entries.filter(e => e.type === "custom").at(-1).data.branch;
@@ -379,15 +369,11 @@ test.each(["success", "failure", "unavailable"])("before-tree attempts subagent 
   if (outcome === "unavailable") h.ctx.model = undefined;
   const result = await h.emit("session_before_tree");
   expect(result.summary.summary).toContain("用 pnpm，不要 npm");
-  if (outcome === "success") {
-    expect(result.summary.summary).toContain("[F1]");
-    expect(h.memory.store.listRuns(1)[0]!.mode).toBe("subagent");
-    expect(h.notices).toEqual([]); // No attempted branch request or fallback.
-  } else {
-    expect(result.summary.summary).toContain("好的。");
-    expect(result.summary.summary).not.toContain("[F1]");
-    expect(h.memory.store.getWatermark(1, "main")).toBeNull();
-  }
+  expect(result.summary.summary).toContain("好的。");
+  expect(result.summary.summary).not.toContain("[F1]");
+  expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+  expect(h.requests).toEqual([]);
+
 });
 
 test("an empty session allocates neither session nor turns through prompt, compact, and tree hooks", async () => {
@@ -405,13 +391,14 @@ test("an empty session allocates neither session nor turns through prompt, compa
 
 
 test("branch summaries retain earlier committed facts and exclude sibling facts", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c)); await h.turn();
   const point = [...h.entries];
   await h.prompt("abandoned tail"); await h.answer("tail reply");
   const summary = await h.emit("session_before_tree");
   expect(summary.summary.summary).toContain("[F1]");
-  expect(summary.summary.summary).toContain("[F2]");
+  expect(summary.summary.summary).not.toContain("[F2]");
+  expect(summary.summary.summary).toContain("abandoned tail");
   h.entries.splice(0, h.entries.length, ...point); await h.emit("session_tree");
   h.provider(async () => { throw new Error("offline"); });
   await h.prompt("sibling raw"); await h.answer();
@@ -443,7 +430,7 @@ test("removing a marker before first reply cannot turn its shared project into a
 });
 
 test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; with no branch consumer nothing is delivered and nothing waits", async branchMode => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": branchMode, recordingModel: "fake/recorder" });
+  const h = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": branchMode, recordingModel: "fake/recorder" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Recording A in flight over T1.
@@ -451,21 +438,21 @@ test.each([true, false])("08:53 premise: a branch note (%s) waits until a note r
   release(recordingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(branchMode ? 1 : 0); // no branch consumer, no delivery
   h.provider(async c => recordingFact(c));
-  await h.emit("agent_settled"); await h.drain();
+  await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 2 : 4);
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("recorded")).toBe(branchMode);
-  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 4 : 6);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
 });
 
 test("spec overflow policy: a subagent recording fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, recordingModel: "fake/recorder" });
+  const h = host({ "recording.triggerTokens": 1000, "recording.branchModeDefault": false, recordingModel: "fake/recorder" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
   const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", tool: 1, full: true } };
   h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : recordingFact(c));
-  await h.emit("agent_settled"); await h.drain();
+  await h.answer("word ".repeat(1000)); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations).toHaveLength(3);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
   const result = h.conversations[1]!.messages[2] as { toolCallId: string; isError: boolean; content: { text: string }[] };
@@ -481,7 +468,7 @@ test("spec overflow policy: a subagent recording fetches cut evidence through th
 });
 
 test("an integration call carries no tools; a recording tool call for a bad address returns an error result and the recording still completes", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, "integration.triggerUnintegratedFacts": 1 });
+  const h = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": false, "integration.triggerUnintegratedFacts": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = integrationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
@@ -489,13 +476,13 @@ test("an integration call carries no tools; a recording tool call for a bad addr
   await h.turn();
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
-  await h.emit("agent_settled"); await h.drain();
+  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
   expect(h.conversations.slice(3).map(c => c.tools!.map(t => t.name))).toEqual(Array.from({ length: 3 }, () => ["trace", "search", "note", "memory"]));
   expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"]]);
 });
 
 test("main facade tools bind each call to the current turn, commit immediately and record raw only at tool_result", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 99 });
+  const h = host({ "recording.triggerTokens": 1000000000 });
   await h.prompt();
   await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "n1", name: "note", arguments: {} }] } });
   const call = async (name: string, input: unknown) => {
@@ -528,7 +515,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
 
 
 test("subagent runs receive the same four definitions registered for the main agent: name, description, schema", async () => {
-  const h = host({ "recording.branchModeDefault": false, "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.branchModeDefault": false, "recording.triggerTokens": 60 });
   const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
   vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
     expect(conversation.tools).toHaveLength(4);
@@ -570,11 +557,11 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
 });
 
 test("18:39: two memory submissions in one reply cannot skip the checklist; the second commits only after the feedback was sent", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
+  const h = host({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1 });
   h.provider(async c => recordingFact(c)); await h.turn();
   const double = { ...integrationReply(), content: [integrationReply().content[0]!, { ...integrationReply().content[0]!, id: "memory-2" }] } as Reply;
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? integrationReply() : double);
-  await h.emit("agent_settled"); await h.drain();
+  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain();
   // The request after the double reply: user, assistant (two calls), two results, then the checklist.
   const second = h.conversations.find(c => c.messages.length === 5)!.messages;
   expect(second.map(m => m.role)).toEqual(["user", "assistant", "toolResult", "toolResult", "user"]);
@@ -589,22 +576,22 @@ test("18:39: two memory submissions in one reply cannot skip the checklist; the 
 });
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
-  const unlimited = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false });
+  const unlimited = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": false });
   let calls = 0;
   const looping = (c: Parameters<typeof recordingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
     ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "trace", arguments: { address: "T1" } }] } : recordingFact(c);
   unlimited.provider(async c => looping(c)); await unlimited.turn();
   expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
   expect(unlimited.conversations.length).toBeGreaterThan(20);
-  const capped = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, "recording.maxToolRounds": 2 });
+  const capped = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": false, "recording.maxToolRounds": 2 });
   capped.provider(async c => looping(c)); await capped.turn();
   const run = capped.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
-  expect(capped.memory.store.getWatermark(1, "main")).toBeNull();
+  expect(capped.memory.store.listSourceEntries(1).some(e => capped.memory.store.entryRecorded(e.id))).toBe(false);
 });
 
 test("a queued user message mid-run does not lose the confirmation of what the prompt injected and delivered", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c));
   await h.turn(); // recording of T1 leaves a delivery
   expect((await h.prompt("two"))?.message?.content).toContain("<recorded>");
@@ -614,7 +601,7 @@ test("a queued user message mid-run does not lose the confirmation of what the p
 });
 
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return recordingFact(c); }, { autoStop: false });
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -655,10 +642,11 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
 });
 
 test("a Pi fork continues the same session on a new branch that inherits the source watermarks, so shared turns are recorded once", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c));
   await h.turn(); // T1 recorded on main
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(1);
+  expect(h.memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   h.ctx.sessionManager.getSessionId = () => "forked"; // pi --fork: same copied path, new Pi session id
   await h.emit("session_start");
   const branch = h.entries.at(-1)?.data?.branch ?? h.memory.store.listRuns(1).at(-1)!.branch;
@@ -667,12 +655,13 @@ test("a Pi fork continues the same session on a new branch that inherits the sou
   expect(run.branch).not.toBe("main");
   expect(run.rangeFrom).toBe("S1/T2"); // not S1/T1 again
   expect(h.memory.store.listSessionFacts(1).filter(f => f.text === "用 pnpm，不要 npm")).toHaveLength(2); // T1 once, T2 once
-  expect(h.memory.store.getWatermark(1, run.branch!)?.lastRecordedTurn).toBe(2);
+  expect(h.memory.store.sourcePath(1, run.branch!, 2).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, run.branch!, 2).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   void branch;
 });
 
 test("the plugin's spend is a footer status item updated after every run, and the tree-switch recording's usage rides on the branch summary", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c));
   await h.turn();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> trace-memory 0\/1 \$\d+\.\d{2}$/); // idle; one fact on this branch
@@ -682,7 +671,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   expect(h.memory.spend({ since: new Date(Date.now() - 60_000).toISOString() }).runs.recording).toBe(1);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");
-  expect(result.summary.usage).toMatchObject({ input: expect.any(Number), output: expect.any(Number), cost: expect.any(Object) });
+  expect(result.summary.usage).toBeUndefined(); // 17b removes tree-switch extraction and its usage attribution
 });
 
 test("the state entry pointing at a new turn is written only after Pi persisted the user message, so a rewind before that message drops it", async () => {
@@ -698,12 +687,13 @@ test("the state entry pointing at a new turn is written only after Pi persisted 
 });
 
 test("a branch forked from an earlier point inherits the nearest recorded ancestor as its watermark", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async c => recordingFact(c));
   await h.turn(); // T1 recorded
   const atT1 = [...h.entries];
-  await h.turn(); // T2 recorded on main; main's watermark is now T2
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+  await h.turn(); await h.answer("next completed source"); await h.drain(); // T2 recorded on main; main's watermark is now T2
+  expect(h.memory.store.sourcePath(1, "main", 2).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, "main", 2).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   h.entries.splice(0, h.entries.length, ...atT1); // the fork copies the path up to T1
   h.ctx.sessionManager.getSessionId = () => "forked";
   await h.emit("session_start");
@@ -714,7 +704,7 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
 });
 
 test("the footer indicator follows activity: accent while recording runs, error after a failed run, warning after a committed-with-problems run, dim idle", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
@@ -722,69 +712,74 @@ test("the footer indicator follows activity: accent while recording runs, error 
   release(recordingFact(h.conversations[0]!)); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   h.provider(async () => { throw new Error("offline"); });
-  await h.turn();
+  await h.turn(); await h.answer("next completed source"); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return recordingFact(c); }, { autoStop: false });
-  await h.turn();
+  await h.turn(); await h.answer("next completed source"); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
 });
 
 test("a fork sees integration progress exactly when every fact of that integration lies on its path", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.maxToolRounds": 4 });
+  const h = host({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "integration.maxToolRounds": 4 });
   // The fake Integrator submits once per round and stops after any rejection instead of resubmitting forever.
   h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? recordingFact(c)
     : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : integrationReply());
   await h.turn(); // T1 → F1
   const atT1 = [...h.entries];
-  await h.turn(); await h.emit("agent_settled"); await h.drain(); // T2 → F2; main integrated F1 while T2 was still being recorded
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+  await h.turn(); await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain(); // T2 → F2; main integrated F1 while T2 was still being recorded
+  expect(h.memory.store.sourcePath(1, "main", 2).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, "main", 2).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 2 })).toBe(true);
   h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
   await h.emit("session_start");
   await h.turn(); // T3 under T1
   const branch = h.memory.store.listRuns(1).at(-1)!.branch!;
-  expect(h.memory.store.getWatermark(1, branch)?.lastRecordedTurn).toBe(3);
+  expect(h.memory.store.sourcePath(1, branch, 3).length).toBeGreaterThan(0);
+  expect(h.memory.store.sourcePath(1, branch, 3).every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
   // main had integrated only F1, which sits on T1 and so on this path: the progress counts here and F1 is not integrated again.
   expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 3 })).toBe(true);
-  expect(h.memory.store.integrationBatch(1, branch, 1).map(f => f.id)).not.toContain(1);
+  expect(h.memory.store.integrationBatch(1, branch, 3).map(f => f.id)).not.toContain(1);
   expect(h.memory.store.listRuns(1).some(r => r.kind === "integration" && r.branch === branch && r.rangeFrom === "F1")).toBe(false);
   expect(h.memory.store.listBranchFacts(1, branch, 3).map(f => f.id)).toContain(1);
 });
 
 test("a dropped duplicate Integration trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
+  const h = host({ "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1 });
   let release!: (value: Reply) => void, held = false;
   h.provider(async c => { if (!c.systemPrompt!.includes("### Second-round user message")) return recordingFact(c);
     if (held) return integrationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
   await h.turn(); // F1 recorded
-  await h.emit("agent_settled"); await h.drain(); // Integration starts and waits for the model
+  await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain(); // Integration starts and waits for the model
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /);
-  await h.emit("agent_settled"); await h.drain(); // duplicate trigger: the core drops it at once
+  await h.answer("tick"); await h.emit("agent_settled"); await h.drain(); // fresh completion, duplicate Integration drops at once
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /); // the first run is still in flight
   release(integrationReply()); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
 test("a stream that dies mid-reply is a failure carrying the provider's error, commits nothing, and a later stream death after a commit is a problem on a success", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   h.provider(async () => ({ ...reply("partial tex"), stopReason: "error", errorMessage: "stream reset by peer" }));
   await h.turn();
   let run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure");
   expect(JSON.parse(run.response!).problems[0]).toContain("stream reset by peer");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
-  expect(h.memory.store.getWatermark(1, "main")).toBeNull();
+  expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryRecorded(e.id))).toBe(false);
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : recordingFact(c), { autoStop: false });
-  await h.turn();
+  await h.turn(); await h.answer("next completed source"); await h.drain();
   run = h.memory.store.listRuns(1).at(-1)!;
   expect(run.outcome).toBe("success");
   expect(JSON.parse(run.response!).problems[0]).toContain("stream reset after commit");
-  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+  const selected: { id: number }[] = JSON.parse(run.response!).entryAudit.entries;
+  expect(selected.length).toBeGreaterThan(0);
+  expect(selected.every(e => h.memory.store.entryRecorded(e.id))).toBe(true);
+  expect(h.memory.pendingEntries(1, "main", 2).every(e => !selected.some(s => s.id === e.id))).toBe(true);
 });
 
 test("integration progress does not count on a fork when a manual fact beyond the fork point was integrated in the same run", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 5 });
+  const h = host({ "recording.triggerTokens": 1000000000 });
   h.provider(async c => recordingFact(c));
   await h.turn(); // T1
   h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: 1, branch: "main", createdAt: "now", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" } as never,
@@ -796,15 +791,15 @@ test("integration progress does not count on a fork when a manual fact beyond th
   expect(h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, branch: "main", createdAt: "now" }, operations: [], integrated: [1, 2] }).ok).toBe(true); // one run consumed F1 and F2 on main
   h.entries.splice(0, h.entries.length, ...atT1); h.ctx.sessionManager.getSessionId = () => "forked";
   await h.emit("session_start");
-  const fork = h.memory.store.listWatermarks(1).find(w => w.branch !== "main")!;
+  const fork = h.entries.filter(e => e.type === "custom").at(-1)!.data;
   expect(fork).toBeDefined();
-  expect(fork.lastRecordedTurn).toBe(1); // recording progress carries
+  expect(h.memory.pendingEntries(1, fork.branch, 1)).toEqual([]); // recording progress carries
   expect(h.memory.store.integratedOnPath(1, { sessionId: 1, headTurnId: 1 })).toBe(false); // F2 is off this path: F1 must be integrated again
   expect(h.memory.store.integrationBatch(1, fork.branch, 1).map(f => f.id)).toEqual([1]);
 });
 
 test("a transient provider error is retried with Pi's policy before the run is failed, and a retry never repeats a committed write", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerTokens": 60 });
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return recordingFact(c); });
   await h.turn();
@@ -816,12 +811,12 @@ test("a transient provider error is retried with Pi's policy before the run is f
   // A non-retryable error is not retried.
   calls = 0;
   h.provider(async () => { calls++; return { ...reply(""), stopReason: "error", errorMessage: "invalid_api_key" }; });
-  await h.turn(); await new Promise(r => setTimeout(r, 50)); await h.drain();
+  await h.turn(); await h.answer("next completed source"); await new Promise(r => setTimeout(r, 50)); await h.drain();
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure"); expect(calls).toBe(1);
 });
 
 test("a retry re-sends the same request: a stream error after a tool round does not duplicate the tool result, failed attempts count in usage and retries are recorded", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, retry: { baseDelayMs: 1 } });
+  const h = host({ "recording.triggerTokens": 60, "recording.branchModeDefault": false, retry: { baseDelayMs: 1 } });
   let calls = 0;
   h.provider(async c => {
     calls++;
@@ -840,7 +835,7 @@ test("a retry re-sends the same request: a stream error after a tool round does 
 });
 
 test("the footer shows the warning indicator while a retry waits", async () => {
-  const h = host({ "recording.triggerAnsweredTurns": 1, retry: { baseDelayMs: 60 } });
+  const h = host({ "recording.triggerTokens": 60, retry: { baseDelayMs: 60 } });
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return recordingFact(c); });
   await h.turn(); // the first attempt failed, the retry is sleeping
@@ -854,10 +849,10 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
   arguments: { operations: [{ op: "create", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] } }] });
 
 test("2026-09-07 backfill by consumer: with both kinds in subagent mode nothing is delivered; a branch Integrator gets facts and knowledge changes", async () => {
-  const settings = { "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "recording.branchModeDefault": false, "integration.maxToolRounds": 4 };
+  const settings = { "recording.triggerTokens": 60, "integration.triggerUnintegratedFacts": 1, "recording.branchModeDefault": false, "integration.maxToolRounds": 4 };
   const subagentOnly = host({ ...settings, "integration.subagentModeDefault": true });
   subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : recordingFact(c));
-  await subagentOnly.turn(); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
+  await subagentOnly.turn(); await subagentOnly.answer("tick"); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
   expect(subagentOnly.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Integration did commit
   expect(subagentOnly.memory.store.listPendingDeliveries(1, "main")).toEqual([]); // nobody reads the conversation
 
@@ -866,11 +861,12 @@ test("2026-09-07 backfill by consumer: with both kinds in subagent mode nothing 
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : recordingFact(c));
   await h.turn(); // Recording commits F1 and leaves it for delivery.
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
-  await h.emit("agent_settled"); await h.drain(); // the batch is due, but F1 is not in the conversation yet
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : reply("No new facts."));
+  await h.answer("tick"); await h.emit("agent_settled"); await h.drain(); // the batch is due, but F1 is not in the conversation yet
   expect(h.memory.store.listRuns(1).some(r => r.kind === "integration")).toBe(false); // the branch Integration waits for that delivery
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
   expect(String((await h.prompt("second"))?.message?.content ?? "")).toContain("<recorded>");
-  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
   const carried = String((await h.prompt("third"))?.message?.content ?? "");
   expect(carried).toContain("<integrated>"); // the knowledge change reaches the conversation the branch Integrator reads

@@ -28,7 +28,8 @@ for (const outcome of ["failure", "cancelled"] as const) test(`2026-09-07 transa
   expect(await record()).toMatchObject({ outcome: "success", facts: [{ id: 1 }] });
   expect(memory.store.getRun(1)?.outcome).toBe("success");
   expect(JSON.parse(memory.store.getRun(1)!.response!).problems[0]).toContain("after commit: connection stopped");
-  expect(memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(1);
+  expect(memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(1, "main", 1).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(memory.store.listRuns(1)).toHaveLength(1);
 });
 for (const kind of ["Error", "AbortError"]) test(`thrown ${kind} after commit retains facts and the known request`, async () => {
@@ -62,12 +63,13 @@ test("manual input and result are the run request and response; facts enter the 
   const run = memory.store.listRuns(1)[0]!;
   expect(run).toMatchObject({ kind: "manual", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: "S1/T1", outcome: "success" });
   expect(JSON.parse(run.request!)).toEqual(input); expect(run.response).toBe(result);
-  expect(memory.store.getWatermark(1, "main")).toBeNull();
+  expect(memory.store.listSourceEntries(1).some(e => memory.store.entryRecorded(e.id))).toBe(false);
   expect(memory.store.listBranchFacts(1, "main").map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "sibling")).toEqual([]);
   let range: unknown;
   agent = async raw => { range = (raw as { range: unknown }).range; return { outcome: "cancelled", output: "test", request: {} }; };
-  expect(await memory.integrate({ sessionId: 1, branch: "main" })).toEqual({ outcome: "empty" }); // T1 is not recorded yet
+  // The unrecorded-Turn gate is superseded by 17b on 2026-09-08; committed facts are eligible.
+  expect((await memory.integrate({ sessionId: 1, branch: "main" })).outcome).toBe("cancelled");
   recorded(memory, 1, "main", 1);
   await memory.integrate({ sessionId: 1, branch: "main" });
   expect(range).toMatchObject({ facts: [{ id: 1 }] });
@@ -100,7 +102,8 @@ test("tools freeze context, reject sibling and late sources, and preserve read r
   context.range.to = "S1/T2"; context.branch = "mutated"; context.readKnowledgeCommits[0]!.commit = 3;
   expect(note.execute({ facts: [fact("T2#assistant")] })).toContain("rejected:");
   expect(note.execute({ facts: [fact()] })).toContain("F1");
-  expect(memory.store.getWatermark(1, "frozen")?.lastRecordedTurn).toBe(1);
+  expect(memory.store.sourcePath(1, "frozen", 1).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(1, "frozen", 1).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(JSON.parse(memory.store.getRun(1)!.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 9, commit: 2 }]);
 });
 

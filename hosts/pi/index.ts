@@ -4,15 +4,16 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
-import { retryAssistantCall, type Tool, type ToolCall, type Usage } from "@earendil-works/pi-ai";
+import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, tokens, toolDefinitions, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, tokens, renderEntry, toolDefinitions, type ConfigOverride, type RecordingAgentInput, type IntegrationAgentInput } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
 type Reply = Awaited<ReturnType<Registry["complete"]>>;
 type FlatConfig = Record<string, string | number | boolean>;
 const tag = "trace-memory";
+const contextMargin = 0.85; // reserve 15% for the shared estimator and provider framing
 const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
@@ -31,7 +32,7 @@ function configuration(): { flat: FlatConfig; core: ConfigOverride } {
     Object.assign(core, { [section]: values });
   }
   for (const key of Object.keys(flat)) if (!["dbPath", "recordingModel", "integrationModel"].includes(key) &&
-    !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && key.slice(s.length + 1) in DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG])) throw new Error(`Unknown setting ${key}`);
+    !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
   for (const key of ["dbPath", "recordingModel", "integrationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
   return { flat, core };
 }
@@ -92,7 +93,7 @@ export default function (pi: ExtensionAPI) {
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
   let ctx: ExtensionContext;
-  type Capture = { payload: Body; model: string; provider: string; branch: string };
+  type Capture = { entries: { id: string; raw: string }[]; payload: Body; model: string; provider: string; branch: string };
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; verified?: string; notified?: boolean } = {};
@@ -113,6 +114,14 @@ export default function (pi: ExtensionAPI) {
     let mode: "branch" | "subagent" = "subagent";
     try {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
+      const checkCapacity = (payload: unknown) => {
+        if (input.kind !== "recording") return;
+        const body = payload as Record<string, unknown>;
+        const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
+          .map(key => typeof body[key] === "number" ? body[key] as number : 0));
+        if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
+          throw new Error("Recording capacity: provider request exceeds model context with output reserved");
+      };
       // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
       // append the Integration feedback, call the model again until it stops. Only sending differs.
       // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
@@ -160,6 +169,12 @@ export default function (pi: ExtensionAPI) {
             const captured = session.capture;
             if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
             if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
+            if (input.kind === "recording" && input.entryIds.some(id => {
+              const entry = memory.store.getSourceEntry(id)!;
+              if (captured.entries.some(e => e.id === entry.nativeId && e.raw === entry.raw)) return false;
+              // The unchanged branch suffix carries the head's natural-language reply in full.
+              return entry.role !== "assistant" || entry.calls.length > 0 || !input.range.to.endsWith(`/T${entry.turnId}`);
+            })) throw new Error("Captured prefix does not contain selected source entries");
             prefix = captured.payload;
             appended = [{ role: "user", text: `${input.prompt}\n\n${input.input}` }];
           }
@@ -197,6 +212,7 @@ export default function (pi: ExtensionAPI) {
                   if (!verified) { verification!.rounds.push(checked); verified = true; }
                   if (!checked.passed) { verification!.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
                 }
+                checkCapacity(candidate);
                 request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
               } });
         });
@@ -210,7 +226,7 @@ export default function (pi: ExtensionAPI) {
       const { reply, usage, retries } = await converse(suffix => {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round
         const fixed = conversation;
-        return () => registry.complete(model, fixed, { ...retry.provider, onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
+        return () => registry.complete(model, fixed, { ...retry.provider, onPayload(payload: unknown) { checkCapacity(payload); request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
       });
       return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason, ...(retries.length ? { retries } : {}) };
     } catch (error) {
@@ -225,7 +241,6 @@ export default function (pi: ExtensionAPI) {
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
-  const recordings = new Map<string, Promise<RecordResult>>();
   const modelName = (kind: "recording" | "integration") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   // Ruling 17:01: recording and integration each configure their mode (recording defaults to branch, integration to
@@ -265,14 +280,6 @@ export default function (pi: ExtensionAPI) {
     showSpend(context);
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
-  const recording = (input: Parameters<typeof memory.record>[0]) => {
-    const key = `${input.sessionId}/${input.branch}`;
-    const existing = recordings.get(key);
-    if (existing) return existing;
-    const promise = memory.record(input).finally(() => { recordings.delete(key); pending.delete(promise); });
-    recordings.set(key, promise); pending.add(promise);
-    return promise;
-  };
   let savedSourceHead: number | undefined;
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
@@ -294,7 +301,7 @@ export default function (pi: ExtensionAPI) {
     }
     current = undefined;
     reconciledLeaf = undefined;
-    reconcile();
+    reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
       const name = marker(ctx.cwd);
@@ -322,12 +329,14 @@ export default function (pi: ExtensionAPI) {
   // The walk is linear in the ancestry with one lookup per entry, and hooks fire on every streaming
   // update, so it runs only when the persisted leaf has moved (10 ms per update at 400 entries otherwise).
   let reconciledLeaf: string | null | undefined;
-  const reconcile = () => {
+  const reconcile = (check = true) => {
     const leaf = ctx.sessionManager.getLeafId();
     if (state.sessionId && leaf === reconciledLeaf) return;
+    const previous = state.sourceHead;
     walk();
     // A walk before the memory session exists creates no Turn; the first walk after allocation must run.
     reconciledLeaf = state.sessionId ? leaf : undefined;
+    if (check && state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   };
   const walk = () => memory.store.transaction(() => {
     const ancestry = ctx.sessionManager.getBranch();
@@ -389,11 +398,17 @@ export default function (pi: ExtensionAPI) {
     if (turnId) { state.head = turnId; if (current) current.id = turnId; }
   });
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
-  const flush = (ended = false) => { reconcile(); if (ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
+  const flush = (ended = false) => { reconcile(false); if (ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
   pi.on("before_provider_request", (event, context) => {
-    ensure(context); reconcile();
-    if (context.model) session.capture = { payload: snapshot(event.payload) as Body,
+    ensure(context);
+    const previous = state.sourceHead;
+    reconcile(false);
+    const ancestry = context.sessionManager.getBranch();
+    // Persisted originals before a context reset are not proof that the provider received them.
+    const reset = ancestry.reduce((last, e, i) => e.type === "compaction" || e.type === "branch_summary" ? i : last, -1);
+    if (context.model) session.capture = { entries: ancestry.slice(reset + 1).filter(e => e.type === "message").map(e => ({ id: e.id, raw: JSON.stringify(e.message) })), payload: snapshot(event.payload) as Body,
       model: context.model.id, provider: context.model.provider, branch: state.branch };
+    if (state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   });
   pi.on("session_start", (_event, context) => restore(context));
   pi.on("session_tree", (_event, context) => { restore(context, true); state.injected = false; save(); });
@@ -432,8 +447,6 @@ export default function (pi: ExtensionAPI) {
       !message.content.some(c => c.type === "toolCall" || (c.type === "thinking" && c.thinking))))) return;
     allocate(current.started);
     reconcile();
-    // Preserve the pre-17b answered-Turn accounting, including thinking-only replies.
-    if (current.id && memory.store.getTurn(current.id)!.assistantText === null) memory.store.updateTurn(current.id, { assistantText: "" });
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
@@ -446,21 +459,17 @@ export default function (pi: ExtensionAPI) {
     if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
     if (!state.sessionId || !state.head) return;
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
+  });
+  const checkQueues = () => {
+    if (!state.sessionId || !state.head) return;
+    const context = ctx;
     const { sessionId, branch, head } = state;
-    const watermark = memory.store.getWatermark(sessionId, branch);
-    const turns = [];
-    for (let id: number | null = head; id && id !== watermark?.lastRecordedTurn;) {
-      const turn: NonNullable<ReturnType<typeof memory.store.getTurn>> = memory.store.getTurn(id)!;
-      turns.push(turn); id = turn.parentTurnId;
-    }
-    const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
-    const growth = turns.reduce((n, t) => n + tokens([t.userPrompt ?? "", t.assistantText ?? "",
-      ...memory.store.listToolCalls(t.id).flatMap(c => [c.input ?? "", c.result ?? ""])].join("\n")), 0);
     const background = (kind: "recording" | "integration", promise: Promise<unknown>) => {
       pending.add(promise); activity.running.set(kind, (activity.running.get(kind) ?? 0) + 1); showSpend(context);
       void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })
         .finally(() => { pending.delete(promise); activity.running.set(kind, (activity.running.get(kind) ?? 1) - 1); showSpend(context); });
     };
+    const count = memory.store.integrationBatch(sessionId, branch, head).length;
     const recordingLaunch = launch("recording");
     // A branch run carries only its instruction (ruling 08:53): it presumes every earlier result is already
     // in the conversation. A result committed after this prompt started is not delivered until the next
@@ -470,29 +479,28 @@ export default function (pi: ExtensionAPI) {
     const undelivered = new Set(memory.store.listPendingDeliveries(sessionId, branch).map(p => memory.store.getRun(p.runId)?.kind));
     const paused = (kind: "recording" | "integration", mode: string | undefined) =>
       mode === "branch" && (kind === "recording" ? undelivered.has("recording") : undelivered.size > 0);
-    const due = answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens;
+    let due = false;
+    try { due = tokens(memory.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, memory.config.render).content).join("\n\n")) >= memory.config.recording.triggerTokens; }
+    catch (error) { context.ui.notify(String(error), "error"); }
     if (due && paused("recording", recordingLaunch.mode)) { activity.last = "warning"; showSpend(context); }
-    if (due && !paused("recording", recordingLaunch.mode))
-      background("recording", recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
+    if (due && !paused("recording", recordingLaunch.mode)) {
+      const [provider, ...id] = recordingLaunch.model.split("/");
+      const model = recordingLaunch.model === "session" || recordingLaunch.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
+      if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) context.ui.notify("Recording capacity: unavailable model context/output limits; left pending", "error");
+      else background("recording", memory.record({ sessionId, branch, headTurnId: head, ...recordingLaunch,
+        capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
+          prefixTokens: recordingLaunch.mode === "branch" && session.capture?.branch === branch ? tokens(JSON.stringify(session.capture.payload)) : 0 } }));
+    }
     const integrationLaunch = launch("integration");
-    const count = memory.store.integrationBatch(sessionId, branch, memory.config.integration.triggerUnintegratedFacts).length;
     if (count >= memory.config.integration.triggerUnintegratedFacts && paused("integration", integrationLaunch.mode)) { activity.last = "warning"; showSpend(context); }
     if (count >= memory.config.integration.triggerUnintegratedFacts && !paused("integration", integrationLaunch.mode))
       background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...integrationLaunch }));
-  });
+  };
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);
     const { sessionId, branch, head } = state;
     if (!sessionId || !head) return { summary: { summary: "" } };
-    let usage: Usage | undefined;
-    try {
-      // A pending run owns its frozen range. Later raw stays in the summary.
-      const result = await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") });
-      reportProblems(result, context);
-      // The switch's own recording cost rides on the branch summary, which Pi counts in the session totals.
-      if ("runId" in result) { try { usage = JSON.parse(memory.store.getRun(result.runId)?.response ?? "{}").usage ?? undefined; } catch { usage = undefined; } }
-    } catch (error) { context.ui.notify(String(error), "error"); }
-    return { summary: { summary: memory.branchSummary(sessionId, branch, head), ...(usage ? { usage } : {}) } };
+    return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
   pi.on("session_before_compact", (event, context) => {
     ensure(context); flush();

@@ -41,7 +41,7 @@ beforeEach(() => {
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 function fact(text = memories.base, options: { sessionId?: number; branch?: string; source?: string[]; createdAt?: string; actor?: "user" | "agent"; category?: "observation" | "question"; quote?: string; negate?: { target: string; strength: "strong" | "weak" }[] } = {}) {
   const owner = options.sessionId ?? sessionId, branch = options.branch ?? "main";
-  const turn = memory.store.appendTurn({ sessionId: owner, parentTurnId: memory.store.getWatermark(owner, branch)?.lastRecordedTurn ?? undefined, kind: "turn", userPrompt: text, assistantText: text, startedAt: time });
+  const turn = memory.store.appendTurn({ sessionId: owner, parentTurnId: memory.store.knowledgePath(owner, branch).headTurnId ?? undefined, kind: "turn", userPrompt: text, assistantText: text, startedAt: time });
   const result = memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: owner, branch, createdAt: time }, entryIds: memory.store.sourcePath(owner, branch, turn.id).map(e => e.id), facts: [{ turnId: turn.id,
     category: options.category ?? "observation", actor: options.actor ?? "user", quote: options.quote, text, source: options.source ?? [`T${turn.id}#user`], createdAt: options.createdAt ?? time, negate: options.negate }] });
   if (!result.ok) throw new Error(result.problems.join("\n"));

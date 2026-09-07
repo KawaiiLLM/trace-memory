@@ -118,7 +118,8 @@ test("2026-09-07: one batch per run", async () => {
     expect(note.execute(batch)).toContain("F1");
     expect(memory.store.getRun(1)?.outcome).toBe("success");
     expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
-    expect(memory.store.getWatermark(s.id, "main")?.lastRecordedTurn).toBe(t.id);
+    expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
+    expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
     expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
     expect(note.execute(batch)).toContain("already committed");
     return { outcome: "success", output: "Done", request: { round: 2 } };
@@ -142,10 +143,11 @@ test("2026-09-07: bounced is not empty", async () => {
   expect((await memory.record(input)).outcome).toBe("bounced");
   expect(memory.store.getRun(1)?.outcome).toBe("bounced");
   expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls[0].input).toEqual({ facts: [{ category: "invalid" }] });
-  expect(memory.store.getWatermark(s.id, "main")).toBeNull();
+  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryRecorded(e.id))).toBe(false);
   reject = false;
   expect(await memory.record(input)).toMatchObject({ outcome: "success", facts: [] });
-  expect(memory.store.getWatermark(s.id, "main")?.lastRecordedTurn).toBe(t.id);
+  expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
+  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryRecorded(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
 });
 
@@ -689,7 +691,7 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
   expect(summary).toMatch(/problems: .*(invalid source|rejected)/);
 });
 
-test("2026-09-07: the Integration threshold triggers, the turn boundary cuts: whole recorded turns up to the threshold, the unrecorded head waits", async () => {
+test("2026-09-07 superseded 2026-09-08 (17b): the Integration threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {
   const project = memory.store.createProject({ name: "batches", declaredBy: "mark" });
   const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const turns = [1, 2, 3, 4].map((i, _, arr) => memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: `t${i}`, assistantText: "ok", startedAt: time, parentTurnId: undefined }));
@@ -699,10 +701,10 @@ test("2026-09-07: the Integration threshold triggers, the turn boundary cuts: wh
   seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
   recorded(memory, s.id, "main", turns[2]!.id); // T1..T3 recorded, T4 (head) not yet
   seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
-  const batch = memory.store.integrationBatch(s.id, "main", 5);
-  expect(batch.map((f) => f.turnId)).toEqual([turns[0]!.id, turns[0]!.id, turns[0]!.id, turns[1]!.id, turns[1]!.id, turns[1]!.id]); // T1 and T2: 6 ≥ 5 at a turn boundary; T3 waits
-  expect(batch.some((f) => f.turnId === turns[3]!.id)).toBe(false); // the unrecorded head never enters a batch
-  expect(memory.store.integrationBatch(s.id, "main", 50)).toHaveLength(9); // below the threshold the batch is everything recorded
+  const batch = memory.store.integrationBatch(s.id, "main", turns[3]!.id);
+  expect(batch.map(f => f.id)).toEqual(Array.from({ length: 11 }, (_, i) => i + 1));
+  expect(batch.filter(f => f.turnId === turns[3]!.id)).toHaveLength(2);
+
 });
 
 test("2026-09-07 review: a late fact on an early turn does not make the batch skip pending facts of later turns", () => {
@@ -713,10 +715,11 @@ test("2026-09-07 review: a late fact on an early turn does not make the batch sk
   const seed = (turn: number, text: string) => memory.store.commitRecordingRun({ run: { kind: "manual", sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
     facts: [{ turnId: turn, category: "decision", actor: "user", text, source: [`T${turn}#user`], createdAt: time }] });
   seed(t1.id, "early decision"); seed(t2.id, "later decision"); seed(t1.id, "late supplement to the early decision"); // F3 lands on T1 after F2 on T2
-  expect(memory.store.integrationBatch(s.id, "main", 2)).toEqual([]); // nothing recorded yet: no batch, whatever manual facts exist
+  // "Nothing before the first Recording" was superseded on 2026-09-08 by 17b.
+  expect(memory.store.integrationBatch(s.id, "main", t2.id).map(f => f.id)).toEqual([1, 2, 3]);
   recorded(memory, s.id, "main", t2.id);
-  const first = memory.store.integrationBatch(s.id, "main", 2);
-  expect(first.map((f) => f.id)).toEqual([1, 3]); // T1 whole: F1 and the late F3
-  expect(memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: time }, operations: [], integrated: first.map((f) => f.id) }).ok).toBe(true);
-  expect(memory.store.integrationBatch(s.id, "main", 2).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
+  const first = memory.store.integrationBatch(s.id, "main", t2.id);
+  expect(first.map((f) => f.id)).toEqual([1, 2, 3]); // no Turn grouping
+  expect(memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: time }, operations: [], integrated: [1, 3] }).ok).toBe(true);
+  expect(memory.store.integrationBatch(s.id, "main", t2.id).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
 });

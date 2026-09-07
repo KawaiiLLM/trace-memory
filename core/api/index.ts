@@ -36,7 +36,7 @@ export interface TraceMemoryConfig {
   };
   recording: {
     branchModeDefault: boolean;
-    triggerAnsweredTurns: number;
+    batchTokens: number;
     triggerTokens: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
@@ -64,8 +64,8 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   },
   recording: {
     branchModeDefault: true,
-    triggerAnsweredTurns: 5,
-    triggerTokens: 50_000,
+    batchTokens: 50_000,
+    triggerTokens: 10_000,
     maxToolRounds: 0,
   },
   integration: {
@@ -79,6 +79,11 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
 export type ConfigOverride = { [K in keyof TraceMemoryConfig]?: Partial<TraceMemoryConfig[K]> };
 
 function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMemoryConfig {
+  for (const [section, values] of Object.entries(override)) {
+    if (!Object.hasOwn(base, section)) throw new Error(`Unknown setting ${section}`);
+    const defaults = base[section as keyof TraceMemoryConfig];
+    for (const key of Object.keys(values)) if (!Object.hasOwn(defaults, key)) throw new Error(`Unknown setting ${section}.${key}`);
+  }
   return {
     render: { ...base.render, ...override.render },
     recording: { ...base.recording, ...override.recording },
@@ -135,10 +140,14 @@ export interface TraceMemory {
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
-  const store = new Store(dbPath);
   const cfg = mergeConfig(DEFAULT_CONFIG, config);
+  const store = new Store(dbPath);
   for (const key of ["toolCallTokens", "entryTokens"] as const) {
     if (!Number.isSafeInteger(cfg.render[key]) || cfg.render[key] < 1) { store.close(); throw new Error(`Invalid render.${key}: expected a positive integer`); }
+  }
+
+  for (const key of ["triggerTokens", "batchTokens"] as const) {
+    if (!Number.isSafeInteger(cfg.recording[key]) || cfg.recording[key] < 1) { store.close(); throw new Error(`Invalid recording.${key}: expected a positive integer`); }
   }
 
   const databaseIdentity = dbPath === ":memory:" ? `:memory:${++memoryDatabaseId}` : realpathSync(dbPath);

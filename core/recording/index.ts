@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
-import type { ToolDefinition, ToolContext } from "../api/tools.ts";
+import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts } from "../render/index.ts";
+import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/recording.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -14,11 +14,14 @@ export interface RecordInput {
   sessionId: number;
   branch: string;
   headTurnId: number;
+  /** Host model capacity after reserving output; prefix includes native tools and context. */
+  capacity?: { inputTokens: number; prefixTokens: number };
   model?: string;
   mode?: "branch" | "subagent";
 }
 export interface RecordingAgentInput {
   kind: "recording";
+  entryIds: number[];
   sessionId: number;
   branch: string;
   range: { from: string; to: string };
@@ -53,27 +56,45 @@ export function freezeRecording(store: Store, input: RecordInput, config: TraceM
     ancestry.unshift(turn);
     id = turn.parentTurnId;
   }
-  const entries = store.pendingEntries(session.id, input.branch, input.headTurnId);
-  const ids = new Set(entries.map(e => e.turnId));
-  const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
-    const selected = entries.filter(e => e.turnId === turn.id);
-    const ordinals = new Set(selected.flatMap(e => e.calls.map(c => c.ordinal)));
-    return { turn: { ...turn, userPrompt: selected.find(e => e.role === "user")?.text ?? null,
-      assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
-      calls: store.listToolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
-  });
+  if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
+    !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Recording capacity: expected nonnegative safe integers");
+  const pending = store.pendingEntries(session.id, input.branch, input.headTurnId);
+  const entries: typeof pending = [];
+  const views: string[] = [];
+  for (const entry of pending) {
+    const view = renderEntry(entry, config.render).content;
+    if (tokens([...views, view].join("\n\n")) > config.recording.batchTokens) break;
+    entries.push(entry); views.push(view);
+  }
+  if (pending.length && !entries.length) throw new Error("Recording capacity: oldest entry exceeds recording.batchTokens; left pending");
   const knowledge = store.listCurrentKnowledge({ sessionId: session.id, headTurnId: input.headTurnId });
   const facts = store.listSessionFacts(session.id);
-  return { sessionId: session.id, branch: input.branch, entries, turns, knowledge, facts,
-    model: input.model ?? "session", mode: input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent") };
+  const mode = input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent");
+  while (entries.length) {
+    const ids = new Set(entries.map(e => e.turnId));
+    const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
+      const selected = entries.filter(e => e.turnId === turn.id);
+      const ordinals = new Set(selected.flatMap(e => e.calls.map(c => c.ordinal)));
+      return { turn: { ...turn, userPrompt: selected.find(e => e.role === "user")?.text ?? null,
+        assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
+        calls: store.listToolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
+    });
+    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
+      model: input.model ?? "session", mode };
+    const prepared = recordingMaterial(store, frozen, config);
+    const capacity = input.capacity;
+    const subagentTokens = tokens(prompt + "\n\n" + prepared.subagentInput) + tokens(JSON.stringify(toolDefinitions));
+    const branchTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt + "\n\n" + prepared.input);
+    if (!capacity || Math.max(subagentTokens, mode === "branch" ? branchTokens : 0) <= capacity.inputTokens) return frozen;
+    entries.pop();
+  }
+  if (pending.length) throw new Error("Recording capacity: oldest entry cannot fit model context with instructions, knowledge, tools and output reserved; left pending");
+  return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode };
+
 }
 
-export async function runRecording(
-  store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
-  config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
-): Promise<RecordResult> {
-  const { sessionId, branch, entries, turns, knowledge, facts, model, mode } = frozen;
-  if (!turns.length) return { outcome: "empty" };
+function recordingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[]; mode: "branch" | "subagent" }, config: TraceMemoryConfig) {
+  const { sessionId, entries, turns, knowledge, facts, mode } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
@@ -91,12 +112,22 @@ export async function runRecording(
   const input = mode === "branch" ? [`Range: ${range.from}..${range.to}`,
     ...(head.assistantText ? [renderTurn(head, [], config.render, { part: "assistant" }).content] : []),
     `Sources:\n${turns.map(({ turn, calls }) => renderSources(turn, calls)).join("\n")}`].join("\n\n") : subagentInput;
+  return { range, readKnowledgeCommits, raw, subagentInput, input };
+}
+
+export async function runRecording(
+  store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
+  config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
+): Promise<RecordResult> {
+  const { sessionId, branch, entries, turns, model, mode } = frozen;
+  if (!turns.length) return { outcome: "empty" };
+  const { range, readKnowledgeCommits, raw, subagentInput, input } = recordingMaterial(store, frozen, config);
   const entryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "recording", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
-  const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range,
+  const agentInput: RecordingAgentInput = { kind: "recording", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
     subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
