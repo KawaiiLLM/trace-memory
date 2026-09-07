@@ -17,6 +17,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];
   const requests: unknown[] = [], conversations: Conversation[] = [];
   let provider = async (_conversation: Conversation) => reply("[]");
+  let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   const model = { provider: "fake", id: "test", api: "openai-completions" };
   const ctx = { cwd: dir, model, ui: { notify: (s: string) => notices.push(s) },
     sessionManager: { getSessionId: () => "pi-test", getBranch: () => entries, getEntries: () => allEntries },
@@ -28,7 +29,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
         await options.onPayload(payload);
         requests.push(structuredClone(payload));
         payload.providerSpecific = false; // The saved request must not alias provider state.
-        if (conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
+        if (autoStop && conversation.tools?.some((t) => t.name === "note") && conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
         if (conversation.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.includes('"committed"'))) return reply("Done.");
         return provider(conversation);
       } },
@@ -48,7 +49,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
   const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close(); rmSync(dir, { recursive: true, force: true }); };
   return { dispose, dir, ctx, entries, hooks, tools, commands, notices, memory, emit, prompt, answer, turn, drain, requests, conversations,
-    provider: (fn: typeof provider) => { provider = fn; } };
+    provider: (fn: typeof provider, options: { autoStop?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; } };
 }
 export function recordingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);

@@ -110,9 +110,10 @@ export async function runRecording(
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (binding.committed) {
     // The batch is committed; a failure while completing the audit record is reported, not a business failure.
+    const after = [...problems];
     try { store.updateRun(binding.committed.runId, { ...run, outcome: "success" }); }
-    catch (error) { return { outcome: "success", ...binding.committed, problems: [`audit update failed after commit: ${String(error)}`] }; }
-    return { outcome: "success", ...binding.committed };
+    catch (error) { after.push(`audit update failed after commit: ${String(error)}`); }
+    return { outcome: "success", ...binding.committed, ...(after.length ? { problems: after } : {}) };
   }
   if (problems.length) {
     const outcome = result.outcome !== "success" ? result.outcome

@@ -188,8 +188,10 @@ export default function (pi: ExtensionAPI) {
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
-  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean;
-    deliveries?: number[]; injected?: boolean } | undefined;
+  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
+  // What this agent run has shown the model and must confirm when it settles. Kept apart from
+  // `current`, which a queued (steering or follow-up) user message replaces mid-run.
+  const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
   const recordings = new Map<string, Promise<RecordResult>>();
   const modelName = (kind: "recording" | "integration") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
@@ -199,6 +201,11 @@ export default function (pi: ExtensionAPI) {
   const launch = (kind: "recording" | "integration") => {
     const branch = kind === "recording" ? memory.config.recording.branchModeDefault : !memory.config.integration.subagentModeDefault;
     return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
+  };
+  // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
+  const reportProblems = (result: unknown, context: ExtensionContext) => {
+    const r = result as { outcome?: string; problems?: string[] } | undefined;
+    if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
   const recording = (input: Parameters<typeof memory.record>[0]) => {
     const key = `${input.sessionId}/${input.branch}`;
@@ -262,12 +269,12 @@ export default function (pi: ExtensionAPI) {
     const parts: string[] = [];
     if (!state.injected) {
       const block = memory.inject(state.sessionId ?? { projectId: state.projectId });
-      if (block) { parts.push(block); current.injected = true; } // nothing yet: try again next prompt
+      if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
     }
     if (state.sessionId) {
       const delivery = memory.deliver(state.sessionId, state.branch);
       if (delivery.text) parts.push(delivery.text);
-      current.deliveries = delivery.runIds; // only what this prompt took; later results wait for the next prompt
+      unconfirmed.deliveries.push(...delivery.runIds); // only what this prompt took; later results wait for the next prompt
     }
     if (!parts.length) return;
     return { message: { customType: tag, content: parts.join("\n\n"), display: false } };
@@ -307,8 +314,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, context) => {
     ensure(context);
     // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
-    if (current?.deliveries) { memory.confirmDelivery(current.deliveries); current.deliveries = undefined; }
-    if (current?.injected) { state.injected = true; current.injected = false; save(); }
+    if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
+    if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
     if (!state.sessionId || !state.head) return;
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
     const { sessionId, branch, head } = state;
@@ -322,7 +329,7 @@ export default function (pi: ExtensionAPI) {
     const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
     const background = (promise: Promise<unknown>) => {
       pending.add(promise);
-      void promise.catch(error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
+      void promise.then(result => reportProblems(result, context), error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
     };
     const recordingLaunch = launch("recording");
     // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is
@@ -341,7 +348,7 @@ export default function (pi: ExtensionAPI) {
     if (!sessionId || !head) return { summary: { summary: "" } };
     try {
       // A pending run owns its frozen range. Later raw stays in the summary.
-      await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") });
+      reportProblems(await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") }), context);
     } catch (error) { context.ui.notify(String(error), "error"); }
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });

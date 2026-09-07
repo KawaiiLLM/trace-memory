@@ -119,9 +119,10 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (committed) {
+    const after = [...problems];
     try { store.updateRun(committed.runId, { ...run, outcome: "success" }); }
-    catch (error) { return { outcome: "success", ...committed, range, readKnowledgeRevisions, problems: [`audit update failed after commit: ${String(error)}`] }; }
-    return { outcome: "success", ...committed, range, readKnowledgeRevisions };
+    catch (error) { after.push(`audit update failed after commit: ${String(error)}`); }
+    return { outcome: "success", ...committed, range, readKnowledgeRevisions, ...(after.length ? { problems: after } : {}) };
   }
   const outcome = result.outcome !== "success" ? result.outcome : result.request == null || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
   if (outcome !== "success") {

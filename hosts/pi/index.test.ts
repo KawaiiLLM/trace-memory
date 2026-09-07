@@ -599,3 +599,23 @@ test("maxToolRounds is a budget: unlimited by default, and a run over an explici
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
   expect(capped.memory.store.getWatermark(1, "main")).toBeNull();
 });
+
+test("a queued user message mid-run does not lose the confirmation of what the prompt injected and delivered", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c));
+  await h.turn(); // recording of T1 leaves a delivery
+  expect((await h.prompt("two"))?.message?.content).toContain("<recorded>");
+  await h.emit("message_start", { message: { role: "user", content: "steer: keep going", timestamp: Date.now() } }); // queued message replaces the turn
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.memory.store.listPendingDeliveries(1, "main").map(d => d.runId)).not.toContain(1); // confirmed despite the replacement
+});
+
+test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return recordingFact(c); }, { autoStop: false });
+  await h.turn();
+  const run = h.memory.store.listRuns(1)[0]!;
+  expect(run.outcome).toBe("success"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
+  expect(h.notices.some(n => n.includes("committed with problems") && n.includes("after commit"))).toBe(true);
+  expect(h.notices.some(n => n.startsWith("Error:"))).toBe(false);
+});
