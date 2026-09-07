@@ -195,13 +195,75 @@ their meanings. Modes are booleans. Impossible source-view capacity still report
 an error and retains pending work. The plugin never writes settings.
 
 Bare `/trace` uses native select/confirm/input dialogs for Current session (state,
-default or explicit origin, enable/disable and shared-identity scope), Settings
-(labelled Global, read-only, effective values, sources and masked values), Runs and
-Status. Cancel changes no enrollment choice. Headless bare `/trace` prints status
-and available commands. `/trace enable`, `/trace disable`, `/trace status`,
-`/trace runs [n]`, `/trace project <name>` and `/trace mark K<n>@<commit> <kind>`
-share existing operations. The existing footer adds Disabled while retaining its
-indicator, colors, counts and spend. Catch up and Stop are ticket 18b, not implemented.
+default or explicit origin, enable/disable and shared-identity scope), Catch up,
+Stop, Settings (labelled Global, read-only, effective values, sources and masked
+values), Runs and Status. Cancel changes no enrollment choice. Headless bare
+`/trace` prints status and available commands. `/trace enable`, `/trace disable`,
+`/trace catchup`, `/trace stop`, `/trace status`, `/trace runs [n]`, `/trace
+project <name>` and `/trace mark K<n>@<commit> <kind>` share existing operations;
+menu actions and commands call the same operations, and the catchup handler
+returns control to the TUI immediately so stop can be invoked while it runs. The
+existing footer adds Disabled while retaining its indicator, colors, counts and
+spend.
+
+### Manual catchup and stop (18b, 2026-09-08)
+
+`/trace catchup` targets the current enabled session's selected branch only. If
+disabled, it rejects with the enable instruction rather than silently enrolling
+the session. It first reconciles available native history (17a), then freezes a
+finite target: the highest currently-pending source-entry id for Noting
+(`undefined`/nothing if none is pending) and the exact set of currently-pending
+fact ids for Consolidation. An empty target completes with no model call.
+Repeating `/trace catchup` while one is active reports the existing operation;
+it never creates a second one or extends the snapshot.
+
+The drain runs bounded Noting batches against the frozen entry-id boundary —
+ignoring `noting.triggerTokens` and `consolidation.triggerUnconsolidatedFacts`,
+not `noting.batchTokens` or model context — then one Consolidation batch against
+the frozen fact set extended with every fact those Noting batches went on to
+produce. Both phases run in subagent mode, regardless of configured defaults or
+a session's automatic fork downgrade; normal task delivery and audit attribution
+stay bound to the target session. A host-local controller (not the core façade,
+not `checkQueues`) is the sole place that schedules the next batch on completion
+of the previous one — the one explicit exception to 17b/17c's no-completion-
+chaining rule. Ordinary entry events never expand the frozen target or start a
+second local scheduling loop; a failure or cancellation ends the invocation and
+leaves unprocessed work pending, with native bounded provider retries inside a
+run unaffected.
+
+The core façade enforces the same frozen target: `noting`/`consolidate` accept
+an optional `boundary: { maxEntryId?, factIds? }` on their input, threaded into
+`freezeNoting`/`freezeConsolidation`'s existing selection queries and into
+`execute`'s pre-freeze emptiness check, so a bounded call cannot silently see
+past its snapshot even if a host bug tried to let it. The drain reuses 17c's one
+Noter slot, one Consolidator slot and one target-phase claim per executor;
+no second queue, worker pool or claim table exists. An occupied slot or a live
+foreign claim on the same target is exposed as Waiting, never stolen, and is
+retried only on that slot's release or the next ordinary eligible-entry
+opportunity — no polling timer.
+
+`/trace stop` first sets the controller's own stop flag, disabling further
+chaining regardless of what the in-flight batch returns, then calls the
+façade's existing `cancelTasks()` — the same fenced cancellation 17c's shutdown
+uses — for this executor's active model calls and retry waits, both the
+catchup's own and any ordinary/borrowed work. It does not set the shutdown
+`stopping` flag, so future ordinary or explicit admission for this executor
+remains possible; it never changes enrollment or configuration, never touches
+the foreground agent, and never releases another executor's claim (the store's
+per-executor invalidation and token-conditional release already scope to the
+calling executor). With nothing running or waiting it is a harmless no-op. A
+batch already committed before cancellation wins stays successful and is never
+replayed; a cancellation that wins leaves its queue entries pending.
+
+Disable, executor shutdown/session replacement, and switching away from the
+catchup's frozen session or branch all end an active catchup through the same
+cancellation path, never retargeting its frozen task to a newly selected branch
+and never resuming the drain automatically on reopen or re-enable; none of
+these events launch a lifecycle flush. `/trace status`, the menu's Current-
+session entry and the footer text report the drain's actual state: running
+(phase and bounded progress), waiting (occupied phase), completed, stopped
+(with how much of the frozen target was processed and that it stays pending)
+or failed (with the diagnostic).
 
 ### Run boundaries
 

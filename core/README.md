@@ -330,3 +330,20 @@ subagent mode. `cancelTasks(true)` stops admission and fences tokens before abor
 `forceTasks()` ends local waits at the host cleanup deadline. The host awaits those
 local tasks before `close()`. Cancellation preserves available audit and unknown
 usage; closed tools and rejection handlers prevent late store access.
+
+
+## Manual catchup boundary (18b)
+
+`TaskOptions` (shared by `NotingInput` and `ConsolidateInput`) gains an optional
+`boundary: { maxEntryId?: number; factIds?: number[] }`. Absent, selection is
+the ordinary unbounded pending set; nothing about existing automatic callers
+changes. When present, `freezeNoting` filters `pendingEntries` to ids no later
+than `maxEntryId` before its usual batch-token loop, and `freezeConsolidation`
+filters `consolidationBatch` to exactly `factIds` before building its range;
+both reuse the same store readers rather than adding a second selection query.
+`execute`'s pre-freeze emptiness check applies the identical filter so a target
+that is empty within its frozen boundary reports `"empty"` without acquiring a
+claim, even while unrelated later entries or facts remain pending outside it.
+This is the only mechanism a manual catchup needs from core: freezing,
+chaining, slots, waiting and cancellation are entirely host-local (18b), reusing
+17c's claims, token fence and `cancelTasks()` unchanged.

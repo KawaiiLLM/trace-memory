@@ -142,7 +142,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - `/trace` opens the native menu described below; `/trace status` reads status. `/trace project <name>`
   declares the project, saves host state and displays refreshed injection.
   `/trace mark K<n> verified|flagged|clear` marks a knowledge revision. These are
-  user commands; the former model-facing `mark` tool is removed.
+  user commands; the former model-facing `mark` tool is removed. `/trace catchup`
+  and `/trace stop` (18b) start and cancel the manual finite drain described below.
 
 ## Executor slots, claims and shutdown
 
@@ -246,16 +247,21 @@ Bare `/trace` opens native dialogs:
 
 - **Current session:** Enabled/Disabled, default or explicit origin, enable/disable
   with confirmation and shared fork/clone scope.
+- **Catch up:** starts (or reports) the manual finite drain described below.
+- **Stop:** cancels this executor's background work, including a running or
+  waiting catchup.
 - **Settings (Global, read-only):** every effective value, its Default/Global/Project/
   Environment source, and masked file values. Edit files by hand; there is no editor.
 - **Runs:** the existing run view, with an optional count input.
-- **Status:** enrollment, counts, pending deliveries, last runs and spend.
+- **Status:** enrollment, counts, pending deliveries, last runs, spend and any
+  catchup state.
 
 Cancel leaves enrollment unchanged. Headless bare `/trace` prints status and the
-available commands. `/trace enable`, `/trace disable`, `/trace status`,
-`/trace runs [n]`, `/trace project <name>` and `/trace mark K<n>@<commit>
-verified|flagged|clear` remain available; menu and command actions share operations.
-Catch up and Stop belong to 18b and are not exposed in this slice.
+available commands. `/trace enable`, `/trace disable`, `/trace catchup`, `/trace
+stop`, `/trace status`, `/trace runs [n]`, `/trace project <name>` and `/trace
+mark K<n>@<commit> verified|flagged|clear` remain available; menu and command
+actions share the same operations. The catchup handler starts the cancellable
+drain and returns immediately, so stop can be invoked while it runs.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
@@ -264,6 +270,58 @@ is a similarity in [0,1]. Mode settings require booleans. Impossible view capaci
 still fails with a capacity message and retains pending sources. Changing `dbPath`
 requires reloading the extension. The footer adds `Disabled` to its existing shape;
 Enabled but idle retains the dim hollow indicator without that label.
+
+## Manual catchup and stop (18b)
+
+`/trace catchup` operates on the current enabled session's selected branch, not
+every closed session. Handler order: require enabled (reject with the enable
+instruction otherwise, never silently enrolling); reconcile available native
+history (17a); freeze the target as the highest currently-pending source-entry id
+(`undefined` when nothing is pending) plus the exact set of currently-pending
+fact ids. An empty target completes immediately with no model call. Repeating
+`/trace catchup` while one is active reports its current state instead of
+starting a second one or extending its snapshot.
+
+The drain runs bounded Noting batches — ignoring `noting.triggerTokens` and
+`consolidation.triggerUnconsolidatedFacts` but not `noting.batchTokens` or model
+context — against the frozen entry-id boundary, then one Consolidation batch
+against the frozen fact-id set extended with every fact those Noting batches
+went on to produce. Both phases always run in subagent mode. Batch-to-batch
+chaining happens only inside this host-local controller (`driveCatchup`), which
+is the sole exception to 17b/17c's no-completion-chaining rule; ordinary entry
+events never expand the frozen target or start a second scheduling loop. The
+core façade enforces the same boundary through an optional `boundary:
+{maxEntryId, factIds}` on `noting`/`consolidate` input, so a host bug cannot
+silently widen what a bounded call is allowed to see.
+
+The drain reuses 17c's one Noter slot, one Consolidator slot and one target
+phase claim per executor — no second queue, worker pool or claim table. An
+occupied local slot or a live foreign claim on the same target shows Waiting
+and is retried only when that slot next releases or the next ordinary eligible
+entry gives the executor another opportunity; there is no polling timer.
+
+`/trace stop` sets the controller's own stop flag (so it schedules no further
+batch, whatever the in-flight one returns) and then calls the façade's existing
+`cancelTasks()` — the same cancellation 17c's shutdown uses, fencing tokens and
+aborting this executor's active model calls and retry waits, both catchup's own
+and any ordinary/borrowed work. It does not set the shutdown `stopping` flag, so
+future ordinary or explicit admission for this executor remains possible; it
+never touches enrollment, configuration or another executor's claim (the
+store's per-executor invalidation and token-conditional release already scope
+to this executor). It does not touch the foreground agent. With nothing
+running or waiting, it is a harmless no-op. A batch already committed before
+cancellation wins stays successful and is not replayed; cancellation that wins
+leaves that batch's queue entries pending for a later drain.
+
+Disable, executor shutdown/session replacement, and switching away from the
+catchup's frozen session or branch all end an active catchup and request the
+same cancellation — never retargeting its frozen task to a newly selected
+branch, and never resuming the drain automatically on reopen or re-enable. None
+of these events launch a flush. `/trace status`, the menu's Current-session
+entry and the footer's underlying status text report the drain honestly:
+running (with phase and bounded progress), waiting (with the occupied phase),
+completed, stopped (with how much of the frozen target was processed) or
+failed (with the diagnostic).
 
 ## SDK signatures and request auditing
 

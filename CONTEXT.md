@@ -32,6 +32,8 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Closed** — a session marked by normal shutdown and cleared on restore. A crash or expired claim does not establish closure; an unclosed crashed conversation waits for resume.
 - **Project** — the unit that shares knowledge. A session belongs to a project only by explicit declaration (a `.trace-memory` marker file found upward from cwd, or an in-session `/trace project <name>`; the in-session declaration wins). An undeclared session is its own project and may later be merged into another, retroactively.
 - **Scope** of a knowledge item — `session` (holds only in that session), `project`, or `global` (about the user, the environment, general working method).
+- **Manual catchup** — `/trace catchup`'s finite, explicit drain of the current enabled session's selected branch: a frozen entry-id boundary for Noting and a frozen fact-id set for Consolidation, drained in bounded batches below the normal triggers, in subagent mode, chaining only within its own host-local controller. The sole exception to the no-completion-chaining rule; it never expands past what it froze.
+- **Stop** — `/trace stop`'s cancellation of one executor's background work (its own manual catchup plus any ordinary or borrowed work), reusing the same claim, token-fence and cancellation machinery as shutdown. It never disables enrollment, never edits configuration and never touches another executor's claim.
 
 ## Reading
 

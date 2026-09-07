@@ -45,7 +45,10 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("consolidation requires a non-empty branch");
   const facts = store.listProjectFacts(session.projectId);
-  const rangeFacts = store.consolidationBatch(session.id, input.branch, input.headTurnId);
+  const rangeFactsAll = store.consolidationBatch(session.id, input.branch, input.headTurnId);
+  // A manual catchup (18b) freezes an explicit fact-id set: the pending facts at freeze time plus
+  // whatever the frozen Noting batches went on to produce. Later unrelated facts stay outside it.
+  const rangeFacts = input.boundary?.factIds === undefined ? rangeFactsAll : rangeFactsAll.filter(f => input.boundary!.factIds!.includes(f.id));
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));

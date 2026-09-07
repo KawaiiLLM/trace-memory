@@ -726,3 +726,28 @@ test("2026-09-07 review: a late fact on an early turn does not make the batch sk
   expect(memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: time }, operations: [], consolidated: [1, 3] }).ok).toBe(true);
   expect(memory.store.consolidationBatch(s.id, "main", t2.id).map((f) => f.id)).toEqual([2]); // F2 is still pending, not skipped
 });
+
+test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added after it was captured, even though they are on-path", async () => {
+  const { s, t } = session();
+  const entry1 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u1", turnId: t.id, role: "user", text: "first", raw: "first", calls: [] });
+  memory.selectEntries(s.id, "main", [entry1.id]);
+  const boundary = { maxEntryId: entry1.id }; // frozen before the second entry exists
+  const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "second", startedAt: time });
+  const entry2 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u2", turnId: t2.id, role: "user", text: "second", raw: "second", calls: [] });
+  memory.selectEntries(s.id, "main", [entry1.id, entry2.id]);
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t2.id, mode: "subagent", boundary });
+  expect(result.outcome).toBe("success");
+  expect(calls[0]!.entryIds).toEqual([entry1.id]); // the later on-path entry stays outside the frozen target
+  expect(memory.pendingEntries(s.id, "main", t2.id).map(e => e.id)).toEqual([entry2.id]); // it remains pending
+
+  // Same guarantee for Consolidation's frozen fact-id set.
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
+    { category: "observation", actor: "user", text: "Frozen fact", source: [`T${t.id}#user`] } ] });
+  const frozenFacts = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
+    { category: "observation", actor: "user", text: "Later fact", source: [`T${t.id}#user`] } ] });
+  const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { factIds: frozenFacts } });
+  expect(cresult.outcome).toBe("success");
+  if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
+  expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(1); // the later fact stays outside the frozen target
+});

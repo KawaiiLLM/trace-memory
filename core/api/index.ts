@@ -123,7 +123,11 @@ export interface RunAgentResult {
 
 }
 
-export interface TaskOptions { borrowed?: boolean; automatic?: boolean; executorSessionId?: number }
+/** A manual catchup's frozen target: `maxEntryId` bounds Noting to entries allocated no later than
+ * the freeze instant; `factIds` bounds Consolidation to the frozen pending-plus-produced fact set.
+ * Absent, selection is the ordinary unbounded pending set (18b). */
+export interface TaskBoundary { maxEntryId?: number; factIds?: number[] }
+export interface TaskOptions { borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary }
 export interface AgentControl {
   signal?: AbortSignal;
   reportProgress?: (progress: Partial<RunAgentResult>) => void;
@@ -294,8 +298,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let empty = false, projectId: number;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | null;
     try { frozen = store.transaction(() => {
-      empty = !(phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-        : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId)).length;
+      const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+        : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+      const boundary = input.boundary;
+      // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
+      // do not turn "empty within the target" into "dropped", nor expand what a batch may take.
+      empty = !boundary ? !pendingNow.length
+        : phase === "noting" ? !pendingNow.some(e => boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId)
+        : !pendingNow.some(f => !boundary.factIds || boundary.factIds.includes((f as { id: number }).id));
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;

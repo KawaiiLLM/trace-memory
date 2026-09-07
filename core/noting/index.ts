@@ -58,7 +58,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
-  const pending = store.pendingEntries(session.id, input.branch, input.headTurnId);
+  const pendingAll = store.pendingEntries(session.id, input.branch, input.headTurnId);
+  // A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
+  const pending = input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!);
   const entries: typeof pending = [];
   const views: string[] = [];
   for (const entry of pending) {
