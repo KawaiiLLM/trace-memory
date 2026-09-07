@@ -17,6 +17,34 @@ export function messageKey(api: string): "messages" | "input" {
   if (api === "anthropic-messages" || api === "openai-completions") return "messages";
   throw new Error(`Unsupported branch payload API: ${api}`);
 }
+/** The parent's own system prompt bytes, read back out of its captured body (19a). */
+export function capturedSystemPrompt(api: string, payload: Body): string {
+  if (responsesApi(api)) {
+    if (typeof payload.instructions !== "string") throw new Error("Captured payload has no instructions string");
+    return payload.instructions;
+  }
+  if (api === "anthropic-messages") {
+    const system = payload.system;
+    if (typeof system === "string") return system;
+    if (Array.isArray(system) && system.length === 1 && (system[0] as Body)?.type === "text" && typeof (system[0] as Body).text === "string") return (system[0] as Body).text as string;
+    throw new Error("Captured payload system is not a single text block");
+  }
+  const first = (payload[messageKey(api)] as Body[] | undefined)?.[0];
+  if (!first || (first.role !== "system" && first.role !== "developer") || typeof first.content !== "string") throw new Error("Captured payload has no leading system message");
+  return first.content;
+}
+/** The parent's tool definitions, in the parent's order, as the child must re-register them (19a). */
+export function capturedTools(api: string, payload: Body): { name: string; description: string; parameters: Body }[] {
+  const tools = payload.tools;
+  if (!Array.isArray(tools)) return [];
+  return tools.map((raw, index) => {
+    const tool = (api === "openai-completions" ? (raw as Body).function : raw) as Body | undefined;
+    const parameters = (api === "anthropic-messages" ? tool?.input_schema : tool?.parameters) as Body | undefined;
+    if (!tool || typeof tool.name !== "string" || typeof tool.description !== "string" || !parameters || typeof parameters !== "object")
+      throw new Error(`Captured tool ${index} is not a name/description/schema function definition`);
+    return { name: tool.name, description: tool.description, parameters };
+  });
+}
 // Native message shapes copied from pi-ai's adapters (openai-responses-shared, anthropic-messages, openai-completions).
 function providerMessage(api: string, message: Appended): Body {
   if (responsesApi(api)) return { role: "user", content: [{ type: "input_text", text: message.text }] };

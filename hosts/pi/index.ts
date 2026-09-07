@@ -6,12 +6,14 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
+import { runNative, NotForkable, type NativeTask, type Verification as NativeVerification } from "./native.ts";
 import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
 type Reply = Awaited<ReturnType<Registry["complete"]>>;
 type FlatConfig = Record<string, string | number | boolean>;
+type NativeModel = NativeTask["model"];
 const tag = "trace-memory";
 const contextMargin = 0.85; // reserve 15% for the shared estimator and provider framing
 const now = () => new Date().toISOString();
@@ -26,6 +28,10 @@ function settings(cwd: string, agentDir = agentDirectory()) {
   };
   return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
 }
+// Host settings that are not core config sections. `nativeRunner` (19a) selects the native Pi fork
+// runner for branch-mode work; `runsDir` places its worker logs (default: dbPath's directory/runs).
+const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
+const hostFlags = ["nativeRunner"];
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
   const layers = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
@@ -46,9 +52,10 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
       }
       Object.assign(core, { [section]: values });
     }
-    for (const key of Object.keys(flat)) if (!["dbPath", "notingModel", "consolidationModel"].includes(key) &&
+    for (const key of Object.keys(flat)) if (![...hostStrings, ...hostFlags].includes(key) &&
       !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
-    for (const key of ["dbPath", "notingModel", "consolidationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+    for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+    for (const key of hostFlags) if (flat[key] !== undefined && typeof flat[key] !== "boolean") throw new Error(`Invalid ${key}`);
     validateConfig(core);
     return core;
   };
@@ -113,6 +120,9 @@ export default function (pi: ExtensionAPI) {
   let { flat, core, sources, layers } = configuration(process.cwd());
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
+  // Ruling 19:5 — native worker logs live next to the database, never in Pi's own sessions
+  // directory (which /resume scans) and never in the project tree. Retention is a v1 limit.
+  const runsDirectory = (piId: string) => join(resolve(String(flat.runsDir ?? join(dirname(resolve(dbPath === ":memory:" ? join(homedir(), ".trace-memory", "trace.db") : dbPath)), "runs")).replace(/^~\//, `${homedir()}/`)), piId);
   let ctx: ExtensionContext;
   let closed = false;
   type Capture = { entries: { id: string; raw: string }[]; payload: Body; model: string; provider: string; branch: string };
@@ -131,7 +141,10 @@ export default function (pi: ExtensionAPI) {
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
     let request: unknown = null;
-    let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] }) | undefined;
+    // `native` keeps a rejected native gate result (both hashes and the differing path) even when
+    // the request-copy runner then completes the task with its own verification.
+    type Verified = ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] };
+    let verification: (Partial<Verified> & { rounds: Verified["rounds"]; native?: NativeVerification }) | undefined;
     let fallbackReason: string | undefined;
     let mode: "branch" | "subagent" = "subagent";
     let usage: unknown;
@@ -148,6 +161,39 @@ export default function (pi: ExtensionAPI) {
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
           throw new Error("Noting capacity: provider request exceeds model context with output reserved");
       };
+      // 19a: the opt-in native path. Pi's own child AgentSession, forked at the persisted leaf of
+      // this branch, runs the task; the request-copy runner below stays the default and the
+      // fallback. Subagent mode and borrowed (closed-session) work never take this path.
+      if (input.mode === "branch" && flat.nativeRunner === true) {
+        try {
+          const captured = session.capture;
+          if (!captured || captured.branch !== input.branch) throw new NotForkable("No current-branch provider payload captured");
+          if (captured.model !== model.id || captured.provider !== model.provider) throw new NotForkable("Session model changed since capture");
+          const parentFile = callContext.sessionManager.getSessionFile?.();
+          if (!parentFile) throw new NotForkable("The parent session is not persisted");
+          const checkpoint = callContext.sessionManager.getLeafId();
+          if (!checkpoint) throw new NotForkable("The parent session has no persisted leaf entry");
+          const native = await runNative({
+            parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
+            cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
+            task: `${input.prompt}\n\n${input.input}`, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            signal: input.signal, feedback: input.kind === "consolidation" ? reviewMessage : undefined,
+            onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
+            onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
+          });
+          mode = "branch";
+          usage = native.usage; request = native.request ?? request; verification = native.verification;
+          retries.splice(0, retries.length, ...native.retries);
+          return { outcome: native.outcome, output: native.output, usage, request, mode, verification,
+            ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
+        } catch (error) {
+          if (!(error instanceof NotForkable)) throw error;
+          // Nothing was sent and nothing was committed: this task continues on the old runner.
+          fallbackReason = `native runner: ${error.message}`;
+          if (error.verification) verification = { rounds: [], native: error.verification }; // a rejected gate still records both hashes
+          if (!session.notified) { contextNotice(input.kind, fallbackReason); session.notified = true; }
+        }
+      }
       // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
       // append the Consolidation feedback, call the model again until it stops. Only sending differs.
       // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
@@ -214,13 +260,14 @@ export default function (pi: ExtensionAPI) {
           // The Anthropic adapter enforces this after onPayload; audit that exact body.
           if (model.api === "anthropic-messages") candidate.stream = true;
           const key = JSON.stringify([model.id, model.provider, hash(prefix.tools ?? null)]);
-          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key, rounds: [] };
+          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key, rounds: [], ...(verification?.native ? { native: verification.native } : {}) };
           if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
           session.verified = key;
         } catch (error) {
-          fallbackReason = String(error);
+          // A native fallback reason (19a) is kept alongside this one; both explain the actual mode.
+          fallbackReason = fallbackReason ? `${fallbackReason}; ${String(error)}` : String(error);
           session.verified = undefined;
-          if (!session.notified) { contextNotice(input.kind, fallbackReason); session.notified = true; }
+          if (!session.notified) { contextNotice(input.kind, String(error)); session.notified = true; }
         }
       if (!fallbackReason && candidate) {
         mode = "branch";
@@ -811,6 +858,7 @@ export default function (pi: ExtensionAPI) {
       stopCatchup();
     } else if (selected === "Settings (Global, read-only)") {
       const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
+        nativeRunner: false, runsDir: "<dbPath directory>/runs",
         ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
       ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
         const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);

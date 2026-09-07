@@ -133,6 +133,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
+    ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
     ...(result.retries?.length ? { retries: result.retries } : {}) });
   if (committed) {
     const after = [...problems];

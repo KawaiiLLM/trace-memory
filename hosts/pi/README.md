@@ -49,6 +49,17 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `noting.branchModeDefault` defaults to `true`. Set it to `false` for subagent
   notings. Branch notings always use the session model, including on fallback;
   `notingModel` applies only when subagent mode is explicitly configured.
+- `nativeRunner` (19a) defaults to `false`. Set it to `true` to run branch-mode Noting and
+  Consolidation on a native Pi child session instead of the request-copy runner. Subagent
+  mode and borrowed (closed-session) work never take the native path. When a native child
+  cannot be prepared, or its first body fails prefix verification before anything is sent,
+  the task continues on the request-copy runner and the run records `fallbackReason`
+  (`native runner: …`) together with the rejected gate result under `verification.native`.
+- `runsDir` (19a) defaults to `<dbPath's directory>/runs`. Native worker logs are written to
+  `<runsDir>/<parent Pi session id>/<timestamp>_<child id>.jsonl`, outside Pi's own sessions
+  directory, so `/resume` never lists them. Each run record stores the absolute path as
+  `nativeLog` inside its response JSON. Retention is a documented v1 limit: nothing prunes
+  that directory.
 - `consolidation.subagentModeDefault` defaults to `true`. Set it to `false` for branch
   consolidation: the candidate round appends the consolidation prompt and input to the
   captured prefix, the final round appends the candidate reply (in the
@@ -500,6 +511,78 @@ preserves `verification`/`fallbackReason` in the response envelope. Without it,
 fallback would send range-only context and falsely record branch mode. No store
 schema or consolidation behavior changed.
 
+## Native runner (19a, opt-in)
+
+`nativeRunner: true` replaces the request-copy runner for branch-mode work with a real
+Pi child session. `native.ts` opens the parent's own JSONL through an **independent**
+`SessionManager` whose session directory is the runs directory, calls
+`createBranchedSession` at the parent's persisted leaf, and hands that manager to
+`createAgentSession`. The foreground manager is never passed in and never mutated;
+`SessionManager.forkFrom` (whole-file copy) is not used, so sibling branches and later
+foreground entries stay out of the child.
+
+The child is built to reproduce the parent's request bytes through the SDK's own options:
+
+- **System prompt.** One inline extension, supplied explicitly by the adapter, returns the
+  parent's captured system prompt bytes from `before_agent_start`. Pi's
+  `DefaultResourceLoader` `systemPrompt` option cannot be used for this: `buildSystemPrompt`
+  appends `\nCurrent working directory: <cwd>\n` to any custom prompt, so the child's prompt
+  would differ from the parent's by that line.
+- **Tools.** The child registers the parent's *whole* tool list, in the parent's order, as
+  `customTools` synthesized from the captured body (name, description, schema), with
+  `noTools: "all"` and an explicit `tools` allowlist so nothing else can appear. Tool
+  DEFINITIONS are the parent's because the gate compares them; tool EXECUTION is whitelisted
+  to the four memory tools core bound for the run. Any other call — including one the copied
+  history invites — returns an error result and never runs. Execution is sequential
+  (`agent.toolExecution` plus a per-tool `executionMode`); Pi's tested default is parallel.
+- **Discovery.** Extensions, skills, prompt templates, themes and project context files are
+  all disabled in the worker. Copied `trace-memory` custom entries travel into the child's
+  JSONL and activate nothing.
+- **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
+  the parent's request/transport identity for cache affinity. The child's own SessionManager
+  id and file stay its own, as does Trace Memory's target attribution.
+- **Task delivery.** The task material core supplies is the child's user prompt; the
+  Consolidation review answer is delivered as a native user message queued with
+  `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
+
+`agent.onPayload` is wrapped (the extension runner's own handler is still called): the first
+body is checked against the captured parent request with `verifyNativeRequest`, appended
+messages being everything past the captured message count. Later rounds are checked against
+the previous round exactly as the request-copy runner does. A rejected first body throws
+inside `onPayload`, **before** the request leaves, so the task falls back to the request-copy
+runner with `fallbackReason: native runner: …` and the rejected result under
+`verification.native` (both hashes and the differing path). Nothing is billed twice.
+
+**Gate result (19a).** With the production Noter and Consolidator prompts and the production
+tool definitions, driven through the real installed pi-ai adapter:
+
+- `openai-completions` (and, by the same construction, the other APIs with no adapter-placed
+  cache markers): **passes**. The child's first body is byte-identical to the captured parent
+  body outside the appended messages — system prompt, tool definitions and order, model
+  parameters, and the whole message prefix.
+- `anthropic-messages`: **fails**, always, at
+  `$.messages.<parent's last user message>.content.<n>.cache_control`. The adapter places the
+  ephemeral cache breakpoint on *the last user message of the body it is building*. In the
+  parent that was the message the child now inherits; in the child the breakpoint moves to the
+  appended task message, so the inherited message loses a field the captured body has. No
+  public option changes that placement (`cacheRetention: "none"` removes every marker, which
+  differs from the parent too), and reproducing it would need the custom message builder that
+  ticket 19 exists to delete. The verification was **not** weakened and no field was excluded;
+  the mismatch is recorded and the task falls back.
+
+Usage is summed from the child's newly generated assistant messages only — copied parent
+responses are restored into the child's state but were never re-sent, so native session
+statistics must not be used. `auto_retry_start` events are recorded as `retries`, and a failed
+attempt's usage is included. A cancelled child with no reported usage records unknown, not zero.
+The outcome comes from the child's terminal assistant response, never from `prompt()`
+resolving; a provider error after a memory tool committed leaves the commit in place and core
+records the problem.
+
+Limits carried into 19b/19c: the native path still requires the parent request capture,
+because that capture is what the gate compares against; the runs directory is never pruned;
+a gate rejection after the child file was created leaves that (unused) child log behind; and
+no live provider run was made — every check above uses stubbed HTTP with the real adapters.
+
 ## Live prefix identity procedure
 
 This is a human-run check, not an automated claim of live cache hits.
@@ -689,6 +772,8 @@ kind. Tree switching contributes no extraction usage to Pi totals.
   ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
+- `nativeRunner` is off by default and, on `anthropic-messages`, its child body cannot
+  match the captured parent prefix (see Native runner). Nothing prunes `runsDir`.
 
 ## Entry views and Noting progress (17a)
 

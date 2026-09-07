@@ -1,0 +1,334 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { expect, test, vi } from "vitest";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { host } from "./test-host.ts";
+import { toolDefinitions } from "../../core/api/index.ts";
+import { hash, messageKey, verifyNativeRequest } from "./branch.ts";
+import { runNative, NotForkable, type NativeTask } from "./native.ts";
+import { recorded } from "../../test/source-fixture.ts";
+
+// 19a exercises the real installed SDK: a real Pi SessionManager and AgentSession for the parent, a
+// real native child fork, real pi-ai adapters, a real temporary SQLite database. Only HTTP is stubbed.
+type Body = Record<string, any>;
+const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
+  { headers: { "content-type": "text/event-stream" } });
+const usage = (input = 10, output = 2, cached = 0) => ({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: cached } });
+export const say = (text: string, tokens = usage()) => sse([
+  { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: "stop" }], usage: tokens }]);
+const call = (id: string, name: string, args: unknown, tokens = usage()) => sse([
+  { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: "tool_calls" }], usage: tokens }]);
+const broken = () => new Response(JSON.stringify({ error: { message: "provider exploded" } }), { status: 500, headers: { "content-type": "application/json" } });
+
+/** Tell the child's requests from the parent's by the production prompt they carry. */
+const worker = (body: Body, phase = "Noting") => JSON.stringify(body).includes(`${phase} (${phase === "Noting" ? "fact" : "knowledge"} extraction)`);
+const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body) => m.role === "tool").length;
+
+const noteBatch = { facts: [{ category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: ["T1#user"] }] };
+const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+
+async function fixture(config: Record<string, unknown> = {}, provider = "fake") {
+  const sent: Body[] = [];
+  let respond: (body: Body, index: number) => Response = () => say("Done.");
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body));
+    sent.push(body);
+    return respond(body, sent.length - 1);
+  }));
+  let manager: SessionManager | undefined;
+  const h = host({ nativeRunner: true, "noting.triggerTokens": 60, ...config }, undefined, { native: () => manager as never });
+  const agentDir = join(h.dir, "agent"), sessionsDir = join(h.dir, "sessions");
+  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
+  const model = modelRuntime.getModel(provider, "test")!;
+  (h.ctx as { model: unknown }).model = model;
+  const settingsManager = SettingsManager.create(h.dir, agentDir);
+  const resourceLoader = new DefaultResourceLoader({ cwd: h.dir, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+  await resourceLoader.reload();
+  manager = SessionManager.create(h.dir, sessionsDir);
+  // The parent registers its own foreground tool plus the four memory tools, as the real
+  // foreground does: the child must reproduce all five definitions but may execute only the memory ones.
+  const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+    ...toolDefinitions].map(definition => ({ ...definition, label: definition.name,
+    async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; } }));
+  const { session: parent } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
+    sessionManager: manager, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
+  const original = { id: manager.getSessionId(), file: manager.getSessionFile()! };
+  return { h, parent, model, agentDir, sessionsDir, sent, original,
+    manager: () => manager!,
+    script: (fn: (body: Body, index: number) => Response) => { respond = fn; },
+    /** One real parent turn, then the extension hooks the foreground would have fired. */
+    async turn(prompt = "用 pnpm，不要 npm") {
+      await this.h.emit("before_agent_start", { prompt });
+      const at = sent.length;
+      await parent.prompt(prompt);
+      const captured = sent[at]!;
+      await this.h.emit("before_provider_request", { payload: captured });
+      await this.h.emit("agent_settled");
+      await this.h.drain();
+      return captured;
+    },
+    /** The same child the host builds, for the checks that need it without the host's scheduling. */
+    task(captured: Body, overrides: Partial<NativeTask> = {}): NativeTask {
+      return { parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
+        checkpoint: manager!.getLeafId()!, runsDir: join(h.dir, "runs", manager!.getSessionId()), cwd: h.dir, agentDir,
+        model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
+        onRequest: () => {}, onProgress: () => {}, ...overrides };
+    },
+    async dispose() { parent.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
+  };
+}
+const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>
+  await vi.waitFor(() => { const run = f.h.memory.store.listRuns(1).find(r => r.kind === kind); expect(run?.response).toBeTruthy(); return run!; }, { timeout: 5000 });
+
+// ---------------------------------------------------------------- checkbox 1: the gate
+test("19a 2026-09-08: the native child's first request passes prefix verification against the captured parent request", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(response.verification.differingPath, JSON.stringify(response.verification)).toBe(null);
+    expect(response.verification.passed).toBe(true);
+    expect(run.mode).toBe("branch");
+    // Both hashes are recorded, and they are the hashes of the two real bodies.
+    expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
+    expect(response.verification.requestHash).toBe(hash(f.sent[1]));
+    expect(JSON.parse(run.request!)).toEqual(f.sent[1]);
+    // The production Noter prompt and the production tool definitions really went out.
+    expect(String(JSON.stringify(f.sent[1]!.messages.at(-1)))).toContain("Noting (fact extraction)");
+    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "trace", "search", "note", "memory"]);
+    expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools);
+    // The gate, recomputed here over the same two bodies with nothing excluded from the comparison.
+    const key = messageKey("openai-completions");
+    const gate = verifyNativeRequest(f.sent[0]!, f.sent[1]!, "openai-completions", f.sent[1]![key].slice(f.sent[0]![key].length));
+    expect(gate.passed).toBe(true);
+    expect(gate.appendedMessages).toHaveLength(2); // the head assistant reply, then the task
+    expect(JSON.stringify(gate.appendedMessages.at(-1))).toContain("Noting (fact extraction)");
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: the anthropic-messages child cannot reproduce the parent's cache breakpoint", async () => {
+  const f = await fixture({}, "fakeanthropic");
+  const anthropic = (events: Body[]) => new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+  const reply = (text: string) => anthropic([
+    { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "test", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
+    { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+    { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } },
+    { type: "content_block_stop", index: 0 },
+    { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 2 } },
+    { type: "message_stop" }]);
+  try {
+    f.script(() => reply("好的。"));
+    await f.turn();
+    const run = await settled(f);
+    // The child never sent a request: the gate rejected its body inside onPayload, and the task
+    // fell back to the request-copy runner with the differing path recorded.
+    const response = JSON.parse(run.response!);
+    expect(response.fallbackReason).toMatch(/native runner: native prefix mismatch at \$\.messages\.\d+\.content\.\d+\.cache_control/);
+    expect(response.verification.native.passed).toBe(false);
+    expect(response.verification.native.differingPath).toMatch(/^\$\.messages\.\d+\.content\.\d+\.cache_control$/);
+    expect(response.verification.native.capturedHash).toBe(hash(f.sent[0]));
+    expect(response.verification.native.requestHash).not.toBe(response.verification.native.capturedHash);
+    // The child sent nothing: the gate rejected its body inside onPayload, before the request left.
+    // The task completed on the request-copy runner, whose own byte-copied prefix still verifies.
+    expect(response.verification.passed).toBe(true);
+    expect(run.outcome).toBe("success");
+  } finally { await f.dispose(); }
+});
+
+// ------------------------------------------- checkbox 2: parent preserved, private child log
+test("19a 2026-09-08: a child run leaves the parent file, id and tree position byte-identical and logs under the runs directory", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    const captured = await f.turn();
+    const run = await settled(f);
+    // The foreground manager still points at its own file and id after a whole native run.
+    expect(f.manager().getSessionId()).toBe(f.original.id);
+    expect(f.manager().getSessionFile()).toBe(f.original.file);
+    const parentFile = f.manager().getSessionFile()!;
+    const before = readFileSync(parentFile), id = f.manager().getSessionId(), leaf = f.manager().getLeafId();
+    const first = JSON.parse(run.response!).nativeLog as string;
+    expect(first).toBe(join(f.h.dir, "runs", id, `${first.split("/").at(-1)}`)); // dirname(dbPath)/runs/<parent id>/
+    expect(statSync(first).isFile()).toBe(true);
+    // A second child on the same parent: still no mutation, and its own id and file.
+    const second = await runNative(f.task(captured));
+    expect(readFileSync(parentFile)).toEqual(before);
+    expect(f.manager().getSessionId()).toBe(id);
+    expect(f.manager().getLeafId()).toBe(leaf);
+    expect(second.nativeLog).not.toBe(first);
+    const logs = readdirSync(join(f.h.dir, "runs", id));
+    expect(logs).toHaveLength(2);
+    expect(new Set(logs.map(name => name.split("_").at(-1)))).not.toContain(`${id}.jsonl`);
+    // The foreground session list scans Pi's sessions directory; the children are not in it.
+    expect(readdirSync(f.sessionsDir)).toEqual([parentFile.split("/").at(-1)]);
+    expect((await SessionManager.list(f.h.dir, f.sessionsDir)).map(s => s.id)).toEqual([id]);
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: the child copies the selected ancestry only, not a sibling branch", async () => {
+  const f = await fixture();
+  try {
+    f.script(() => say("好的。"));
+    const captured = await f.turn();
+    const selected = f.manager().getLeafId()!;
+    // A sibling branch on the same parent file: an abandoned edit of the same user message.
+    f.manager().branch(f.manager().getBranch(selected)[0]!.id);
+    f.manager().appendMessage({ role: "user", content: "sibling branch prompt", timestamp: Date.now() } as never);
+    const sibling = f.manager().getLeafId()!;
+    f.manager().branch(selected);
+    const result = await runNative(f.task(captured, { checkpoint: selected }));
+    const child = readFileSync(result.nativeLog!, "utf8");
+    expect(child).not.toContain("sibling branch prompt");
+    expect(child).not.toContain(sibling);
+    expect(child).toContain("用 pnpm，不要 npm");
+  } finally { await f.dispose(); }
+});
+
+// ------------------------------------- checkbox 3: real writes through native tool execution
+test("19a 2026-09-08: a Noting write commits through native tool execution", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Noted.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(run.outcome).toBe("success");
+    expect(JSON.parse(run.response!).output).toBe("Noted.");
+    expect(JSON.parse(run.response!).toolCalls.map((c: Body) => c.name)).toEqual(["note"]);
+    const facts = f.h.memory.store.listSessionFacts(1);
+    expect(facts.map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(f.h.memory.store.sourcePath(1, "main", 1).every(e => f.h.memory.store.entryNoted(e.id))).toBe(true);
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: a source entry outside the frozen range is rejected although the child copied it", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.")
+      : call("t1", "note", { facts: [{ ...noteBatch.facts[0], source: ["T9#user"] }] }));
+    await f.turn();
+    const run = await settled(f);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    const response = JSON.parse(run.response!);
+    expect(String(response.toolCalls[0].result)).toContain("rejected:");
+    expect(run.outcome).toBe("bounced");
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: a provider error after the commit keeps the commit and records the problem", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? broken() : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(run.outcome).toBe("success");
+    expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider failed after commit");
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: Consolidation's two submissions and its review round run natively", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false });
+  try {
+    f.script(body => !worker(body, "Consolidation") ? say("好的。")
+      : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
+    await f.turn();
+    f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
+      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+    recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
+    await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
+    const run = await settled(f, "consolidation");
+    expect(run.outcome, run.response ?? "").toBe("success");
+    const response = JSON.parse(run.response!);
+    expect(response.toolCalls).toHaveLength(2); // candidate, then the answered resubmission
+    expect(response.output).toBe("Integrated.");
+    // The review feedback reached the child as a native user message before its second submission.
+    const review = f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1);
+    expect(JSON.stringify(review)).toContain("NEAR:");
+  } finally { await f.dispose(); }
+});
+
+// ------------------------- checkbox 4: copied custom state, tool whitelist, sequential execution
+test("19a 2026-09-08: copied plugin custom state activates no extension and starts no worker", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    const child = readFileSync(JSON.parse(run.response!).nativeLog, "utf8");
+    expect(child).toContain('"customType":"trace-memory"'); // the foreground's own state came along
+    // ... and nothing acted on it: one run, no second worker, and the child's tools are the
+    // parent's definitions, not a set an extension registered inside the child.
+    expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
+    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "trace", "search", "note", "memory"]);
+    expect(readdirSync(join(f.h.dir, "runs", f.manager().getSessionId()))).toHaveLength(1);
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: only the memory tools execute; other copied tools are rejected in call order", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1000000000 });
+  try {
+    f.script(() => say("好的。"));
+    const captured = await f.turn();
+    const calls = [{ index: 0, id: "a", type: "function", function: { name: "read", arguments: JSON.stringify({ path: "/etc/passwd" }) } },
+      { index: 1, id: "b", type: "function", function: { name: "trace", arguments: JSON.stringify({ address: "S1/T1" }) } }];
+    f.script(body => worker(body) || toolResults(body) === 0 && JSON.stringify(body).includes("note what happened") ? sse([{ id: "c", object: "chat.completion.chunk", created: 1, model: "test",
+      choices: [{ index: 0, delta: { role: "assistant", tool_calls: calls }, finish_reason: "tool_calls" }], usage: usage() }]) : say("Done."));
+    const executed: string[] = [];
+    const result = await runNative(f.task(captured, { tools: [{ name: "trace", description: "", parameters: {}, execute: () => { executed.push("trace"); return "traced"; } }] }));
+    expect(result.calls).toEqual([{ name: "read", executed: false }, { name: "trace", executed: true }]);
+    expect(executed).toEqual(["trace"]); // the foreground tool never ran
+    const results = f.sent.at(-1)!.messages.filter((m: Body) => m.role === "tool");
+    expect(results.map((m: Body) => m.tool_call_id)).toEqual(["a", "b"]); // sequential, in call order
+    expect(String(results[0].content)).toContain("not available to a Trace Memory worker");
+    expect(String(results[1].content)).toContain("traced");
+  } finally { await f.dispose(); }
+});
+
+// ------------------------------------------------------- checkbox 5: usage, checkbox 6: cache
+test("19a 2026-09-08: usage counts the child's new responses only, including a failed attempt", async () => {
+  const f = await fixture();
+  try {
+    let attempt = 0;
+    f.script(body => !worker(body) ? say("好的。", usage(777, 555))
+      : body.messages?.some((m: Body) => m.role === "tool") ? say("Done.", usage(30, 4))
+      : attempt++ === 0 ? broken() : call("t1", "note", noteBatch, usage(20, 3)));
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(response.retries).toEqual([{ attempt: 1, error: expect.any(String) }]);
+    // 20 + 30 from this child's two responses; the copied parent's 777 is not in the total.
+    expect(response.usage.input).toBe(50);
+    expect(response.usage.output).toBe(7);
+    expect(f.h.memory.spend(1).input).toBe(50);
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: a cancelled child without reported usage records unknown, not zero", async () => {
+  const f = await fixture();
+  try {
+    f.script(() => say("好的。"));
+    const captured = await f.turn();
+    const controller = new AbortController();
+    controller.abort();
+    const result = await runNative(f.task(captured, { signal: controller.signal }));
+    expect(result.outcome).toBe("cancelled");
+    expect(result.usage).toBeUndefined();
+  } finally { await f.dispose(); }
+});
+
+test("19a 2026-09-08: each child response's reported cache read is recorded as an observation", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.", usage(30, 4, 0))
+      : call("t1", "note", noteBatch, usage(20, 3, 12)));
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    // Recorded, never required: the run's outcome does not depend on this number.
+    expect(response.verification.cache_read).toBe(12);
+    expect(response.usage.cacheRead).toBe(12);
+    expect(run.outcome).toBe("success");
+  } finally { await f.dispose(); }
+});

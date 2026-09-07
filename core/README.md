@@ -8,7 +8,7 @@ core/ is host-agnostic: it must not import any host SDK.
 - render/  one renderer for noting input, compaction tail, branch summary, trace; XML injection blocks.
 - prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
-Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call).
+Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
 
 ## Runtime and verification
 
@@ -75,7 +75,10 @@ The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
 The noting config chooses branch/subagent mode; provider prefix verification
-remains the host's responsibility.
+remains the host's responsibility, as is the choice of runner behind a mode: the Pi
+host can serve branch mode either by copying the captured request or, behind its
+own `nativeRunner` switch, by running a native Pi child session (19a). Core sees the
+same contract either way.
 
 ## Rendering decisions
 

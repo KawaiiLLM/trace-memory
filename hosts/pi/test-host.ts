@@ -9,12 +9,20 @@ type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1]
 export type Reply = Awaited<ReturnType<ExtensionContext["modelRegistry"]["complete"]>>;
 export const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 export const reply = (output: string): Reply => ({ role: "assistant", content: [{ type: "text", text: output }], api: "openai-completions", provider: "fake", model: "test", stopReason: "stop", timestamp: 1, usage });
-export function host(config: Record<string, unknown> = {}, marker?: string) {
+/** 19a: a real Pi SessionManager backing the fake context, so native fork work has a real file. */
+export type NativeSource = () => { getSessionId(): string; getSessionFile(): string | undefined; getLeafId(): string | null;
+  getBranch(): unknown[]; getEntries(): unknown[]; appendCustomEntry(customType: string, data?: unknown): string } | undefined;
+export function host(config: Record<string, unknown> = {}, marker?: string, options: { native?: NativeSource } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
   // Pi settings the host reads for retries: a fast, deterministic policy instead of the user's ~/.pi/agent.
   const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) } }));
+  // Models the native child resolves through Pi's own ModelRuntime; the stubbed fetch answers them.
+  writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
+    i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: "https://fake.invalid/v1", apiKey: "fake-key", api,
+      models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] }])) }));
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  const native = () => options.native?.();
   if (marker) writeFileSync(join(dir, ".trace-memory"), marker);
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
@@ -32,7 +40,10 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
       confirm: async (title: string, message: string) => { dialogs.push({ title: `${title} ${message}` }); return answers.shift() ?? false; },
       input: async (title: string) => { dialogs.push({ title }); return answers.shift(); },
       theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` } },
-    sessionManager: { getHeader: () => ({ timestamp: headerTimestamp }), getSessionId: () => "pi-test", getLeafId: () => entries.at(-1)?.id ?? null, getBranch: () => entries, getEntries: () => allEntries },
+    sessionManager: { getHeader: () => ({ timestamp: headerTimestamp }), getSessionId: () => native()?.getSessionId() ?? "pi-test",
+      getSessionFile: () => native()?.getSessionFile(),
+      getLeafId: () => native() ? native()!.getLeafId() : entries.at(-1)?.id ?? null,
+      getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
       complete: async (selected: unknown, conversation: Conversation, options: any) => {
@@ -49,7 +60,9 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   } as unknown as ExtensionContext;
   const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, command: any) => commands.set(name, command),
-    appendEntry: (customType: string, data: unknown) => { const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
+    appendEntry: (customType: string, data: unknown) => {
+      if (native()) { native()!.appendCustomEntry(customType, structuredClone(data)); return; }
+      const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
   } as unknown as ExtensionAPI;
   const previous = process.env.TRACE_MEMORY_CONFIG;
   const { retry: _retry, ...extensionConfig } = config as { retry?: unknown } & Record<string, unknown>;
@@ -59,6 +72,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); });
   const persist = (message: unknown, id = `e${allEntries.length}`) => {
     const entry = { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "message", message: structuredClone(message) };
+    if (native()) return entry; // the real Pi session already persisted this message
     entries.push(entry); allEntries.push(entry); return entry;
   };
   const emit = async (name: string, event: any = {}) => {

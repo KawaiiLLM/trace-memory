@@ -149,6 +149,7 @@ export async function runNoting(
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits,
     toolCalls: binding.sequence, fetched: binding.fetched, problems,
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
+    ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
     ...(result.retries?.length ? { retries: result.retries } : {}) });
   if (binding.committed) {

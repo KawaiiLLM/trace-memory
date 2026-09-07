@@ -118,6 +118,8 @@ export interface RunAgentResult {
   mode?: "branch" | "subagent";
   verification?: unknown;
   fallbackReason?: string;
+  /** Absolute path of the host's native worker log for this run, when the host writes one (19a). */
+  nativeLog?: string;
   /** Transient provider errors retried by the host before this reply, in order. */
   retries?: { attempt: number; error: string }[];
 
