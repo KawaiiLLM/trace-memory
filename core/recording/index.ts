@@ -1,26 +1,26 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { validateNoteOutput, type Fact, type Turn } from "../model/index.ts";
+import { validateRecordingOutput, type Fact, type Turn } from "../model/index.ts";
 import type { Store, FactCommitInput, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import { finish, renderFact, renderTurn, budgetEntries, budgetFacts } from "../render/index.ts";
+import { finish, renderFact, renderTurn, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
-const prompt = readFileSync(new URL("../prompts/note.md", import.meta.url), "utf8");
+const prompt = readFileSync(new URL("../prompts/recording.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 
-export interface NoteInput {
+export interface RecordInput {
   sessionId: number;
   branch: string;
   headTurnId: number;
   model?: string;
   mode?: "branch" | "subagent";
 }
-export interface NoteAgentInput {
-  kind: "note";
+export interface RecordingAgentInput {
+  kind: "recording";
   sessionId: number;
   branch: string;
   range: { from: string; to: string };
-  readEntryRevisions: { entryId: number; rev: number }[];
+  readKnowledgeRevisions: { knowledgeId: number; rev: number }[];
   model: string;
   mode: "branch" | "subagent";
   prompt: string;
@@ -30,15 +30,15 @@ export interface NoteAgentInput {
   subagentInput: string;
   trace: (address: string) => string;
 }
-export type NoteResult =
+export type RecordResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "success"; runId: number; facts: Fact[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] };
 
-export function freezeNote(store: Store, input: NoteInput, config: TraceMemoryConfig) {
+export function freezeRecording(store: Store, input: RecordInput, config: TraceMemoryConfig) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
-  if (typeof input.branch !== "string" || !input.branch) throw new Error("note requires a non-empty branch");
+  if (typeof input.branch !== "string" || !input.branch) throw new Error("recording requires a non-empty branch");
   const ancestry: Turn[] = [];
   const seen = new Set<number>();
   let id: number | null = input.headTurnId;
@@ -50,46 +50,46 @@ export function freezeNote(store: Store, input: NoteInput, config: TraceMemoryCo
     ancestry.unshift(turn);
     id = turn.parentTurnId;
   }
-  const watermark = store.getWatermark(session.id, input.branch)?.lastNotedTurn;
+  const watermark = store.getWatermark(session.id, input.branch)?.lastRecordedTurn;
   const index = watermark == null ? -1 : ancestry.findIndex((t) => t.id === watermark);
   if (watermark != null && index < 0) throw new Error("branch watermark is not an ancestor of its head; use a new branch identity");
   const turns = ancestry.slice(index + 1).map((turn) => ({ turn, calls: store.listToolCalls(turn.id) }));
-  const entries = store.listVisibleEntries(session.id, session.projectId);
+  const knowledge = store.listVisibleKnowledge(session.id, session.projectId);
   const facts = store.listSessionFacts(session.id);
-  return { sessionId: session.id, branch: input.branch, turns, entries, facts,
-    model: input.model ?? "session", mode: input.mode ?? (config.note.branchModeDefault ? "branch" : "subagent") };
+  return { sessionId: session.id, branch: input.branch, turns, knowledge, facts,
+    model: input.model ?? "session", mode: input.mode ?? (config.recording.branchModeDefault ? "branch" : "subagent") };
 }
 
-export async function runNote(
-  store: Store, frozen: ReturnType<typeof freezeNote>, runAgent: RunAgent,
+export async function runRecording(
+  store: Store, frozen: ReturnType<typeof freezeRecording>, runAgent: RunAgent,
   config: TraceMemoryConfig, trace: (address: string) => string,
-): Promise<NoteResult> {
-  const { sessionId, branch, turns, entries, facts, model, mode } = frozen;
+): Promise<RecordResult> {
+  const { sessionId, branch, turns, knowledge, facts, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
-  const readEntryRevisions = entries.map(({ entry, revision }) => ({ entryId: entry.id, rev: revision.rev }));
+  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.rev }));
   const raw = turns.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
   const rawText = raw.map((r) => r.content).join("\n\n");
   const receipts = raw.flatMap((r) => r.receipts);
   const episodic = budgetFacts(rawText, facts, (f) => renderFact(f, store.listFactRelations(f.id)), config.render.episodicBlockTokens);
-  const active = budgetEntries(entries, config.render.entriesBlockTokens);
-  const recent = episodic.recent, entryLines = active.groups.map((g) => g.text);
+  const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
+  const recent = episodic.recent, knowledgeLines = active.groups.map((g) => g.text);
   receipts.push(...episodic.receipts, ...active.receipts);
   // Branch mode appends one message to the live conversation and carries only the range (ruling
   // 08:53: fork mode has only the last of the four inputs); the prompt says where the rest is.
   // Subagent mode must carry everything.
-  const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
+  const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
     "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
   const input = mode === "branch" ? `Range: ${range.from}..${range.to}` : subagentInput;
   const fetched: { address: string; content: string }[] = [];
   let fetching = true;
-  const agentInput: NoteAgentInput = { kind: "note", sessionId, branch, range, readEntryRevisions: structuredClone(readEntryRevisions), model, mode,
+  const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range, readKnowledgeRevisions: structuredClone(readKnowledgeRevisions), model, mode,
     prompt, promptHash, subagentInput, input, trace: (address) => {
-      if (!fetching) throw new Error("note run has finished");
+      if (!fetching) throw new Error("recording run has finished");
       const content = trace(address); fetched.push({ address, content }); return content;
     } };
-  const run: RunInput = { kind: "note", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
+  const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, createdAt: new Date().toISOString() };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
@@ -100,11 +100,11 @@ export async function runNote(
   run.mode = result.mode ?? mode;
   run.request = result.request === undefined ? null : JSON.stringify(result.request);
   const record = (problems: string[]) => {
-    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, fetched, problems,
+    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, fetched, problems,
       ...(result.verification !== undefined ? { verification: result.verification } : {}),
       ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   };
-  const fail = (outcome: "failure" | "cancelled" | "bounced", problems: string[]): NoteResult => {
+  const fail = (outcome: "failure" | "cancelled" | "bounced", problems: string[]): RecordResult => {
     record(problems);
     return { outcome, problems, runId: store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id };
   };
@@ -113,7 +113,7 @@ export async function runNote(
   let parsed: unknown;
   try { parsed = typeof result.output === "string" ? JSON.parse(result.output) : result.output; }
   catch (error) { return fail("bounced", [`invalid JSON: ${String(error)}`]); }
-  const validated = validateNoteOutput(parsed);
+  const validated = validateRecordingOutput(parsed);
   if (validated.problems.length || !validated.value) return fail("bounced", validated.problems);
   const problems: string[] = [], commits: FactCommitInput[] = [];
   let prior = -1;
@@ -135,8 +135,8 @@ export async function runNote(
   }
   if (problems.length) return fail("bounced", problems);
   record([]);
-  const committed = store.commitNoteRun({ run, facts: commits,
-    watermark: { sessionId, branch, lastNotedTurn: turns.at(-1)!.turn.id }, pendingDelivery: { sessionId, branch } });
+  const committed = store.commitRecordingRun({ run, facts: commits,
+    watermark: { sessionId, branch, lastRecordedTurn: turns.at(-1)!.turn.id }, pendingDelivery: { sessionId, branch } });
   return committed.ok ? { outcome: "success", runId: committed.runId, facts: committed.facts }
     : { outcome: "bounced", runId: committed.runId, problems: committed.problems };
 }

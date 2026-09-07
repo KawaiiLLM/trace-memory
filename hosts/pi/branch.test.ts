@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { complete } from "@earendil-works/pi-ai/compat";
 import * as branch from "./branch.ts";
-import { host as createHost, reply, usage, noteFact } from "./test-host.ts";
+import { host as createHost, reply, usage, recordingFact } from "./test-host.ts";
 
 vi.mock("@earendil-works/pi-ai/compat", () => ({ complete: vi.fn() }));
 const disposers: (() => Promise<void>)[] = [];
@@ -11,7 +11,7 @@ const payload = () => ({ model: "test", stream: true, temperature: 0.3, system: 
   messages: [{ role: "user", content: "Raw  \ncontext" }, { role: "assistant", content: "Previous reply" }],
   tools: [{ type: "function", function: { name: "trace", parameters: { type: "object", properties: {} } } }] });
 async function setup() {
-  const h = createHost({ "note.triggerAnsweredTurns": 1, noteModel: "fake/ignored" });
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, recordingModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
   const sent: branch.Body[] = [];
@@ -24,7 +24,7 @@ async function setup() {
   return { ...h, sent, capture, run: () => h.memory.store.listRuns(1).at(-1)! };
 }
 
-test("branch note preserves prefix bytes, options and tools; record contains independent body hashes", async () => {
+test("branch recording preserves prefix bytes, options and tools; record contains independent body hashes", async () => {
   const h = await setup(), captured = payload();
   await h.capture(captured);
   captured.system = "mutation of hook owner after capture";
@@ -34,7 +34,7 @@ test("branch note preserves prefix bytes, options and tools; record contains ind
   const messages = request.messages as unknown[];
   expect(Buffer.from(branch.serialize(messages.slice(0, -1)))).toEqual(Buffer.from(branch.serialize(original.messages)));
   expect(request).toEqual({ ...original, messages: [...original.messages, expect.objectContaining({ role: "user" })] });
-  const prompt = readFileSync(new URL("../../core/prompts/note.md", import.meta.url), "utf8");
+  const prompt = readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8");
   expect((messages.at(-1) as { content: string }).content).toBe(prompt + "\n\nRange: S1/T1..S1/T1");
   const run = h.run(), response = JSON.parse(run.response!);
   expect(run.mode).toBe("branch"); expect(run.model).toBe("fake/test");
@@ -116,19 +116,19 @@ test("model change without a fresh capture falls back; explicit subagent never u
   await h.capture(); h.ctx.model = { ...h.ctx.model!, id: "next" }; await h.turn();
   expect(JSON.parse(h.run().response!).fallbackReason).toContain("model changed");
   expect(complete).not.toHaveBeenCalled();
-  const subagent = createHost({ "note.branchModeDefault": false, "note.triggerAnsweredTurns": 1, noteModel: "fake/noter" });
+  const subagent = createHost({ "recording.branchModeDefault": false, "recording.triggerAnsweredTurns": 1, recordingModel: "fake/recorder" });
   disposers.push(subagent.dispose);
   await subagent.emit("before_provider_request", { payload: payload() }); await subagent.turn();
-  expect(subagent.memory.store.listRuns(1)[0]).toMatchObject({ mode: "subagent", model: "fake/noter" });
+  expect(subagent.memory.store.listRuns(1)[0]).toMatchObject({ mode: "subagent", model: "fake/recorder" });
 });
 
 test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s uses its native append without changing any prefix character", api => {
   const body: branch.Body = api === "openai-responses" ? { instructions: "system", input: payload().messages, tools: [] }
     : { system: [{ type: "text", text: "system", cache_control: { type: "ephemeral" } }], messages: payload().messages, tools: [] };
-  const request = branch.buildRequest(body, api, "note\n\nrange");
-  expect(branch.verifyRequest(body, request, api, "note\n\nrange").passed).toBe(true);
+  const request = branch.buildRequest(body, api, "recording\n\nrange");
+  expect(branch.verifyRequest(body, request, api, "recording\n\nrange").passed).toBe(true);
   (request[branch.messageKey(api)] as branch.Body[])[0]!.content = "Raw \ncontext";
-  expect(branch.verifyRequest(body, request, api, "note\n\nrange").differingPath).toContain(".0.content");
+  expect(branch.verifyRequest(body, request, api, "recording\n\nrange").differingPath).toContain(".0.content");
 });
 
 test("an in-flight branch request keeps its captured body across a tree switch and a later capture", async () => {
@@ -147,8 +147,8 @@ test("an in-flight branch request keeps its captured body across a tree switch a
   expect(h.run()).toMatchObject({ mode: "branch", branch: "main", outcome: "success" });
 });
 
-test("a model switch during the settle candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1, "settle.subagentModeDefault": false });
+test("a model switch during the integration candidate round does not redirect or break the final round", async () => {
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false });
   disposers.push(h.dispose);
   await h.emit("session_start");
   let release!: () => void;
@@ -156,15 +156,15 @@ test("a model switch during the settle candidate round does not redirect or brea
     const body = await options!.onPayload!({}, model) as branch.Body;
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
     if (/Range: F/.test(last)) await new Promise<void>(resolve => { release = resolve; });
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(settleOutput);
-    return noteFact({ messages: [{ role: "user", content: last }] } as never);
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(integrationOutput);
+    return recordingFact({ messages: [{ role: "user", content: last }] } as never);
   });
   await h.emit("before_provider_request", { payload: payload() });
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
-  h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-settlement.
+  h.ctx.model = { ...h.ctx.model!, id: "next" }; // The user switches the session model mid-integration.
   release(); await h.drain();
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "settle");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
   expect(vi.mocked(complete).mock.calls.map(c => c[0].id)).toEqual(["test", "test", "test"]);
   expect(JSON.parse(runs[1]!.response!).verification.passed).toBe(true);
@@ -179,9 +179,9 @@ test("the verifier independently rejects extra appends and provider option chang
   expect(branch.verifyRequest(original, request, "openai-completions", "instruction").passed).toBe(false);
 });
 
-const settleOutput = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
+const integrationOutput = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
 test("17:01 settle is branch-capable: candidate appends to the captured prefix, final replays the candidate reply plus the feedback on that request", async () => {
-  const h = createHost({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1, "settle.subagentModeDefault": false, settleModel: "fake/ignored" });
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, integrationModel: "fake/ignored" });
   disposers.push(h.dispose);
   await h.emit("session_start");
   const sent: branch.Body[] = [];
@@ -189,7 +189,7 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
     const body = await options!.onPayload!({}, model) as branch.Body;
     sent.push(structuredClone(body));
     const last = String((body.messages as { content: string }[]).at(-1)!.content);
-    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(settleOutput);
+    if (/Range: F/.test(last) || /NEAR:/.test(last)) return reply(integrationOutput);
     const address = /S(\d+)\/T(\d+)/.exec(last)!;
     return reply(JSON.stringify([{ turn: address[0], title: "Package manager", topic: "tooling", facts: [
       { category: "observation", actor: "user", text: "用 pnpm，不要 npm", timestamp: "2026-09-07T00:00:00Z", source: [`T${address[2]}#user`] } ] }]));
@@ -198,34 +198,34 @@ test("17:01 settle is branch-capable: candidate appends to the captured prefix, 
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(0); expect(complete).toHaveBeenCalledTimes(3);
-  const prompt = readFileSync(new URL("../../core/prompts/settle.md", import.meta.url), "utf8");
+  const prompt = readFileSync(new URL("../../core/prompts/integration.md", import.meta.url), "utf8");
   const [candidate, final] = sent.slice(1) as { messages: { role: string; content: string }[] }[];
   expect(candidate!.messages.slice(0, -1)).toEqual(payload().messages);
   expect(candidate!.messages.at(-1)!.content.startsWith(prompt + "\n\nRange: F1..F1")).toBe(true);
   expect(final!.messages.slice(0, -2)).toEqual(candidate!.messages);
-  expect(final!.messages.at(-2)).toEqual({ role: "assistant", content: settleOutput });
+  expect(final!.messages.at(-2)).toEqual({ role: "assistant", content: integrationOutput });
   expect(final!.messages.at(-1)!.role).toBe("user");
   expect(final!.messages.at(-1)!.content).toContain("NEAR:");
   expect(final!.messages.at(-1)!.content).toContain("This is the final round.");
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "settle");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["branch", "fake/test", "success"], ["branch", "fake/test", "success"]]);
   expect(JSON.parse(runs[1]!.request!)).toEqual(final);
   expect(JSON.parse(runs[1]!.response!).verification).toMatchObject({ passed: true, capturedHash: branch.hash(candidate), requestHash: branch.hash(final) });
-  expect(h.memory.store.listVisibleEntries(1, 1)).toHaveLength(0);
+  expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(0);
 });
 
-test("settle branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
-  const h = createHost({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1, "settle.subagentModeDefault": false, "note.branchModeDefault": false, noteModel: "fake/noter", settleModel: "fake/settler" });
+test("integration branch mode without a capture falls back to subagent for both rounds and notifies once", async () => {
+  const h = createHost({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, "integration.subagentModeDefault": false, "recording.branchModeDefault": false, recordingModel: "fake/recorder", integrationModel: "fake/Integrator" });
   disposers.push(h.dispose);
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(settleOutput) : noteFact(c));
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(integrationOutput) : recordingFact(c));
   await h.turn();
   await h.emit("agent_settled"); await h.drain();
   expect(complete).not.toHaveBeenCalled(); expect(h.requests).toHaveLength(3);
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "settle");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"], ["subagent", "fake/test", "success"]]);
   expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");
   expect(JSON.parse(runs[1]!.response!).fallbackReason).toContain("not a branch request");
-  expect(h.notices.filter(n => n.includes("settle fell back"))).toHaveLength(1);
+  expect(h.notices.filter(n => n.includes("integration fell back"))).toHaveLength(1);
 });
 
 test.each(["anthropic-messages", "openai-completions", "openai-responses"])("%s replays an assistant reply in pi-ai's native shape before the feedback message", api => {

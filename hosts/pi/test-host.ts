@@ -48,7 +48,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string) {
   return { dispose, dir, ctx, entries, hooks, tools, commands, notices, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider) => { provider = fn; } };
 }
-export function noteFact(conversation: Conversation) {
+export function recordingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
   return reply(JSON.stringify([{ turn: address[0], title: "Package manager", topic: "tooling", facts: [

@@ -2,21 +2,21 @@ import { readFacade, type ListingOptions, type SearchScope, type MarkInput } fro
 export type { ListingOptions, SearchScope, MarkInput } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
-import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index.ts";
-import { finish, renderFact, renderTurn, renderEntryTrace, renderEntryDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
+import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens } from "../render/index.ts";
-export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index.ts";
+export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
 import { openStore, type Store } from "../store/index.ts";
 import type { RunOutcome } from "../model/index.ts";
 
-import { freezeSettle, runSettle, type SettleInput, type SettleResult } from "../settle/index.ts";
-export type { SettleInput, SettleResult, SettleAgentInput, SettleRange, NearPair, SettleDiagnostic } from "../settle/index.ts";
+import { freezeIntegration, runIntegration, type IntegrateInput, type IntegrateResult } from "../integration/index.ts";
+export type { IntegrateInput, IntegrateResult, IntegrationAgentInput, IntegrationRange, NearPair, IntegrationDiagnostic } from "../integration/index.ts";
 
-const inFlightSettles = new Set<string>();
-const inFlightNotes = new Set<string>();
+const inFlightIntegrations = new Set<string>();
+const inFlightRecordings = new Set<string>();
 let memoryDatabaseId = 0;
 
-// ---- Flat config, defaults in one place (spec.md: render budgets, note/settle triggers and modes) ----
+// ---- Flat config, defaults in one place (spec.md: render budgets, recording/integration triggers and modes) ----
 
 export interface TraceMemoryConfig {
   render: {
@@ -26,17 +26,17 @@ export interface TraceMemoryConfig {
     stderrTailTokens: number;
     reportHeadTokens: number;
     reportTailTokens: number;
-    entriesBlockTokens: number;
+    knowledgeBlockTokens: number;
     episodicBlockTokens: number;
   };
-  note: {
+  recording: {
     branchModeDefault: boolean;
     triggerAnsweredTurns: number;
     triggerTokens: number;
   };
-  settle: {
+  integration: {
     subagentModeDefault: boolean;
-    triggerUnsettledFacts: number;
+    triggerUnintegratedFacts: number;
     nearThreshold: number;
   };
 }
@@ -49,17 +49,17 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     stderrTailTokens: 120,
     reportHeadTokens: 200,
     reportTailTokens: 80,
-    entriesBlockTokens: 10_000,
+    knowledgeBlockTokens: 10_000,
     episodicBlockTokens: 20_000,
   },
-  note: {
+  recording: {
     branchModeDefault: true,
     triggerAnsweredTurns: 5,
     triggerTokens: 50_000,
   },
-  settle: {
+  integration: {
     subagentModeDefault: true,
-    triggerUnsettledFacts: 50,
+    triggerUnintegratedFacts: 50,
     nearThreshold: 0.28,
   },
 };
@@ -69,8 +69,8 @@ export type ConfigOverride = { [K in keyof TraceMemoryConfig]?: Partial<TraceMem
 function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMemoryConfig {
   return {
     render: { ...base.render, ...override.render },
-    note: { ...base.note, ...override.note },
-    settle: { ...base.settle, ...override.settle },
+    recording: { ...base.recording, ...override.recording },
+    integration: { ...base.integration, ...override.integration },
   };
 }
 
@@ -84,7 +84,7 @@ export interface RunAgentResult {
   mode?: "branch" | "subagent";
   verification?: unknown;
   fallbackReason?: string;
-  /** Host-owned continuation state of a settle candidate, handed back inside the final round's `continuation.response`; never stored. */
+  /** Host-owned continuation state of an integration candidate, handed back inside the final round's `continuation.response`; never stored. */
   state?: unknown;
 }
 
@@ -96,14 +96,14 @@ export interface TraceMemory {
   readonly store: Store;
   readonly config: TraceMemoryConfig;
   close(): void;
-  note(input: NoteInput): Promise<NoteResult>;
-  settle(input: SettleInput): Promise<SettleResult>;
-  /** Committed lineage facts and unnoted raw, without consuming deliveries or dropping facts. */
+  record(input: RecordInput): Promise<RecordResult>;
+  integrate(input: IntegrateInput): Promise<IntegrateResult>;
+  /** Committed lineage facts and unrecorded raw, without consuming deliveries or dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   compact(sessionId: number, branch?: string, headTurnId?: number): string;
-  /** A session id after the first reply; before it exists (first prompt), the project alone: global + project entries, no deliveries. */
+  /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number }): string;
-  /** Pending note results for this session and branch, rendered once and marked delivered; "" when none. */
+  /** Pending recording results for this session and branch, rendered once and marked delivered; "" when none. */
   deliver(sessionId: number, branch?: string | null): string;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
@@ -119,23 +119,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const trace = (address: string): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
-    const entryMatch = /^E([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target ?? "");
-    if (entryMatch) {
-      const [id, from, to] = entryMatch.slice(1).map((n) => n === undefined ? undefined : Number(n));
+    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target ?? "");
+    if (knowledgeMatch) {
+      const [id, from, to] = knowledgeMatch.slice(1).map((n) => n === undefined ? undefined : Number(n));
       if (flags.length || [id, from, to].some((n) => n !== undefined && !Number.isSafeInteger(n)) ||
           (to !== undefined && to < from!)) throw invalid();
-      const entry = store.getEntry(id!);
-      if (!entry) throw new Error(`entry E${id} does not exist`);
+      const knowledge = store.getKnowledge(id!);
+      if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
       const revision = (rev: number) => {
-        const value = store.getEntryRevision(id!, rev);
-        if (!value) throw new Error(`entry E${id} has no revision ${rev}`);
+        const value = store.getKnowledgeRevision(id!, rev);
+        if (!value) throw new Error(`knowledge K${id} has no revision ${rev}`);
         return value;
       };
-      if (to !== undefined) return renderEntryDiff(revision(from!), revision(to),
-        store.listEntryRevisions(id!).filter((r) => r.rev > from! && r.rev <= to));
-      if (from !== undefined) return renderEntryTrace({ entry, revision: revision(from) }, undefined, [], store.listMarks(id!));
-      return renderEntryTrace({ entry, revision: revision(entry.currentRevision) },
-        store.listEntryRevisions(id!), store.listEntryLinks(id!), store.listMarks(id!));
+      if (to !== undefined) return renderKnowledgeDiff(revision(from!), revision(to),
+        store.listKnowledgeRevisions(id!).filter((r) => r.rev > from! && r.rev <= to));
+      if (from !== undefined) return renderKnowledgeTrace({ knowledge, revision: revision(from) }, undefined, [], store.listKnowledgeMarks(id!));
+      return renderKnowledgeTrace({ knowledge, revision: revision(knowledge.currentRevision) },
+        store.listKnowledgeRevisions(id!), store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!));
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {
@@ -184,25 +184,25 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     store,
     config: cfg,
     close: () => store.close(),
-    note: async (input) => {
+    record: async (input) => {
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightNotes.has(key)) return { outcome: "dropped" };
-      inFlightNotes.add(key);
+      if (inFlightRecordings.has(key)) return { outcome: "dropped" };
+      inFlightRecordings.add(key);
       try {
-        const frozen = freezeNote(store, input, cfg);
-        return await runNote(store, frozen, runAgent, cfg, read.trace);
-      } finally { inFlightNotes.delete(key); }
+        const frozen = freezeRecording(store, input, cfg);
+        return await runRecording(store, frozen, runAgent, cfg, read.trace);
+      } finally { inFlightRecordings.delete(key); }
     },
-    settle: async (input) => {
+    integrate: async (input) => {
       const session = store.getSession(input.sessionId);
       if (!session) throw new Error(`session S${input.sessionId} does not exist`);
       const key = JSON.stringify([databaseIdentity, input.sessionId, input.branch]);
-      if (inFlightSettles.has(key)) return { outcome: "dropped" };
-      inFlightSettles.add(key);
+      if (inFlightIntegrations.has(key)) return { outcome: "dropped" };
+      inFlightIntegrations.add(key);
       try {
-        const frozen = freezeSettle(store, input, cfg);
-        return await runSettle(store, frozen, runAgent, cfg);
-      } finally { inFlightSettles.delete(key); }
+        const frozen = freezeIntegration(store, input, cfg);
+        return await runIntegration(store, frozen, runAgent, cfg);
+      } finally { inFlightIntegrations.delete(key); }
     },
     ...read,
   };

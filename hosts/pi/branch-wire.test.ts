@@ -3,7 +3,7 @@ import { host } from "./test-host.ts";
 
 // Exercise the installed pi-ai adapter, replacing only HTTP, not complete/onPayload.
 test("real pi-ai serialization sends the preserved body and reports cache reads", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   const sent: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
     sent.push(JSON.parse(String(init.body)));

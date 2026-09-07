@@ -2,16 +2,19 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
-its exposed store. Notes use verified branch mode by default; settle uses
+its exposed store. Recordings use verified branch mode by default; integration uses
 subagent mode. Threshold-triggered runs start at turn stop (`agent_settled`); tree navigation
-also finishes the abandoned branch note.
+also finishes the abandoned branch recording.
 
 Run the extension with Pi 0.85.0 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
 repository root, run `npm install`, `npm test`, `npm run typecheck`, and
 `npm run smoke:pi`. The smoke script loads the extension directly under Node
-using the host tests' stub ExtensionAPI and commits one note through a fake
+using the host tests' stub ExtensionAPI and commits one recording through a fake
 provider into a temporary database. See below for launching a real Pi session.
+
+v1 is unreleased. Databases created before the vocabulary rename are not read;
+there is no migration. Start with a new database.
 
 ## Configuration
 
@@ -20,23 +23,23 @@ chosen because this ticket permits settings or environment; the extension does
 not discover or modify Pi settings files. Example:
 
 ```sh
-export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","note.triggerAnsweredTurns":5,"note.triggerTokens":50000,"settle.triggerUnsettledFacts":50}'
+export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","recording.triggerAnsweredTurns":5,"recording.triggerTokens":50000,"integration.triggerUnintegratedFacts":50}'
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
-- `noteModel` and `settleModel` accept `provider/model-id`, or `session`. Omission
+- `recordingModel` and `integrationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
-- Core settings use dotted names: every `render.*`, `note.*`, and `settle.*` key
+- Core settings use dotted names: every `render.*`, `recording.*`, and `integration.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
-- `note.branchModeDefault` defaults to `true`. Set it to `false` for subagent
-  notes. Branch notes always use the session model, including on fallback;
-  `noteModel` applies only when subagent mode is explicitly configured.
-- `settle.subagentModeDefault` defaults to `true`. Set it to `false` for branch
-  settlement: the candidate round appends the settle prompt and input to the
+- `recording.branchModeDefault` defaults to `true`. Set it to `false` for subagent
+  recordings. Branch recordings always use the session model, including on fallback;
+  `recordingModel` applies only when subagent mode is explicitly configured.
+- `integration.subagentModeDefault` defaults to `true`. Set it to `false` for branch
+  integration: the candidate round appends the integration prompt and input to the
   captured prefix, the final round appends the candidate reply (in the
   provider's native assistant shape) and the feedback message to the candidate
-  request. Tree navigation explicitly uses subagent mode with `noteModel` for a
-  new note.
+  request. Tree navigation explicitly uses subagent mode with `recordingModel` for a
+  new recording.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.0. Tests use Vitest on Node; the standalone
@@ -50,9 +53,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   cannot. The first prompt is buffered until that reply permits its turn row to
   be appended. Later prompts append immediately. Marker declarations go through
   `mark(..., source: "marker")`; a persisted in-session mark wins on resume.
-- `before_agent_start` injects the entries block once per session (by project
+- `before_agent_start` injects the knowledge block once per session (by project
   before allocation, by session afterward; after compaction the compaction block
-  already carries the entries) and, on every prompt, the pending note deliveries
+  already carries the knowledge) and, on every prompt, the pending recording deliveries
   for this branch. It performs no search. The facade controls category order,
   chronological ordering, constraints first, and atomic delivery consumption.
 - Assistant streaming updates persist intermediate text. Completed assistant
@@ -67,8 +70,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   results since the branch watermark. It is not cumulative provider billing
   usage, which would recount context on every tool iteration. Trigger settings
   apply to this estimate, including raw that exceeds rendering budgets.
-- Settlement counts only the current branch's facts beyond its settle watermark.
-  A note completion never triggers settlement; new facts wait for the next
+- Integration counts only the current branch's facts beyond its integration watermark.
+  A recording completion never triggers integration; new facts wait for the next
   `agent_settled`. Calls are launched without awaiting them in that hook. The
   facade drops duplicates. Quit/reload waits for pending runs before closing
   SQLite; session replacement leaves them running against their frozen ranges.
@@ -77,7 +80,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   branch tip reuses its name; selecting an earlier point creates a new branch.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
-  session on its first reply. The before-tree hook finishes notes as described below.
+  session on its first reply. The before-tree hook finishes recordings as described below.
 - Compaction flushes partial assistant text and returns `memory.compact(...)` as
   `compaction.summary`. `firstKeptEntryId: ""` retains no old Pi messages: the
   facade block replaces the context. Pi 0.85.0's context builder searches for
@@ -102,23 +105,23 @@ older vendored implementation:
 
 `modelRegistry.complete` supplies Pi's configured provider/model/auth access. A
 fresh call has exactly the input prompt as system prompt and one user message
-with the input text. A note call also carries one tool, `trace`, through which
+with the input text. A recording call also carries one tool, `trace`, through which
 the model fetches a cut tool call's full text by its expansion address (spec,
 overflow policy); the host executes it through the core's read path and calls
 the model again, up to eight rounds, the way pi-om's observer loop executes its
-tool. A settle call carries no tools. `options.onPayload` snapshots the
+tool. An Integration call carries no tools. `options.onPayload` snapshots the
 provider-native JSON body without modifying it; the last body sent (which
 embeds any earlier tool rounds) is returned as `request`; the facade records it
 along with output and usage, including provider failures.
 No authorization headers are included in this request-body audit.
 
-For settle's final round in subagent mode, the candidate call returns its SDK
+For integration's final round in subagent mode, the candidate call returns its SDK
 conversation and complete assistant message as `state` on the run result; the
 core hands that back inside `continuation.response`, so the host keeps nothing
 between rounds. The final call replays that conversation and appends
 `continuation.message` exactly once; the SDK serializes the request and
 `onPayload` captures that body independently. The model is resolved from the
-run's frozen model name, so switching the session model mid-settlement does not
+run's frozen model name, so switching the session model mid-integration does not
 redirect the final round.
 
 The vendored 0.84.4 `types.ts`, extension/SDK/session/compaction docs, and
@@ -138,8 +141,8 @@ npm run typecheck
 The registration test imports the default extension with a stub ExtensionAPI, checks
 registration, runs `/trace`, and asserts that it created no session or model
 request. The host suite also checks trigger boundaries, request-body capture,
-settle continuation, incremental raw, compaction, marker precedence, deliveries
-on branch return, frozen in-flight ranges, duplicate note/settle calls, provider
+integration continuation, incremental raw, compaction, marker precedence, deliveries
+on branch return, frozen in-flight ranges, duplicate recording/integration calls, provider
 failures, and absence of Pi imports in core.
 
 ## Manual verification in a real Pi session
@@ -159,23 +162,23 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    “For this project use pnpm.”; “Do not use npm.”; “Keep code and comments in
    English.”; “Preserve the language of quoted conversation.”; “Please repeat
    those constraints.”; “What constraints are we following?”
-3. Run `/trace` after replies four, five and six. After four, expect no note run.
-   After five, expect an asynchronous note attempt, a watermark through turn
+3. Run `/trace` after replies four, five and six. After four, expect no recording run.
+   After five, expect an asynchronous recording attempt, a watermark through turn
    five on success, and possibly pending delivery. After six, expect the pending
-   delivery consumed if the note finished before that prompt. If it finished
+   delivery consumed if the recording finished before that prompt. If it finished
    later, the next prompt consumes it. Invalid model output may bounce: inspect
    status rather than assuming facts were committed.
-4. Run `/compact`. Expect immediate compaction with `<entries>` and `<episodic>`,
+4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    raw since the watermark, recent facts, and no compaction model request.
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
    its source turn. Expect the original conversation text and source addresses.
    The search/trace tools themselves are recorded as raw tool calls.
 6. Save the actual prompt/reply transcript, `/trace` outputs, observed fact ids,
    compaction content, and trace result. Check `runs.request`, `mode`, `model`
-   and `response.usage` using the facade. Default settlement requires 50
-   unsettled facts; six short turns need not produce any settle run. For a
-   separate settlement exercise set `settle.triggerUnsettledFacts` to 1 and wait
-   for another turn stop after the note commits.
+   and `response.usage` using the facade. Default integration requires 50
+   unintegrated facts; six short turns need not produce any integration run. For a
+   separate integration exercise set `integration.triggerUnintegratedFacts` to 1 and wait
+   for another turn stop after the recording commits.
 
 Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
@@ -185,8 +188,8 @@ credentials or replace the manual conversation above.
 
 Branch mode inherits the latest captured provider request: system instructions,
 messages, tools, and all body options (including cache controls, sampling and
-reasoning settings). It appends exactly one user message containing the note
-prompt, two newlines, and the core's range-only input. Subagent mode has the note
+reasoning settings). It appends exactly one user message containing the recording
+prompt, two newlines, and the core's range-only input. Subagent mode has the recording
 prompt as system instructions, one full rendered input message, and the `trace`
 tool. Inherited tools in branch mode are definitions only: this one-call path
 does not execute model tool calls.
@@ -242,7 +245,7 @@ explicit provider measurement. Its Anthropic adapter maps
 `dist/api/anthropic-messages.js:411`, `openai-completions.js:1180`, and
 `openai-responses-shared.js:441`). `response.usage` preserves the full SDK usage.
 
-A mismatch prevents the branch provider call. The same note run uses the full
+A mismatch prevents the branch provider call. The same recording run uses the full
 frozen subagent input, records `mode: subagent`, `response.fallbackReason`, and
 the failed verification with both hashes. `runs.request` is the actual fallback
 request, while the failed branch hash describes the rejected candidate. Missing
@@ -251,10 +254,10 @@ Notification happens once per Pi session. Provider/auth failures after a passed
 comparison remain branch failures; they do not trigger another billable call.
 
 The small core contract correction for this ticket exposes the already-frozen
-full note input as `subagentInput`, accepts the actual returned `mode`, and
+full recording input as `subagentInput`, accepts the actual returned `mode`, and
 preserves `verification`/`fallbackReason` in the response envelope. Without it,
 fallback would send range-only context and falsely record branch mode. No store
-schema or settle behavior changed.
+schema or integration behavior changed.
 
 ## Live prefix identity procedure
 
@@ -276,7 +279,7 @@ This is a human-run check, not an automated claim of live cache hits.
 2. Enable branch mode and a one-turn trigger with an isolated database:
 
    ```sh
-   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","note.branchModeDefault":true,"note.triggerAnsweredTurns":1}'
+   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","recording.branchModeDefault":true,"recording.triggerAnsweredTurns":1}'
    node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
      --extension /private/tmp/trace-memory-manual/capture.ts \
      --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
@@ -289,7 +292,7 @@ This is a human-run check, not an automated claim of live cache hits.
    No payload rewriter should follow Trace Memory.
 
 3. Send a substantial prompt with several explicit project constraints. Wait for
-   the assistant and the note to finish before another prompt; `/trace` is
+   the assistant and the recording to finish before another prompt; `/trace` is
    read-only. From a second terminal, in the repository root, run:
 
    ```sh
@@ -299,8 +302,8 @@ This is a human-run check, not an automated claim of live cache hits.
    import { DatabaseSync } from 'node:sqlite';
    import { hash, serialize } from './hosts/pi/branch.ts';
    const db = new DatabaseSync('/private/tmp/trace-memory-manual/branch.db', { readOnly: true });
-   const run = db.prepare("SELECT * FROM runs WHERE kind='note' ORDER BY id DESC LIMIT 1").get();
-   assert.ok(run, 'Wait for the note to finish');
+   const run = db.prepare("SELECT * FROM runs WHERE kind='recording' ORDER BY id DESC LIMIT 1").get();
+   assert.ok(run, 'Wait for the recording to finish');
    const response = JSON.parse(run.response);
    console.log({ mode: run.mode, model: run.model, outcome: run.outcome, ...response });
    assert.equal(run.mode, 'branch');
@@ -323,31 +326,31 @@ This is a human-run check, not an automated claim of live cache hits.
    `verification.cache_read` for cached input tokens. A positive count is an
    observation, not identity proof; zero/missing counts do not fail comparison.
    Hashes should each match their respective body, not each other. Inspect the
-   appended message: note prompt followed by range-only input, no copied raw.
+   appended message: recording prompt followed by range-only input, no copied raw.
 5. Change the session model, then send another prompt and wait. Repeat the check:
    a supported model's first new run should have `firstForKey: true`. Repeat
    after changing active tool definitions. For an unsupported API expect
    subagent mode, a fallback reason and one notice, rather than invented hashes.
-   Compare with a separate database using `note.branchModeDefault: false` to
+   Compare with a separate database using `recording.branchModeDefault: false` to
    evaluate extraction quality and cost before choosing the operational default.
 
 
 ## Attribution and tree navigation (ticket 07)
 
 `session_before_tree` flushes recorded assistant text and awaits the abandoned
-session/branch's pending note, if any. It does not retry that run or extend its
-frozen range. With no pending note it attempts one subagent note through the
+session/branch's pending recording, if any. It does not retry that run or extend its
+frozen range. With no pending recording it attempts one subagent recording through the
 captured head, regardless of normal thresholds. Failure or an unavailable model
-leaves the watermark unchanged. No settlement is triggered by this hook.
+leaves the watermark unchanged. No integration is triggered by this hook.
 
 The only new core capability is the read `branchSummary(sessionId, branch,
 headTurnId)`. `compact` is unsuitable because it includes session-wide recent
 facts and applies a fact budget. The summary instead uses core `renderFact`,
-`renderTurn`, and `finish`: committed lineage facts through the note watermark,
+`renderTurn`, and `finish`: committed lineage facts through the recording watermark,
 followed by all raw after it, with standard tool cuts and omission receipts.
 There is no summary fact budget. This resolves "since its watermark" as raw
 coverage: previously committed branch facts remain represented, rather than
-being lost when a pending note advances the watermark. Sibling facts are
+being lost when a pending recording advances the watermark. Sibling facts are
 excluded. Reading a summary never consumes a pending delivery. A pending run's
 later, unfrozen raw remains raw in the summary, without a second extraction.
 When no facts committed, failed extraction produces rendered raw alone.
@@ -360,7 +363,7 @@ accepts the supplied summary only when navigation requested summarization
 (`options.summarize`). The public result cannot force insertion for a user's
 no-summary navigation. The host returns its summary in either case and never
 calls Pi's summarizer itself. The hook's abort signal does not cancel a frozen
-note. Existing `session_tree` restoration gives an earlier branch point a fresh
+recording. Existing `session_tree` restoration gives an earlier branch point a fresh
 identity and preserves the identity when returning to a saved branch tip.
 
 Marker discovery is a plain ancestor walk; the first file wins and an empty
@@ -372,10 +375,10 @@ and current project ID in the Pi custom state and returns the updated injection
 immediately in its tool result. The database declaration remains authoritative
 when restoring older tree state, so a session's mark wins on every branch.
 Peers remain in the marker project. Only an undeclared own space is merged.
-Facts change project membership through their session join; session entries
+Facts change project membership through their session join; session knowledge
 retain scope, ownership and revisions while their project ID follows the
-session. Duplicate project entries now share the next settlement's NEAR pool;
-merge itself neither settles nor deletes duplicates.
+session. Duplicate project knowledge now share the next integration's NEAR pool;
+merge itself neither integrates nor deletes duplicates.
 
 An empty text content block is not an assistant reply. Nonempty text, thinking,
 or a tool call permits allocation; the tool-call case permits `mark` as the
@@ -384,6 +387,6 @@ creates neither a session row nor a turn row. Project records may precede replie
 
 Ticket 07's stub-host tests cover ancestor/nearest/worktree markers, session-only
 mark precedence and persisted host state, retroactive merge and immediate
-injection, session-entry isolation, shared duplicate visibility, deferred note
-completion with later raw and branch-only delivery, fresh subagent notes,
+injection, session-knowledge isolation, shared duplicate visibility, deferred recording
+completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.

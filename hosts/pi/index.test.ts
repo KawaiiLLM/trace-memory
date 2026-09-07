@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "vitest";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, noteFact, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, recordingFact, usage, type Reply } from "./test-host.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -30,13 +30,13 @@ test("five answered turns trigger only at stop, reset at the watermark, and slas
   expect(h.requests).toHaveLength(0);
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(1);
-  expect(h.memory.store.getWatermark(1, "main")?.lastNotedTurn).toBe(5);
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(5);
   await h.turn();
   expect(h.requests).toHaveLength(1);
   expect(h.memory.store.listTurns(1)).toHaveLength(6);
 });
 
-test("50K raw context growth triggers note, including tool results; no assistant means no answered turn", async () => {
+test("50K raw context growth triggers recording, including tool results; no assistant means no answered turn", async () => {
   const h = host();
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "read", input: { path: "large.txt" }, content: [{ type: "text", text: "x".repeat(200_000) }], isError: false });
@@ -50,33 +50,33 @@ test("50K raw context growth triggers note, including tool results; no assistant
   expect(h.requests).toHaveLength(1);
 });
 
-test("note through runAgent commits the exact provider request, prompt, model, usage and subagent mode", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
-  h.provider(async c => noteFact(c));
+test("recording through runAgent commits the exact provider request, prompt, model, usage and subagent mode", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c));
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success");
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
   expect(JSON.parse(run.request!)).toEqual(h.requests[0]);
-  expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../core/prompts/note.md", import.meta.url), "utf8"));
+  expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace"]);
   expect(JSON.parse(run.response!).usage).toEqual(usage);
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
 
-test("first prompt injects project/global entries without allocating a session; marker is declared and mark wins", async () => {
+test("first prompt injects project/global knowledge without allocating a session; marker is declared and mark wins", async () => {
   const h = host({}, "project-name");
   const p = h.memory.store.createProject({ name: "project-name", declaredBy: "marker" });
   const s = h.memory.store.createSession({ host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
-  const noted = h.memory.store.commitNoteRun({ run: { kind: "note", sessionId: s.id, createdAt: "now" }, facts: [
+  const recorded = h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: s.id, createdAt: "now" }, facts: [
     { turnId: t.id, category: "observation", actor: "user", text: "规则", source: [`T${t.id}#user`], createdAt: "now" },
   ] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const seeded = h.memory.store.commitSettleRun({ run: { kind: "settle", sessionId: s.id, createdAt: "now" }, operations: [
-    { op: "new", handle: "$e1", author: "fixture", text: "项目规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
-    { op: "new", handle: "$e2", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
+  if (!recorded.ok) throw new Error(recorded.problems.join("; "));
+  const seeded = h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: s.id, createdAt: "now" }, operations: [
+    { op: "new", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
+    { op: "new", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
   ] });
   expect(seeded.ok && seeded.rejected.length === 0).toBe(true);
   const injection = await h.prompt();
@@ -110,27 +110,27 @@ test("raw is incremental and compaction contains intermediate assistant text wit
 });
 
 test("pending delivery is injected once on its own branch", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
   const original = [...h.entries];
   await h.prompt("second"); await h.answer();
   const mainTip = [...h.entries];
-  release(noteFact(h.conversations[0]!)); await h.drain();
+  release(recordingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   h.entries.splice(0, h.entries.length, ...original);
   await h.emit("session_tree");
   const injected = async () => (await h.prompt())?.message?.content ?? "";
-  expect(await injected()).not.toContain("pending_notes");
+  expect(await injected()).not.toContain("recorded");
   h.entries.splice(0, h.entries.length, ...mainTip); await h.emit("session_tree");
-  expect(await injected()).toContain("pending_notes");
-  expect(await injected()).not.toContain("pending_notes");
+  expect(await injected()).toContain("recorded");
+  expect(await injected()).not.toContain("recorded");
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(0);
 });
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
@@ -139,18 +139,18 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   await h.prompt("later raw"); await h.answer();
   h.entries.splice(0, h.entries.length, ...old);
   await h.emit("session_tree");
-  release(noteFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.getWatermark(1, "main")?.lastNotedTurn).toBe(1);
+  release(recordingFact(h.conversations[0]!)); await h.drain();
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(1);
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
-test("settle waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1, settleModel: "fake/settler" });
+test("integration waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1, integrationModel: "fake/Integrator" });
   const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output) : noteFact(c));
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output) : recordingFact(c));
   await h.turn();
-  expect(h.requests).toHaveLength(1); // No post-note completion trigger.
+  expect(h.requests).toHaveLength(1); // No post-recording completion trigger.
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(3);
   const candidate = h.conversations[1]!, final = h.conversations[2]!;
@@ -158,21 +158,21 @@ test("settle waits for a turn stop after facts arrive and final replays candidat
   expect(final.messages.slice(0, 1)).toEqual(candidate.messages);
   expect(final.messages[1]).toEqual(reply(output));
   expect(final.messages).toHaveLength(3); expect(final.messages[2]!.role).toBe("user");
-  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "settle");
+  const runs = h.memory.store.listRuns(1).filter(r => r.kind === "integration");
   expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
-  expect(runs.map(r => r.model)).toEqual(["fake/settler", "fake/settler"]);
+  expect(runs.map(r => r.model)).toEqual(["fake/Integrator", "fake/Integrator"]);
   expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests[2]);
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
   let closed = false;
   const shutdown = h.emit("session_shutdown", { reason }).then(() => { closed = true; });
   await h.drain(); expect(closed).toBe(false);
-  release(noteFact(h.conversations[0]!)); await shutdown;
+  release(recordingFact(h.conversations[0]!)); await shutdown;
   expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success"); expect(h.requests).toHaveLength(1);
   await expect(h.emit("session_start")).rejects.toThrow(/not open/); // Pi re-runs the factory; this instance is dead.
 });
@@ -184,7 +184,7 @@ test("core contains no Pi imports and host imports core only through the facade"
 });
 
 test("token threshold uses growth since watermark, including the CJK heuristic", async () => {
-  const h = host({ "note.triggerTokens": 4 });
+  const h = host({ "recording.triggerTokens": 4 });
   await h.prompt("一"); await h.answer("a"); await h.emit("agent_settled");
   expect(h.requests).toHaveLength(0); // 0.75 + 0.25 = 1.
   await h.prompt("一一一"); await h.answer("aaa"); await h.emit("agent_settled"); await h.drain();
@@ -194,7 +194,7 @@ test("token threshold uses growth since watermark, including the CJK heuristic",
 });
 
 test("provider failures retain captured request and do not advance a watermark", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   h.provider(async () => { throw new Error("provider unavailable"); });
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -202,9 +202,9 @@ test("provider failures retain captured request and do not advance a watermark",
   expect(h.memory.store.getWatermark(1, "main")).toBeNull();
 });
 
-test("settle in-flight duplicates cannot erase the candidate continuation", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1, "settle.triggerUnsettledFacts": 1 });
-  h.provider(async c => noteFact(c)); await h.turn();
+test("integration in-flight duplicates cannot erase the candidate continuation", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
+  h.provider(async c => recordingFact(c)); await h.turn();
   const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
   let release!: (value: Reply) => void;
   h.provider(async c => c.messages.length === 1 ? new Promise(resolve => { release = resolve; }) : reply(output));
@@ -215,23 +215,23 @@ test("settle in-flight duplicates cannot erase the candidate continuation", asyn
   expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success", "success"]);
 });
 
-test("entries are injected once per session, only once something exists; later prompts carry only deliveries", async () => {
+test("knowledge are injected once per session, only once something exists; later prompts carry only deliveries", async () => {
   const h = host();
-  expect((await h.prompt())?.message?.content ?? "").not.toContain("<entries>"); // empty store: no block at all
+  expect((await h.prompt())?.message?.content ?? "").not.toContain("<knowledge>"); // empty store: no block at all
   await h.answer();
   const p = h.memory.store.getSession(1)!.projectId;
   const t = h.memory.store.appendTurn({ sessionId: 1, kind: "turn", startedAt: "2026-09-06T00:00:00Z" });
-  const noted = h.memory.store.commitNoteRun({ run: { kind: "note", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
+  const recorded = h.memory.store.commitRecordingRun({ run: { kind: "recording", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" },
     facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
-  if (!noted.ok) throw new Error("setup");
-  h.memory.store.commitSettleRun({ run: { kind: "settle", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
-    { op: "new", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
+  if (!recorded.ok) throw new Error("setup");
+  h.memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
+    { op: "new", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
   void p;
   const second = await h.prompt("again");
-  expect(second?.message?.content).toContain("<entries>");
+  expect(second?.message?.content).toContain("<knowledge>");
   await h.answer();
   const third = await h.prompt("once more");
-  expect(third?.message?.content ?? "").not.toContain("<entries>");
+  expect(third?.message?.content ?? "").not.toContain("<knowledge>");
 });
 
 
@@ -269,73 +269,73 @@ test("mark persists in host state across tree restoration without merging marker
   expect(h.memory.status(1)).toContain("shared (marker)");
 });
 
-test("declaring an own project moves facts and project entries, preserves session scope, and injects immediately", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
-  h.provider(async c => noteFact(c)); await h.turn();
+test("declaring an own project moves facts and project knowledge, preserves session scope, and injects immediately", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c)); await h.turn();
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
-    const commit = store.commitSettleRun({ run: { kind: "settle", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
+    const commit = store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
       op: "new" as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
       createdAt: "now", category: "constraint" as const, scope,
     })) });
     expect(commit.ok && commit.rejected.length === 0).toBe(true);
   };
   seed(1, 1, ["project", "session"]);
-  const sessionRevision = store.getEntryRevision(2, 1);
+  const sessionRevision = store.getKnowledgeRevision(2, 1);
   const target = store.createProject({ name: "named", declaredBy: "mark" });
   const peer = store.createSession({ host: "peer", projectId: target.id, startedAt: "now", firstReplyAt: "now" });
   const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm" });
-  const noted = store.commitNoteRun({ run: { kind: "note", sessionId: peer.id, createdAt: "now" }, facts: [
+  const recorded = store.commitRecordingRun({ run: { kind: "recording", sessionId: peer.id, createdAt: "now" }, facts: [
     { turnId: turn.id, category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [`T${turn.id}#user`], createdAt: "now" },
   ] });
-  if (!noted.ok) throw new Error(noted.problems.join("; "));
-  seed(peer.id, noted.facts[0]!.id, ["project"]);
+  if (!recorded.ok) throw new Error(recorded.problems.join("; "));
+  seed(peer.id, recorded.facts[0]!.id, ["project"]);
   const marked = await h.tools.get("mark").execute("id", { input: { project: "named" } });
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
   expect(store.listProjectFacts(own)).toEqual([]);
   expect(store.listProjectFacts(target.id)).toHaveLength(2);
-  // Both duplicate project entries are now in the next settlement's NEAR pool.
-  expect(store.getEntry(1)!.projectId).toBe(target.id);
-  expect(store.getEntry(3)!.projectId).toBe(target.id);
-  expect(store.listVisibleEntries(1, target.id).map(v => v.entry.id)).toEqual([1, 2, 3]);
-  expect(store.getEntryRevision(2, 1)).toEqual(sessionRevision);
+  // Both duplicate project knowledge are now in the next integration's NEAR pool.
+  expect(store.getKnowledge(1)!.projectId).toBe(target.id);
+  expect(store.getKnowledge(3)!.projectId).toBe(target.id);
+  expect(store.listVisibleKnowledge(1, target.id).map(v => v.knowledge.id)).toEqual([1, 2, 3]);
+  expect(store.getKnowledgeRevision(2, 1)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
   expect(marked.content[0].text).toContain(h.memory.inject(1));
   expect(h.memory.inject(1)).toContain("仅当前会话");
 });
 
-test("before-tree waits for a frozen pending note and summarizes its facts plus later raw without delivering", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
+test("before-tree waits for a frozen pending recording and summarizes its facts plus later raw without delivering", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); const forkPoint = [...h.entries];
-  await h.prompt("later unnoted raw"); await h.answer("later reply");
+  await h.prompt("later unrecorded raw"); await h.answer("later reply");
   const tip = [...h.entries];
   let finished = false;
   const switching = h.emit("session_before_tree", { preparation: { userWantsSummary: true } }).then(r => { finished = true; return r; });
   await h.drain(); expect(finished).toBe(false); expect(h.requests).toHaveLength(1);
-  release(noteFact(h.conversations[0]!));
+  release(recordingFact(h.conversations[0]!));
   const result = await switching;
   expect(result.summary.summary).toContain("[F1]");
-  expect(result.summary.summary).toContain("later unnoted raw");
+  expect(result.summary.summary).toContain("later unrecorded raw");
   expect(result.summary.summary).toContain("later reply");
   expect(result.summary.summary).toBe(h.memory.branchSummary(1, "main", 2));
-  expect(h.conversations[0]!.messages[0]!.content).not.toContain("later unnoted raw");
-  expect(h.memory.store.getWatermark(1, "main")!.lastNotedTurn).toBe(1);
+  expect(h.conversations[0]!.messages[0]!.content).not.toContain("later unrecorded raw");
+  expect(h.memory.store.getWatermark(1, "main")!.lastRecordedTurn).toBe(1);
   expect(h.memory.store.listRuns(1)[0]!.branch).toBe("main");
   h.entries.splice(0, h.entries.length, ...forkPoint); await h.emit("session_tree");
   const branch = h.entries.at(-1).data.branch;
   expect(branch).not.toBe("main");
   expect(h.memory.store.listPendingDeliveries(1, branch)).toEqual([]);
-  expect((await h.prompt())?.message?.content ?? "").not.toContain("pending_notes");
+  expect((await h.prompt())?.message?.content ?? "").not.toContain("recorded");
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   h.entries.splice(0, h.entries.length, ...tip); await h.emit("session_tree");
-  expect((await h.prompt())?.message?.content).toContain("pending_notes");
+  expect((await h.prompt())?.message?.content).toContain("recorded");
 });
 
-test.each(["success", "failure", "unavailable"])("before-tree attempts subagent note below threshold: %s", async outcome => {
+test.each(["success", "failure", "unavailable"])("before-tree attempts subagent recording below threshold: %s", async outcome => {
   const h = host();
-  h.provider(async c => { if (outcome === "failure") throw new Error("offline"); return noteFact(c); });
+  h.provider(async c => { if (outcome === "failure") throw new Error("offline"); return recordingFact(c); });
   await h.turn();
   if (outcome === "unavailable") h.ctx.model = undefined;
   const result = await h.emit("session_before_tree");
@@ -366,8 +366,8 @@ test("an empty session allocates neither session nor turns through prompt, compa
 
 
 test("branch summaries retain earlier committed facts and exclude sibling facts", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1 });
-  h.provider(async c => noteFact(c)); await h.turn();
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c)); await h.turn();
   const point = [...h.entries];
   await h.prompt("abandoned tail"); await h.answer("tail reply");
   const summary = await h.emit("session_before_tree");
@@ -404,28 +404,28 @@ test("removing a marker before first reply cannot turn its shared project into a
 });
 
 test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; subagent mode does not", async branchMode => {
-  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": branchMode, noteModel: "fake/noter" });
+  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": branchMode, recordingModel: "fake/recorder" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
-  await h.turn(); // Note A in flight over T1.
+  await h.turn(); // Recording A in flight over T1.
   await h.prompt("second"); await h.answer(); // This prompt saw no delivery.
-  release(noteFact(h.conversations[0]!)); await h.drain();
+  release(recordingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
-  h.provider(async c => noteFact(c));
+  h.provider(async c => recordingFact(c));
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 1 : 2);
-  expect((await h.prompt("third"))?.message?.content).toContain("pending_notes");
+  expect((await h.prompt("third"))?.message?.content).toContain("recorded");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(branchMode ? 2 : 3);
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
 });
 
-test("spec overflow policy: a subagent note fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": false, noteModel: "fake/noter" });
+test("spec overflow policy: a subagent recording fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, recordingModel: "fake/recorder" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
   const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1 tool=1 full" } };
-  h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : noteFact(c));
+  h.provider(async c => c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : recordingFact(c));
   await h.emit("agent_settled"); await h.drain();
   expect(h.conversations).toHaveLength(2);
   expect(h.conversations[1]!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
@@ -441,16 +441,16 @@ test("spec overflow policy: a subagent note fetches cut evidence through the tra
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
 });
 
-test("a settle call carries no tools; a note tool call for a bad address returns an error result and the note still completes", async () => {
-  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": false, "settle.triggerUnsettledFacts": 1 });
-  const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "E999" } };
+test("an integration call carries no tools; a recording tool call for a bad address returns an error result and the recording still completes", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1, "recording.branchModeDefault": false, "integration.triggerUnintegratedFacts": 1 });
+  const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = JSON.stringify({ new: [], edit: [], merge: [], delete: [], not_admitted: [{ id: "F1", because: "Not durable." }], near_ack: [], over_budget: false });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? reply(output)
-    : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : noteFact(c));
+    : c.messages.length === 1 ? { ...reply(""), content: [call], stopReason: "toolUse" } : recordingFact(c));
   await h.turn();
   const result = h.conversations[1]!.messages[2] as { isError: boolean; content: { text: string }[] };
   expect(result.isError).toBe(true); expect(result.content[0]!.text).toContain("does not exist");
   await h.emit("agent_settled"); await h.drain();
   expect(h.conversations.slice(2).map(c => c.tools)).toEqual([undefined, undefined]);
-  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["note", "success"], ["settle", "success"], ["settle", "success"]]);
+  expect(h.memory.store.listRuns(1).map(r => [r.kind, r.outcome])).toEqual([["recording", "success"], ["integration", "success"], ["integration", "success"]]);
 });

@@ -1,3 +1,5 @@
+Note: The history entries below predate the 2026-09-07 vocabulary rename.
+
 # Live verification record (2026-09-07)
 
 Environment: Pi 0.85.0 under Node 24.6.0, provider openai-codex, model gpt-5.6-sol

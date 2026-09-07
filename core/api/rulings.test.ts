@@ -4,19 +4,19 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NoteAgentInput, type RunAgentResult } from "./index.ts";
+import { TraceMemory, type RecordingAgentInput, type RunAgentResult } from "./index.ts";
 import { tokens } from "../render/index.ts";
 
 let directory: string;
 let memory: TraceMemory;
-let calls: NoteAgentInput[];
+let calls: RecordingAgentInput[];
 const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
   calls = [];
-  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NoteAgentInput); return ok([]); });
+  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as RecordingAgentInput); return ok([]); });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -51,8 +51,8 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
 
 test("08:53: in branch mode the appended note message carries only the range; subagent mode carries the raw", async () => {
   const { s, t } = session();
-  await memory.note({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
-  await memory.note({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
+  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
+  await memory.record({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
   // "fork模式只有最后一个": the range and the instruction (the prompt), nothing else.
@@ -69,5 +69,5 @@ test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does no
   expect(() => memory.trace(`S${s.id + 1}/T${t.id}`)).toThrow("does not exist");
 });
 
-// 09:43 "sessions of one project settle separately": pinned in core/api/settle.test.ts,
+// 09:43 "sessions of one project integrate separately": pinned in core/api/integration.test.ts,
 // "each session settles only its own branch facts and shares already-settled context".

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
-import type { Store, EntryWithRevision } from "../store/index.ts";
-import { freezeNote } from "../note/index.ts";
-import { budgetEntries, budgetFacts, finish, listingLine, renderEntriesBlock, renderEntry, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
+import type { Store, KnowledgeWithRevision } from "../store/index.ts";
+import { freezeRecording } from "../recording/index.ts";
+import { budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, xmlBlock } from "../render/index.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string }
-export type SearchScope = "facts" | "entries" | "all" | "raw";
+export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 export type MarkInput = { sessionId: number; project: string; source?: "marker" | "mark" }
-  | { entryId: number; kind: "verified" | "flagged" | "clear" };
+  | { knowledgeId: number; kind: "verified" | "flagged" | "clear" };
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string) => string) {
   const cursors = new Map<string, { lines: string[]; footer: string; cap: number }>();
@@ -32,12 +32,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return value;
   };
   const factLine = (id: number) => renderFact(store.getFact(id)!, store.listFactRelations(id));
-  const entryLine = (value: EntryWithRevision) => renderEntry(value, store.listMarks(value.entry.id).filter((m) => m.rev === value.revision.rev));
-  const entriesFor = (projectId: number, sessionId = 0) => {
-    const active = budgetEntries(store.listVisibleEntries(sessionId, projectId), config.render.entriesBlockTokens, entryLine);
-    return { content: renderEntriesBlock(active.groups), receipts: active.receipts };
+  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value, store.listKnowledgeMarks(value.knowledge.id).filter((m) => m.rev === value.revision.rev));
+  const knowledgeFor = (projectId: number, sessionId = 0) => {
+    const active = budgetKnowledge(store.listVisibleKnowledge(sessionId, projectId), config.render.knowledgeBlockTokens, knowledgeLine);
+    return { content: renderKnowledgeBlock(active.groups), receipts: active.receipts };
   };
-  const entries = (id: number) => entriesFor(session(id).projectId, id);
+  const knowledge = (id: number) => knowledgeFor(session(id).projectId, id);
   const trace = (address: string, options: ListingOptions = {}): string => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
@@ -51,32 +51,32 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
     let project = store.findProjectByName(address);
     while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
-    if (project) return page([...store.listVisibleEntries(0, project.id).map(entryLine),
+    if (project) return page([...store.listVisibleKnowledge(0, project.id).map(knowledgeLine),
       ...store.listProjectFacts(project.id).map((f) => factLine(f.id))].map(listingLine), options);
     const result = expand(address);
-    return /^(E|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
+    return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
   };
   return {
     trace,
-    // Entries are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
-    // prompt (ruling 08:53: note results are injected with the next user message). Two reads, one job each.
+    // Knowledge are injected once, at session start (ruling: "约束最前", grilling Q15); deliveries ride every
+    // prompt (ruling 08:53: recording results are injected with the next user message). Two reads, one job each.
     inject: (target: number | { projectId: number }): string => {
       if (typeof target === "object") {
-        // First prompt: no session id yet (allocated at the first reply), so no session entries.
+        // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
         if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
-        return finish(entriesFor(target.projectId));
+        return finish(knowledgeFor(target.projectId));
       }
-      return finish(entries(target));
+      return finish(knowledge(target));
     },
     deliver: (sessionId: number, branch: string | null = "main"): string => {
       session(sessionId);
-      return store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("pending_notes", facts.map((f) => factLine(f.id)).join("\n")) : "");
+      return store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("recorded", facts.map((f) => factLine(f.id)).join("\n")) : "");
     },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
-      const block = entries(sessionId);
-      const after = store.getWatermark(sessionId, branch)?.lastNotedTurn ?? 0;
+      const block = knowledge(sessionId);
+      const after = store.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;
       const turns = headTurnId === undefined ? store.listTurns(sessionId).filter((t) => t.id > after)
-        : freezeNote(store, { sessionId, branch, headTurnId }, config).turns.map((t) => t.turn);
+        : freezeRecording(store, { sessionId, branch, headTurnId }, config).turns.map((t) => t.turn);
       const raw = turns.map((t) => renderTurn(t, store.listToolCalls(t.id), config.render));
       const rawText = raw.map((r) => r.content).join("\n\n");
       const facts = store.listSessionFacts(sessionId);
@@ -85,7 +85,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
-      const tail = freezeNote(store, { sessionId, branch, headTurnId }, config).turns;
+      const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).turns;
       const raw = tail.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
       const facts = store.listBranchFacts(sessionId, branch).map((f) => factLine(f.id));
       return finish({ content: [...facts, ...raw.map((r) => r.content)].join("\n\n"),
@@ -93,14 +93,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (options.cursor) return page([], options);
-      if (!["facts", "entries", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
+      if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       const lines = store.searchAddresses(query, scope, options.sessionId).map((address) => {
         if (address.startsWith("F")) return factLine(Number(address.slice(1)));
         if (address.startsWith("T")) return expand(address);
         const [id, rev] = address.slice(1).split("@").map(Number);
-        return entryLine({ entry: store.getEntry(id!)!, revision: store.getEntryRevision(id!, rev!)! });
+        return knowledgeLine({ knowledge: store.getKnowledge(id!)!, revision: store.getKnowledgeRevision(id!, rev!)! });
       }).map(listingLine);
-      return page(lines, options, `${scope === "raw" ? "Raw search uses literal LIKE over turns and tool calls. " : "Search uses FTS5 over stored fact text and entry revisions. "}No hit does not mean absent.`);
+      return page(lines, options, `${scope === "raw" ? "Raw search uses literal LIKE over turns and tool calls. " : "Search uses FTS5 over stored fact text and knowledge revisions. "}No hit does not mean absent.`);
     },
     mark: (input: MarkInput): string => {
       if ("project" in input) {
@@ -108,18 +108,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         return `S${input.sessionId} project: ${project.name} (${store.projectDeclaration(input.sessionId)})`;
       }
       if (!["verified", "flagged", "clear"].includes(input.kind)) throw new Error("invalid mark kind");
-      const rev = store.setMark(input.entryId, input.kind, new Date().toISOString());
-      return `E${input.entryId}@${rev}: ${input.kind}`;
+      const rev = store.setKnowledgeMark(input.knowledgeId, input.kind, new Date().toISOString());
+      return `K${input.knowledgeId}@${rev}: ${input.kind}`;
     },
     status: (sessionId: number): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId), watermarks = store.listWatermarks(sessionId);
       const branches = [...new Set([...watermarks.map((w) => w.branch), ...runs.map((r) => r.branch)])];
       return [`Session: S${sessionId}`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
-        `Entries: ${store.listVisibleEntries(sessionId, s.projectId).length} visible active`,
+        `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
         ...(watermarks.length ? [] : ["Watermarks: none"]),
-        ...watermarks.map((w) => `Watermark ${w.branch}: noted ${w.lastNotedTurn ? `T${w.lastNotedTurn}` : "none"}; settled ${w.lastSettledFact ? `F${w.lastSettledFact}` : "none"}`),
-        ...(["note", "settle"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
+        ...watermarks.map((w) => `Watermark ${w.branch}: recorded ${w.lastRecordedTurn ? `T${w.lastRecordedTurn}` : "none"}; integrated ${w.lastIntegratedFact ? `F${w.lastIntegratedFact}` : "none"}`),
+        ...(["recording", "integration"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
         `Pending deliveries: ${branches.reduce((n, b) => n + store.listPendingDeliveries(sessionId, b).length, 0)}`].join("\n");
     },
   };

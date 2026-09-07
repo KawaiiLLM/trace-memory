@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { Tool, ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type NoteResult, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type RecordResult, type RecordingAgentInput, type IntegrationAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -20,7 +20,7 @@ const text = (message: { content?: unknown }) => typeof message.content === "str
 function configuration(): { flat: FlatConfig; core: ConfigOverride } {
   const flat: FlatConfig = JSON.parse(process.env.TRACE_MEMORY_CONFIG ?? "{}");
   const core: ConfigOverride = {};
-  for (const section of ["render", "note", "settle"] as const) {
+  for (const section of ["render", "recording", "integration"] as const) {
     const values: Record<string, number | boolean> = {};
     for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
       const override = flat[`${section}.${key}`];
@@ -30,9 +30,9 @@ function configuration(): { flat: FlatConfig; core: ConfigOverride } {
     }
     Object.assign(core, { [section]: values });
   }
-  for (const key of Object.keys(flat)) if (!["dbPath", "noteModel", "settleModel"].includes(key) &&
-    !["render", "note", "settle"].some(s => key.startsWith(`${s}.`) && key.slice(s.length + 1) in DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG])) throw new Error(`Unknown setting ${key}`);
-  for (const key of ["dbPath", "noteModel", "settleModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+  for (const key of Object.keys(flat)) if (!["dbPath", "recordingModel", "integrationModel"].includes(key) &&
+    !["render", "recording", "integration"].some(s => key.startsWith(`${s}.`) && key.slice(s.length + 1) in DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG])) throw new Error(`Unknown setting ${key}`);
+  for (const key of ["dbPath", "recordingModel", "integrationModel"]) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
   return { flat, core };
 }
 function marker(cwd: string): string | undefined {
@@ -59,17 +59,17 @@ export default function (pi: ExtensionAPI) {
   const traceTool: Tool = { name: "trace", description: "Fetch the full text of a cut tool call by its expansion address (for example `T12 tool=2 full`), or any memory address.",
     parameters: { type: "object", properties: { address: { type: "string" } }, required: ["address"], additionalProperties: false } as unknown as Tool["parameters"] };
   const memory = TraceMemory(dbPath, async raw => {
-    const input = raw as NoteAgentInput | SettleAgentInput;
+    const input = raw as RecordingAgentInput | IntegrationAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
     // The model is frozen with the run (a branch run freezes the session model at launch), so a
-    // model switch during a two-round settle cannot redirect its final round.
+    // model switch during a two-round integration cannot redirect its final round.
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
-    const continuation = input.kind === "settle" ? input.continuation : undefined;
+    const continuation = input.kind === "integration" ? input.continuation : undefined;
     let request: unknown = null;
     let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
     let fallbackReason: string | undefined;
@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI) {
       if (input.mode === "branch") {
         let candidate: Body | undefined;
         try {
-          // Note and settle candidate: the captured prefix plus one instruction. Settle final: the
+          // Recording and integration candidate: the captured prefix plus one instruction. Integration final: the
           // verified candidate request plus the candidate reply replayed and the feedback message;
           // it depends on nothing the main session changes after the candidate was sent.
           let prefix: Body, appended: Appended[];
@@ -119,21 +119,21 @@ export default function (pi: ExtensionAPI) {
             output: text(reply), usage: reply.usage, request, mode, verification };
         }
       }
-      // Subagent mode: a fresh call. A note may fetch cut evidence through the trace tool (spec,
+      // Subagent mode: a fresh call. A recording may fetch cut evidence through the trace tool (spec,
       // overflow policy); like pi-om's observer, the host executes the call and continues.
-      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "note" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
-        ...(input.kind === "note" ? { tools: [traceTool] } : {}) };
+      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: input.kind === "recording" && fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
+        ...(input.kind === "recording" ? { tools: [traceTool] } : {}) };
       if (continuation) {
         // The candidate round handed its conversation back through the core; nothing is kept here.
         const prior = continuation.response.state as { conversation: Conversation; reply: Reply } | undefined;
-        if (!prior) throw new Error("Missing settle candidate conversation");
+        if (!prior) throw new Error("Missing integration candidate conversation");
         conversation = { ...prior.conversation, messages: [...prior.conversation.messages, prior.reply, { ...continuation.message, timestamp: Date.now() }] };
       }
       let reply: Reply;
       for (let round = 0; ; round++) {
         reply = await registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); } });
         const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
-        if (input.kind !== "note" || reply.stopReason !== "toolUse" || !calls.length || round >= 8) break;
+        if (input.kind !== "recording" || reply.stopReason !== "toolUse" || !calls.length || round >= 8) break;
         const results = calls.map(call => {
           let content: string, isError = false;
           try { content = input.trace(String(call.arguments.address ?? "")); } catch (error) { content = String(error); isError = true; }
@@ -142,7 +142,7 @@ export default function (pi: ExtensionAPI) {
         conversation = { ...conversation, messages: [...conversation.messages, reply, ...results] };
       }
       const outcome = reply.stopReason === "aborted" ? "cancelled" : reply.stopReason === "error" ? "failure" : "success";
-      const state = input.kind === "settle" && input.round === "candidate" && outcome === "success"
+      const state = input.kind === "integration" && input.round === "candidate" && outcome === "success"
         ? { conversation: structuredClone(conversation), reply: structuredClone(reply) } : undefined;
       return { outcome, output: text(reply), usage: reply.usage, request, mode, verification, fallbackReason, ...(state ? { state } : {}) };
     } catch (error) {
@@ -154,21 +154,21 @@ export default function (pi: ExtensionAPI) {
   let state: State;
   let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
   const pending = new Set<Promise<unknown>>();
-  const notes = new Map<string, Promise<NoteResult>>();
-  const modelName = (kind: "note" | "settle") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
+  const recordings = new Map<string, Promise<RecordResult>>();
+  const modelName = (kind: "recording" | "integration") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01: note and settle each configure their mode (note defaults to branch, settle to
+  // Ruling 17:01: recording and integration each configure their mode (recording defaults to branch, integration to
   // subagent); branch mode always runs on the session model, subagent mode on the configured one.
-  const launch = (kind: "note" | "settle") => {
-    const branch = kind === "note" ? memory.config.note.branchModeDefault : !memory.config.settle.subagentModeDefault;
+  const launch = (kind: "recording" | "integration") => {
+    const branch = kind === "recording" ? memory.config.recording.branchModeDefault : !memory.config.integration.subagentModeDefault;
     return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
-  const note = (input: Parameters<typeof memory.note>[0]) => {
+  const recording = (input: Parameters<typeof memory.record>[0]) => {
     const key = `${input.sessionId}/${input.branch}`;
-    const existing = notes.get(key);
+    const existing = recordings.get(key);
     if (existing) return existing;
-    const promise = memory.note(input).finally(() => { notes.delete(key); pending.delete(promise); });
-    notes.set(key, promise); pending.add(promise);
+    const promise = memory.record(input).finally(() => { recordings.delete(key); pending.delete(promise); });
+    recordings.set(key, promise); pending.add(promise);
     return promise;
   };
   const save = () => pi.appendEntry(tag, { ...state, dbPath });
@@ -219,7 +219,7 @@ export default function (pi: ExtensionAPI) {
     ensure(context);
     current = { prompt: event.prompt, started: now(), completed: "", partial: "" };
     append();
-    // Entries once per session (the compaction block carries them afterwards); deliveries on every prompt.
+    // Knowledge once per session (the compaction block carries them afterwards); deliveries on every prompt.
     const parts: string[] = [];
     if (!state.injected) {
       const block = memory.inject(state.sessionId ?? { projectId: state.projectId });
@@ -268,7 +268,7 @@ export default function (pi: ExtensionAPI) {
     const { sessionId, branch, head } = state;
     const watermark = memory.store.getWatermark(sessionId, branch);
     const turns = [];
-    for (let id: number | null = head; id && id !== watermark?.lastNotedTurn;) {
+    for (let id: number | null = head; id && id !== watermark?.lastRecordedTurn;) {
       const turn: NonNullable<ReturnType<typeof memory.store.getTurn>> = memory.store.getTurn(id)!;
       turns.push(turn); id = turn.parentTurnId;
     }
@@ -278,16 +278,16 @@ export default function (pi: ExtensionAPI) {
       pending.add(promise);
       void promise.catch(error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
     };
-    const noteLaunch = launch("note");
-    // A branch note carries only the range (ruling 08:53): it presumes every earlier note result is
+    const recordingLaunch = launch("recording");
+    // A branch recording carries only the range (ruling 08:53): it presumes every earlier recording result is
     // already in the conversation. A result committed after this prompt started is not delivered
-    // until the next prompt, so the note waits for that prompt's turn stop.
+    // until the next prompt, so the recording waits for that prompt's turn stop.
     const undelivered = memory.store.listPendingDeliveries(sessionId, branch).length > 0;
-    if ((answered >= memory.config.note.triggerAnsweredTurns || growth >= memory.config.note.triggerTokens) && !(noteLaunch.mode === "branch" && undelivered))
-      background(note({ sessionId, branch, headTurnId: head, ...noteLaunch }));
-    const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastSettledFact ?? 0)).length;
-    if (count >= memory.config.settle.triggerUnsettledFacts)
-      background(memory.settle({ sessionId, branch, ...launch("settle") }));
+    if ((answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens) && !(recordingLaunch.mode === "branch" && undelivered))
+      background(recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
+    const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastIntegratedFact ?? 0)).length;
+    if (count >= memory.config.integration.triggerUnintegratedFacts)
+      background(memory.integrate({ sessionId, branch, ...launch("integration") }));
   });
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);
@@ -295,7 +295,7 @@ export default function (pi: ExtensionAPI) {
     if (!sessionId || !head) return { summary: { summary: "" } };
     try {
       // A pending run owns its frozen range. Later raw stays in the summary.
-      await note({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("note") });
+      await recording({ sessionId, branch, headTurnId: head, mode: "subagent", model: modelName("recording") });
     } catch (error) { context.ui.notify(String(error), "error"); }
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
@@ -326,10 +326,10 @@ export default function (pi: ExtensionAPI) {
     parameters: schema({ address: { type: "string" }, options: { type: "object", properties: { cap: { type: "integer", minimum: 1 }, cursor: { type: "string" } } } }, ["address"]),
     async execute(_id, raw) { const args = raw as { address: string; options?: ListingOptions }; return result(memory.trace(args.address, args.options)); } });
   pi.registerTool({ name: "search", label: "Search", description: "Search stored memory. No hit does not mean absent.",
-    parameters: schema({ query: { type: "string" }, scope: { enum: ["facts", "entries", "all", "raw"] } }, ["query"]),
+    parameters: schema({ query: { type: "string" }, scope: { enum: ["facts", "knowledge", "all", "raw"] } }, ["query"]),
     async execute(_id, raw) { const args = raw as { query: string; scope?: SearchScope }; return result(memory.search(args.query, args.scope, { sessionId: state.sessionId })); } });
-  pi.registerTool({ name: "mark", label: "Mark", description: "Declare the current project or mark an entry revision.",
-    parameters: schema({ input: { anyOf: [schema({ project: { type: "string" } }, ["project"]), schema({ entryId: { type: "integer", minimum: 1 }, kind: { enum: ["verified", "flagged", "clear"] } }, ["entryId", "kind"])] } }, ["input"]),
+  pi.registerTool({ name: "mark", label: "Mark", description: "Declare the current project or mark a knowledge item revision.",
+    parameters: schema({ input: { anyOf: [schema({ project: { type: "string" } }, ["project"]), schema({ knowledgeId: { type: "integer", minimum: 1 }, kind: { enum: ["verified", "flagged", "clear"] } }, ["knowledgeId", "kind"])] } }, ["input"]),
     async execute(_id, raw) {
       const args = raw as { input: { project: string } | Exclude<MarkInput, { project: string }> };
       if ("project" in args.input && !state.sessionId) throw new Error("A session requires an assistant reply");

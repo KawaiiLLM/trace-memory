@@ -1,7 +1,7 @@
 {
   "name": "trace-memory",
   "version": "0.1.0-dev",
-  "description": "Traceable two-layer memory for coding agents: facts noted from conversation, settled into entries, every claim traceable back to the source turn.",
+  "description": "Traceable two-layer memory for coding agents: facts recorded from conversation, integrated into knowledge, every claim traceable back to the source turn.",
   "type": "module",
   "license": "MIT",
   "keywords": ["memory", "agent", "claude-code", "pi", "pi-package"],

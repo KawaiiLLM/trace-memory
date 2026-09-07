@@ -1,6 +1,6 @@
-import { ENTRY_CATEGORIES } from "../model/index.ts";
-import type { EntryLink, EntryRevision, Mark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
-import type { EntryWithRevision } from "../store/index.ts";
+import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
+import type { KnowledgeLink, KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import type { KnowledgeWithRevision } from "../store/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
 
 type Budgets = TraceMemoryConfig["render"];
@@ -57,7 +57,7 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
     };
     if (selected) {
       const read = /^(read|read_file|search|grep|glob)$/i.test(call.name);
-      const memoryWrite = /(?:^|__)(?:note|settle|mark|remember|forget)$/i.test(call.name);
+      const memoryWrite = /(?:^|__)(?:note|memory|mark|remember|forget)$/i.test(call.name);
       if ((read || memoryWrite) && !options.full) {
         const path = string(input.path ?? input.file_path ?? input.pattern ?? call.input);
         body.push(read ? `${call.name} ${path}` : `receipt: ${call.name} ${call.status}`);
@@ -97,20 +97,20 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
     `  source: ${fact.source.join(", ")}`].join("\n");
 }
 
-export function renderEntry({ entry, revision: r }: EntryWithRevision, marks: Mark[] = []): string {
-  return `[E${entry.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
+export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
+  return `[K${knowledge.id}@${r.rev}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
-const revisionLine = (r: EntryRevision): string =>
-  `  E${r.entryId}@${r.rev} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
-const revisionSummary = (revisions: EntryRevision[]): string =>
+const revisionLine = (r: KnowledgeRevision): string =>
+  `  K${r.knowledgeId}@${r.rev} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
+const revisionSummary = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Revisions:\n${revisions.map(revisionLine).join("\n")}` : "Revisions: none";
 
-export function renderEntryTrace(value: EntryWithRevision, revisions?: EntryRevision[], links: EntryLink[] = [], marks: Mark[] = []): string {
-  return [renderEntry(value, marks.filter((m) => m.rev === value.revision.rev)), ...(revisions ? [
-    `  status: ${value.entry.status}`,
-    ...links.map((l) => `  ${l.kind}: E${l.toEntry}@${l.toRev} (from E${l.fromEntry}@${l.fromRev})`),
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, revisions?: KnowledgeRevision[], links: KnowledgeLink[] = [], marks: KnowledgeMark[] = []): string {
+  return [renderKnowledge(value, marks.filter((m) => m.rev === value.revision.rev)), ...(revisions ? [
+    `  status: ${value.knowledge.status}`,
+    ...links.map((l) => `  ${l.kind}: K${l.toKnowledge}@${l.toRev} (from K${l.fromKnowledge}@${l.fromRev})`),
     revisionSummary(revisions),
   ] : [revisionLine(value.revision)])].join("\n");
 }
@@ -144,8 +144,8 @@ function diffText(before: string, after: string): string {
   return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
 }
 
-export function renderEntryDiff(a: EntryRevision, b: EntryRevision, revisions: EntryRevision[]): string {
-  return [`[E${a.entryId}@${a.rev}..${b.rev}]`, `  text: ${diffText(a.text, b.text)}`,
+export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[]): string {
+  return [`[K${a.knowledgeId}@${a.rev}..${b.rev}]`, `  text: ${diffText(a.text, b.text)}`,
     `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
@@ -161,16 +161,16 @@ export function renderNegationWalk(steps: NegationStep[]): string {
   ]).join("\n");
 }
 
-export function budgetEntries(entries: EntryWithRevision[], cap: number, line: (entry: EntryWithRevision) => string = renderEntry) {
+export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge) {
   let used = 0, omitted = false;
   const groups: { category: string; text: string }[] = [], receipts: string[] = [];
-  for (const category of ENTRY_CATEGORIES) {
-    const group = entries.filter((e) => e.revision.category === category)
-      .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.entry.id - b.entry.id);
+  for (const category of KNOWLEDGE_CATEGORIES) {
+    const group = knowledge.filter((e) => e.revision.category === category)
+      .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id);
     const text = group.map((e) => line(e)).join("\n");
-    if (ENTRY_CATEGORIES.indexOf(category) >= 3 && (omitted || used + tokens(text) > cap)) {
+    if (KNOWLEDGE_CATEGORIES.indexOf(category) >= 3 && (omitted || used + tokens(text) > cap)) {
       omitted = true;
-      if (group.length) receipts.push(`omitted ${group.length} ${category} entries; expand: ${group.map((e) => `E${e.entry.id}`).join(", ")}`);
+      if (group.length) receipts.push(`omitted ${group.length} ${category} knowledge; expand: ${group.map((e) => `K${e.knowledge.id}`).join(", ")}`);
     } else { groups.push({ category, text }); used += tokens(text); }
   }
   return { groups, receipts };
@@ -184,15 +184,15 @@ export function budgetFacts(base: string, facts: Fact[], line: (fact: Fact) => s
     if (dropped || used + tokens(text) > cap) { dropped++; continue; }
     recent.push(text); used += tokens(text);
   }
-  if (tokens(base) > cap) receipts.push(`${label} overage: ${tokens(base) - cap} tokens; all ${label === "raw" ? "unnoted raw" : "range facts"} kept`);
+  if (tokens(base) > cap) receipts.push(`${label} overage: ${tokens(base) - cap} tokens; all ${label === "raw" ? "unrecorded raw" : "range facts"} kept`);
   if (dropped) receipts.push(`omitted ${dropped} older facts; expand: ${facts.slice(-dropped).map((f) => `F${f.id}`).join(", ")}`);
   return { recent, receipts };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.
 export const xmlBlock = (tag: string, text: string): string => `<${tag}>\n${text}\n</${tag}>`;
-export const renderEntriesBlock = (groups: { category: string; text: string }[]): string => {
+export const renderKnowledgeBlock = (groups: { category: string; text: string }[]): string => {
   const blocks = groups.filter((g) => g.text).map((g) => xmlBlock(g.category, g.text));
-  return blocks.length ? `<entries>\n${blocks.join("\n")}\n</entries>` : ""; // nothing to inject: no block at all
+  return blocks.length ? `<knowledge>\n${blocks.join("\n")}\n</knowledge>` : ""; // nothing to inject: no block at all
 };
 export const listingLine = (text: string): string => text.replaceAll("\n", " ⏎ ");

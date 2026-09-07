@@ -30,10 +30,10 @@ test("opens a store at the given path and applies default config", () => {
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {
   const dir2 = mkdtempSync(join(tmpdir(), "trace-memory-api-"));
-  const other = TraceMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { settle: { subagentModeDefault: false, triggerUnsettledFacts: 10 } });
-  expect(other.config.settle).toEqual({ subagentModeDefault: false, triggerUnsettledFacts: 10, nearThreshold: 0.28 });
+  const other = TraceMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { integration: { subagentModeDefault: false, triggerUnintegratedFacts: 10 } });
+  expect(other.config.integration).toEqual({ subagentModeDefault: false, triggerUnintegratedFacts: 10, nearThreshold: 0.28 });
   expect(other.config.render).toEqual(DEFAULT_CONFIG.render);
-  expect(other.config.note).toEqual(DEFAULT_CONFIG.note);
+  expect(other.config.recording).toEqual(DEFAULT_CONFIG.recording);
   other.close();
   rmSync(dir2, { recursive: true, force: true });
 });
@@ -41,7 +41,7 @@ test("a partial config overrides only the sections given, keeping the rest defau
 test("read methods reject missing sessions and search an empty store", () => {
   expect(() => memory.compact(1)).toThrow("session S1 does not exist");
   expect(() => memory.inject(1)).toThrow("session S1 does not exist");
-  expect(() => memory.trace("E1")).toThrow("entry E1 does not exist");
+  expect(() => memory.trace("K1")).toThrow("knowledge K1 does not exist");
   expect(() => memory.status(1)).toThrow("session S1 does not exist");
   expect(memory.search("pnpm")).toContain("No hit does not mean absent");
 });

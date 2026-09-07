@@ -1,4 +1,4 @@
-// core/model — row types and write-time shape validation for note and settle output.
+// core/model — row types and write-time shape validation for recording and integration output.
 // Terms: CONTEXT.md. Contract: .scratch/v1/spec.md (Modules, Schema).
 // Validation never throws on model output; it returns a list of problems instead.
 
@@ -14,7 +14,7 @@ export const FACT_CATEGORIES = [
 ] as const;
 export type FactCategory = (typeof FACT_CATEGORIES)[number];
 
-export const ENTRY_CATEGORIES = [
+export const KNOWLEDGE_CATEGORIES = [
   "constraint",
   "open",
   "dispute",
@@ -23,7 +23,7 @@ export const ENTRY_CATEGORIES = [
   "term",
   "reference",
 ] as const;
-export type EntryCategory = (typeof ENTRY_CATEGORIES)[number];
+export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
 
 export const ACTORS = ["user", "agent"] as const;
 export type Actor = (typeof ACTORS)[number];
@@ -34,23 +34,23 @@ export type RelationKind = (typeof RELATION_KINDS)[number];
 export const RELATION_STRENGTHS = ["strong", "weak"] as const;
 export type RelationStrength = (typeof RELATION_STRENGTHS)[number];
 
-export const ENTRY_SCOPES = ["session", "project", "global"] as const;
-export type EntryScope = (typeof ENTRY_SCOPES)[number];
+export const KNOWLEDGE_SCOPES = ["session", "project", "global"] as const;
+export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 
-export const ENTRY_STATUSES = ["active", "merged", "archived"] as const;
-export type EntryStatus = (typeof ENTRY_STATUSES)[number];
+export const KNOWLEDGE_STATUSES = ["active", "merged", "archived"] as const;
+export type KnowledgeStatus = (typeof KNOWLEDGE_STATUSES)[number];
 
-export const ENTRY_OPS = ["new", "edit", "merge", "archive"] as const;
-export type EntryOp = (typeof ENTRY_OPS)[number];
+export const KNOWLEDGE_OPS = ["new", "edit", "merge", "archive"] as const;
+export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
 
-export const RUN_KINDS = ["note", "settle"] as const;
+export const RUN_KINDS = ["recording", "integration"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
 export const RUN_OUTCOMES = ["success", "failure", "cancelled"] as const;
 export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 
-export const MARK_KINDS = ["verified", "flagged"] as const;
-export type MarkKind = (typeof MARK_KINDS)[number];
+export const KNOWLEDGE_MARK_KINDS = ["verified", "flagged"] as const;
+export type KnowledgeMarkKind = (typeof KNOWLEDGE_MARK_KINDS)[number];
 
 export const EVENT_PREFIXES = ["completed:", "reported:", "dispatched:", "attempted:"] as const;
 
@@ -112,33 +112,33 @@ export interface FactRelation {
   strength: RelationStrength;
 }
 
-export interface Entry {
+export interface Knowledge {
   id: number;
   projectId: number | null; // null only for scope=global
-  status: EntryStatus;
+  status: KnowledgeStatus;
   author: string;
   currentRevision: number;
 }
 
-export interface EntryRevision {
+export interface KnowledgeRevision {
   id: number;
-  entryId: number;
+  knowledgeId: number;
   rev: number;
   text: string;
-  category: EntryCategory;
-  scope: EntryScope;
+  category: KnowledgeCategory;
+  scope: KnowledgeScope;
   supports: number[];
-  op: EntryOp;
+  op: KnowledgeOp;
   because: number[] | null;
   runId: number | null;
   createdAt: string;
 }
 
-export interface EntryLink {
-  fromEntry: number;
+export interface KnowledgeLink {
+  fromKnowledge: number;
   fromRev: number;
   kind: "merged_into" | "split_from";
-  toEntry: number;
+  toKnowledge: number;
   toRev: number;
 }
 
@@ -158,10 +158,10 @@ export interface Run {
   createdAt: string;
 }
 
-export interface Mark {
-  entryId: number;
+export interface KnowledgeMark {
+  knowledgeId: number;
   rev: number;
-  kind: MarkKind;
+  kind: KnowledgeMarkKind;
   createdAt: string;
 }
 
@@ -175,8 +175,8 @@ export interface PendingDelivery {
 export interface Watermark {
   sessionId: number;
   branch: string;
-  lastNotedTurn: number | null;
-  lastSettledFact: number | null;
+  lastRecordedTurn: number | null;
+  lastIntegratedFact: number | null;
 }
 
 // ---- Shared validation plumbing ----
@@ -186,12 +186,12 @@ export interface ValidationResult<T> {
   value: T | null;
 }
 
-const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, note.md
-const LOCAL_ENTRY_HANDLE_RE = /^\$e\d+$/; // $e<n>, settle.md
+const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, recording.md
+const LOCAL_KNOWLEDGE_HANDLE_RE = /^\$e\d+$/; // $e<n>, integration.md
 const FACT_ID_RE = /^F\d+$/;
-const ENTRY_ID_RE = /^E\d+$/;
-// A bare fact or entry id embedded in prose text; ids belong only in relation/supports fields.
-const EMBEDDED_ID_RE = /\b[FE]\d+\b/;
+const KNOWLEDGE_ID_RE = /^K\d+$/;
+// A bare fact or knowledge id embedded in prose text; ids belong only in relation/supports fields.
+const EMBEDDED_ID_RE = /\b[FK]\d+\b/;
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
@@ -201,42 +201,42 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
-// ---- Note output (core/prompts/note.md) ----
+// ---- Recording output (core/prompts/recording.md) ----
 
-export interface NoteRelationInput {
+export interface RecordingRelationInput {
   target: string; // "F<id>" or "$n"
   strength: RelationStrength;
 }
 
-export interface NoteFactInput {
+export interface RecordingFactInput {
   category: FactCategory;
   actor: Actor;
   text: string;
   quote?: string;
   timestamp: string;
   source: string[]; // raw addresses, e.g. "T812#user", "T812#t3"
-  support?: NoteRelationInput[];
-  negate?: NoteRelationInput[];
+  support?: RecordingRelationInput[];
+  negate?: RecordingRelationInput[];
 }
 
-export interface NoteTurnBatch {
+export interface RecordingTurnBatch {
   turn: string; // "S<session>/T<turn>"
   title: string;
   topic: string;
-  facts: NoteFactInput[];
+  facts: RecordingFactInput[];
 }
 
 function validateRelationList(
   path: string,
   value: unknown,
   problems: string[],
-): NoteRelationInput[] | undefined {
+): RecordingRelationInput[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     problems.push(`${path}: expected an array`);
     return [];
   }
-  const out: NoteRelationInput[] = [];
+  const out: RecordingRelationInput[] = [];
   value.forEach((pair, k) => {
     const p = `${path}[${k}]`;
     if (!Array.isArray(pair) || pair.length !== 2) {
@@ -255,7 +255,7 @@ function validateRelationList(
   return out;
 }
 
-function validateNoteFact(path: string, raw: unknown, problems: string[]): NoteFactInput | null {
+function validateRecordingFact(path: string, raw: unknown, problems: string[]): RecordingFactInput | null {
   if (typeof raw !== "object" || raw === null) {
     problems.push(`${path}: expected an object`);
     return null;
@@ -272,7 +272,7 @@ function validateNoteFact(path: string, raw: unknown, problems: string[]): NoteF
     problems.push(`${path}.text: expected a non-empty string`);
   } else {
     if (EMBEDDED_ID_RE.test(f.text)) {
-      problems.push(`${path}.text: must not embed a fact or entry id; ids live only in relation fields`);
+      problems.push(`${path}.text: must not embed a fact or knowledge id; ids live only in relation fields`);
     }
     if (f.category === "event" && !EVENT_PREFIXES.some((p) => (f.text as string).startsWith(p))) {
       problems.push(`${path}.text: an event fact must start with one of ${EVENT_PREFIXES.join("|")}`);
@@ -302,13 +302,13 @@ function validateNoteFact(path: string, raw: unknown, problems: string[]): NoteF
   };
 }
 
-/** Validate one note run's full JSON output: an array of per-turn fact batches. */
-export function validateNoteOutput(raw: unknown): ValidationResult<NoteTurnBatch[]> {
+/** Validate one recording run's full JSON output: an array of per-turn fact batches. */
+export function validateRecordingOutput(raw: unknown): ValidationResult<RecordingTurnBatch[]> {
   const problems: string[] = [];
   if (!Array.isArray(raw)) {
-    return { problems: ["note output must be a JSON array"], value: null };
+    return { problems: ["recording output must be a JSON array"], value: null };
   }
-  const batches: NoteTurnBatch[] = [];
+  const batches: RecordingTurnBatch[] = [];
   raw.forEach((item, i) => {
     const path = `[${i}]`;
     if (typeof item !== "object" || item === null) {
@@ -329,9 +329,9 @@ export function validateNoteOutput(raw: unknown): ValidationResult<NoteTurnBatch
       problems.push(`${path}.facts: expected an array`);
       return;
     }
-    const facts: NoteFactInput[] = [];
+    const facts: RecordingFactInput[] = [];
     obj.facts.forEach((f, j) => {
-      const fact = validateNoteFact(`${path}.facts[${j}]`, f, problems);
+      const fact = validateRecordingFact(`${path}.facts[${j}]`, f, problems);
       if (fact) facts.push(fact);
     });
     batches.push({
@@ -344,58 +344,58 @@ export function validateNoteOutput(raw: unknown): ValidationResult<NoteTurnBatch
   return { problems, value: batches };
 }
 
-// ---- Settle output (core/prompts/settle.md) ----
+// ---- Integration output (core/prompts/integration.md) ----
 
-export interface SettleNewEntryInput {
+export interface IntegrationNewKnowledgeInput {
   handle: string; // "$e<n>"
   text: string;
-  scope: EntryScope;
-  category: EntryCategory;
+  scope: KnowledgeScope;
+  category: KnowledgeCategory;
   supports: string[]; // "F<id>"
 }
 
-export interface SettleEditEntryInput {
-  id: string; // "E<id>"
+export interface IntegrationEditKnowledgeInput {
+  id: string; // "K<id>"
   text: string;
-  scope: EntryScope;
-  category: EntryCategory;
+  scope: KnowledgeScope;
+  category: KnowledgeCategory;
   supports: string[];
   because: string[];
 }
 
-export interface SettleMergeEntryInput {
-  into: string; // "E<id>"
-  absorb: string[]; // "E<id>"[]
+export interface IntegrationMergeKnowledgeInput {
+  into: string; // "K<id>"
+  absorb: string[]; // "K<id>"[]
   text: string;
-  scope: EntryScope;
-  category: EntryCategory;
+  scope: KnowledgeScope;
+  category: KnowledgeCategory;
   supports: string[];
   because: string[];
 }
 
-export interface SettleDeleteEntryInput {
-  id: string; // "E<id>"
+export interface IntegrationDeleteKnowledgeInput {
+  id: string; // "K<id>"
   because: string[];
 }
 
-export interface SettleNotAdmittedInput {
+export interface IntegrationNotAdmittedInput {
   id: string; // "F<id>"
   because: string;
 }
 
-export interface SettleNearAckInput {
-  candidate: string; // "$e<n>" or "E<id>"
-  entry: string; // "E<id>"
+export interface IntegrationNearAckInput {
+  candidate: string; // "$e<n>" or "K<id>"
+  knowledge: string; // "K<id>"
   because: string;
 }
 
-export interface SettleOutput {
-  new: SettleNewEntryInput[];
-  edit: SettleEditEntryInput[];
-  merge: SettleMergeEntryInput[];
-  delete: SettleDeleteEntryInput[];
-  not_admitted: SettleNotAdmittedInput[];
-  near_ack: SettleNearAckInput[];
+export interface IntegrationOutput {
+  new: IntegrationNewKnowledgeInput[];
+  edit: IntegrationEditKnowledgeInput[];
+  merge: IntegrationMergeKnowledgeInput[];
+  delete: IntegrationDeleteKnowledgeInput[];
+  not_admitted: IntegrationNotAdmittedInput[];
+  near_ack: IntegrationNearAckInput[];
   over_budget: boolean;
 }
 
@@ -412,19 +412,19 @@ function checkText(path: string, text: unknown, problems: string[]): void {
   if (!isNonEmptyString(text)) {
     problems.push(`${path}: expected a non-empty string`);
   } else if (EMBEDDED_ID_RE.test(text)) {
-    problems.push(`${path}: must not embed a fact or entry id`);
+    problems.push(`${path}: must not embed a fact or knowledge id`);
   }
 }
 
 function checkScope(path: string, v: unknown, problems: string[]): void {
-  if (!ENTRY_SCOPES.includes(v as EntryScope)) {
-    problems.push(`${path}: expected one of ${ENTRY_SCOPES.join("|")}, got ${JSON.stringify(v)}`);
+  if (!KNOWLEDGE_SCOPES.includes(v as KnowledgeScope)) {
+    problems.push(`${path}: expected one of ${KNOWLEDGE_SCOPES.join("|")}, got ${JSON.stringify(v)}`);
   }
 }
 
 function checkCategory(path: string, v: unknown, problems: string[]): void {
-  if (!ENTRY_CATEGORIES.includes(v as EntryCategory)) {
-    problems.push(`${path}: expected one of ${ENTRY_CATEGORIES.join("|")}, got ${JSON.stringify(v)}`);
+  if (!KNOWLEDGE_CATEGORIES.includes(v as KnowledgeCategory)) {
+    problems.push(`${path}: expected one of ${KNOWLEDGE_CATEGORIES.join("|")}, got ${JSON.stringify(v)}`);
   }
 }
 
@@ -439,68 +439,68 @@ function checkFactIdArray(path: string, v: unknown, problems: string[], nonEmpty
   return v;
 }
 
-function checkEntryId(path: string, v: unknown, problems: string[]): void {
-  if (typeof v !== "string" || !ENTRY_ID_RE.test(v)) {
-    problems.push(`${path}: expected "E<id>", got ${JSON.stringify(v)}`);
+function checkKnowledgeId(path: string, v: unknown, problems: string[]): void {
+  if (typeof v !== "string" || !KNOWLEDGE_ID_RE.test(v)) {
+    problems.push(`${path}: expected "K<id>", got ${JSON.stringify(v)}`);
   }
 }
 
-/** Validate one settle round's full JSON output (either round; shape is identical). */
-export function validateSettleOutput(raw: unknown): ValidationResult<SettleOutput> {
+/** Validate one integration round's full JSON output (either round; shape is identical). */
+export function validateIntegrationOutput(raw: unknown): ValidationResult<IntegrationOutput> {
   const problems: string[] = [];
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return { problems: ["settle output must be a JSON object"], value: null };
+    return { problems: ["integration output must be a JSON object"], value: null };
   }
   const obj = raw as Record<string, unknown>;
 
-  const newEntries: SettleNewEntryInput[] = asArray("new", obj.new, problems).map((item, i) => {
+  const newKnowledge: IntegrationNewKnowledgeInput[] = asArray("new", obj.new, problems).map((item, i) => {
     const p = `new[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    if (typeof it.handle !== "string" || !LOCAL_ENTRY_HANDLE_RE.test(it.handle)) {
+    if (typeof it.handle !== "string" || !LOCAL_KNOWLEDGE_HANDLE_RE.test(it.handle)) {
       problems.push(`${p}.handle: expected "$e<n>", got ${JSON.stringify(it.handle)}`);
     }
     checkText(`${p}.text`, it.text, problems);
     checkScope(`${p}.scope`, it.scope, problems);
     checkCategory(`${p}.category`, it.category, problems);
     const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
-    return { handle: it.handle as string, text: it.text as string, scope: it.scope as EntryScope, category: it.category as EntryCategory, supports };
+    return { handle: it.handle as string, text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports };
   });
 
-  const editEntries: SettleEditEntryInput[] = asArray("edit", obj.edit, problems).map((item, i) => {
+  const editKnowledge: IntegrationEditKnowledgeInput[] = asArray("edit", obj.edit, problems).map((item, i) => {
     const p = `edit[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkEntryId(`${p}.id`, it.id, problems);
+    checkKnowledgeId(`${p}.id`, it.id, problems);
     checkText(`${p}.text`, it.text, problems);
     checkScope(`${p}.scope`, it.scope, problems);
     checkCategory(`${p}.category`, it.category, problems);
     const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
     const because = checkFactIdArray(`${p}.because`, it.because, problems);
-    return { id: it.id as string, text: it.text as string, scope: it.scope as EntryScope, category: it.category as EntryCategory, supports, because };
+    return { id: it.id as string, text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports, because };
   });
 
-  const mergeEntries: SettleMergeEntryInput[] = asArray("merge", obj.merge, problems).map((item, i) => {
+  const mergeKnowledge: IntegrationMergeKnowledgeInput[] = asArray("merge", obj.merge, problems).map((item, i) => {
     const p = `merge[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkEntryId(`${p}.into`, it.into, problems);
+    checkKnowledgeId(`${p}.into`, it.into, problems);
     const absorb = asArray(`${p}.absorb`, it.absorb, problems) as unknown[];
-    absorb.forEach((a, k) => checkEntryId(`${p}.absorb[${k}]`, a, problems));
+    absorb.forEach((a, k) => checkKnowledgeId(`${p}.absorb[${k}]`, a, problems));
     checkText(`${p}.text`, it.text, problems);
     checkScope(`${p}.scope`, it.scope, problems);
     checkCategory(`${p}.category`, it.category, problems);
     const supports = checkFactIdArray(`${p}.supports`, it.supports, problems, true);
     const because = checkFactIdArray(`${p}.because`, it.because, problems);
-    return { into: it.into as string, absorb: absorb as string[], text: it.text as string, scope: it.scope as EntryScope, category: it.category as EntryCategory, supports, because };
+    return { into: it.into as string, absorb: absorb as string[], text: it.text as string, scope: it.scope as KnowledgeScope, category: it.category as KnowledgeCategory, supports, because };
   });
 
-  const deleteEntries: SettleDeleteEntryInput[] = asArray("delete", obj.delete, problems).map((item, i) => {
+  const deleteKnowledge: IntegrationDeleteKnowledgeInput[] = asArray("delete", obj.delete, problems).map((item, i) => {
     const p = `delete[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    checkEntryId(`${p}.id`, it.id, problems);
+    checkKnowledgeId(`${p}.id`, it.id, problems);
     const because = checkFactIdArray(`${p}.because`, it.because, problems);
     return { id: it.id as string, because };
   });
 
-  const notAdmitted: SettleNotAdmittedInput[] = asArray("not_admitted", obj.not_admitted, problems).map((item, i) => {
+  const notAdmitted: IntegrationNotAdmittedInput[] = asArray("not_admitted", obj.not_admitted, problems).map((item, i) => {
     const p = `not_admitted[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
     if (typeof it.id !== "string" || !FACT_ID_RE.test(it.id)) {
@@ -512,17 +512,17 @@ export function validateSettleOutput(raw: unknown): ValidationResult<SettleOutpu
     return { id: it.id as string, because: it.because as string };
   });
 
-  const nearAck: SettleNearAckInput[] = asArray("near_ack", obj.near_ack, problems).map((item, i) => {
+  const nearAck: IntegrationNearAckInput[] = asArray("near_ack", obj.near_ack, problems).map((item, i) => {
     const p = `near_ack[${i}]`;
     const it = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
-    if (typeof it.candidate !== "string" || !(LOCAL_ENTRY_HANDLE_RE.test(it.candidate) || ENTRY_ID_RE.test(it.candidate))) {
-      problems.push(`${p}.candidate: expected "$e<n>" or "E<id>", got ${JSON.stringify(it.candidate)}`);
+    if (typeof it.candidate !== "string" || !(LOCAL_KNOWLEDGE_HANDLE_RE.test(it.candidate) || KNOWLEDGE_ID_RE.test(it.candidate))) {
+      problems.push(`${p}.candidate: expected "$e<n>" or "K<id>", got ${JSON.stringify(it.candidate)}`);
     }
-    checkEntryId(`${p}.entry`, it.entry, problems);
+    checkKnowledgeId(`${p}.knowledge`, it.knowledge, problems);
     if (!isNonEmptyString(it.because)) {
       problems.push(`${p}.because: expected a non-empty string`);
     }
-    return { candidate: it.candidate as string, entry: it.entry as string, because: it.because as string };
+    return { candidate: it.candidate as string, knowledge: it.knowledge as string, because: it.because as string };
   });
 
   if (obj.over_budget !== undefined && typeof obj.over_budget !== "boolean") {
@@ -532,10 +532,10 @@ export function validateSettleOutput(raw: unknown): ValidationResult<SettleOutpu
   return {
     problems,
     value: {
-      new: newEntries,
-      edit: editEntries,
-      merge: mergeEntries,
-      delete: deleteEntries,
+      new: newKnowledge,
+      edit: editKnowledge,
+      merge: mergeKnowledge,
+      delete: deleteKnowledge,
       not_admitted: notAdmitted,
       near_ack: nearAck,
       over_budget: obj.over_budget === true,
