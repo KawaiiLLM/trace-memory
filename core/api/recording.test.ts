@@ -191,7 +191,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
 });
 
 const golden = (name: string) => readFileSync(new URL(`../../test/fixtures/recording/${name}.txt`, import.meta.url), "utf8").trimEnd();
-const small = { render: { commandTokens: 20, stdoutHeadTokens: 8, stdoutTailTokens: 8 } };
+const small = { render: { commandTokens: 30, stdoutHeadTokens: 12, stdoutTailTokens: 12 } };
 test("fixture turn golden and recording input use identical rendering with receipts last", async () => {
   memory.close(); open(small);
   const first = turn(); turn(first.id, 1);
@@ -240,8 +240,8 @@ test("raw exceeding the episodic budget is retained, while older facts are dropp
 });
 
 test("stdout keeps head and tail; stderr keeps tail; reports keep head and tail", () => {
-  memory.close(); open({ render: { commandTokens: 1, stdoutHeadTokens: 1, stdoutTailTokens: 1,
-    stderrTailTokens: 1, reportHeadTokens: 1, reportTailTokens: 1 } });
+  memory.close(); open({ render: { commandTokens: 2, stdoutHeadTokens: 2, stdoutTailTokens: 2,
+    stderrTailTokens: 2, reportHeadTokens: 2, reportTailTokens: 2 } });
   const t = memory.store.appendTurn({ sessionId, kind: "turn", userPrompt: "uncut user", assistantText: "uncut assistant", startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "a\nbbbbb\nc" }),
     result: JSON.stringify({ stdout: "a\nbbbbb\nc", stderr: "first\nlast" }), status: "failure" });

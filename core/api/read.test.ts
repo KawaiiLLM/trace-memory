@@ -93,7 +93,7 @@ test("compaction retains oversized raw with standard tool cuts and receipts outs
   const { s, t } = populated(), raw = fixture.observation.repeat(1000);
   const next = turn(s.id, raw, t.id);
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: "pwd", result: JSON.stringify({ stdout: "x".repeat(10000) }), status: "success" });
-  memory.config.render.episodicBlockTokens = 1;
+  memory.config.render.episodicBlockTokens = 70;
   const result = memory.compact(s.id, "main", next.id);
   expect(result).toContain(raw); expect(result).toContain("omitted 1 lines, 10000 characters");
   expect(result).toContain("raw overage:"); expect(result).toContain("all unrecorded raw kept");
@@ -111,7 +111,7 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   const n = recording(s.id, selected.id, fixture.interpretation);
   const full = memory.compact(s.id, "main", selected.id);
   expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));
-  memory.config.render.episodicBlockTokens = 40;
+  memory.config.render.episodicBlockTokens = 70;
   const limited = memory.compact(s.id, "main", selected.id);
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();

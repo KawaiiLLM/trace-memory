@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type IntegrationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
+import { TraceMemory, tokens, type IntegrationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "./index.ts";
 import memories from "../../test/fixtures/recording/facts.json";
 
 type IntegrationAgentInput = CoreInput & { round: "candidate" | "final"; request?: any; response?: RunAgentResult };
@@ -335,12 +335,12 @@ test("merge records survivor revision, absorbed links, and trace history", async
 
 test("numbers, token overage and unanswered NEAR are diagnostics, never gates", async () => {
   const f = fact("Measured 12 samples.", { quote: "Confirmed 42." }); knowledge([f], { text: "Measured 12 samples." });
-  const output = createOutput(f, "Measured 12 samples. 42 2 999 " + "x".repeat(801));
+  const output = createOutput(f, "Measured 12 samples. 42 2 999 " + "the recorder writes facts that cite their source. ".repeat(30));
   queue(createOutput(f, "Measured 12 samples."), output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.committed).toHaveLength(1);
   expect(result.diagnostics).toContainEqual({ kind: "unsupported_numbers", knowledge: "$e1", numbers: ["2", "999"] });
-  expect(result.diagnostics).toContainEqual({ kind: "over_200_tokens", knowledge: "$e1", tokens: Math.ceil(output.operations[0]!.text.length / 4) });
+  expect(result.diagnostics).toContainEqual({ kind: "over_200_tokens", knowledge: "$e1", tokens: tokens(output.operations[0]!.text) });
   expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: result.unansweredNear });
   expect(audit(result.runId, 1).diagnostics).toEqual(result.diagnostics);
 });

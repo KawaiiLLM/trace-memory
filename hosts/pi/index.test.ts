@@ -39,7 +39,8 @@ test("five answered turns trigger only at stop, reset at the watermark, and slas
 test("50K raw context growth triggers recording, including tool results; no assistant means no answered turn", async () => {
   const h = host();
   await h.prompt(); await h.answer();
-  await h.emit("tool_result", { toolName: "read", input: { path: "large.txt" }, content: [{ type: "text", text: "x".repeat(200_000) }], isError: false });
+  // A run of one letter is priced at the default seven characters per token, so 400K characters is ~57K.
+  await h.emit("tool_result", { toolName: "read", input: { path: "large.txt" }, content: [{ type: "text", text: "x".repeat(400_000) }], isError: false });
   expect(h.requests).toHaveLength(0);
   await h.emit("agent_settled"); await h.drain();
   expect(h.requests).toHaveLength(1);
@@ -217,14 +218,14 @@ test("core contains no Pi imports and host imports core only through the facade"
   expect(readFileSync("hosts/pi/index.ts", "utf8").match(/from "\.\.\/\.\.\/core\/[^\"]+"/g)).toEqual(['from "../../core/api/index.ts"']);
 });
 
-test("token threshold uses growth since watermark, including the CJK heuristic", async () => {
-  const h = host({ "recording.triggerTokens": 4 });
+test("token threshold uses growth since watermark, and Chinese is not priced as ASCII", async () => {
+  const h = host({ "recording.triggerTokens": 8 });
   await h.prompt("一"); await h.answer("a"); await h.emit("agent_settled");
-  expect(h.requests).toHaveLength(0); // 0.75 + 0.25 = 1.
+  expect(h.requests).toHaveLength(0); // one hanzi, one line break, one word: three.
   await h.prompt("一一一"); await h.answer("aaa"); await h.emit("agent_settled"); await h.drain();
-  expect(h.requests).toHaveLength(1); // Three more tokens, exactly four since watermark.
-  await h.prompt("一一一"); await h.answer("aaa"); await h.emit("agent_settled");
-  expect(h.requests).toHaveLength(1); // Three since the new watermark.
+  expect(h.requests).toHaveLength(1); // five more, eight since the watermark.
+  await h.prompt("一"); await h.answer("a"); await h.emit("agent_settled");
+  expect(h.requests).toHaveLength(1); // three since the new watermark.
 });
 
 test("provider failures retain captured request and do not advance a watermark", async () => {

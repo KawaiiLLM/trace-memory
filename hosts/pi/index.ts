@@ -396,7 +396,8 @@ export default function (pi: ExtensionAPI) {
       turns.push(turn); id = turn.parentTurnId;
     }
     const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
-    const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
+    const growth = turns.reduce((n, t) => n + tokens([t.userPrompt ?? "", t.assistantText ?? "",
+      ...memory.store.listToolCalls(t.id).flatMap(c => [c.input ?? "", c.result ?? ""])].join("\n")), 0);
     const background = (kind: "recording" | "integration", promise: Promise<unknown>) => {
       pending.add(promise); activity.running.set(kind, (activity.running.get(kind) ?? 0) + 1); showSpend(context);
       void promise.then(result => reportProblems(result, context), error => { activity.last = "error"; context.ui.notify(String(error), "error"); })

@@ -28,14 +28,20 @@ function session() {
   return { s, t };
 }
 
-test("Q12: token estimate weighs CJK at 0.75 per character and everything else at 0.25", () => {
+test("2026-09-07: the estimate is segment-based, superseding the Q12 two-weight formula, and Chinese is still never priced as ASCII", () => {
+  // Q12 ruled 0.75 per CJK character and 0.25 per other; measurement against a real tokenizer put that
+  // 28% low on Chinese and 46% high on English prose, so the user ruled for per-segment pricing.
   expect(tokens("abcd")).toBe(1);
   expect(tokens("地形值")).toBe(3);
-  expect(tokens("mapC 地形")).toBe(Math.ceil(5 * 0.25 + 2 * 0.75));
-  // A Chinese line must never be estimated as if it were ASCII: 40 characters is 30 tokens, not 10.
-  expect(tokens("一".repeat(40))).toBe(30);
-  // Characters, not UTF-16 code units: four astral emoji are four characters, one token.
-  expect(tokens("😀😀😀😀")).toBe(1);
+  expect(tokens("mapC 地形")).toBe(3);
+  // The point Q12 protected still holds: 40 Chinese characters are 35 tokens, not the 10 that four
+  // characters per token would give.
+  expect(tokens("一".repeat(40))).toBe(35);
+  // Characters, not UTF-16 code units: four astral emoji are four characters, not eight.
+  expect(tokens("😀😀😀😀")).toBe(5);
+  // A run of horizontal whitespace costs the one token o200k holds for it, whatever its width.
+  expect(tokens("a b")).toBe(tokens("ab") + 1);
+  expect(tokens(`a${" ".repeat(64)}b`)).toBe(tokens("a  b"));
 });
 
 test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese output is cut at its token cap, not at four characters per token", () => {

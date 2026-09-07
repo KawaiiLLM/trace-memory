@@ -8,7 +8,8 @@ receipt: mcp__plugin_claude-mnemo_mnemo__note skipped
 command:
 cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'
 
-[omitted 9 lines, 220 characters]
+
+[omitted 8 lines, 219 characters]
 stdout:
 [omitted 2 lines, 97 characters]
 [Source entry id: T1#assistant]

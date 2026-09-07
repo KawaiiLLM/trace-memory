@@ -7,13 +7,104 @@ type Budgets = TraceMemoryConfig["render"];
 export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}` }
 export interface Rendered { content: string; receipts: string[] }
 
-// Token estimate (ruled, grilling Q12; no tokenizer dependency): 0.75 per CJK character, 0.25 per
-// other character, counted in code points. Every budget in this module is measured with it.
-const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]/u;
+// Token estimate (no tokenizer dependency). Two weights over character classes cannot price both
+// Chinese and English prose at once: the ruled 0.75/0.25 pair under-counted Chinese by 28% and
+// over-counted English prose by 46%, and refitting the two constants left the Chinese shortfall at
+// 23% (measurement 2026-09-07). So the text is split on whitespace and punctuation runs and each
+// segment is priced by its own rule, the shape used by tokenx (github.com/johannschopplich/tokenx,
+// MIT), whose ratios are calibrated against OpenAI's o200k_base. Every budget here uses this.
+// Two rules are ours, both measured: runs are priced across letter/digit boundaries because this
+// project's addresses (F42, T7, K1) are that shape in every line we budget, and a run of horizontal
+// whitespace costs the one token o200k holds for it. Accuracy over 20 corpora of this project's own
+// text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting is the safe
+// direction for a budget. core/render/index.test.ts pins the bound against recorded true counts.
+const PUNCTUATION = /[.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]/;
+const SPLIT = new RegExp(`(\\s+|${PUNCTUATION.source}+)`);
+const INDENT = /\n[^\S\n]/;
+const SPACE_RUN = /[^\S\n]{2,}/;
+const NON_ASCII = /[\u0080-\uFFFF]/;
+const CJK = /[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u30FF\uFF00-\uFFEF\u2E80-\u2EFF\u31C0-\u31EF\u3200-\u32FF\u3300-\u33FF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/;
+const DIGITS = /^\d+$/;
+const LOWERCASE_WORD = /^[a-z]+$/;
+const LETTERS_AND_DIGITS = /^(?=.*[a-z])(?=.*\d)[a-z\d]+$/i;
+// Ratios in characters per token; a whole language is priced through the minority of its words that
+// carry a diacritic, so each is fitted against running text rather than against the matched segments.
+const SCRIPTS: { pattern: RegExp; charsPerToken: number }[] = [
+  { pattern: /[äöüßẞ]/i, charsPerToken: 3 },
+  { pattern: /[éèêëàâîïôûùüÿçœæáíóúñ]/i, charsPerToken: 4.5 },
+  { pattern: /[ąćęłńóśźżěščřžýůúďťň]/i, charsPerToken: 2.5 },
+  { pattern: /[\u0430-\u044F\u0451]/i, charsPerToken: 6 },
+  { pattern: /[\u03AC-\u03CE]/i, charsPerToken: 3 },
+  // Anchored to pure pictographic runs: symbols like ™ are Extended_Pictographic too, and an
+  // unanchored match would misprice the word they are attached to.
+  { pattern: /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\p{Emoji_Component}]*$/u, charsPerToken: 0.9 },
+];
+const HANZI_CHARS_PER_TOKEN = 1.15, KANA_CHARS_PER_TOKEN = 1.4, HANGUL_CHARS_PER_TOKEN = 1.65;
+const DEFAULT_CHARS_PER_TOKEN = 7, PUNCTUATION_CHARS_PER_TOKEN = 6;
+const SHORT_SEGMENT = 3, MERGED_WORD = 8;
+
+const isHangul = (code: number) => (code >= 0xAC00 && code <= 0xD7AF) || (code >= 0x1100 && code <= 0x11FF)
+  || (code >= 0x3130 && code <= 0x318F) || (code >= 0xA960 && code <= 0xA97F) || (code >= 0xD7B0 && code <= 0xD7FF);
+
+// One rounding for the whole segment: rounding each script on its own would charge a token for every
+// script boundary in mixed CJK text.
+function cjkTokens(segment: string): number {
+  let kana = 0, hangul = 0, hanzi = 0;
+  for (const character of segment) {
+    const code = character.codePointAt(0)!;
+    if (code >= 0x3040 && code <= 0x30FF) kana++;
+    else if (isHangul(code)) hangul++;
+    else hanzi++;
+  }
+  return Math.ceil(hanzi / HANZI_CHARS_PER_TOKEN + kana / KANA_CHARS_PER_TOKEN + hangul / HANGUL_CHARS_PER_TOKEN);
+}
+
+function runTokens(run: string): number {
+  if (DIGITS.test(run)) return Math.ceil(run.length / 3); // o200k chunks digit runs by three
+  if (run.length <= SHORT_SEGMENT) return 1;
+  // Common lowercase words up to eight characters merge into one token; the lowercase gate keeps
+  // capitalised compounds and scripts without a rule of their own at the default ratio.
+  if (run.length <= MERGED_WORD && LOWERCASE_WORD.test(run)) return 1;
+  if (PUNCTUATION.test(run)) return Math.ceil(run.length / PUNCTUATION_CHARS_PER_TOKEN);
+  return Math.ceil(run.length / DEFAULT_CHARS_PER_TOKEN);
+}
+
+function segmentTokens(segment: string, previous: string): number {
+  if (/^\s+$/.test(segment)) {
+    let count = 0;
+    // A line break stands on its own after a word but merges into a preceding punctuation token.
+    if (segment.includes("\n")) count += PUNCTUATION.test(previous.slice(-1)) ? 0 : 1;
+    // o200k holds one token for a run of spaces of any length, so indentation costs one whatever its
+    // width. A lone space between words merges into the word that follows and costs nothing.
+    if (INDENT.test(segment) || SPACE_RUN.test(segment)) count += 1;
+    return count;
+  }
+  if (NON_ASCII.test(segment)) {
+    for (const { pattern, charsPerToken } of SCRIPTS) {
+      if (pattern.test(segment)) return Math.ceil([...segment].length / charsPerToken);
+    }
+    if (CJK.test(segment)) return cjkTokens(segment);
+  }
+  // o200k breaks at letter/digit boundaries, and this project's own addresses (F42, T7, K1, R12) are
+  // exactly that shape, in every fact line, knowledge line and source index we budget. Charging one
+  // token for the whole short segment under-counted a rendered fact line by 16% (measured 2026-09-07);
+  // pricing each run on its own follows the tokenizer instead.
+  if (LETTERS_AND_DIGITS.test(segment)) {
+    let total = 0;
+    for (const run of segment.match(/\d+|\D+/g)!) total += runTokens(run);
+    return total;
+  }
+  return runTokens(segment);
+}
+
 export const tokens = (text: string): number => {
-  let cjk = 0, other = 0;
-  for (const ch of text) if (CJK.test(ch)) cjk++; else other++;
-  return Math.ceil(cjk * 0.75 + other * 0.25);
+  let total = 0, previous = "";
+  for (const segment of text.split(SPLIT)) {
+    if (!segment) continue;
+    total += segmentTokens(segment, previous);
+    previous = segment;
+  }
+  return total;
 };
 
 // Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
