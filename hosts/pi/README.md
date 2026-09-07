@@ -444,13 +444,12 @@ The host therefore publishes one footer status item through
 which a statusline extension renders as a segment:
 
 ```text
-<indicator> 🧠 trace: 12  memory: 7/38  $22.58
+🧠 <indicator> trace-memory 7/38 $22.58
 ```
 
-`trace` counts the main agent's trace calls on this branch; `memory` is the
-applicable current knowledge over the facts on this branch; the amount is this
-session's cumulative spend at the model's configured API rates (Pi's own cost
-formula).
+The ratio is the applicable current knowledge over the facts on this branch; the
+amount is this session's cumulative spend at the model's configured API rates
+(Pi's own cost formula).
 
 The indicator uses Pi theme colours: dim `○` idle, accent `●` a Recording run in
 flight, success `●` an Integration run in flight, warning `●` a branch Recording

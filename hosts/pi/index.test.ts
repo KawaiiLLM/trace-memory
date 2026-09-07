@@ -672,7 +672,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   const h = host({ "recording.triggerAnsweredTurns": 1 });
   h.provider(async c => recordingFact(c));
   await h.turn();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> 🧠 trace: 0  memory: 0\/1  \$\d+\.\d{2}$/); // idle; one fact on this branch
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> trace-memory 0\/1 \$\d+\.\d{2}$/); // idle; one fact on this branch
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ recording: 1, integration: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
@@ -716,15 +716,15 @@ test("the footer indicator follows activity: accent while recording runs, error 
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
-  expect(h.statuses.get("trace-memory")).toMatch(/^<accent>●<\/accent> 🧠/); // recording in flight
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <accent>●<\/accent> /); // recording in flight
   release(recordingFact(h.conversations[0]!)); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   h.provider(async () => { throw new Error("offline"); });
   await h.turn();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<error>●<\/error> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return recordingFact(c); }, { autoStop: false });
   await h.turn();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
 });
 
 test("a fork sees integration progress exactly when every fact of that integration lies on its path", async () => {
@@ -756,11 +756,11 @@ test("a dropped duplicate Integration trigger neither ends the running indicator
     if (held) return integrationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
   await h.turn(); // F1 recorded
   await h.emit("agent_settled"); await h.drain(); // Integration starts and waits for the model
-  expect(h.statuses.get("trace-memory")).toMatch(/^<success>●<\/success> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /);
   await h.emit("agent_settled"); await h.drain(); // duplicate trigger: the core drops it at once
-  expect(h.statuses.get("trace-memory")).toMatch(/^<success>●<\/success> 🧠/); // the first run is still in flight
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <success>●<\/success> /); // the first run is still in flight
   release(integrationReply()); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
 test("a stream that dies mid-reply is a failure carrying the provider's error, commits nothing, and a later stream death after a commit is a problem on a success", async () => {
@@ -772,7 +772,7 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(JSON.parse(run.response!).problems[0]).toContain("stream reset by peer");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
   expect(h.memory.store.getWatermark(1, "main")).toBeNull();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<error>●<\/error> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : recordingFact(c), { autoStop: false });
   await h.turn();
   run = h.memory.store.listRuns(1).at(-1)!;
@@ -842,8 +842,8 @@ test("the footer shows the warning indicator while a retry waits", async () => {
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return recordingFact(c); });
   await h.turn(); // the first attempt failed, the retry is sleeping
-  expect(h.statuses.get("trace-memory")).toMatch(/^<warning>●<\/warning> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
   await new Promise(r => setTimeout(r, 120)); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> 🧠/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");
 });
