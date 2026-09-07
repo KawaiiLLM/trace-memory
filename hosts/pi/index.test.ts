@@ -750,8 +750,9 @@ test("a branch forked before the source's last integration re-integrates the com
 
 test("a dropped duplicate Integration trigger neither ends the running indicator nor changes the last outcome", async () => {
   const h = host({ "recording.triggerAnsweredTurns": 1, "integration.triggerUnintegratedFacts": 1 });
-  let release!: (value: Reply) => void;
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? new Promise(resolve => { release = resolve; }) : recordingFact(c));
+  let release!: (value: Reply) => void, held = false;
+  h.provider(async c => { if (!c.systemPrompt!.includes("### Second-round user message")) return recordingFact(c);
+    if (held) return integrationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
   await h.turn(); // F1 recorded
   await h.emit("agent_settled"); await h.drain(); // Integration starts and waits for the model
   expect(h.statuses.get("trace-memory")).toMatch(/^<success>●<\/success> ☉/);
