@@ -49,3 +49,23 @@ above completed normally. Not reproduced; noted for watching.
 
 Observed with the `json` output mode: the injected block appears as a custom
 message (`role: custom`, `customType: trace-memory`) before the assistant turn.
+
+## Session 3 (`tmsettle1`, after the review fixes in ebaba06): settle in branch mode
+
+Fresh database `/tmp/tm-live2/trace.db`, marker `tm-live2`, config
+`note.triggerAnsweredTurns=1`, `settle.triggerUnsettledFacts=2`,
+`settle.subagentModeDefault=false`; three one-rule prompts, each a `pi -p` process.
+
+| Run | Kind | Mode | Verified | cacheRead | Result |
+|---|---|---|---|---|---|
+| 1–3 | note | branch | yes | — | F1–F3 decision/user |
+| 4 | settle candidate | branch | yes (prefix = captured main request) | 2176 | candidate JSON |
+| 5 | settle final | branch | yes (prefix = candidate request) | 2048 | E1, E2 constraint/project |
+
+- The final request's tail is `[user (settle prompt + input), message/assistant
+  (candidate reply replayed as an `output_text` item), user (NEAR/CLOSER +
+  checklist)]`; the openai-codex backend accepted the replayed item.
+- The settle range froze at F1..F2 while note run 3 was still in flight; F3
+  stays unsettled for the next trigger, as designed.
+- This provider reported non-zero `cacheRead` on both settle calls, unlike the
+  earlier sessions; still recorded as an observation only.
