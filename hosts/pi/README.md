@@ -414,3 +414,14 @@ mark precedence and persisted host state, retroactive merge and immediate
 injection, session-knowledge isolation, shared duplicate visibility, deferred recording
 completion with later raw and branch-only delivery, fresh subagent recordings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
+
+## Known limits
+
+- A queued (steering or follow-up) user message bypasses `before_agent_start`, so
+  recording results that finish during such a message are delivered at the next
+  ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
+- Two identical user messages delivered back to back before any assistant reply
+  are treated as one turn: Pi events carry no message identity, and the host tells
+  messages apart by text and reply state.
+- Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
+  redeclaring the project there changes the shared session's project.

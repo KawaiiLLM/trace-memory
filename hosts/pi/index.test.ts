@@ -619,3 +619,51 @@ test("a run that committed and then hit a provider failure is reported as a warn
   expect(h.notices.some(n => n.includes("committed with problems") && n.includes("after commit"))).toBe(true);
   expect(h.notices.some(n => n.startsWith("Error:"))).toBe(false);
 });
+
+test("16b: Pi marks and post-tree injection use the restored head, while explicit commit marks remain unrestricted", async () => {
+  const h = host();
+  await h.turn();
+  const write = (head: number, branch: string, op: "create" | "update", text: string) => {
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: head, branch });
+    const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${head}#user`] }] })).factIds[0];
+    expect(tools[3]!.execute({ operations: [{ op, ...(op === "update" ? { id: "K1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], because: [`F${fact}`] }], skipped: [] })).not.toContain("rejected:");
+  };
+  write(1, "main", "create", "Root rule");
+  const root = [...h.entries];
+  await h.prompt("C rule"); await h.answer();
+  write(2, "main", "update", "C rule");
+  const c = [...h.entries];
+  h.entries.splice(0, h.entries.length, ...root); await h.emit("session_tree");
+  await h.prompt("D rule"); await h.answer();
+  write(3, h.entries.at(-1).data.branch, "update", "D rule");
+  await h.commands.get("trace").handler("mark K1 verified", h.ctx);
+  expect(h.notices.at(-1)).toBe("K1@3: verified");
+  h.entries.splice(0, h.entries.length, ...c); await h.emit("session_tree");
+  await h.commands.get("trace").handler("mark K1 flagged", h.ctx);
+  expect(h.notices.at(-1)).toBe("K1@2: flagged");
+  await h.commands.get("trace").handler("mark K1@3 clear", h.ctx);
+  expect(h.notices.at(-1)).toBe("K1@3: clear");
+  await expect(h.commands.get("trace").handler("mark K1@57 verified", h.ctx)).rejects.toThrow("does not exist");
+  const injected = (await h.prompt("Continue C")).message.content;
+  expect(injected).toContain("[K1@2]"); expect(injected).not.toContain("[K1@3]");
+  const carry = await h.emit("session_before_tree");
+  expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.at(-1).data.branch, 4));
+  expect(carry.summary.summary).toMatch(/^<branch_carry>\nthis is knowledge from another branch;/);
+});
+
+test("a Pi fork continues the same session on a new branch that inherits the source watermarks, so shared turns are recorded once", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c));
+  await h.turn(); // T1 recorded on main
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(1);
+  h.ctx.sessionManager.getSessionId = () => "forked"; // pi --fork: same copied path, new Pi session id
+  await h.emit("session_start");
+  const branch = h.entries.at(-1)?.data?.branch ?? h.memory.store.listRuns(1).at(-1)!.branch;
+  await h.turn(); // one turn on the fork
+  const run = h.memory.store.listRuns(1).at(-1)!;
+  expect(run.branch).not.toBe("main");
+  expect(run.rangeFrom).toBe("S1/T2"); // not S1/T1 again
+  expect(h.memory.store.listSessionFacts(1).filter(f => f.text === "用 pnpm，不要 npm")).toHaveLength(2); // T1 once, T2 once
+  expect(h.memory.store.getWatermark(1, run.branch!)?.lastRecordedTurn).toBe(2);
+  void branch;
+});

@@ -73,7 +73,7 @@ function audit(runId: number, callIndex: number, outcome: "success" | "failure" 
   expect(run.outcome).toBe(outcome);
   expect(JSON.parse(run.request!)).toEqual(calls[callIndex]!.request);
   expect(run.promptHash).toBe(createHash("sha256").update(calls[callIndex]!.prompt).digest("hex"));
-  expect(JSON.parse(run.response!).readKnowledgeRevisions).toEqual(calls[callIndex]!.readKnowledgeRevisions);
+  expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual(calls[callIndex]!.readKnowledgeCommits);
   return JSON.parse(run.response!);
 }
 
@@ -87,14 +87,14 @@ test("freezes session branch range, read revisions, relations and guidance throu
   selection.branch = "switched";
   const late = fact(memories.observation, { negate: [{ target: `F${current}`, strength: "strong" }] });
   const update = memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "update", knowledgeId: e,
-    expectedRevision: 1, text: memories.editedKnowledge, category: "open", scope: "project", supports: [late], because: [late], createdAt: time }] });
+    baseCommit: 1, text: memories.editedKnowledge, category: "open", scope: "project", supports: [late], because: [late], createdAt: time }] });
   expect(update.ok).toBe(true);
   const moved = memory.trace(`K${e}`); expect(moved).not.toBe(before);
   knowledge([late]);
   queue(createOutput(current)); resolve(createOutput(current)); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range).toEqual({ from: `F${current}`, to: `F${current}`, facts: [memory.store.getFact(current)!] });
-  expect(result.readKnowledgeRevisions).toEqual([{ knowledgeId: e, rev: 1 }]);
+  expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
   for (const call of calls) {
     expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("branch");
     expect(call.input).not.toContain(`[F${late}]`); expect(call.input).not.toContain(`[F${foreign}]`);
@@ -118,7 +118,7 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   ids.push(knowledge([cited], { scope: "global", sessionId: foreignSession }));
   const archived = knowledge([cited]);
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "archive", knowledgeId: archived,
-    expectedRevision: archived, because: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
+    baseCommit: archived, because: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
   watermark(unrelatedFact);
   const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
   const weak = fact(memories.interpretation, { negate: [{ target: `F${cited}`, strength: "weak" }] });
@@ -257,7 +257,7 @@ test("context uses timestamp freshness while range remains complete and categori
   expect(small).toContain("omitted 3 older facts");
   for (const category of categories.slice(0, 3)) expect(small).toContain(`[${category}/project]`);
   for (const category of categories.slice(3)) { expect(small).not.toContain(`[${category}/project]`); expect(small).toContain(`omitted 1 ${category} knowledge`); }
-  expect(calls[2]!.readKnowledgeRevisions).toHaveLength(7);
+  expect(calls[2]!.readKnowledgeCommits).toHaveLength(7);
 });
 
 test("bigram Jaccard has a known nontrivial score and an inclusive configurable threshold", async () => {
@@ -309,7 +309,7 @@ test("a target that moved on bounces the whole batch, audits the rejection and p
   queue(output); const resolve = deferred(), pending = integration();
   await new Promise((r) => setTimeout(r, 0));
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "update", knowledgeId: e,
-    expectedRevision: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
+    baseCommit: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], because: [], createdAt: time }] });
   resolve(output); const result = await pending;
   if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
   expect(result.problems.join(" ")).toContain("current: K1@2");
@@ -325,11 +325,11 @@ test("merge records survivor revision, absorbed links, and trace history", async
   const output = { ...empty, operations: [{ op: "merge", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`], because: [`F${b}`] }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, rev: 3 }]);
-  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([{ fromKnowledge: absorbed, fromRev: 2, kind: "merged_into", toKnowledge: survivor, toRev: 3 }]);
+  expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, commit: 3 }]);
+  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([{ fromKnowledge: absorbed, fromCommit: 2, kind: "merged_into", toKnowledge: survivor, toCommit: 3 }]);
   expect(memory.trace(`K${absorbed}`)).toContain(`K${survivor}@3`);
   expect(memory.trace(`K${survivor}`)).toContain("merge");
-  expect(memory.trace(`K${survivor}@1..3`)).toContain(`F${b}`);
+  expect(memory.trace(`K${survivor}@1..K${survivor}@3`)).toContain(`F${b}`);
   expect(memory.store.getKnowledgeRevision(survivor, 3)?.because).toEqual([b]);
 });
 
@@ -404,7 +404,7 @@ test("integration revisions and success record roll back if watermark writing fa
 test("simulation v7m fixture integrates through the facade with traceable Chinese evidence", async () => {
   const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/integration.json", import.meta.url), "utf8"));
   const ids = new Map<number, number>();
-  for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, source: source.source, createdAt: source.timestamp }));
+  for (const source of fixture.facts) ids.set(source.id, fact(source.text, { actor: source.actor, category: source.category, quote: source.quote, createdAt: source.timestamp }));
   const output = { ...empty, operations: [{ op: "create", ...fixture.knowledge, supports: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`), because: fixture.knowledge.supports.map((id: string) => `F${ids.get(Number(id.slice(1)))}`) }] };
   queue(output, output); const result = await integration();
   if (result.outcome !== "success") throw new Error("expected success");
@@ -419,7 +419,7 @@ test("an archived target bounces the whole batch and preserves the watermark and
   queue(output); const resolve = deferred(), pending = integration();
   await new Promise((r) => setTimeout(r, 0));
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [{ op: "archive", knowledgeId: e,
-    expectedRevision: 1, because: [old], createdAt: time }] });
+    baseCommit: 1, because: [old], createdAt: time }] });
   resolve(output); const result = await pending;
   if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
   expect(result.problems.join(" ")).toContain("target moved on or is inactive");

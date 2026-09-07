@@ -117,13 +117,13 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
 
 CREATE TABLE IF NOT EXISTS knowledge_links (
   from_knowledge INTEGER NOT NULL,
-  from_rev INTEGER NOT NULL,
+  from_commit INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('merged_into','split_from')),
   to_knowledge INTEGER NOT NULL,
-  to_rev INTEGER NOT NULL,
-  PRIMARY KEY (from_knowledge, from_rev, kind, to_knowledge, to_rev),
-  FOREIGN KEY (from_knowledge, from_rev) REFERENCES knowledge_revisions(knowledge_id, id),
-  FOREIGN KEY (to_knowledge, to_rev) REFERENCES knowledge_revisions(knowledge_id, id)
+  to_commit INTEGER NOT NULL,
+  PRIMARY KEY (from_knowledge, from_commit, kind, to_knowledge, to_commit),
+  FOREIGN KEY (from_knowledge, from_commit) REFERENCES knowledge_revisions(knowledge_id, id),
+  FOREIGN KEY (to_knowledge, to_commit) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -262,7 +262,7 @@ export type KnowledgeOperationInput =
   | {
       op: "update";
       knowledgeId: number;
-      expectedRevision: number;
+      baseCommit: number;
       text: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
@@ -273,8 +273,8 @@ export type KnowledgeOperationInput =
   | {
       op: "merge";
       intoKnowledgeId: number;
-      intoExpectedRevision: number;
-      absorb: { knowledgeId: number; expectedRevision: number }[];
+      intoBaseCommit: number;
+      absorb: { knowledgeId: number; baseCommit: number }[];
       text: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
@@ -285,7 +285,7 @@ export type KnowledgeOperationInput =
   | {
       op: "archive";
       knowledgeId: number;
-      expectedRevision: number;
+      baseCommit: number;
       because: number[];
       createdAt: string;
     };
@@ -306,7 +306,7 @@ export interface CommittedKnowledgeOp {
   op: KnowledgeOp;
   handle?: string;
   knowledgeId: number;
-  rev: number;
+  commit: number;
 }
 
 export type CommitIntegrationResult =
@@ -716,14 +716,14 @@ export class Store {
 
   listKnowledgeLinks(knowledgeId: number): KnowledgeLink[] {
     return (this.db.prepare(
-      "SELECT * FROM knowledge_links WHERE from_knowledge = ? ORDER BY from_rev, kind, to_knowledge, to_rev",
+      "SELECT * FROM knowledge_links WHERE from_knowledge = ? ORDER BY from_commit, kind, to_knowledge, to_commit",
     ).all(knowledgeId) as any[]).map((r) => ({
-      fromKnowledge: r.from_knowledge, fromRev: r.from_rev, kind: r.kind, toKnowledge: r.to_knowledge, toRev: r.to_rev,
+      fromKnowledge: r.from_knowledge, fromCommit: r.from_commit, kind: r.kind, toKnowledge: r.to_knowledge, toCommit: r.to_commit,
     }));
   }
 
-  listKnowledgeRevisions(knowledgeId: number): KnowledgeRevision[] {
-    return this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? ORDER BY id").all(knowledgeId).map(toKnowledgeRevision);
+  listKnowledgeRevisions(knowledgeId?: number): KnowledgeRevision[] {
+    return this.db.prepare("SELECT * FROM knowledge_revisions WHERE ? IS NULL OR knowledge_id = ? ORDER BY id").all(knowledgeId ?? null, knowledgeId ?? null).map(toKnowledgeRevision);
   }
 
   pathTurns(path: KnowledgePath): Set<number> {
@@ -757,19 +757,15 @@ export class Store {
 
   /** All citations from the reader's own session constrain applicability, including because. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
-    const turns = path ? this.pathTurns(path) : null;
+    const turns = path ? this.pathTurns(path) : undefined;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
-    for (const link of this.db.prepare("SELECT from_rev, to_rev FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_rev: number; to_rev: number }[]) {
-      parents.get(link.to_rev)!.push(link.from_rev);
+    for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
+      parents.get(link.to_commit)!.push(link.from_commit);
     }
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
       (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
-      (!path || (this.admits(r, path.sessionId) &&
-      [...r.supports, ...(r.because ?? [])].every(id => {
-        const fact = this.getFact(id)!;
-        return this.getTurn(fact.turnId)!.sessionId !== path.sessionId || turns!.has(fact.turnId);
-      }))));
+      (!path || this.commitApplies(r, path, turns)));
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
     for (const r of applicable) {
@@ -781,6 +777,28 @@ export class Store {
       }
     }
     return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+  }
+
+  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path)): boolean {
+    return this.getTurn(fact.turnId)!.sessionId !== path.sessionId ||
+      (turns.has(fact.turnId) && fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1]))));
+  }
+
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path)): boolean {
+    return this.admits(commit, path.sessionId) && [...commit.supports, ...(commit.because ?? [])]
+      .every(id => this.factOnPath(this.getFact(id)!, path, turns));
+  }
+
+  commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {
+    return this.db.prepare(`SELECT * FROM knowledge_revisions WHERE id = ? OR id IN
+      (SELECT from_commit FROM knowledge_links WHERE to_commit = ? AND kind = 'merged_into') ORDER BY id`)
+      .all(commit.parentId, commit.id).map(toKnowledgeRevision);
+  }
+
+  commitChildren(commit: KnowledgeRevision): KnowledgeRevision[] {
+    return this.db.prepare(`SELECT * FROM knowledge_revisions WHERE parent_id = ? OR id IN
+      (SELECT to_commit FROM knowledge_links WHERE from_commit = ? AND kind = 'merged_into') ORDER BY id`)
+      .all(commit.id, commit.id).map(toKnowledgeRevision);
   }
 
   currentCommit(knowledgeId: number, path: KnowledgePath | null = null): KnowledgeRevision[] {
@@ -809,7 +827,7 @@ export class Store {
       if (!fact) return `cited fact F${id} does not exist`;
       const sessionId = this.getTurn(fact.turnId)!.sessionId;
       if (sessionId === path.sessionId) {
-        if (!turns.has(fact.turnId)) return `F${id}: record an adoption fact on this path first`;
+        if (!this.factOnPath(fact, path, turns)) return `F${id}: record an adoption fact on this path first`;
       } else if (scope === "session" || (scope === "project" && this.getSession(sessionId)!.projectId !== projectId)) {
         return `F${id}: not an available fact for ${scope} scope`;
       }
@@ -817,23 +835,27 @@ export class Store {
     return null;
   }
 
+  commitDescendants(commitId: number): Set<number> {
+    return new Set((this.db.prepare(`WITH RECURSIVE
+      edges(parent, child) AS (
+        SELECT parent_id, id FROM knowledge_revisions WHERE parent_id IS NOT NULL
+        UNION SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'
+      ), descendants(id) AS (
+        SELECT ? UNION SELECT e.child FROM edges e JOIN descendants d ON e.parent = d.id
+      ) SELECT id FROM descendants`).all(commitId) as { id: number }[]).map(r => r.id));
+  }
+
   baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null): string | null {
     const current = this.currentCommit(knowledgeId, path);
     if (current.some(r => r.id === base && r.op !== "archive")) return null;
-    const descendants = new Set((this.db.prepare(`WITH RECURSIVE
-      edges(parent, child) AS (
-        SELECT parent_id, id FROM knowledge_revisions WHERE parent_id IS NOT NULL
-        UNION SELECT from_rev, to_rev FROM knowledge_links WHERE kind = 'merged_into'
-      ), descendants(id) AS (
-        SELECT ? UNION SELECT e.child FROM edges e JOIN descendants d ON e.parent = d.id
-      ) SELECT id FROM descendants`).all(base) as { id: number }[]).map(r => r.id));
+    const descendants = this.commitDescendants(base);
     const tips = this.currentSet(path).filter(k => k.knowledge.id === knowledgeId || descendants.has(k.revision.id));
     return `K${knowledgeId}@${base}: target moved on or is inactive; current: ${tips.map(k => `K${k.knowledge.id}@${k.revision.id}`).join(", ") || "none (inapplicable)"}; re-read and resubmit`;
   }
 
   /**
    * Commit one integration run: the run record and its knowledge operations as one transaction.
-   * An operation whose expected revision no longer matches the knowledge's current revision
+   * An operation whose base commit has an applicable successor on the writer's path
    * (someone else moved it since the Integrator read it) rolls back the batch and records failure.
    */
   commitIntegrationRun(input: CommitIntegrationRunInput): CommitIntegrationResult {
@@ -873,19 +895,19 @@ export class Store {
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
     sessionId: number, path: KnowledgePath | null): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
-    if (op.op === "merge") op = { ...op, absorb: op.absorb.filter((a, i, all) => all.findIndex(b => b.knowledgeId === a.knowledgeId && b.expectedRevision === a.expectedRevision) === i) };
+    if (op.op === "merge") op = { ...op, absorb: op.absorb.filter((a, i, all) => all.findIndex(b => b.knowledgeId === a.knowledgeId && b.baseCommit === a.baseCommit) === i) };
     const targets = op.op === "create" ? [] : op.op === "merge"
-      ? [{ knowledgeId: op.intoKnowledgeId, expectedRevision: op.intoExpectedRevision }, ...op.absorb]
-      : [{ knowledgeId: op.knowledgeId, expectedRevision: op.expectedRevision }];
+      ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
+      : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
     const seen = new Set<number>();
     for (const target of targets) {
-      const bad = this.baseProblem(target.knowledgeId, target.expectedRevision, path);
+      const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path);
       if (bad) return { ok: false, reason: bad };
-      if (seen.has(target.expectedRevision)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
-      seen.add(target.expectedRevision);
+      if (seen.has(target.baseCommit)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
+      seen.add(target.baseCommit);
     }
     if (op.op === "merge" && !op.absorb.length) return { ok: false, reason: "merge: nothing to absorb" };
-    const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.expectedRevision)! : null;
+    const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
     const scope = op.op === "archive" ? prior!.scope : op.scope;
     const supports = op.op === "archive" ? [] : op.supports;
     if (op.op !== "archive" && !supports.length) return { ok: false, reason: "supports must not be empty" };
@@ -901,10 +923,10 @@ export class Store {
       JSON.stringify(op.because ?? []), runId, op.createdAt);
     const commitId = Number(info.lastInsertRowid);
     if (op.op === "merge") for (const parent of op.absorb) {
-      this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_rev, kind, to_knowledge, to_rev) VALUES (?, ?, 'merged_into', ?, ?)")
-        .run(parent.knowledgeId, parent.expectedRevision, knowledgeId, commitId);
+      this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
+        .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);
     }
-    return { ok: true, value: { op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, rev: commitId } };
+    return { ok: true, value: { op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId } };
   }
 
   // -- marks: each row belongs to one immutable commit --

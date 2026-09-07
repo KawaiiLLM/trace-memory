@@ -22,7 +22,7 @@ export interface IntegrationAgentInput {
   sessionId: number;
   branch: string;
   range: IntegrationRange;
-  readKnowledgeRevisions: { knowledgeId: number; rev: number }[];
+  readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   mode: "branch" | "subagent";
   prompt: string;
@@ -36,7 +36,7 @@ export type IntegrateResult =
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
       committed: CommittedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
-      range: IntegrationRange; readKnowledgeRevisions: { knowledgeId: number; rev: number }[]; unansweredNear: NearPair[] };
+      range: IntegrationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[]; unansweredNear: NearPair[] };
 
 export function freezeIntegration(store: Store, input: IntegrateInput, config: TraceMemoryConfig) {
   const session = store.getSession(input.sessionId);
@@ -84,7 +84,7 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const { sessionId, branch, rangeFacts, context, knowledge, lines, reminders, model, mode, threshold } = frozen;
   if (!rangeFacts.length) return { outcome: "empty" };
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
-  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.id }));
+  const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   const rangeText = rangeFacts.map((f) => lines.get(f.id)!).join("\n");
   const episodic = budgetFacts(rangeText, context, (f) => lines.get(f.id)!, config.render.episodicBlockTokens, "range");
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
@@ -93,11 +93,11 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   const initial = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
     "Already-integrated facts (newest first):", recent.join("\n"), "Range facts:", rangeText,
     "Negated-evidence reminder (review cues only; no status derived):", reminders.join("\n\n") || "none"].join("\n\n"), receipts });
-  const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeRevisions, model, mode, prompt, promptHash };
+  const base = { kind: "integration" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "integration", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
   const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}` +
     (knowledge.filter(k => k.knowledge.id === item.knowledge.id).length > 1 ? `@${item.revision.id}` : "");
-  const binding = bind({ kind: "integration", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeRevisions }, run, { frozen, feedback: (batch) => {
+  const binding = bind({ kind: "integration", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeCommits }, run, { frozen, feedback: (batch) => {
   const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
     .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
@@ -118,14 +118,14 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
   if (result.request != null) run.request = JSON.stringify(result.request);
   const committed = binding.memory.committed;
   const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null ? ["runAgent must return the exact provider request"] : binding.memory.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions, toolCalls: binding.sequence, fetched: binding.fetched,
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (committed) {
     const after = [...problems];
     try { store.updateRun(committed.runId, { ...run, outcome: "success" }); }
     catch (error) { after.push(`audit update failed after commit: ${String(error)}`); }
-    return { outcome: "success", ...committed, range, readKnowledgeRevisions, ...(after.length ? { problems: after } : {}) };
+    return { outcome: "success", ...committed, range, readKnowledgeCommits, ...(after.length ? { problems: after } : {}) };
   }
   const outcome = result.outcome !== "success" ? result.outcome : result.request == null || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
   if (outcome !== "success") {
@@ -134,6 +134,6 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     return { outcome, runId, problems };
   }
   const empty = store.commitIntegrationRun({ run, operations: [], watermark: { sessionId, branch, lastIntegratedFact: rangeFacts.at(-1)!.id } });
-  return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], unansweredNear: [], range, readKnowledgeRevisions }
+  return empty.ok ? { outcome: "success", ...empty, output: { operations: [], skipped: [] }, diagnostics: [], unansweredNear: [], range, readKnowledgeCommits }
     : { outcome: "failure", runId: empty.runId, problems: empty.problems };
 }

@@ -110,7 +110,7 @@ test("manual memory reuses current revisions and refuses inactive or duplicate m
   }
   write.execute({ operations: [merge], skipped: [] });
   expect(write.execute({ operations: [{ ...create, op: "update", id: "K2" }], skipped: [] })).toContain("rejected:");
-  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1" }], skipped: [] })).committed[0].rev).toBe(4);
+  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1" }], skipped: [] })).committed[0].commit).toBe(4);
   write.execute({ operations: [{ op: "archive", id: "K1", because: ["F1"] }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
   expect(memory.trace("K1")).toContain("archive");

@@ -1,0 +1,23 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`16b: branch carry fixture uses evidence ancestry, includes commits and raw; tags delimit and lines stay byte for byte 1`] = `
+"<branch_carry>
+this is knowledge from another branch; it must not be written as facts; the Recorder's facts come only from the current branch's conversation, never from messages this plugin injected.
+Facts:
+[F1] 2026-09-06T00:00:00Z [decision/user] main
+  source: T1#user
+[F2] 2026-09-06T00:00:00Z [decision/user] C
+  source: T2#user
+Commits (by evidence):
+[K1@1] [constraint/project] Use blue tiles
+  supports: F1
+[K1@2] [constraint/project] C version
+  supports: F2
+Unrecorded raw:
+[S1/T4] 2026-09-06T00:00:00Z [turn]
+[Source entry id: T4#user]
+Unrecorded <work> & more
+[Source entry id: T4#assistant]
+Pending
+</branch_carry>"
+`;

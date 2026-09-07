@@ -11,7 +11,7 @@ export interface ToolDefinition {
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
   | { kind: "recording" | "integration"; sessionId: number; branch: string; headTurnId?: number | null; range: { from: string; to: string };
-      readKnowledgeRevisions: { knowledgeId: number; rev: number }[] };
+      readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
 type Reads = { trace(address: string, options?: ListingOptions): string;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
@@ -35,10 +35,10 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 ] };
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
-  { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge item or revision. F<n>.. navigates later strong negations, never a current conclusion.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
-  { name: "search", description: "Use literal substring search over facts/raw in this session's project and global, project and own-session knowledge. layer selects facts, knowledge, raw or all; no hit does not mean absent.", parameters: object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
+  { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
+  { name: "search", description: "Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent.", parameters: object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Recording runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
-  { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
+  { name: "memory", description: "Write one atomic knowledge batch. Integration runs are the normal writers; main agents may write but have no memory duty. Submit complete resulting text/category/scope/supports and triggering facts in because. First valid Integration batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Bare K1 is rejected with several tips; use explicit K1@57 bases.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
@@ -69,6 +69,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId }
     : context.kind === "recording" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]) }
     : review!.frozen.path;
+  const sourceTurns = store.pathTurns(path);
   const memory = bindMemory(store, session.id, run, review, path);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
@@ -80,17 +81,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const checkAddress = (address: string) => {
     for (const target of address.split(",").map((a) => a.trim())) {
       if (/^K/.test(target)) continue; // The façade validates commit, diff and tree addresses.
-      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.([1-9]\d*))?)?$/.exec(target);
+      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$/.exec(target);
       if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);
       const missing = () => new Error(`address does not exist: ${target}`);
       if (m[2]) { const t = store.getTurn(Number(m[2])); if (!t || (m[1] && t.sessionId !== Number(m[1]))) throw missing(); }
       if (m[3] && !store.getSession(Number(m[3]))) throw missing();
       if (m[4] && !existingFact(Number(m[4]))) throw missing();
-      if (m[5]) {
-        const knowledge = store.getKnowledge(Number(m[5]));
-        if (!knowledge) throw missing();
-        for (const rev of [m[6], m[7]].filter(Boolean).map(Number)) if (!store.getKnowledgeRevision(knowledge.id, rev)) throw missing();
-      }
     }
   };
   const note = (input: Record<string, unknown>): string => {
@@ -107,7 +103,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (Array.isArray(fact.source)) for (const source of fact.source) {
           const m = typeof source === "string" ? /^T([1-9]\d*)#(user|assistant|t([1-9]\d*))$/.exec(source) : null;
           const turn = m ? store.getTurn(Number(m[1])) : null;
-          if (!turn || turn.sessionId !== session.id || (context.kind === "recording" && !allowed.has(turn.id)) || turn.kind === "compaction") errors.push(`invalid source ${source}; expected a source inside the frozen range or calling session`);
+          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || (context.kind === "recording" && !allowed.has(turn.id)) || turn.kind === "compaction") errors.push(`invalid source ${source}; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
           else {
             if (!first) first = turn.id;
             if ((m![2] === "user" && turn.userPrompt === null) || (m![2] === "assistant" && turn.assistantText === null) || (m![3] && !store.listToolCalls(turn.id).some((c) => c.ordinal === Number(m![3])))) errors.push(`source ${source} does not exist`);
@@ -131,8 +127,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     const receipt = (ids: number[]) => JSON.stringify({ results: ids.map((id) => `ok: F${id}`), factIds: ids });
     const committedRun = store.commitRecordingRun({ run: { ...run,
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
-      response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeRevisions: context.kind === "recording" ? context.readKnowledgeRevisions : [] }) }, facts: commits,
-      responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeRevisions: context.readKnowledgeRevisions }),
+      response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "recording" ? context.readKnowledgeCommits : [] }) }, facts: commits,
+      responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
       ...(context.kind === "recording" ? { watermark: { sessionId: session.id, branch: context.branch, lastRecordedTurn: Number(context.range.to.split("/T")[1]) }, pendingDelivery: { sessionId: session.id, branch: context.branch } } : {}) });
     if (!committedRun.ok) { problems = committedRun.problems; return JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }); }
     const result = receipt(committedRun.facts.map((f) => f.id));
@@ -154,7 +150,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
-      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "recording" ? { readKnowledgeRevisions: context.readKnowledgeRevisions } : {}) }) });
+      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "recording" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}) }) });
       return result;
     } });
   const tools = [

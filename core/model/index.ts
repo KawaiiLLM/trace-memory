@@ -137,10 +137,10 @@ export interface KnowledgeRevision {
 
 export interface KnowledgeLink {
   fromKnowledge: number;
-  fromRev: number;
+  fromCommit: number;
   kind: "merged_into" | "split_from";
   toKnowledge: number;
-  toRev: number;
+  toCommit: number;
 }
 
 export interface Run {

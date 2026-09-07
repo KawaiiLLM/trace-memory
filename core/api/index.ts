@@ -6,7 +6,7 @@ export type { ListingOptions, SearchScope } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { realpathSync } from "node:fs";
 import { freezeRecording, runRecording, type RecordInput, type RecordResult } from "../recording/index.ts";
-import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { finish, renderFact, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 export { tokens } from "../render/index.ts";
 export type { RecordInput, RecordResult, RecordingAgentInput } from "../recording/index.ts";
 import { Store, type KnowledgePath } from "../store/index.ts";
@@ -130,31 +130,47 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const trace = (address: string, display: ListingOptions = {}): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
-    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K[1-9]\d*@)?([1-9]\d*))?)?(\.\.)?$/.exec(target ?? "");
+    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.K([1-9]\d*)@([1-9]\d*))?|(\.\.))?$/.exec(target ?? "");
     if (knowledgeMatch) {
-      const [id, from, to] = knowledgeMatch.slice(1, 4).map((n) => n === undefined ? undefined : Number(n));
-      if (flags.length || [id, from, to].some((n) => n !== undefined && !Number.isSafeInteger(n)) ||
-          (to !== undefined && to < from!) || (from !== undefined && knowledgeMatch[4])) throw invalid();
-      if (target?.includes("..K") && !target.includes(`..K${id}@`)) throw invalid();
+      const [id, from, other, to] = knowledgeMatch.slice(1, 5).map(n => n === undefined ? undefined : Number(n));
+      if (flags.length || [id, from, other, to].some(n => n !== undefined && !Number.isSafeInteger(n)) ||
+          (other !== undefined && other !== id)) throw invalid();
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
-      // Reads are unrestricted (user ruling 2026-09-07); the scope rule applies to injection and Integration.
       const history = store.listKnowledgeRevisions(id!);
-      const revision = (rev: number) => {
-        const value = store.getKnowledgeRevision(id!, rev);
-        if (!value) throw new Error(`knowledge K${id} has no revision ${rev}; address does not exist`);
+      const commit = (commitId: number) => {
+        const value = store.getKnowledgeRevision(id!, commitId);
+        if (!value) throw new Error(`commit K${id}@${commitId} does not exist`);
         return value;
       };
-      if (to !== undefined) return renderKnowledgeDiff(revision(from!), revision(to),
-        history.filter((r) => r.id > from! && r.id <= to));
-      if (from !== undefined) return renderKnowledgeTrace({ knowledge, revision: revision(from) }, undefined, [], store.listKnowledgeMarks(id!));
+      const describe = (r: typeof history[number]) => renderKnowledgeTrace({ knowledge, revision: r }, store.listKnowledgeMarks(id!), store.commitParents(r), store.commitChildren(r));
+      if (to !== undefined) {
+        const a = commit(from!), b = commit(to);
+        const ancestors = (tip: typeof a) => {
+          const ids = new Set<number>(), pending = [tip];
+          while (pending.length) {
+            const r = pending.pop()!;
+            if (ids.has(r.id)) continue;
+            ids.add(r.id); pending.push(...store.commitParents(r));
+          }
+          return ids;
+        };
+        const left = ancestors(a), right = ancestors(b);
+        return renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)));
+      }
+      if (from !== undefined) return describe(commit(from));
+      if (knowledgeMatch[5]) return `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, undefined, display.headTurnId);
       const tips = store.currentCommit(id!, path);
-      if (knowledgeMatch[4]) return history.map(r => renderKnowledgeTrace({ knowledge, revision: r }, undefined,
-        store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!))).join("\n");
-      return tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") +
-        renderKnowledgeTrace({ knowledge, revision: r }, history, store.listKnowledgeLinks(id!), store.listKnowledgeMarks(id!))).join("\n") ||
-        `K${id}: no current commit on this path\n` + history.map(r => renderKnowledgeTrace({ knowledge, revision: r }, history, store.listKnowledgeLinks(id!))).join("\n");
+      const applicable = history.filter(r => !path || store.commitApplies(r, path));
+      const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path)) : [];
+      return [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
+        : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
+        ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
+        ...(tips.length ? [] : history.map(describe)),
+        ...store.listKnowledgeLinks(id!).map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
+        path ? "Applicable history on this path:" : "Commit history:", renderCommitHistory(applicable),
+        ...(path ? ["Other branches' tips:", ...otherTips.map(describe)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

@@ -92,13 +92,13 @@ test("malformed items still produce results for every item, and reject the entir
 
 test("tools freeze context, reject sibling and late sources, and preserve read revisions", () => {
   memory.store.appendTurn({ sessionId: 1, kind: "turn", parentTurnId: 1, assistantText: "sibling", startedAt: "later" });
-  const context: ToolContext = { kind: "recording", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeRevisions: [{ knowledgeId: 9, rev: 2 }] };
+  const context: ToolContext = { kind: "recording", sessionId: 1, branch: "frozen", range: { from: "S1/T1", to: "S1/T1" }, readKnowledgeCommits: [{ knowledgeId: 9, commit: 2 }] };
   const note = memory.tools(context)[2]!;
-  context.range.to = "S1/T2"; context.branch = "mutated"; context.readKnowledgeRevisions[0]!.rev = 3;
+  context.range.to = "S1/T2"; context.branch = "mutated"; context.readKnowledgeCommits[0]!.commit = 3;
   expect(note.execute({ facts: [fact("T2#assistant")] })).toContain("rejected:");
   expect(note.execute({ facts: [fact()] })).toContain("F1");
   expect(memory.store.getWatermark(1, "frozen")?.lastRecordedTurn).toBe(1);
-  expect(JSON.parse(memory.store.getRun(1)!.response!).readKnowledgeRevisions).toEqual([{ knowledgeId: 9, rev: 2 }]);
+  expect(JSON.parse(memory.store.getRun(1)!.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 9, commit: 2 }]);
 });
 
 test("trace and search use parameter options, share scoped pagination, and reject obsolete address flags", () => {
@@ -157,7 +157,7 @@ test("reads return every knowledge item while injection still applies the scope 
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", knowledgeId: 3, expectedRevision: 3, because: [1], createdAt: "later" },
+    { op: "archive", knowledgeId: 3, baseCommit: 3, because: [1], createdAt: "later" },
   ] });
   expect(trace!.execute({ address: "K3@3" })).toContain("owner 1 scope session");
   expect(trace!.execute({ address: "K3" })).toContain("archive");

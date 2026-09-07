@@ -1,5 +1,5 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
-import type { KnowledgeLink, KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
 
@@ -112,16 +112,15 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
-const revisionLine = (r: KnowledgeRevision): string =>
+const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
-const revisionSummary = (revisions: KnowledgeRevision[]): string =>
-  revisions.length ? `Revisions:\n${revisions.map(revisionLine).join("\n")}` : "Revisions: none";
+export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
+  revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
 
-export function renderKnowledgeTrace(value: KnowledgeWithRevision, revisions?: KnowledgeRevision[], links: KnowledgeLink[] = [], marks: KnowledgeMark[] = []): string {
-  return [renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id)), ...(revisions ? [
-    ...links.map((l) => `  ${l.kind}: K${l.toKnowledge}@${l.toRev} (from K${l.fromKnowledge}@${l.fromRev})`),
-    revisionSummary(revisions),
-  ] : [revisionLine(value.revision)])].join("\n");
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[]): string {
+  const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
+  return [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+    `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
 }
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
@@ -154,12 +153,12 @@ function diffText(before: string, after: string): string {
 }
 
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[]): string {
-  return [`[K${a.knowledgeId}@${a.id}..${b.id}]`, `  text: ${diffText(a.text, b.text)}`,
+  return [`[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]`, `  text: ${diffText(a.text, b.text)}`,
     `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
-    revisionSummary(revisions)].join("\n");
+    renderCommitHistory(revisions)].join("\n");
 }
 
 export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }

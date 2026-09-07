@@ -53,7 +53,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       const base = read?.revision.id ?? 0;
       if (touched.has(base)) errors.push(`${address}: duplicate operation target`);
       touched.add(base);
-      return { knowledgeId: id, expectedRevision: base };
+      return { knowledgeId: id, baseCommit: base };
     };
     const dest = op !== "create" ? target(value.id) : undefined;
     const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length ? value.absorb.map(target) : (errors.push("merge must absorb at least one knowledge item"), [])) : [];
@@ -63,13 +63,13 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
     const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: op === "archive" ? [] : facts(value.supports, errors, true), because, createdAt: run.createdAt };
-    const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.expectedRevision)?.revision.scope : value.scope;
+    const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
     if (scope && [...content.supports, ...because].every(Number.isSafeInteger)) {
       const bad = store.citationProblem([...content.supports, ...because], scope, path);
       if (bad) errors.push(bad);
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
-      : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoExpectedRevision: dest!.expectedRevision, absorb, ...content }
+      : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
       : op === "archive" ? { op: "archive", ...dest!, because, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });

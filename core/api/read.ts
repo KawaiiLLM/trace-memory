@@ -86,9 +86,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       const tail = freezeRecording(store, { sessionId, branch, headTurnId }, config).turns;
       const raw = tail.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
-      const facts = store.listBranchFacts(sessionId, branch).map((f) => factLine(f.id));
-      return finish({ content: [...facts, ...raw.map((r) => r.content)].join("\n\n"),
-        receipts: raw.flatMap((r) => r.receipts) });
+      const path = { sessionId, headTurnId }, turns = store.pathTurns(path);
+      const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, turns)).sort((a, b) => a.id - b.id);
+      const factIds = new Set(facts.map(f => f.id));
+      const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path) &&
+        [...r.supports, ...(r.because ?? [])].some(id => factIds.has(id)))
+        .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
+      const content = ["this is knowledge from another branch; it must not be written as facts; the Recorder's facts come only from the current branch's conversation, never from messages this plugin injected.",
+        "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map(knowledgeLine),
+        "Unrecorded raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
+      // Escape payload markup so injected content cannot close or nest the carry boundary.
+      return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
     },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (options.cursor) return page([], options);
@@ -96,16 +104,20 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const lines = store.searchAddresses(query, scope).map((address) => {
         if (address.startsWith("F")) return factLine(Number(address.slice(1)));
         if (address.startsWith("T")) return expand(address);
-        const [id, rev] = address.slice(1).split("@").map(Number);
+        const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
-        // A hit on history or on a retired item must not read like a current rule.
-        const current = store.currentCommit(id!, options.sessionId === undefined ? null : store.knowledgePath(options.sessionId, undefined, options.headTurnId));
-        const link = store.listKnowledgeLinks(id!).find(l => l.fromRev === rev && l.kind === "merged_into");
-        const status = current.some(r => r.id === rev) ? (current.find(r => r.id === rev)!.op === "archive" ? "archived" : "")
-          : link ? `merged into K${link.toKnowledge}@${link.toRev}`
-          : current.some(r => r.op === "archive") ? "archived"
-          : `historical; current: ${current.map(r => `K${id}@${r.id}`).join(", ") || "none"}`;
-        return knowledgeLine({ knowledge, revision: store.getKnowledgeRevision(id!, rev!)! }) + (status ? `\n  note: ${status}` : "");
+        const path = options.sessionId === undefined ? null : store.knowledgePath(options.sessionId, undefined, options.headTurnId);
+        const hit = store.getKnowledgeRevision(id!, commit!)!;
+        const current = store.currentCommit(id!, path);
+        const applicable = !path || store.commitApplies(hit, path);
+        const descendants = store.commitDescendants(hit.id);
+        const successors = [...new Set(store.listKnowledgeRevisions().filter(r => descendants.has(r.id)).map(r => r.knowledgeId))]
+          .flatMap(id => store.currentCommit(id, path)).filter(r => r.id !== hit.id && descendants.has(r.id));
+        const status = !applicable ? "another branch"
+          : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
+          : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
+          : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
+        return knowledgeLine({ knowledge, revision: hit }) + `\n  note: ${status}`;
       }).map(listingLine);
       return page(lines, options, "Search uses literal substring search. No hit does not mean absent.");
     },
@@ -118,6 +130,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(typeof address === "number" ? `K${address}` : address);
       if (!match) throw new Error("invalid knowledge address");
       const id = Number(match[1]);
+      if (!store.getKnowledge(id) || (match[2] && !store.getKnowledgeRevision(id, Number(match[2])))) throw new Error(`address does not exist: ${address}`);
       const tips = match[2] ? [store.getKnowledgeRevision(id, Number(match[2]))].filter(r => r !== null) : store.currentCommit(id, path ?? null);
       if (tips.length !== 1) throw new Error(`K${id}: ${tips.length ? "several tips; specify a commit" : "no current commit"}`);
       const commitId = store.mark(tips[0]!.id, kind, new Date().toISOString());

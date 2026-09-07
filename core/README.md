@@ -53,7 +53,7 @@ trace evidence, the tool-call input/result sequence, problems and committed IDs.
 `tools(context)` also binds these definitions to a main agent with
 `{kind: "manual", sessionId, branch, currentTurnId}`, or to a Recording context
 with `{kind: "recording", sessionId, branch, range: {from, to},
-readKnowledgeRevisions}`. `note({facts})` validates every item and commits nothing
+readKnowledgeCommits}`. `note({facts})` validates every item and commits nothing
 on any rejection; a corrected whole batch may be resubmitted. Success returns
 `results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
 `rejected: <reason>`. A Recording binding commits at most one batch. The batch,
@@ -81,7 +81,7 @@ prompt's fields with the spec's continuation lines: `[F<n>] time
 [category/actor] text`, relations at line end, then optional JSON-quoted `quote:`
 and mandatory `source:` lines. Outbound relations say `support|negate F<n>
 strong|weak`; inbound relations add `inbound`. Knowledge context uses
-`[K<n>@<rev>] [category/scope] text` and a `supports:` continuation. Turn messages
+`[K<n>@<commit>] [category/scope] text` and a `supports:` continuation. Turn messages
 carry source addresses; tools use `[T<n>#t<n>] tool=… status=… omitted=…`.
 Receipts follow all content, including assistant text, and list omitted calls
 (including partially omitted calls) and expansion addresses.
@@ -121,18 +121,16 @@ their ticket-01 placeholders.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
-`trace("K1")` renders the current knowledge, status, outbound knowledge links, and all
-revisions in ascending order. Each revision line carries its address, operation,
-stored time, and `because` fact addresses (`none` for an empty/null list).
-Supports and triggering facts are addresses; `trace("F1")` expands their content.
-`K1@2` is only that snapshot and its revision metadata, without today's status
-or links. Merged knowledge items retain their own last revision; `merged_into` names the
-exact survivor revision stored in the link, even if that survivor later changes.
-Archives render the stored archive revision, including its triggering facts.
+`trace("K1")` renders the path current, its parents and children, applicable
+commit history, and the other branches' tips. Without context it labels tips
+newest-created and never calls one current. `K1@57` reads one immutable global
+commit, `K1@57..K1@61` compares any two commits of the same identity (including
+siblings and reverse order), and `K1..` shows the commit tree across branches.
+Commit metadata includes operation, stored time, and `because` fact addresses.
+Supports and triggering facts expand through `trace("F1")`.
 
-`K1@2..4` compares endpoint snapshots and lists revisions 3 and 4, including
-changes later reverted. Equal endpoints are allowed (no transitions); descending
-ranges are invalid. Added/removed supports use set membership in stored order;
+Diff metadata lists commits unique to either endpoint ancestry, preserving
+changes later reverted. Equal endpoints have no transitions. Added/removed supports use set membership in stored order;
 unchanged category and scope fields are omitted. Text uses lossless lexical
 LCS tokens: individual Han characters, other word/number runs, whitespace runs,
 and individual punctuation/symbols. Adjacent removals use `[-text-]`, additions
@@ -148,16 +146,16 @@ retain all normal relation annotations, even though weak negations and supports
 are not traversed. Later means allocation order, not potentially backdated fact
 timestamps. No model call or derived fact status is involved.
 
-IDs and revisions must be positive safe integers without leading zeros. Knowledge
+IDs and commits must be positive safe integers without leading zeros. Knowledge
 and negation-walk addresses reject options; malformed addresses and missing
-knowledge/facts/revisions raise descriptive errors. Session addresses, comma lists,
-and cursors remain for later tickets.
+knowledge/facts/commits raise descriptive errors. Session addresses, comma lists,
+and listing cursors are supported.
 
 The trace fixture in `test/fixtures/trace.json` is cut from simulation v7m's
 `knowledge.json` (knowledge 2, both revisions) and `facts.jsonl` (facts 2, 8, 35, 81).
 Only required records/fields are copied. Category and strength enums are mapped
-to English; Chinese text, quotes, and source addresses are preserved. Tests remap
-knowledge/fact IDs to allocated IDs. Simulation revision `at` values are retained as
+to English; Chinese text and quotes are preserved. Tests remap knowledge/fact
+IDs and raw-source addresses into the fixture database. Simulation revision `at` values are retained as
 stored times because the source has integration-boundary labels, not wall-clock times.
 Four checked-in goldens cover current knowledge, snapshot, diff, and negation walk.
 
@@ -297,12 +295,10 @@ count, all branch watermarks, latest attempts by run id, and pending run count.
 
 ## Branch summary read (ticket 07)
 
-`branchSummary(sessionId, branch, headTurnId)` renders committed facts on the
-branch's recorded ancestry, then raw between its current recording watermark and the
-explicit head. It uses the existing core fact/turn renderer and omission
-receipts, without a fact budget, knowledge, or delivery consumption. A host awaits
-its frozen pending recording before reading; later unrecorded turns remain raw. Unlike
-`compact`, this read excludes sibling facts and never budgets away committed
-branch facts. This missing read is the only core implementation change in 07;
-project declaration, transactional merge, watermarks and delivery writes reuse
-the ticket 04 store contract.
+`branchSummary(sessionId, branch, headTurnId)` returns one `<branch_carry>` XML
+block with the fixed other-branch reminder, facts whose raw evidence lies on the
+leaving path, commits selected by that evidence, and raw after the recording
+watermark. Content markup is escaped. There is no fact budget or delivery
+consumption. The host awaits its frozen pending recording and passes the block
+unchanged as Pi's summary; later unrecorded turns remain raw. Injected messages
+are never raw sources for new facts.

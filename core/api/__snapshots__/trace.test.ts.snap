@@ -1,9 +1,14 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 1`] = `
-"[K1@2] [reference/project] mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。血色衣冠运行时表将9号命名为“丘陵”（原版称“荒地”），与 mod 说明文档“荒地地形改为丘陵地形”的说法一致，此前认为二者矛盾的疑虑已解除。
+"K1 tips (newest-created: K1@2):
+[K1@2] [reference/project] mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。血色衣冠运行时表将9号命名为“丘陵”（原版称“荒地”），与 mod 说明文档“荒地地形改为丘陵地形”的说法一致，此前认为二者矛盾的疑虑已解除。
   supports: F7, F9, F10
-Revisions:
+  parents: K1@1
+  children: none
+  K1@2 update integration@F86 because: F10
+Commit history:
+Commits:
   K1@1 create integration@F50 because: none
   K1@2 update integration@F86 because: F10"
 `;
@@ -11,22 +16,24 @@ Revisions:
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 2`] = `
 "[K1@1] [reference/project] mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。
   supports: F7, F9
+  parents: none
+  children: K1@2
   K1@1 create integration@F50 because: none"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 3`] = `
-"[K1@1..2]
+"[K1@1..K1@2]
   text: mapC 中 raw terrain 值9（文件内曾标注“荒地”）分化明显：高度处于水位的1993格里1989格运行时被重写为 terrain8（海）；同一raw值但地处高处的488格中380格运行时仍为 terrain9（丘陵），其余转为13/14/8等。{+血色衣冠运行时表将9号命名为“丘陵”（原版称“荒地”），与 mod 说明文档“荒地地形改为丘陵地形”的说法一致，此前认为二者矛盾的疑虑已解除。+}
   supports added: F10
   supports removed: none
-Revisions:
+Commits:
   K1@2 update integration@F86 because: F10"
 `;
 
 exports[`simulation knowledge and strong negation goldens preserve Chinese memory content 4`] = `
 "[F8] 2026-08-16 03:10 [observation/agent] mod 自身说明文档写着「荒地地形改为丘陵地形」，与「荒地值实测为外海」的结论对不上，此矛盾未解决，未做猜测。 · inbound negate F10 strong
-  source: S18993/T249#assistant
+  source: T2#assistant
   [F10] 2026-08-23 09:12 [observation/agent] 血色衣冠地形 9 号在运行时表里被命名为「丘陵」，原版对应地形叫「荒地」，与 mod 说明文档「荒地地形改为丘陵地形」的说法一致。 · negate F8 strong
-    source: S18993/T351#assistant
+    source: T2#assistant
     no later strong negation recorded"
 `;

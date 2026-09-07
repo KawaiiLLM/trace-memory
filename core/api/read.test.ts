@@ -63,7 +63,7 @@ test("visibility includes global, own project and own session only, excluding in
   const outside = knowledge(foreign.id, recording(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time },
-    operations: [{ op: "archive", knowledgeId: archived, expectedRevision: archived, because: [f.id], createdAt: time }] });
+    operations: [{ op: "archive", knowledgeId: archived, baseCommit: archived, because: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), memory.compact(s.id)]) {
     expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}@`);
@@ -159,7 +159,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
   const edit = memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
-    op: "update", knowledgeId: e, expectedRevision: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
+    op: "update", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
@@ -177,7 +177,7 @@ test("literal search finds facts, historical knowledge and raw across projects",
   const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
   memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{
-    op: "update", knowledgeId: e, expectedRevision: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
+    op: "update", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
@@ -328,21 +328,21 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
   const run = { sessionId: s.id, kind: "integration" as const, createdAt: time };
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "update", knowledgeId: a, expectedRevision: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoExpectedRevision: b, absorb: [{ knowledgeId: c, expectedRevision: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitIntegrationRun({ run, operations: [{ op: "archive", knowledgeId: b, expectedRevision: 5, because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run, operations: [{ op: "update", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run, operations: [{ op: "archive", knowledgeId: b, baseCommit: 5, because: [1], createdAt: time }] });
   const hits = memory.search("pnpm", "knowledge");
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: historical; current: K${a}@4`);
-  expect(hits).toContain(`note: merged into K${b}@5`);
+  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
+  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("note: archived");
   expect(hits).toContain("note: archived");
   const current = memory.search("for installs", "knowledge").split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
-  expect(current).not.toContain("note:"); // the current revision carries no note
+  expect(current).toContain("note: tip"); // unbound reads label tips without claiming current
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
   const s = session(), t = turn(s.id, "scope raw"), n = recording(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{ op: "update", knowledgeId: k, expectedRevision: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitIntegrationRun({ run: { sessionId: s.id, kind: "integration", createdAt: time }, operations: [{ op: "update", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], because: [1], createdAt: time }] });
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;

@@ -228,6 +228,14 @@ export default function (pi: ExtensionAPI) {
         .map(e => (e as { data: State & { dbPath: string } }).data)
         .filter(d => d.dbPath === dbPath && d.sessionId === saved.sessionId && d.branch === saved.branch).at(-1);
       state = { ...saved, piId, branch: (fork && tip?.head !== saved.head) || saved.piId !== piId ? randomUUID() : saved.branch };
+      // A new branch (Pi fork, clone, or tree switch off a saved head) inherits the source branch's
+      // watermarks where they lie on its own ancestry, so shared turns are recorded once.
+      if (state.branch !== saved.branch && saved.sessionId && !memory.store.getWatermark(saved.sessionId, state.branch)) {
+        const source = memory.store.getWatermark(saved.sessionId, saved.branch);
+        let onPath = false;
+        for (let id = state.head ?? null; id && source?.lastRecordedTurn; id = memory.store.getTurn(id)?.parentTurnId ?? null) if (id === source.lastRecordedTurn) { onPath = true; break; }
+        if (source && onPath) memory.store.setWatermark(saved.sessionId, state.branch, source.lastRecordedTurn ?? undefined, source.lastIntegratedFact ?? undefined);
+      }
     } else {
       const name = marker(ctx.cwd);
       const project = name && memory.store.findProjectByName(name);
@@ -258,7 +266,7 @@ export default function (pi: ExtensionAPI) {
       model: context.model.id, provider: context.model.provider, branch: state.branch };
   });
   pi.on("session_start", (_event, context) => restore(context));
-  pi.on("session_tree", (_event, context) => { restore(context, true); save(); });
+  pi.on("session_tree", (_event, context) => { restore(context, true); state.injected = false; save(); });
   pi.on("before_agent_start", (event, context) => {
     ensure(context);
     current = { prompt: event.prompt, started: now(), completed: "", partial: "" };
@@ -268,7 +276,7 @@ export default function (pi: ExtensionAPI) {
     // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
     const parts: string[] = [];
     if (!state.injected) {
-      const block = memory.inject(state.sessionId ?? { projectId: state.projectId });
+      const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : { projectId: state.projectId });
       if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
     }
     if (state.sessionId) {
@@ -399,8 +407,8 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(marked, "info"); return;
       }
       if (parts[0] === "mark") {
-        if (!/^K[1-9]\d*$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n> verified|flagged|clear");
-        context.ui.notify(memory.mark(Number(parts[1]!.slice(1)), parts[2] as "verified" | "flagged" | "clear"), "info"); return;
+        if (!/^K[1-9]\d*(?:@[1-9]\d*)?$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n>@<commit> verified|flagged|clear");
+        context.ui.notify(memory.mark(parts[1]!, parts[2] as "verified" | "flagged" | "clear", state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info"); return;
       }
       context.ui.notify(state?.sessionId ? memory.status(state.sessionId) : "Trace Memory: no assistant reply; no session id.", "info"); } });
 }

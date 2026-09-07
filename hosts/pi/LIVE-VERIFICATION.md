@@ -162,3 +162,24 @@ A first attempt (`tmtail1`) stalled for five minutes before any turn row was
 written and was killed; the retry ran in 16 seconds. Second occurrence of the
 startup stall first seen in session 2; still not reproduced on demand and not
 inside the extension's hooks (no turn had been recorded when it hung).
+
+## Session 7 (`tmfork-main` and `tmfork-side`, after tickets 16a–16b): knowledge commits per path
+
+`pi --fork tmfork-main --session-id tmfork-side` copies the main session's path; the
+host restores the same Trace Memory session on a new branch id. Main recorded
+"store data in SQLite" (F1) and integrated K1@1; the fork recorded "changed to
+Redis" (F3) and integrated K1@2 with parent K1@1. One turn later each side asked
+the model to `trace K1`:
+
+- main: `K1 path current: K1@1`, children K1@2, and `Other branches' tips:` listing
+  K1@2 (Redis) with its parent.
+- fork: `K1 path current: K1@2`, applicable history K1@1 then K1@2, no other tips.
+
+Timing: Integration runs at turn stop, so a trace issued in the same turn as the
+rule sees the previous state; the first attempt of this scenario traced one turn
+too early (main saw "K1 does not exist", the fork saw only K1@1).
+
+Defect found and fixed after this run: the forked branch started with no
+watermark and recorded the shared T1 a second time (F2 duplicated F1). A new
+branch now inherits the source branch's recording and integration watermarks
+when they lie on its own ancestry.

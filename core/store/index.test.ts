@@ -238,7 +238,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
         {
           op: "update",
           knowledgeId,
-          expectedRevision: 1,
+          baseCommit: 1,
           text: "The project uses pnpm exclusively.",
           category: "constraint",
           scope: "project",
@@ -269,7 +269,7 @@ describe("commitIntegrationRun: revision conflicts", () => {
         {
           op: "update",
           knowledgeId,
-          expectedRevision: 1, // stale: the knowledge is now at revision 2
+          baseCommit: 1, // stale: the knowledge is now at revision 2
           text: "A conflicting edit.",
           category: "constraint",
           scope: "project",
@@ -479,7 +479,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.commitIntegrationRun({ run: { kind: "integration", sessionId: peer.id, createdAt: integrationAt },
-      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: integrationAt }] }).ok).toBe(true);
+      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: integrationAt }] }).ok).toBe(true);
     const target = store.declareProject(peer.id, "destination", "mark");
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
     store.mergeProject(target.id, survivor.id);
@@ -500,7 +500,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     const edited = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "update", knowledgeId: id, expectedRevision: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
+      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt }],
     });
     expect(edited.ok).toBe(true);
     store.close();
@@ -523,13 +523,13 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const bId = b.committed[0]!.knowledgeId;
     const run = { kind: "integration" as const, sessionId: s.id, createdAt: integrationAt };
     const rejected = store.commitIntegrationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: aId, expectedRevision: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
     ] });
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
     const merged = store.commitIntegrationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoExpectedRevision: 1, absorb: [{ knowledgeId: bId, expectedRevision: 2 }, { knowledgeId: bId, expectedRevision: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
     ] });
     expect(merged.ok).toBe(true);
     expect(store.currentCommit(aId)[0]?.op).toBe("merge");
@@ -600,7 +600,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitIntegrationRun({
       run: { kind: "integration", sessionId: s.id, createdAt: integrationAt },
-      operations: [{ op: "archive", knowledgeId: id, expectedRevision: 1, because: [999998], createdAt: integrationAt }],
+      operations: [{ op: "archive", knowledgeId: id, baseCommit: 1, because: [999998], createdAt: integrationAt }],
     });
     expect(archive.ok).toBe(false);
     expect(store.currentCommit(id)[0]?.op).toBe("create");
@@ -614,7 +614,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       run: { kind: "integration", sessionId: s.id, branch: "main", createdAt: integrationAt },
       operations: [
         { op: "create", handle: "$e1", author: "integration", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: integrationAt },
-        { op: "update", knowledgeId: 424242, expectedRevision: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
+        { op: "update", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: integrationAt },
       ],
       watermark: { sessionId: s.id, branch: "main", lastIntegratedFact: factId },
     });

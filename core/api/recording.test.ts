@@ -176,15 +176,15 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = recording(second.id);
-  expect(calls[1]!.readKnowledgeRevisions).toEqual([{ knowledgeId: 1, rev: 1 }]);
+  expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   expect(calls[1]!.input).toContain("[K1@1]");
   memory.store.commitIntegrationRun({ run: { kind: "integration", sessionId, createdAt: time }, operations: [
-    { op: "update", knowledgeId: 1, expectedRevision: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
+    { op: "update", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
   ] });
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
   const run = memory.store.getRun(result.runId)!;
-  expect(JSON.parse(run.response!).readKnowledgeRevisions).toEqual([{ knowledgeId: 1, rev: 1 }]);
+  expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   expect(JSON.parse(run.request!)).toEqual(request);
   expect(run.model).toBe("fake-model"); expect(run.promptHash).toMatch(/^[0-9a-f]{64}$/);
   expect(run.request).not.toBe(calls[1]!.input);

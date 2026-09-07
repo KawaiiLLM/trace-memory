@@ -22,7 +22,7 @@ export interface RecordingAgentInput {
   sessionId: number;
   branch: string;
   range: { from: string; to: string };
-  readKnowledgeRevisions: { knowledgeId: number; rev: number }[];
+  readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   mode: "branch" | "subagent";
   prompt: string;
@@ -71,7 +71,7 @@ export async function runRecording(
   if (!turns.length) return { outcome: "empty" };
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
-  const readKnowledgeRevisions = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, rev: revision.id }));
+  const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   const raw = turns.map(({ turn, calls }) => renderTurn(turn, calls, config.render));
   const rawText = raw.map((r) => r.content).join("\n\n");
   const receipts = raw.flatMap((r) => r.receipts);
@@ -88,9 +88,9 @@ export async function runRecording(
     `Sources:\n${turns.map(({ turn, calls }) => renderSources(turn, calls)).join("\n")}`].join("\n\n") : subagentInput;
   const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, createdAt: new Date().toISOString() };
-  const binding = tools({ kind: "recording", sessionId, branch, range, readKnowledgeRevisions }, run);
+  const binding = tools({ kind: "recording", sessionId, branch, range, readKnowledgeCommits }, run);
   const agentInput: RecordingAgentInput = { kind: "recording", sessionId, branch, range,
-    readKnowledgeRevisions: structuredClone(readKnowledgeRevisions), model, mode, prompt, promptHash,
+    readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
     subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
@@ -104,7 +104,7 @@ export async function runRecording(
     ? (result.outcome === "success" ? (result.request == null ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : result.request === undefined || result.request === null ? ["runAgent must return the exact provider request"] : binding.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeRevisions,
+  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readKnowledgeCommits,
     toolCalls: binding.sequence, fetched: binding.fetched, problems,
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
