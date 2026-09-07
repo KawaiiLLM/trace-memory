@@ -123,6 +123,9 @@ export default function (pi: ExtensionAPI) {
         return { reply, usage };
       };
       const outcomeOf = (reply: Reply) => reply.stopReason === "aborted" ? "cancelled" as const : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" as const : "success" as const;
+      // A stream that died mid-reply reports its error, not the partial text it managed to produce.
+      const outputOf = (reply: Reply) => outcomeOf(reply) === "success" ? text(reply)
+        : `${reply.stopReason}${reply.errorMessage ? `: ${reply.errorMessage}` : ""}${text(reply) ? ` (partial output: ${text(reply).slice(0, 200)})` : ""}`;
       if (input.mode === "branch") {
         let candidate: Body | undefined;
         try {
@@ -170,7 +173,7 @@ export default function (pi: ExtensionAPI) {
               request = snapshot(candidate); input.reportRequest(request); return snapshot(candidate);
             } }));
         if (verification && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number") verification.cache_read = (usage as { cacheRead: number }).cacheRead;
-        return { outcome: outcomeOf(reply), output: text(reply), usage, request, mode, verification };
+        return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification };
         }
       }
       // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
@@ -180,7 +183,7 @@ export default function (pi: ExtensionAPI) {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] };
         return registry.complete(model, conversation, { onPayload(payload: unknown) { request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); } });
       });
-      return { outcome: outcomeOf(reply), output: text(reply), usage, request, mode, verification, fallbackReason };
+      return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason };
     } catch (error) {
       return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }

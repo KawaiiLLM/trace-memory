@@ -761,3 +761,21 @@ test("a dropped duplicate Integration trigger neither ends the running indicator
   release(integrationReply()); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^<dim>○<\/dim> ☉/);
 });
+
+test("a stream that dies mid-reply is a failure carrying the provider's error, commits nothing, and a later stream death after a commit is a problem on a success", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async () => ({ ...reply("partial tex"), stopReason: "error", errorMessage: "stream reset by peer" }));
+  await h.turn();
+  let run = h.memory.store.listRuns(1)[0]!;
+  expect(run.outcome).toBe("failure");
+  expect(JSON.parse(run.response!).problems[0]).toContain("stream reset by peer");
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
+  expect(h.memory.store.getWatermark(1, "main")).toBeNull();
+  expect(h.statuses.get("trace-memory")).toMatch(/^<error>●<\/error> ☉/);
+  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : recordingFact(c), { autoStop: false });
+  await h.turn();
+  run = h.memory.store.listRuns(1).at(-1)!;
+  expect(run.outcome).toBe("success");
+  expect(JSON.parse(run.response!).problems[0]).toContain("stream reset after commit");
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+});
