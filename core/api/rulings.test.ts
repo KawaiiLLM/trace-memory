@@ -674,3 +674,19 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
   expect(summary).not.toContain("problems: none");
   expect(summary).toMatch(/problems: .*(invalid source|rejected)/);
 });
+
+test("2026-09-07: the Integration threshold triggers, the turn boundary cuts: whole recorded turns up to the threshold, the unrecorded head waits", async () => {
+  const project = memory.store.createProject({ name: "batches", declaredBy: "mark" });
+  const s = memory.store.createSession({ host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+  const turns = [1, 2, 3, 4].map((i, _, arr) => memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: `t${i}`, assistantText: "ok", startedAt: time, parentTurnId: undefined }));
+  for (let i = 1; i < turns.length; i++) memory.store.db.prepare("UPDATE turns SET parent_turn_id = ? WHERE id = ?").run(turns[i - 1]!.id, turns[i]!.id);
+  const seed = (turn: number, n: number, kind: "recording" | "manual" = "recording") => memory.store.commitRecordingRun({ run: { kind, sessionId: s.id, branch: "main", createdAt: time, rangeFrom: `S${s.id}/T${turn}`, rangeTo: `S${s.id}/T${turn}`, outcome: "success" } as never,
+    facts: Array.from({ length: n }, (_, k) => ({ turnId: turn, category: "observation", actor: "user", text: `fact ${turn}.${k}`, source: [`T${turn}#user`], createdAt: time })) });
+  seed(turns[0]!.id, 3); seed(turns[1]!.id, 3); seed(turns[2]!.id, 3);
+  memory.store.setWatermark(s.id, "main", turns[2]!.id, undefined); // T1..T3 recorded, T4 (head) not yet
+  seed(turns[3]!.id, 2, "manual"); // manual facts on the head being recorded
+  const batch = memory.store.integrationBatch(s.id, "main", 5);
+  expect(batch.map((f) => f.turnId)).toEqual([turns[0]!.id, turns[0]!.id, turns[0]!.id, turns[1]!.id, turns[1]!.id, turns[1]!.id]); // T1 and T2: 6 ≥ 5 at a turn boundary; T3 waits
+  expect(batch.some((f) => f.turnId === turns[3]!.id)).toBe(false); // the unrecorded head never enters a batch
+  expect(memory.store.integrationBatch(s.id, "main", 50)).toHaveLength(9); // below the threshold the batch is everything recorded
+});

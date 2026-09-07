@@ -1060,6 +1060,26 @@ export class Store {
       .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root })); // every source on the path, not only the first
   }
 
+  /**
+   * The next Integration batch of a branch: unintegrated facts of fully recorded turns (never the turn
+   * still being recorded), taken in path order one whole turn at a time until the threshold is reached;
+   * the threshold is a trigger, the turn boundary is the cut (user ruling 2026-09-07).
+   */
+  integrationBatch(sessionId: number, branch: string, threshold: number): Fact[] {
+    const watermark = this.getWatermark(sessionId, branch);
+    const recorded = watermark?.lastRecordedTurn ?? null;
+    const facts = this.listBranchFacts(sessionId, branch, recorded).filter((f) => f.id > (watermark?.lastIntegratedFact ?? 0));
+    if (!facts.length) return [];
+    const order: number[] = [];
+    for (let id: number | null = recorded ?? this.knowledgePath(sessionId, branch).headTurnId; id; id = this.getTurn(id)?.parentTurnId ?? null) order.unshift(id);
+    const batch: Fact[] = [];
+    for (const turnId of order) {
+      batch.push(...facts.filter((f) => f.turnId === turnId).sort((a, b) => a.id - b.id));
+      if (batch.length >= threshold) break;
+    }
+    return batch;
+  }
+
   /** The nearest ancestor of the head (or the head itself) covered by a successful recording run's range, for a new branch's watermark. */
   lastRecordedAncestor(sessionId: number, headTurnId: number): number | null {
     const recorded = new Set<number>();

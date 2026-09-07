@@ -444,16 +444,19 @@ The host therefore publishes one footer status item through
 which a statusline extension renders as a segment:
 
 ```text
-<indicator> ☉ $12.34
+<indicator> 🧠 trace: 12  memory: 7/38  $22.58
 ```
+
+`trace` counts the main agent's trace calls on this branch; `memory` is the
+applicable current knowledge over the facts on this branch; the amount is this
+session's cumulative spend at the model's configured API rates (Pi's own cost
+formula).
 
 The indicator uses Pi theme colours: dim `○` idle, accent `●` a Recording run in
 flight, success `●` an Integration run in flight, warning `●` a branch Recording
 paused until the next prompt delivers or the last run committed with problems,
-error `●` the last run failed. The amount is the plugin's spend since local
-midnight across all sessions, at the model's configured API rates (Pi's own
-cost formula), so it resets daily. `/trace` prints the session's breakdown by
-run kind. The one cost Pi does count is the Recording performed before a tree
+error `●` the last run failed. `/trace` prints the session's breakdown by run
+kind. The one cost Pi does count is the Recording performed before a tree
 switch, whose usage rides on the branch summary.
 
 ## Known limits

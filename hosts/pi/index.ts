@@ -238,8 +238,16 @@ export default function (pi: ExtensionAPI) {
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
     const indicator = runningKind("recording") ? paint("accent", "●") : runningKind("integration") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
-    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
-    context.ui.setStatus("trace-memory", `${indicator} ☉ $${memory.spend({ since: dayStart.toISOString() }).cost.toFixed(2)}`);
+    // Fixed reading (user ruling 2026-09-07): trace = the main agent's trace calls on this branch;
+    // memory = applicable current knowledge / facts on this branch; $ = this session's cumulative spend.
+    let traces = 0, facts = 0, knowledge = 0, cost = 0;
+    if (state?.sessionId) {
+      for (let id = state.head ?? null; id; id = memory.store.getTurn(id)?.parentTurnId ?? null) traces += memory.store.listToolCalls(id).filter(c => c.name === "trace").length;
+      facts = memory.store.listBranchFacts(state.sessionId, state.branch, state.head).length;
+      knowledge = memory.store.listCurrentKnowledge({ sessionId: state.sessionId, headTurnId: state.head ?? null }).length;
+      cost = memory.spend(state.sessionId).cost;
+    }
+    context.ui.setStatus("trace-memory", `${indicator} 🧠 trace: ${traces}  memory: ${knowledge}/${facts}  $${cost.toFixed(2)}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
@@ -401,7 +409,7 @@ export default function (pi: ExtensionAPI) {
     if (due && recordingLaunch.mode === "branch" && undelivered) { activity.last = "warning"; showSpend(context); } // paused until the next prompt delivers
     if (due && !(recordingLaunch.mode === "branch" && undelivered))
       background("recording", recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
-    const count = memory.store.listBranchFacts(sessionId, branch, head).filter(f => f.id > (watermark?.lastIntegratedFact ?? 0)).length;
+    const count = memory.store.integrationBatch(sessionId, branch, memory.config.integration.triggerUnintegratedFacts).length;
     if (count >= memory.config.integration.triggerUnintegratedFacts)
       background("integration", memory.integrate({ sessionId, branch, headTurnId: head, ...launch("integration") }));
   });

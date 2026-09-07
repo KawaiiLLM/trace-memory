@@ -44,7 +44,7 @@ export function freezeIntegration(store: Store, input: IntegrateInput, config: T
   if (typeof input.branch !== "string" || !input.branch) throw new Error("integration requires a non-empty branch");
   const after = store.getWatermark(session.id, input.branch)?.lastIntegratedFact ?? 0;
   const facts = store.listProjectFacts(session.projectId);
-  const rangeFacts = store.listBranchFacts(session.id, input.branch, input.headTurnId).filter((f) => f.id > after).sort((a, b) => a.id - b.id);
+  const rangeFacts = store.integrationBatch(session.id, input.branch, config.integration.triggerUnintegratedFacts);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
