@@ -2,7 +2,7 @@
 
 Label: ready-for-agent. Tracker: none configured; this file is the ticket.
 
-Status: specified, held behind ticket 17 (17a–17c), which the user has not released. Baseline: `b4fcd51`, revised 2026-09-08.
+Status: specified; split 2026-09-08 into 18a (enrollment, mode-independent delivery, read-only settings, menu; released, runs after 17b) and 18b (manual catchup and stop; held behind 17c, whose slots, claims, fencing and cancellation it reuses). This file is their parent specification. Baseline for 18a: commit `c5cb96e`.
 
 Depends on the entry identity and attach-time reconciliation of 17a, the queue contracts of 17b and the claim of 17c. Rulings recorded 2026-09-08: "enabled means delivered, whatever the worker mode" supersedes the 2026-09-07 consumer-mode backfill matrix; configuration follows pi-om's shape (a namespaced key in Pi's `settings.json`, read-only, environment overrides) and the menu shows effective values without editing them; there is no historical-import machinery beyond 17a's reconciliation gated by enrollment; there is no migration section.
 
@@ -18,7 +18,7 @@ Give each memory session one persistent enrollment state: enabled or disabled. N
 
 Enabled sessions participate in source ingestion, initial knowledge injection, incremental fact and knowledge delivery, Recording, Integration and closed-session catch-up. Disabled sessions do not participate automatically. Disabling preserves existing memory; enabling imports missing native history and resumes processing from durable progress.
 
-The `/trace` command opens a native Pi menu showing the current session's enrollment state, the effective global settings (read-only), run history and status. Explicit enable, disable, runs and status commands remain available without interactive UI.
+The `/trace` command opens a native Pi menu showing the current session's enrollment state, the effective global settings (read-only), run history and status. Explicit enable, disable, catchup, stop, runs and status commands remain available without interactive UI. Catchup drains a finite snapshot of the current path's backlog on demand; stop cancels this executor's background work without disabling memory.
 
 ## User Stories
 
@@ -54,6 +54,12 @@ The `/trace` command opens a native Pi menu showing the current session's enroll
 30. As a user, I want noninteractive commands for enrollment and status, so that scripts and non-TUI hosts can use the same operations.
 32. As a user, I want sessions open in another Pi process to observe shared enrollment, so that a stale host cannot continue writing after I disable the session elsewhere.
 33. As a user, I want previous knowledge to remain available in its original scope after disabling its source session, so that a pause does not silently retract established knowledge from other conversations.
+34. As a user, I want to explicitly catch up my current path's backlog below normal thresholds, so that small tails and imported history need not wait for more conversation.
+35. As a user, I want catchup to freeze its target when invoked, so that new messages cannot turn it into an endless drain.
+36. As a user, I want a stop command and matching menu action, so that I can cancel background extraction without stopping my foreground agent or disabling future memory.
+37. As a user, I want cancellation and failure to preserve committed progress, so that a later catchup can resume rather than repeat completed batches.
+38. As a user, I want repeated catchup commands to reuse one active operation, so that manual controls cannot bypass worker limits or create duplicate jobs.
+39. As a user, I want status to show catchup running, waiting, completed, stopped or failed, so that I know whether work is progressing or why it ended.
 
 ## Implementation Decisions
 
@@ -99,11 +105,25 @@ The enrollment switch controls participation, not deletion:
 - **Import is reconciliation.** Enabling runs 17a's attach-time reconciliation over the current native path; it is idempotent by entry identity, so interruption, retry and entries completing during the reconciliation all resolve through the same path. The plugin never parses the session file itself; it reads entries through the session manager.
 - **Tree navigation.** If enabled, reconcile any newly selected ancestry before queue selection and automatic source injection. Reuse common ancestor progress and retain sibling queues separately. Navigation changes neither enrollment nor the trigger policy; it does not initiate a model flush.
 
+### Manual catchup and stop
+
+- **Command scope.** `/trace catchup` operates on the current enabled memory session and selected branch, not every closed session. Reconcile available native history first using 17a, then freeze the source boundary and existing pending fact set. If memory is disabled, reject with an instruction to enable it; do not silently enroll the session. An empty target completes without a model call.
+- **Finite target.** Drain only pending entries through that frozen boundary. After Recording, integrate the frozen pending facts plus facts produced by successful Recording of those selected entries. Later conversation entries and unrelated later fact writes are not added to the operation. The target is a finite entry/fact set, not a moving latest-position or maximum-fact-ID watermark.
+- **Bounded batches.** Ignore normal Recording and Integration trigger thresholds, not the per-batch or actual model-context limits. Process Recording batches first, then remaining target facts through Integration. Stop when the frozen target is processed. A failure or cancellation ends this catchup invocation and leaves unprocessed work pending; native bounded provider retries within a run remain unchanged.
+- **Explicit drain exception.** Only an active manual catchup may schedule the next batch on completion of its preceding batch. This is an exception to 17b/17c's normal no-completion-chaining policy, not a persistent auto-drain mode. Ordinary entry events must not expand the manual target or start a second local scheduling loop.
+- **Execution mode.** Manual catchup uses subagent for both phases, allowing consecutive batches without waiting for another foreground prompt to deliver prior results into a fork prefix. This does not change configured modes or clear a session's automatic fork downgrade. Normal task delivery and audit attribution remain bound to the target session.
+- **Shared capacity.** Reuse 17c's one Recorder slot and one Integrator slot per executor, plus target-session phase claims. An occupied slot or a foreign claim is not stolen or duplicated; expose Waiting and keep any wait cancellable. Repeating `/trace catchup` reports the active operation rather than creating another or extending its snapshot. No separate durable queue, worker pool or claim system is added.
+- **Stop semantics.** `/trace stop` first disables continuation of the manual catchup, then requests cancellation of all memory workers owned by this executor, including ordinary and borrowed closed-session work. It does not abort the foreground user agent, change enrollment/global configuration, or cancel workers owned by another executor. If no operation is active it is a harmless no-op.
+- **Cancellation safety.** Use 17c's token fencing, conditional release and shared five-second cleanup deadline. Preserve any batch committed before cancellation wins; prevent late uncommitted writes and retain their queue entries. Do not report stopped workers as still running, release another owner's claim, or replay already-committed work.
+- **After stop.** Do not automatically resume the cancelled drain or immediately replace its cancelled tasks. Future ordinary eligible entry events may schedule work under the usual thresholds; an explicit new catchup creates a fresh snapshot. Use `/trace disable`, not stop, to keep automatic participation off.
+- **Lifecycle.** Disable, executor shutdown/session replacement, or switching away from the selected tree path ends the manual catchup and cancels its owned in-flight work through the same fenced cancellation path. Never retarget its frozen task to the newly selected branch or resume the manual drain automatically on reopen. These events launch no lifecycle flush.
+- **Menu and status.** Expose Catch up and Stop alongside session controls. Show the frozen target and bounded progress, or Waiting with the occupied phase; report completion, cancellation and failure honestly. Explain that stop ends current work but future automatic triggers remain enabled. Inherited or inaccessible source history must not be reported as fully processed.
+
 ### Menu and configuration
 
 - **Native UI.** Register a command that uses Pi's `select`, `confirm` and `input` dialogs. No new UI dependency.
-- **Top-level actions.** With no arguments, `/trace` presents Current session, Settings, Runs and Status. Current session shows Enabled or Disabled plus whether the state came from a default or explicit choice. Settings is visibly labelled Global and is read-only.
-- **Explicit commands.** Keep `/trace enable`, `/trace disable`, `/trace status` and existing run/read command forms. Menu actions and commands call the same enrollment/configuration operations. In a headless context, bare `/trace` returns status and available commands instead of attempting a blocking menu.
+- **Top-level actions.** With no arguments, `/trace` presents Current session, Catch up, Stop, Settings, Runs and Status. Current session shows Enabled or Disabled plus whether the state came from a default or explicit choice. Stop is enabled when this executor has background work or a manual catchup waiting/running. Settings is visibly labelled Global and is read-only.
+- **Explicit commands.** Keep `/trace enable`, `/trace disable`, `/trace catchup`, `/trace stop`, `/trace status` and existing run/read command forms. Menu actions and commands call the same operations. The catchup handler starts the cancellable operation and returns control to the TUI so stop can be invoked while it runs. In a headless context, bare `/trace` returns status and available commands instead of attempting a blocking menu.
 - **Toggle copy.** Explain on disable that processing and future injection stop but stored memory and already-injected text remain. Explain on enable that available history, including the paused interval, will be queued. Mention shared fork/clone identity when applicable. Cancellation makes no state change.
 - **Configuration shape (pi-om's).** Configuration is read from the `trace-memory` key of Pi's global `settings.json` (the agent dir) and the project's `.pi/settings.json`, project over global, with `TRACE_MEMORY_CONFIG` environment overrides on top; the reader that already loads Pi's `retry` settings is reused. Recording mode, Integration mode, trigger thresholds, compressed-view limits and batch budget live there and nowhere per session. Enrollment alone is session-scoped. The plugin never writes configuration.
 - **Effective values.** The menu shows each effective value and which layer supplied it. Editing is by hand in the file; a value masked by an environment override is shown as masked.
@@ -143,6 +163,10 @@ Acceptance covers these externally observable scenarios:
 15. **Menu parity.** Native menu selection and explicit commands produce the same state. Escape/cancel changes nothing; headless bare command returns useful text. Changing a shared-session switch displays its scope.
 16. **Configuration loading.** Global file, project file and environment layer in that precedence; invalid and boundary values fail loading by key; the menu shows each effective value and its source, including a masked file value.
 17. **Retained memory.** Disabling a source session does not retract its already-shared knowledge from another session.
+18. **Manual finite drain.** Start catchup with a backlog larger than one batch and an Integration tail below fifty facts. Drain successive bounded Recording batches, then integrate the target facts, including those just produced. Add new entries and unrelated facts meanwhile; they stay outside the manual target. Assert no model call for an empty target and no implicit enrollment for a disabled target.
+19. **Capacity and command parity.** Exercise menu and command catchup, repeat invocation while running or waiting, and deliver ordinary entry events concurrently. Verify one controller, unchanged frozen scope, at most one worker per local phase and valid target claims. A busy borrowed worker or foreign claim is not preempted; stop remains available while waiting.
+20. **Stop and resume.** Stop an invocation during Recording, during Integration, between batches and while waiting for a claim. No next batch starts; uncommitted work stays pending and a prior commit remains successful. Cancellation cleanup is bounded by 17c. Repeating stop is harmless, the foreground agent continues, and global configuration/enrollment stay unchanged. A later explicit catchup resumes remaining work; ordinary later entry events still follow their thresholds.
+21. **Drain lifecycle.** Disable, exit, replace the session or switch tree paths during catchup. End the manual operation without redirecting its task or launching a flush. Reopen does not automatically restart it. Failure after one successful batch preserves that batch and stops the drain with visible diagnostics.
 
 Revert probes should fail when default selection uses first-seen time, source ingestion deduplicates by text, only the menu checks enrollment, fork restoration overwrites the current switch from historical state, or delivery is gated on worker mode again. A final live Pi acceptance verifies native creation timestamps, persistence timing and terminal menu interactions; synthetic tests do not establish those runtime details by themselves.
 
@@ -155,6 +179,7 @@ Revert probes should fail when default selection uses first-seen time, source in
 - Per-session mode/budget overrides, configuration profiles, a web settings UI, or any menu that writes configuration.
 - A separate import worker that continuously scans all old sessions without opt-in.
 - Immediate drain-on-enable, extraction on configuration changes, compaction or shutdown.
+- Persistent auto-drain modes, manual draining of every session, or a second scheduler/worker pool for catchup. The finite explicit current-path catchup above is in scope.
 - Replacing the existing worker runtime with AgentSession.
 - A new cross-machine settings service, log-export system or footer redesign.
 
@@ -165,5 +190,7 @@ The final default ruling is: sessions created after plugin installation default 
 The later entry-view decision remains authoritative: user and assistant entries also have the overall entry cap. This enrollment ticket does not revive the earlier proposal to leave them unbounded, nor the older lifecycle drain rules.
 
 Ticket 17 deliberately excluded enrollment UI and retained mode-dependent backfill. Those are the additions here, not reasons to duplicate its source ingestion or scheduling mechanisms. The settings editor of the first draft was dropped on 2026-09-08 after checking pi-om, which registers only read-only `/om:status` and `/om:view` and reads its configuration from a namespaced `settings.json` key. The proposed fake-host/façade test seam, with reuse of ticket 17's two-process check, is the sole confirmation requested before implementation.
+
+The later user ruling adds `/trace catchup` and `/trace stop` here as user-facing controls over 17c's executor slots, target claims and cancellation. Manual catchup is the sole finite completion-chaining exception; it does not change the automatic closed-session selection policy. Settings remain read-only.
 
 No external issue was published: the repository has no configured issue tracker or Git remote. This local ticket follows the existing ready-for-agent convention.
