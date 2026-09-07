@@ -681,3 +681,32 @@ test("the plugin's spend is a footer status item updated after every run, and th
   expect(result.summary.usage).toMatchObject({ input: expect.any(Number), output: expect.any(Number), cost: expect.any(Object) });
   expect(h.statuses.get("trace-memory")).toMatch(/^mem 2 runs/);
 });
+
+test("the state entry pointing at a new turn is written only after Pi persisted the user message, so a rewind before that message drops it", async () => {
+  const h = host();
+  await h.turn();
+  const before = h.entries.length;
+  await h.prompt("second"); // before_agent_start: the turn exists in the database, no state entry yet
+  expect(h.memory.store.listTurns(1)).toHaveLength(2);
+  expect(h.entries.length).toBe(before);
+  await h.emit("message_start", { message: { role: "user", content: "second", timestamp: Date.now() } });
+  expect(h.entries.length).toBe(before); // still nothing: Pi persists the user message after message_end
+  await h.answer(); // the assistant started: now the head advances in the session file
+  expect(h.entries.at(-1)!.data.head).toBe(2);
+});
+
+test("a branch forked from an earlier point inherits the nearest recorded ancestor as its watermark", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 });
+  h.provider(async c => recordingFact(c));
+  await h.turn(); // T1 recorded
+  const atT1 = [...h.entries];
+  await h.turn(); // T2 recorded on main; main's watermark is now T2
+  expect(h.memory.store.getWatermark(1, "main")?.lastRecordedTurn).toBe(2);
+  h.entries.splice(0, h.entries.length, ...atT1); // the fork copies the path up to T1
+  h.ctx.sessionManager.getSessionId = () => "forked";
+  await h.emit("session_start");
+  await h.turn(); // T3 on the fork, parent T1
+  const run = h.memory.store.listRuns(1).at(-1)!;
+  expect(run.rangeFrom).toBe("S1/T3"); // T1 is not recorded again
+  expect(h.memory.store.getTurn(3)!.parentTurnId).toBe(1);
+});

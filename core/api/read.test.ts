@@ -140,8 +140,8 @@ test("delivery and branch facts use run ownership independently of audit JSON", 
     facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
   const manual = memory.store.listRuns(s.id).at(-1)!;
   memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
-  expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["recorded"]);
-  expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["manual"]);
+  expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["recorded", "manual"]); // facts belong to their turn, whichever branch wrote them
+  expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["recorded", "manual"]); // same turn, same path
   expect(memory.deliver(s.id).text).toContain("recorded");
   for (const run of [memory.store.getRun(first.runId)!, manual]) {
     memory.store.updateRun(run.id, { ...run, response: "{}" });

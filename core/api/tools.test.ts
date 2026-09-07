@@ -129,12 +129,13 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
 });
 
 
-test("manual facts on a common ancestor remain bound to their calling branch", async () => {
+test("manual facts belong to their turn: a branch whose path includes that turn integrates them", async () => {
   memory.tools(manual(1, 1, "A"))[2]!.execute({ facts: [fact()] });
   await memory.record({ sessionId: 1, branch: "B", headTurnId: 1 });
   expect(memory.store.listBranchFacts(1, "A").map(f => f.id)).toEqual([1]);
-  expect(memory.store.listBranchFacts(1, "B")).toEqual([]);
-  expect(await memory.integrate({ sessionId: 1, branch: "B" })).toEqual({ outcome: "empty" });
+  expect(memory.store.listBranchFacts(1, "B", 1).map(f => f.id)).toEqual([1]);
+  expect(memory.store.listBranchFacts(1, "C")).toEqual([]); // no path known for C
+  expect((await memory.integrate({ sessionId: 1, branch: "B", headTurnId: 1 })).outcome).not.toBe("empty");
 });
 
 test("reads return every knowledge item while injection still applies the scope rule", () => {

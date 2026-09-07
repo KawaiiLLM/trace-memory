@@ -188,7 +188,7 @@ export default function (pi: ExtensionAPI) {
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
-  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
+  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean; saved?: boolean } | undefined;
   // What this agent run has shown the model and must confirm when it settles. Kept apart from
   // `current`, which a queued (steering or follow-up) user message replaces mid-run.
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
@@ -238,11 +238,11 @@ export default function (pi: ExtensionAPI) {
       state = { ...saved, piId, branch: (fork && tip?.head !== saved.head) || saved.piId !== piId ? randomUUID() : saved.branch };
       // A new branch (Pi fork, clone, or tree switch off a saved head) inherits the source branch's
       // watermarks where they lie on its own ancestry, so shared turns are recorded once.
-      if (state.branch !== saved.branch && saved.sessionId && !memory.store.getWatermark(saved.sessionId, state.branch)) {
+      if (state.branch !== saved.branch && saved.sessionId && state.head && !memory.store.getWatermark(saved.sessionId, state.branch)) {
+        // The nearest recorded ancestor, whichever branch recorded it; integration progress from the source.
+        const recorded = memory.store.lastRecordedAncestor(saved.sessionId, state.head);
         const source = memory.store.getWatermark(saved.sessionId, saved.branch);
-        let onPath = false;
-        for (let id = state.head ?? null; id && source?.lastRecordedTurn; id = memory.store.getTurn(id)?.parentTurnId ?? null) if (id === source.lastRecordedTurn) { onPath = true; break; }
-        if (source && onPath) memory.store.setWatermark(saved.sessionId, state.branch, source.lastRecordedTurn ?? undefined, source.lastIntegratedFact ?? undefined);
+        if (recorded || source?.lastIntegratedFact) memory.store.setWatermark(saved.sessionId, state.branch, recorded ?? undefined, source?.lastIntegratedFact ?? undefined);
       }
     } else {
       const name = marker(ctx.cwd);
@@ -263,9 +263,11 @@ export default function (pi: ExtensionAPI) {
     if (current && state.sessionId && !current.id) {
       const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "turn", userPrompt: current.prompt, startedAt: current.started });
       current.id = state.head = turn.id;
-      save();
+      // Not saved yet: Pi persists the user message only after message_end, and a state entry
+      // written before it would survive a rewind to the point before that message.
     }
   };
+  const persistState = () => { if (current?.id && !current.saved) { current.saved = true; save(); } };
   const flush = (ended = false) => {
     if (current?.id && current.replied) memory.store.updateTurn(current.id, { assistantText: [current.completed, current.partial].filter(Boolean).join("\n"), ...(ended ? { endedAt: now() } : {}) });
   };
@@ -306,6 +308,7 @@ export default function (pi: ExtensionAPI) {
   });
   const assistant = (message: { content?: unknown }, context: ExtensionContext, ended: boolean) => {
     ensure(context);
+    persistState(); // the user message is in the session file once the assistant has started
     if (!current || (!text(message) && (!Array.isArray(message.content) ||
       !message.content.some(c => c.type === "toolCall" || (c.type === "thinking" && c.thinking))))) return;
     current.replied = true;
@@ -326,10 +329,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context, false); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context, true); });
   pi.on("tool_result", event => {
+    persistState();
     if (current?.id) memory.store.appendToolCall({ turnId: current.id, name: event.toolName, input: JSON.stringify(event.input), result: JSON.stringify({ content: event.content, details: event.details }), status: event.isError ? "failure" : "success" });
   });
   pi.on("agent_settled", (_event, context) => {
-    ensure(context);
+    ensure(context); persistState();
     // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
     if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
     if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
@@ -355,9 +359,9 @@ export default function (pi: ExtensionAPI) {
     const undelivered = memory.store.listPendingDeliveries(sessionId, branch).length > 0;
     if ((answered >= memory.config.recording.triggerAnsweredTurns || growth >= memory.config.recording.triggerTokens) && !(recordingLaunch.mode === "branch" && undelivered))
       background(recording({ sessionId, branch, headTurnId: head, ...recordingLaunch }));
-    const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastIntegratedFact ?? 0)).length;
+    const count = memory.store.listBranchFacts(sessionId, branch, head).filter(f => f.id > (watermark?.lastIntegratedFact ?? 0)).length;
     if (count >= memory.config.integration.triggerUnintegratedFacts)
-      background(memory.integrate({ sessionId, branch, ...launch("integration") }));
+      background(memory.integrate({ sessionId, branch, headTurnId: head, ...launch("integration") }));
   });
   pi.on("session_before_tree", async (_event, context) => {
     ensure(context); flush(true);

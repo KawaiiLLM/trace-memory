@@ -1037,17 +1037,29 @@ export class Store {
   // -- watermarks --
 
   /** Branch facts follow the ancestry frozen by the latest successful recording. */
-  listBranchFacts(sessionId: number, branch: string): Fact[] {
+  /** Facts on the branch's path: every fact whose turn lies on the ancestor chain of the head (given, or the branch's latest known turn), manual facts included. */
+  listBranchFacts(sessionId: number, branch: string, headTurnId?: number | null): Fact[] {
+    const root = headTurnId ?? this.knowledgePath(sessionId, branch).headTurnId;
+    if (!root) return [];
     return this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
-      SELECT t.id, t.parent_turn_id FROM turns t JOIN watermarks w ON t.id = w.last_recorded_turn
-      WHERE w.session_id = ? AND w.branch = ? AND t.session_id = w.session_id
+      SELECT t.id, t.parent_turn_id FROM turns t WHERE t.id = ? AND t.session_id = ?
       UNION
       SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
       WHERE t.session_id = ?
-    ) SELECT f.* FROM facts f JOIN runs r ON r.id = f.run_id
-      WHERE (r.kind != 'manual' AND f.turn_id IN (SELECT id FROM lineage))
-        OR (r.kind = 'manual' AND r.session_id = ? AND r.branch = ?) ORDER BY f.id`)
-      .all(sessionId, branch, sessionId, sessionId, branch).map(toFact);
+    ) SELECT f.* FROM facts f WHERE f.turn_id IN (SELECT id FROM lineage) ORDER BY f.id`)
+      .all(root, sessionId, sessionId).map(toFact);
+  }
+
+  /** The nearest ancestor of the head (or the head itself) covered by a successful recording run's range, for a new branch's watermark. */
+  lastRecordedAncestor(sessionId: number, headTurnId: number): number | null {
+    const recorded = new Set<number>();
+    for (const run of this.listRuns(sessionId)) {
+      if (run.kind !== "recording" || run.outcome !== "success" || !run.rangeFrom || !run.rangeTo) continue;
+      const from = Number(/\/T(\d+)$/.exec(run.rangeFrom)?.[1]), to = Number(/\/T(\d+)$/.exec(run.rangeTo)?.[1]);
+      for (let id: number | null = to; id; id = this.getTurn(id)?.parentTurnId ?? null) { recorded.add(id); if (id === from) break; }
+    }
+    for (let id: number | null = headTurnId; id; id = this.getTurn(id)?.parentTurnId ?? null) if (recorded.has(id)) return id;
+    return null;
   }
 
   listIntegratedProjectFacts(projectId: number): Fact[] {
