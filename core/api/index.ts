@@ -4,6 +4,7 @@ export type { ListingOptions, SearchScope, MarkInput } from "./read.ts";
 import { realpathSync } from "node:fs";
 import { freezeNote, runNote, type NoteInput, type NoteResult } from "../note/index.ts";
 import { finish, renderFact, renderTurn, renderEntryTrace, renderEntryDiff, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+export { tokens } from "../render/index.ts";
 export type { NoteInput, NoteResult, NoteAgentInput } from "../note/index.ts";
 import { openStore, type Store } from "../store/index.ts";
 import type { RunOutcome } from "../model/index.ts";

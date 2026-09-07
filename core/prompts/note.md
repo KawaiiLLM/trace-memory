@@ -12,6 +12,7 @@ You are the memory extractor for a coding assistant. Once the raw conversation i
 - **Facts written earlier in this session** [new]: the most recent slice by freshness. Nothing is hidden. Each fact starts with `[F<id>] time [category/actor] text · relations`, followed by `quote:` (when present) and `source:` continuation lines. Inbound relations are labeled `inbound`.
 - The raw turns after the watermark, each message tagged `[Source entry id: …]` [pi-om]. Each tool call has a fixed metadata line `[T<id>#t<n>] tool=<name> status=<status> omitted=<true|false>`, followed by command/stdout/stderr or report fields. Reads and searches show name plus path; memory writes show receipts. Cuts include omission counts; expansion addresses follow the content. A cut result cannot justify `completed:` without fetching its full evidence; a cut report stays `reported:`.
 - **You only see the current batch and the past.** Written facts cannot be edited; to correct one, write a new fact with a relation.
+- When this message carries only the range, you are running inside the live conversation: the raw turns of the range, the facts delivered after earlier notes, and the active entries are the ones already in this conversation.
 
 ## Output
 

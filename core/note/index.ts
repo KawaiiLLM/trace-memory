@@ -76,15 +76,12 @@ export async function runNote(
   const active = budgetEntries(entries, config.render.entriesBlockTokens);
   const recent = episodic.recent, entryLines = active.groups.map((g) => g.text);
   receipts.push(...episodic.receipts, ...active.receipts);
-  // Branch mode appends one message to the live conversation: the raw turns, the facts delivered
-  // after earlier notes, and the injected entries are already in the model's context, so the
-  // message carries only the range. Subagent mode must carry everything.
+  // Branch mode appends one message to the live conversation and carries only the range (ruling
+  // 08:53: fork mode has only the last of the four inputs); the prompt says where the rest is.
+  // Subagent mode must carry everything.
   const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active entries:", entryLines.filter(Boolean).join("\n"),
     "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
-  const input = mode === "branch"
-    ? finish({ content: [`Range: ${range.from}..${range.to}`,
-       "The raw turns of this range, the facts delivered after earlier notes, and the active entries are already in this conversation."].join("\n\n"), receipts: [] })
-    : subagentInput;
+  const input = mode === "branch" ? `Range: ${range.from}..${range.to}` : subagentInput;
   const fetched: { address: string; content: string }[] = [];
   let fetching = true;
   const agentInput: NoteAgentInput = { kind: "note", sessionId, branch, range, readEntryRevisions: structuredClone(readEntryRevisions), model, mode,

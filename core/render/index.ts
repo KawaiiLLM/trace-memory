@@ -7,25 +7,26 @@ type Budgets = TraceMemoryConfig["render"];
 export interface TurnOptions { tool?: number; full?: boolean; cap?: number }
 export interface Rendered { content: string; receipts: string[] }
 
-// Token estimate (ruled, no tokenizer dependency): 0.75 per CJK character, 0.25 per other code unit.
-// Omission counts still report UTF-16 code units.
+// Token estimate (ruled, grilling Q12; no tokenizer dependency): 0.75 per CJK character, 0.25 per
+// other character, counted in code points. Every budget in this module is measured with it.
 const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]/u;
 export const tokens = (text: string): number => {
-  let cjk = 0;
-  for (const ch of text) if (CJK.test(ch)) cjk++;
-  return Math.ceil(cjk * 0.75 + (text.length - cjk) * 0.25);
+  let cjk = 0, other = 0;
+  for (const ch of text) if (CJK.test(ch)) cjk++; else other++;
+  return Math.ceil(cjk * 0.75 + other * 0.25);
 };
 
+// Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
 function cut(text: string, head: number, tail: number): string {
   if (tokens(text) <= head + tail) return text;
   const lines = text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
   let first = 0, last = lines.length, used = 0;
-  while (first < last && used + lines[first]!.length <= head * 4) used += lines[first++]!.length;
+  while (first < last && used + tokens(lines[first]!) <= head) used += tokens(lines[first++]!);
   used = 0;
-  while (last > first && used + lines[last - 1]!.length <= tail * 4) used += lines[--last]!.length;
+  while (last > first && used + tokens(lines[last - 1]!) <= tail) used += tokens(lines[--last]!);
   const omitted = lines.slice(first, last).join("");
   return [lines.slice(0, first).join(""),
-    `[omitted ${last - first} lines, ${omitted.length} characters]`,
+    `[omitted ${last - first} lines, ${[...omitted].length} characters]`,
     lines.slice(last).join("")].filter(Boolean).join("\n");
 }
 

@@ -4,8 +4,8 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
-import { buildRequest, verifyRequest, hash, snapshot, type Body } from "./branch.ts";
-import { DEFAULT_CONFIG, TraceMemory, type ConfigOverride, type NoteResult, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
+import { buildRequest, verifyRequest, hash, snapshot, type Body, type Appended } from "./branch.ts";
+import { DEFAULT_CONFIG, TraceMemory, tokens, type ConfigOverride, type NoteResult, type NoteAgentInput, type SettleAgentInput, type MarkInput, type ListingOptions, type SearchScope } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
@@ -15,11 +15,6 @@ const tag = "trace-memory";
 const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
-const estimate = (s: string) => {
-  let cjk = 0;
-  for (const c of s) if (/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff00-\uffef]/u.test(c)) cjk++;
-  return Math.ceil(cjk * .75 + (s.length - cjk) * .25);
-};
 
 function configuration(): { flat: FlatConfig; core: ConfigOverride } {
   const flat: FlatConfig = JSON.parse(process.env.TRACE_MEMORY_CONFIG ?? "{}");
@@ -65,32 +60,39 @@ export default function (pi: ExtensionAPI) {
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
-    const model = ((input.kind === "note" && input.mode === "branch") || input.model === "session") ? callContext.model : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
+    const model = (input.mode === "branch" || input.model === "session") ? callContext.model : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
     let request: unknown = null;
     let verification: (ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number }) | undefined;
     let fallbackReason: string | undefined;
     let mode: "branch" | "subagent" = "subagent";
     try {
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
-      if (input.kind === "note" && input.mode === "branch") {
+      if (input.mode === "branch") {
         const session = sessions.get(callPiId)!;
         const captured = session.capture;
         let candidate: Body | undefined;
         try {
+          // Note and settle candidate: the captured prefix plus one instruction. Settle final: the
+          // verified candidate request plus the candidate reply replayed and the feedback message.
+          const continuation = input.kind === "settle" ? input.continuation : undefined;
+          if (continuation && (continuation.response.mode !== "branch" || !continuation.request)) throw new Error("Candidate round was not a branch request");
           if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
           if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
-          const instruction = `${input.prompt}\n\n${input.input}`;
-          candidate = buildRequest(captured.payload, model.api, instruction);
+          const prefix = continuation ? continuation.request as Body : captured.payload;
+          const appended: Appended[] = continuation
+            ? [{ role: "assistant", text: String(continuation.response.output) }, { role: "user", text: continuation.message.content }]
+            : [{ role: "user", text: `${input.prompt}\n\n${input.input}` }];
+          candidate = buildRequest(prefix, model.api, appended);
           // The Anthropic adapter enforces this after onPayload; audit that exact body.
           if (model.api === "anthropic-messages") candidate.stream = true;
           const key = JSON.stringify([model.id, model.provider, hash(captured.payload.tools ?? null)]);
-          verification = { ...verifyRequest(captured.payload, candidate, model.api, instruction), key, firstForKey: session.verified !== key };
+          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key };
           if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
           session.verified = key;
         } catch (error) {
           fallbackReason = String(error);
           session.verified = undefined;
-          if (!session.notified) { contextNotice(fallbackReason); session.notified = true; }
+          if (!session.notified) { contextNotice(input.kind, fallbackReason); session.notified = true; }
         }
         if (!fallbackReason && candidate) {
           mode = "branch";
@@ -125,7 +127,7 @@ export default function (pi: ExtensionAPI) {
       return { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: String(error), request, mode, verification, fallbackReason };
     }
   }, core);
-  const contextNotice = (reason: string) => ctx.ui.notify(`Trace Memory: note fell back to subagent mode. ${reason}`, "warning");
+  const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
   let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
@@ -133,6 +135,12 @@ export default function (pi: ExtensionAPI) {
   const notes = new Map<string, Promise<NoteResult>>();
   const modelName = (kind: "note" | "settle") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
+  // Ruling 17:01: note and settle each configure their mode (note defaults to branch, settle to
+  // subagent); branch mode always runs on the session model, subagent mode on the configured one.
+  const launch = (kind: "note" | "settle") => {
+    const branch = kind === "note" ? memory.config.note.branchModeDefault : !memory.config.settle.subagentModeDefault;
+    return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
+  };
   const note = (input: Parameters<typeof memory.note>[0]) => {
     const key = `${input.sessionId}/${input.branch}`;
     const existing = notes.get(key);
@@ -244,18 +252,21 @@ export default function (pi: ExtensionAPI) {
       turns.push(turn); id = turn.parentTurnId;
     }
     const answered = turns.filter(t => t.kind === "turn" && t.assistantText !== null).length;
-    const tokens = turns.reduce((n, t) => n + estimate((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
+    const growth = turns.reduce((n, t) => n + tokens((t.userPrompt ?? "") + (t.assistantText ?? "") + memory.store.listToolCalls(t.id).map(c => (c.input ?? "") + (c.result ?? "")).join("")), 0);
     const background = (promise: Promise<unknown>) => {
       pending.add(promise);
       void promise.catch(error => context.ui.notify(String(error), "error")).finally(() => pending.delete(promise));
     };
-    if (answered >= memory.config.note.triggerAnsweredTurns || tokens >= memory.config.note.triggerTokens)
-      background(note({ sessionId, branch, headTurnId: head,
-        mode: memory.config.note.branchModeDefault ? "branch" : "subagent",
-        model: memory.config.note.branchModeDefault ? ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session" : modelName("note") }));
+    const noteLaunch = launch("note");
+    // A branch note carries only the range (ruling 08:53): it presumes every earlier note result is
+    // already in the conversation. A result committed after this prompt started is not delivered
+    // until the next prompt, so the note waits for that prompt's turn stop.
+    const undelivered = memory.store.listPendingDeliveries(sessionId, branch).length > 0;
+    if ((answered >= memory.config.note.triggerAnsweredTurns || growth >= memory.config.note.triggerTokens) && !(noteLaunch.mode === "branch" && undelivered))
+      background(note({ sessionId, branch, headTurnId: head, ...noteLaunch }));
     const count = memory.store.listBranchFacts(sessionId, branch).filter(f => f.id > (watermark?.lastSettledFact ?? 0)).length;
     if (count >= memory.config.settle.triggerUnsettledFacts)
-      background(memory.settle({ sessionId, branch, mode: "subagent", model: modelName("settle") }).then(result => {
+      background(memory.settle({ sessionId, branch, ...launch("settle") }).then(result => {
         if (result.outcome !== "dropped") for (const [key, value] of continuations) if (value.owner === `${sessionId}/${branch}`) continuations.delete(key);
         return result;
       }));
@@ -281,9 +292,15 @@ export default function (pi: ExtensionAPI) {
       state.head = turn.id; save();
     }
   });
-  pi.on("session_shutdown", async event => {
+  // Pi tears the extension runtime down and re-runs the factory for every reason, including
+  // session replacement (new, resume, fork); this instance never serves the next session.
+  let closed = false;
+  pi.on("session_shutdown", async () => {
+    if (closed) return;
+    closed = true;
     flush(true);
-    if (event.reason === "quit" || event.reason === "reload") { await Promise.allSettled([...pending]); memory.close(); }
+    await Promise.allSettled([...pending]);
+    memory.close();
   });
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
   const schema = (properties: object, required: string[]) => ({ type: "object", properties, required, additionalProperties: false }) as ToolDefinition["parameters"];

@@ -164,11 +164,17 @@ test("settle waits for a turn stop after facts arrive and final replays candidat
   expect(JSON.parse(runs[1]!.request!)).toEqual(h.requests[2]);
 });
 
-test("session replacement does not close the facade or launch extraction", async () => {
-  const h = host(); await h.turn();
-  await h.emit("session_shutdown", { reason: "new" });
-  await h.emit("session_start"); await h.turn();
-  expect(h.memory.store.listTurns(1)).toHaveLength(2); expect(h.requests).toHaveLength(0);
+test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs, launches nothing, and closes the store", async reason => {
+  const h = host({ "note.triggerAnsweredTurns": 1 });
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.turn();
+  let closed = false;
+  const shutdown = h.emit("session_shutdown", { reason }).then(() => { closed = true; });
+  await h.drain(); expect(closed).toBe(false);
+  release(noteFact(h.conversations[0]!)); await shutdown;
+  expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success"); expect(h.requests).toHaveLength(1);
+  await expect(h.emit("session_start")).rejects.toThrow(/not open/); // Pi re-runs the factory; this instance is dead.
 });
 
 test("core contains no Pi imports and host imports core only through the facade", () => {
@@ -395,4 +401,21 @@ test("removing a marker before first reply cannot turn its shared project into a
   await h.tools.get("mark").execute("m", { input: { project: "override" } });
   expect(h.memory.store.getSession(1)!.projectId).toBe(shared);
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
+});
+
+test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; subagent mode does not", async branchMode => {
+  const h = host({ "note.triggerAnsweredTurns": 1, "note.branchModeDefault": branchMode, noteModel: "fake/noter" });
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.turn(); // Note A in flight over T1.
+  await h.prompt("second"); await h.answer(); // This prompt saw no delivery.
+  release(noteFact(h.conversations[0]!)); await h.drain();
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  h.provider(async c => noteFact(c));
+  await h.emit("agent_settled"); await h.drain();
+  expect(h.requests).toHaveLength(branchMode ? 1 : 2);
+  expect((await h.prompt("third"))?.message?.content).toContain("pending_notes");
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.requests).toHaveLength(branchMode ? 2 : 3);
+  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
 });

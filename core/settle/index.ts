@@ -103,6 +103,7 @@ export async function runSettle(store: Store, frozen: ReturnType<typeof freezeSe
     try { result = await runAgent(structuredClone({ ...base, round, input, ...(continuation ? { continuation } : {}) })); }
     catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
       output: error instanceof Error ? error.message : String(error) }; }
+    run.mode = result.mode ?? mode;
     run.request = result.request === undefined ? null : JSON.stringify(result.request);
     let outcome: "success" | "failure" | "cancelled" | "bounced" = result.outcome;
     let problems: string[] = [], output: SettleOutput | null = null;
@@ -115,7 +116,9 @@ export async function runSettle(store: Store, frozen: ReturnType<typeof freezeSe
       } catch (error) { problems = [`invalid JSON: ${String(error)}`]; }
       if (problems.length || !output) outcome = "bounced";
     }
-    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, problems, round });
+    run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, readEntryRevisions, problems, round,
+      ...(result.verification !== undefined ? { verification: result.verification } : {}),
+      ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
     const runId = round === "final" && outcome === "success" ? 0
       : store.recordRun({ ...run, outcome: outcome === "bounced" ? "failure" : outcome }).id;
     return { outcome, runId, problems, output, result, run };
