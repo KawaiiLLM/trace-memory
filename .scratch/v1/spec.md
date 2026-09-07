@@ -103,6 +103,7 @@ The simulation driver's validation and application logic is the executable proto
 - Within one process, at most one recording run and one integration run per session-branch at a time; a trigger that fires while one is running is dropped (the next trigger re-evaluates). An Integration run covers only that session-branch's own facts; sessions of one project integrate separately (user ruling 2026-09-06 09:43). No leases across processes in v1.
 - Failure or cancellation commits nothing but the run record. A run's business result is whether a batch committed: once the write tool has committed the batch, the run record, the watermark and the delivery in one transaction, the run is a `success` whatever the model does afterwards; a provider failure after that point is recorded in the run record's response only, and a committed batch is never undone. `failure` / `cancelled` (nothing committed), `bounced` (last submission rejected, never corrected), and success with zero facts (stopped normally without submitting) are therefore mutually exclusive. A branch switch while a recording run is pending lets the run finish against its frozen branch; its delivery goes to that branch only. The branch summary for the abandoned branch uses committed facts plus the rendered raw for anything still unrecorded; it never silently drops raw.
 - Two behaviour cases the tests must cover: a new turn arrives while the model has not returned; the user switches branch while the model has not returned.
+- Deliveries and the first knowledge injection are confirmed at the turn's `agent_settled`, after Pi has persisted the message; only the run ids that prompt took are confirmed, results committed during the turn wait for the next prompt, and confirmation is bound to the ids, not to the current session state. A turn that never settles delivers or injects again: duplicates are allowed before confirmation, silent loss is not (user ruling 2026-09-07).
 
 ### Overflow policy
 
@@ -113,7 +114,7 @@ The simulation driver's validation and application logic is the executable proto
 ### Run record contract
 
 - `runAgent(input) → {outcome: success|failure|cancelled, output, usage, request}` where `request` is the exact request as sent to the provider (system prompt, messages, tool definitions), filled by the host. The core stores `request`, never its own assembled input, as the record of what the model saw.
-- Every attempt is recorded, including bounced outputs, feedback rounds, failures, and cancellations. Business writes are one transaction per successful run; run records are written regardless.
+- Every attempt that ends is recorded: success, bounced outputs, feedback rounds, failures, and cancellations. A process death before the commit leaves no run record; the raw and the watermark are untouched and the range is re-run at the next trigger (user ruling 2026-09-07: business safety, not per-attempt audit). Business writes are one transaction per successful run; run records are written regardless.
 - Branch-mode verification compares request bodies structurally (system prompt and message prefix) against the session's own last provider request; cache-read usage is an additional observation, never the proof. The verification is re-run whenever the model, provider, or tool definitions change.
 
 ### Integration feedback loop

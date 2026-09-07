@@ -35,7 +35,7 @@ export interface RecordingAgentInput {
 }
 export type RecordResult =
   | { outcome: "dropped" | "empty" }
-  | { outcome: "success"; runId: number; facts: Fact[] }
+  | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] };
 
 export function freezeRecording(store: Store, input: RecordInput, config: TraceMemoryConfig) {
@@ -109,7 +109,9 @@ export async function runRecording(
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (binding.committed) {
-    store.updateRun(binding.committed.runId, { ...run, outcome: "success" });
+    // The batch is committed; a failure while completing the audit record is reported, not a business failure.
+    try { store.updateRun(binding.committed.runId, { ...run, outcome: "success" }); }
+    catch (error) { return { outcome: "success", ...binding.committed, problems: [`audit update failed after commit: ${String(error)}`] }; }
     return { outcome: "success", ...binding.committed };
   }
   if (problems.length) {

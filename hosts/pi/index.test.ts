@@ -128,8 +128,39 @@ test("pending delivery is injected once on its own branch", async () => {
   expect(await injected()).not.toContain("recorded");
   h.entries.splice(0, h.entries.length, ...mainTip); await h.emit("session_tree");
   expect(await injected()).toContain("recorded");
-  expect(await injected()).not.toContain("recorded");
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(0);
+  expect(await injected()).toContain("recorded"); // not settled yet: delivered again rather than lost
+  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  h.provider(async c => recordingFact(c));
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.memory.store.listPendingDeliveries(1, "main").map(d => d.runId)).not.toContain(1); // the first delivery is confirmed
+  expect(await injected()).not.toContain("[F1]"); // run 1's delivery is not repeated once confirmed
+});
+
+test("2026-09-07: deliveries and the first injection are confirmed at agent_settled with only the run ids that prompt took", async () => {
+  const h = host({ "recording.triggerAnsweredTurns": 1 }, "project-name");
+  const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "marker" });
+  const seed = store.createSession({ host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
+  const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
+  const noted = store.commitRecordingRun({ run: { kind: "recording", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
+  if (!noted.ok) throw new Error("seed");
+  store.commitIntegrationRun({ run: { kind: "integration", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", handle: "$e1", author: "fixture", text: "项目规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" }] });
+  // Injection prepared at the prompt, persisted only at settle: a turn that never settles injects again.
+  expect((await h.prompt())?.message?.content).toContain("<knowledge>");
+  expect(h.entries.some(e => e.data?.injected === true)).toBe(false);
+  expect((await h.prompt("again"))?.message?.content).toContain("<knowledge>");
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.entries.some(e => e.data?.injected === true)).toBe(true);
+  // A delivery taken by a prompt stays pending until that turn settles; a result committed mid-turn waits.
+  let release!: (value: Reply) => void;
+  h.provider(async () => new Promise(resolve => { release = resolve; }));
+  await h.prompt("one"); await h.answer(); await h.emit("agent_settled"); await h.drain(); // recording A in flight
+  await h.prompt("two"); // took nothing: A is not committed yet
+  release(recordingFact(h.conversations[0]!)); await h.drain(); // A commits during turn two
+  h.provider(async c => recordingFact(c));
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect(h.memory.store.listPendingDeliveries(h.memory.store.getSession(2) ? 2 : 1, "main").length).toBeGreaterThanOrEqual(1); // A's delivery was not confirmed by a turn that never showed it
+  const content = (await h.prompt("three"))?.message?.content ?? "";
+  expect(content).toContain("<recorded>");
 });
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
@@ -232,7 +263,7 @@ test("knowledge are injected once per session, only once something exists; later
   void p;
   const second = await h.prompt("again");
   expect(second?.message?.content).toContain("<knowledge>");
-  await h.answer();
+  await h.answer(); await h.emit("agent_settled"); // the injection is confirmed only when the turn settles
   const third = await h.prompt("once more");
   expect(third?.message?.content ?? "").not.toContain("<knowledge>");
 });

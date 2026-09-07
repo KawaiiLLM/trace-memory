@@ -188,7 +188,8 @@ export default function (pi: ExtensionAPI) {
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
-  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean } | undefined;
+  let current: { prompt: string; started: string; id?: number; completed: string; partial: string; replied?: boolean;
+    deliveries?: number[]; injected?: boolean } | undefined;
   const pending = new Set<Promise<unknown>>();
   const recordings = new Map<string, Promise<RecordResult>>();
   const modelName = (kind: "recording" | "integration") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
@@ -256,12 +257,18 @@ export default function (pi: ExtensionAPI) {
     current = { prompt: event.prompt, started: now(), completed: "", partial: "" };
     append();
     // Knowledge once per session (the compaction block carries them afterwards); deliveries on every prompt.
+    // Both are confirmed at this turn's agent_settled, after Pi has persisted the message (ruling
+    // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
     const parts: string[] = [];
     if (!state.injected) {
       const block = memory.inject(state.sessionId ?? { projectId: state.projectId });
-      if (block) { parts.push(block); state.injected = true; save(); } // nothing yet: try again next prompt
+      if (block) { parts.push(block); current.injected = true; } // nothing yet: try again next prompt
     }
-    if (state.sessionId) { const delivery = memory.deliver(state.sessionId, state.branch); if (delivery) parts.push(delivery); }
+    if (state.sessionId) {
+      const delivery = memory.deliver(state.sessionId, state.branch);
+      if (delivery.text) parts.push(delivery.text);
+      current.deliveries = delivery.runIds; // only what this prompt took; later results wait for the next prompt
+    }
     if (!parts.length) return;
     return { message: { customType: tag, content: parts.join("\n\n"), display: false } };
   });
@@ -299,6 +306,9 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on("agent_settled", (_event, context) => {
     ensure(context);
+    // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
+    if (current?.deliveries) { memory.confirmDelivery(current.deliveries); current.deliveries = undefined; }
+    if (current?.injected) { state.injected = true; current.injected = false; save(); }
     if (!state.sessionId || !state.head) return;
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
     const { sessionId, branch, head } = state;

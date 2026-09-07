@@ -1014,14 +1014,17 @@ export class Store {
     });
   }
 
-  deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): string {
+  /** Renders the pending deliveries without consuming them; the host confirms the run ids it persisted. */
+  deliver(sessionId: number, branch: string | null, render: (facts: Fact[]) => string): { text: string; runIds: number[] } {
     return this.transaction(() => {
       const pending = this.listPendingDeliveries(sessionId, branch);
       const facts = pending.flatMap((p) => this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(p.runId).map(toFact));
-      const text = render(facts);
-      for (const p of pending) this.clearPendingDelivery(p.runId, new Date().toISOString());
-      return text;
+      return { text: render(facts), runIds: pending.map((p) => p.runId) };
     });
+  }
+  confirmDeliveries(runIds: number[]): void {
+    const at = new Date().toISOString();
+    this.transaction(() => { for (const runId of runIds) this.clearPendingDelivery(runId, at); });
   }
 
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {

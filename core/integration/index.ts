@@ -34,7 +34,7 @@ export interface IntegrationAgentInput {
 export type IntegrateResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
-  | { outcome: "success"; runId: number; output: MemoryBatch;
+  | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
       committed: CommittedKnowledgeOp[]; diagnostics: IntegrationDiagnostic[];
       range: IntegrationRange; readKnowledgeRevisions: { knowledgeId: number; rev: number }[]; unansweredNear: NearPair[] };
 
@@ -119,7 +119,8 @@ export async function runIntegration(store: Store, frozen: ReturnType<typeof fre
     candidate: binding.memory.candidate, problems, ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}) });
   if (committed) {
-    store.updateRun(committed.runId, { ...run, outcome: "success" });
+    try { store.updateRun(committed.runId, { ...run, outcome: "success" }); }
+    catch (error) { return { outcome: "success", ...committed, range, readKnowledgeRevisions, problems: [`audit update failed after commit: ${String(error)}`] }; }
     return { outcome: "success", ...committed, range, readKnowledgeRevisions };
   }
   const outcome = result.outcome !== "success" ? result.outcome : result.request == null || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";

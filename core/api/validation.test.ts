@@ -40,53 +40,53 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects a non-object top level", async () => {
-    const { problems, value } = await checkMemoryBatch([]);
+    const { problems = [], value } = await checkMemoryBatch([]);
     expect(value).toBeNull();
     expect(problems.length).toBeGreaterThan(0);
   });
 
   test("rejects a model-supplied knowledge handle", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "create", handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "team", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "team", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "recording", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "recording", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "term", supports: ["K1"], because: ["K1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "x", scope: "project", category: "term", supports: ["K1"], because: ["K1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
   test("rejects a knowledge item id embedded in knowledge text", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "create", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("text"))).toBe(true);
   });
 
   test("rejects a malformed update id", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "update", id: "5", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "update", id: "5", text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("visible"))).toBe(true);
   });
 
   test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [{ op: "merge", id: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "merge", id: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "term", supports: ["F1"], because: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("not-an-id"))).toBe(true);
   });
 
   test("accepts an explicit skipped fact with a reason", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [], skipped: [{ fact: "F1", because: "different conditions" }] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [], skipped: [{ fact: "F1", because: "different conditions" }] });
     expect(problems).toEqual([]);
   });
 
   test("rejects an unknown batch field", async () => {
-    const { problems } = await checkMemoryBatch({ operations: [], skipped: [], extra: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [], skipped: [], extra: [] });
     expect(problems.some((p) => p.includes("memory expects"))).toBe(true);
   });
 });

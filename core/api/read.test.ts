@@ -51,8 +51,8 @@ test("injection stays byte-identical across a no-op recording and has no XML att
   const before = memory.inject(s.id), next = turn(s.id, fixture.observation, t.id);
   expect((await memory.record({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
   expect(memory.inject(s.id)).toBe(before);
-  expect(memory.deliver(s.id, "main")).toBe(""); // the no-op recording wrote no facts; its delivery is consumed anyway
-  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the no-op recording wrote no facts
+  memory.confirmDelivery(empty.runIds); expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
   expect(memory.inject(s.id)).toBe(before);
   for (const tag of before.match(/<[^>]+>/g)!) expect(tag).toMatch(/^<\/?[a-z_]+>$/);
 });
@@ -121,13 +121,15 @@ test("pending delivery is exact to its run and branch, consumed once, including 
   const s = session(), t = turn(s.id);
   const first = recording(s.id, t.id, "first delivery", "main", true);
   const second = recording(s.id, t.id, "second delivery", "other", true);
-  expect(memory.deliver(s.id, "unrelated")).toBe("");
+  expect(memory.deliver(s.id, "unrelated").text).toBe("");
   const delivery = memory.deliver(s.id, "main");
-  expect(delivery).toContain("first delivery"); expect(delivery).not.toContain("second delivery");
-  expect(memory.deliver(s.id, "main")).toBe("");
+  expect(delivery.text).toContain("first delivery"); expect(delivery.text).not.toContain("second delivery");
+  expect(memory.deliver(s.id, "main").text).toContain("first delivery"); // unconfirmed: delivered again, never silently lost
+  memory.confirmDelivery(delivery.runIds);
+  expect(memory.deliver(s.id, "main").text).toBe("");
   expect(memory.inject(s.id)).not.toContain("recorded");
   expect(memory.store.listPendingDeliveries(s.id, "other").map((p) => p.runId)).toEqual([second.runId]);
-  expect(memory.deliver(s.id, "other")).toContain("second delivery");
+  expect(memory.deliver(s.id, "other").text).toContain("second delivery");
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
 });
 
@@ -140,7 +142,7 @@ test("delivery and branch facts use run ownership independently of audit JSON", 
   memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
   expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["recorded"]);
   expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["manual"]);
-  expect(memory.deliver(s.id)).toContain("recorded");
+  expect(memory.deliver(s.id).text).toContain("recorded");
   for (const run of [memory.store.getRun(first.runId)!, manual]) {
     memory.store.updateRun(run.id, { ...run, response: "{}" });
     const ids = (memory.store.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(run.id) as { id: number }[]).map(f => f.id);
@@ -305,7 +307,7 @@ test("a delivery is preserved on render failure", () => {
   recording(s.id, t.id, "pending fact", "main", true);
   expect(() => memory.store.deliver(s.id, "main", () => { throw new Error("render failed"); })).toThrow("render failed");
   expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
-  expect(memory.deliver(s.id)).toContain("pending fact");
+  expect(memory.deliver(s.id).text).toContain("pending fact");
 });
 
 test("first-prompt injection by project needs no session: global and project knowledge, no deliveries", () => {

@@ -143,3 +143,20 @@ test("inserting an archive before a retained create cannot erase its unanswered 
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: [{ candidate: "$e1", knowledge: "K1", score: 1 }] });
 });
+
+test("2026-09-07: an audit update that fails after the commit is reported, not turned into a business failure", async () => {
+  let done = false;
+  setup(async input => {
+    input.reportRequest({ first: true }); input.tools[3]!.execute(batch);
+    input.reportRequest({ second: true }); input.tools[3]!.execute(batch);
+    done = true; return success();
+  });
+  const original = memory.store.updateRun.bind(memory.store);
+  memory.store.updateRun = ((...args: Parameters<typeof original>) => { if (done) throw new Error("disk full"); return original(...args); }) as typeof original;
+  const result = await integrate();
+  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(result.problems).toEqual(["audit update failed after commit: Error: disk full"]);
+  expect(memory.store.getKnowledge(1)?.currentRevision).toBe(1);
+  expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+});

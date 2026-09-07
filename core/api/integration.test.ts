@@ -202,9 +202,9 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
     const result = await integration();
     if (!("problems" in result)) throw new Error("expected failure");
     const expected = bad === "json" || bad === "shape" ? "bounced" : bad === "cancelled" || bad === "abort" ? "cancelled" : "failure";
-    expect(result.outcome).toBe(expected); expect(result.problems.length).toBeGreaterThan(0);
-    if (bad === "json") expect(result.problems.join("\n")).toContain("memory expects");
-    if (bad === "shape") expect(result.problems.join("\n")).toContain("category");
+    expect(result.outcome).toBe(expected); expect(result.problems!.length).toBeGreaterThan(0);
+    if (bad === "json") expect(result.problems!.join("\n")).toContain("memory expects");
+    if (bad === "shape") expect(result.problems!.join("\n")).toContain("category");
     const run = memory.store.getRun(result.runId)!;
     expect(run.outcome).toBe(expected);
     expect(JSON.parse(run.response!).problems).toEqual(result.problems);

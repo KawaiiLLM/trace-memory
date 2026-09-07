@@ -63,10 +63,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }
       return finish(knowledge(target));
     },
-    deliver: (sessionId: number, branch: string | null = "main"): string => {
+    deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
       return store.deliver(sessionId, branch, (facts) => facts.length ? xmlBlock("recorded", facts.map((f) => factLine(f.id)).join("\n")) : "");
     },
+    // Ruling 2026-09-07: a delivery is confirmed only after the host persisted it (at the turn's stop);
+    // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.
+    confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
       const block = knowledge(sessionId);
       const after = store.getWatermark(sessionId, branch)?.lastRecordedTurn ?? 0;

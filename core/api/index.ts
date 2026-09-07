@@ -111,7 +111,10 @@ export interface TraceMemory {
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number }): string;
   /** Pending recording results for this session and branch, rendered once and marked delivered; "" when none. */
-  deliver(sessionId: number, branch?: string | null): string;
+  /** Pending recording results for this session and branch, rendered but not consumed; "" when none. */
+  deliver(sessionId: number, branch?: string | null): { text: string; runIds: number[] };
+  /** Marks the given deliveries consumed once the host has persisted them. */
+  confirmDelivery(runIds: number[]): void;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(knowledgeId: number, kind: "verified" | "flagged" | "clear"): string;
