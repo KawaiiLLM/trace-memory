@@ -75,7 +75,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const visibleFact = (id: number) => { const f = store.getFact(id); return f && visibleSession(store.getTurn(f.turnId)!.sessionId); };
   const checkAddress = (address: string) => {
     for (const target of address.split(",").map((a) => a.trim())) {
-      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@[1-9]\d*(?:\.\.[1-9]\d*)?)?$/.exec(target);
+      const m = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(?:user|assistant|t[1-9]\d*))?$|^S([1-9]\d*)$|^F([1-9]\d*)(?:\.\.)?$|^K([1-9]\d*)(?:@[1-9]\d*(?:\.\.[1-9]\d*)?)?$/.exec(target);
       if (!m) throw new Error(`invalid trace address: ${target}; use tool and full parameters`);
       if (m[2]) { const t = store.getTurn(Number(m[2])); if (!t || !visibleSession(t.sessionId) || (m[1] && t.sessionId !== Number(m[1]))) throw new Error("address does not exist or is not visible in this session"); }
       if (m[3] && !visibleSession(Number(m[3]))) throw new Error("address does not exist or is not visible in this session");

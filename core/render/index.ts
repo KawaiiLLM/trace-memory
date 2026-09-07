@@ -4,7 +4,7 @@ import type { KnowledgeWithRevision } from "../store/index.ts";
 import type { TraceMemoryConfig } from "../api/index.ts";
 
 type Budgets = TraceMemoryConfig["render"];
-export interface TurnOptions { tool?: number; full?: boolean }
+export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}` }
 export interface Rendered { content: string; receipts: string[] }
 
 // Token estimate (ruled, grilling Q12; no tokenizer dependency): 0.75 per CJK character, 0.25 per
@@ -37,11 +37,15 @@ function object(text: string | null): Record<string, unknown> {
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
 export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, options: TurnOptions = {}): Rendered {
-  const lines = [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
+  const part = options.part;
+  if (part && (part === "user" ? turn.userPrompt === null : part === "assistant" ? turn.assistantText === null
+    : !calls.some((call) => `t${call.ordinal}` === part))) throw new Error(`source T${turn.id}#${part} does not exist`);
+  const lines: string[] = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const receipts: string[] = [];
-  if (turn.userPrompt !== null) lines.push(`[Source entry id: T${turn.id}#user]\n${turn.userPrompt}`);
+  if ((!part || part === "user") && turn.userPrompt !== null) lines.push(`[Source entry id: T${turn.id}#user]\n${turn.userPrompt}`);
   let omittedCalls = 0;
   for (const call of calls) {
+    if (part && part !== `t${call.ordinal}`) continue;
     const input = object(call.input), result = object(call.result);
     const selected = options.tool === undefined || options.tool === call.ordinal;
     let omitted = !selected;
@@ -77,9 +81,18 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
       receipts.push(`expand: trace({"address":"T${turn.id}","tool":${call.ordinal},"full":true})`);
     }
   }
-  if (turn.assistantText !== null) lines.push(`[Source entry id: T${turn.id}#assistant]\n${turn.assistantText}`);
+  if ((!part || part === "assistant") && turn.assistantText !== null) lines.push(`[Source entry id: T${turn.id}#assistant]\n${turn.assistantText}`);
   if (omittedCalls) receipts.unshift(`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`);
   return { content: lines.join("\n"), receipts };
+}
+
+export function renderSources(turn: Turn, calls: ToolCall[]): string {
+  const preview = (text: string | null) => [...(text ?? "").replace(/\s+/gu, " ")].slice(0, 60).join("");
+  return [
+    ...(turn.userPrompt === null ? [] : [`T${turn.id}#user ${preview(turn.userPrompt)}`]),
+    ...(turn.assistantText === null ? [] : [`T${turn.id}#assistant ${preview(turn.assistantText)}`]),
+    ...calls.map((call) => `T${turn.id}#t${call.ordinal} tool=${call.name} ${preview(call.input)}`),
+  ].join(" | ");
 }
 
 export function finish(rendered: Rendered): string {

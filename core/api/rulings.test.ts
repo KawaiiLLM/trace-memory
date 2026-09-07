@@ -1,5 +1,5 @@
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
-// from. Names quote the ruling; dates are the conversation the ruling was made in (2026-09-06).
+// from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -49,14 +49,15 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   expect(rendered).toContain("[omitted 1 lines, 400 characters]");
 });
 
-test("08:53: in branch mode the appended note message carries only the range; subagent mode carries the raw", async () => {
+test("08:53 with 2026-09-07 premise repair: branch uses conversation context; subagent carries the raw", async () => {
   const { s, t } = session();
   await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
   await memory.record({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
-  // "fork模式只有最后一个": the range and the instruction (the prompt), nothing else.
-  expect(branch!.input).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`);
+  // The premise repair adds only the missing final reply and source index.
+  expect(branch!.input).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[Source entry id: T${t.id}#assistant]\n好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
+  expect(branch!.subagentInput).toBe(subagent!.input);
   expect(branch!.prompt).toContain("already in this conversation");
   expect(subagent!.input).toContain("Raw:");
   expect(subagent!.input).toContain("用 pnpm，不要 npm");
@@ -223,4 +224,77 @@ test("2026-09-07: second submission commits, first does not", async () => {
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.request!)).toEqual({ messages: ["last"] });
   expect(JSON.parse(run.response!).problems).toEqual(["provider failed after commit"]);
   expect(JSON.parse(run.response!).toolCalls).toHaveLength(4);
+});
+
+
+test("2026-09-07: branch input premise repair appends the missing final reply and source index", async () => {
+  const { s } = session();
+  const first = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
+    userPrompt: "0123456789".repeat(6) + " PRIVATE USER TAIL", assistantText: "Earlier reply", startedAt: time });
+  const head = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn",
+    userPrompt: "Check it", assistantText: "Final-only finding: " + "result ".repeat(10) + "verified.", startedAt: time });
+  memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
+  await memory.record({ sessionId: s.id, branch: "main", headTurnId: head.id });
+  const input = calls[0]!;
+  expect(input.mode).toBe("branch");
+  expect(input.input).toContain(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
+  expect(input.input).toContain(`Sources:\nT${first.id}#user`);
+  expect(input.input).toContain(`T${head.id}#t1 tool=Bash`);
+  expect(input.input).not.toContain("PRIVATE USER TAIL");
+  expect(input.input).not.toContain("PRIVATE TOOL RESULT");
+  expect(input.input).toBe(`Range: S1/T2..S1/T3
+
+[Source entry id: T3#assistant]
+Final-only finding: result result result result result result result result result result verified.
+
+Sources:
+T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply
+T3#user Check it | T3#assistant Final-only finding: result result result result result resul | T3#t1 tool=Bash {"command":"check"}`);
+});
+
+test("2026-09-07: branch source previews keep one line and at most 60 Unicode characters without a final reply", async () => {
+  const { s } = session();
+  const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
+    userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
+  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
+  await memory.record({ sessionId: s.id, branch: "main", headTurnId: t.id });
+  expect(calls[0]!.input).toBe(`Range: S1/T2..S1/T2\n\nSources:\nT2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`);
+});
+
+test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix #%s renders only its part", (part) => {
+  const { s, t } = session();
+  const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
+  const expected = part === "user" ? `[Source entry id: T${t.id}#user]\n用 pnpm，不要 npm`
+    : part === "assistant" ? `[Source entry id: T${t.id}#assistant]\n好的。`
+    : `[T${t.id}#t1] tool=Bash status=success omitted=false\ncommand:\npnpm install\nstdout:\ndone`;
+  for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
+    expect(memory.trace(`${base}#${part}`)).toBe(expected);
+    expect(tool.execute({ address: `${base}#${part}` })).toBe(expected);
+  }
+  expect(() => memory.trace(`S${s.id + 1}/T${t.id}#${part}`)).toThrow("does not exist");
+});
+
+test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () => {
+  const { t } = session();
+  const output = "hidden evidence ".repeat(300);
+  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: '{"command":"second"}', result: output, status: "success" });
+  const cut = memory.trace(`T${t.id}#t2`);
+  expect(cut).toContain("omitted=true");
+  expect(cut).not.toContain(output);
+  expect(cut).not.toContain("#t1");
+  const full = memory.trace(`T${t.id}#t2`, { full: true });
+  expect(full).toBe(`[T${t.id}#t2] tool=Bash status=success omitted=false\ncommand:\nsecond\nreport:\n${output}`);
+  expect(memory.trace(`T${t.id}#t2`, { tool: 2, full: true })).toBe(full);
+  expect(() => memory.trace(`T${t.id}#t2`, { tool: 1 })).toThrow("conflicts");
+});
+
+test("2026-09-07: trace rejects a missing source part with the reason", () => {
+  const { s } = session();
+  const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: null, assistantText: null, startedAt: time });
+  const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
+  for (const part of ["user", "assistant", "t1"]) for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
+    const reason = `source T${t.id}#${part} does not exist`;
+    expect(() => memory.trace(`${base}#${part}`)).toThrow(reason);
+    expect(tool.execute({ address: `${base}#${part}` })).toBe(`rejected: ${reason}`);
+  }
 });

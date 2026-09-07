@@ -174,11 +174,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (!fact) throw new Error(`fact ${target} does not exist`);
       return renderFact(fact, store.listFactRelations(fact.id));
     }
-    const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)$/.exec(target ?? "");
+    const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(user|assistant|t[1-9]\d*))?$/.exec(target ?? "");
     if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
     const sessionOfAddress = turnMatch[1] === undefined ? undefined : Number(turnMatch[1]);
     if (flags.length) throw new Error("invalid trace address: use tool and full parameters");
-    const options: TurnOptions = { tool: display.tool, full: display.full };
+    const part = turnMatch[3] as TurnOptions["part"];
+    if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
+    const options: TurnOptions = { tool: display.tool, full: display.full, part };
     const turn = store.getTurn(Number(turnMatch[2]));
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);

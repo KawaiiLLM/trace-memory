@@ -37,7 +37,7 @@ test("branch recording preserves prefix bytes, options and tools; record contain
   expect(Buffer.from(branch.serialize(messages.slice(0, -1)))).toEqual(Buffer.from(branch.serialize(original.messages)));
   expect(request).toEqual({ ...original, messages: [...original.messages, expect.objectContaining({ role: "user" })] });
   const prompt = readFileSync(new URL("../../core/prompts/recording.md", import.meta.url), "utf8");
-  expect((messages.at(-1) as { content: string }).content).toBe(prompt + "\n\nRange: S1/T1..S1/T1");
+  expect((messages.at(-1) as { content: string }).content).toBe(prompt + "\n\nRange: S1/T1..S1/T1\n\n[Source entry id: T1#assistant]\n好的。\n\nSources:\nT1#user 用 pnpm，不要 npm | T1#assistant 好的。");
   const run = h.run(), response = JSON.parse(run.response!);
   expect(run.mode).toBe("branch"); expect(run.model).toBe("fake/test");
   expect(run.outcome).toBe("success"); expect(JSON.parse(run.request!)).toEqual(request);

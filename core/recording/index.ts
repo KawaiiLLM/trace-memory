@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import type { ToolDefinition, ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import { finish, renderFact, renderTurn, budgetKnowledge, budgetFacts } from "../render/index.ts";
+import { finish, renderFact, renderTurn, renderSources, budgetKnowledge, budgetFacts } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/recording.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -79,12 +79,13 @@ export async function runRecording(
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
   const recent = episodic.recent, knowledgeLines = active.groups.map((g) => g.text);
   receipts.push(...episodic.receipts, ...active.receipts);
-  // Branch mode appends one message to the live conversation and carries only the range (ruling
-  // 08:53: fork mode has only the last of the four inputs); the prompt says where the rest is.
-  // Subagent mode must carry everything.
+  // The captured request precedes the head's final reply; append that missing raw and its source index.
   const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
     "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
-  const input = mode === "branch" ? `Range: ${range.from}..${range.to}` : subagentInput;
+  const head = turns.at(-1)!.turn;
+  const input = mode === "branch" ? [`Range: ${range.from}..${range.to}`,
+    ...(head.assistantText ? [renderTurn(head, [], config.render, { part: "assistant" }).content] : []),
+    `Sources:\n${turns.map(({ turn, calls }) => renderSources(turn, calls)).join("\n")}`].join("\n\n") : subagentInput;
   const run: RunInput = { kind: "recording", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "recording", sessionId, branch, range, readKnowledgeRevisions }, run);
