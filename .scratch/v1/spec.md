@@ -67,10 +67,10 @@ Two layers of memory extracted automatically from the conversation, each claim t
 
 - `runAgent(input) → {outcome: success|failure|cancelled, output, usage, request}`; the model writes only through the core's write tools (see Write tools), never to the store directly.
 - Triggers, budgets, models, and modes are configuration with the defaults above.
-- Facts are never hidden or deleted; relations are annotations. Knowledge changes only through revisions; status is active|merged|archived and system-maintained.
+- Facts are never hidden or deleted; relations are annotations. Knowledge changes only through immutable commits (see Knowledge commits and paths).
 - Project attribution: `.trace-memory` marker found upward from cwd, or the host command `/trace project <name>` (the user's act, not the model's); the in-session declaration wins; an undeclared session is its own project; merging relabels facts and project-scoped knowledge.
 - Session ids are allocated at the first assistant reply.
-- Addresses: `K<n>`, `K<n>@<rev>`, `K<n>@<a>..<b>`, `F<n>`, `F<n>..` (later strong negations, branching), `T<n>`, `S<n>/T<m>`, `S<n>`, comma lists; `cursor` continues any listing; `tool` and `full` are trace parameters, not address flags.
+- Addresses: `K<n>`, `K<n>@<commit>`, `K<n>@<a>..K<n>@<b>`, `K<n>..`, `F<n>`, `F<n>..` (later strong negations, branching), `T<n>`, `S<n>/T<m>`, `S<n>`, comma lists; `cursor` continues any listing; `tool` and `full` are trace parameters, not address flags.
 - Prefix-identical calls are verified once by comparing provider request bodies through `before_provider_request` and checking cache-read usage; if the check fails, recording falls back to subagent mode and the run record says so.
 
 ### Vocabulary (user ruling 2026-09-07)
@@ -91,6 +91,18 @@ Four tools and no other model-facing surface: `trace` and `search` read; `note` 
 - Marks (verified | flagged | clear on a knowledge item) and project declaration are the user's acts, not the model's: host commands `/trace mark K<n> <kind>` and `/trace project <name>`, backed by façade methods. The former `mark` tool is gone.
 - Hosts execute tool calls in both modes and call the model again until it stops (an optional per-kind budget `maxToolRounds`, default 0 = unlimited, turns a run that exceeds it into a failure; by design Recording takes one round, two or three with fetches or a corrected batch, Integration two, three with a correction): in subagent mode by extending the conversation, in branch mode by appending the assistant call and the tool results to the verified request, so the prefix never changes and branch Recording can fetch cut evidence through `trace` as well. The run record stores the last request sent (which embeds every earlier round) and the sequence of tool results.
 - Rejected alternatives: whole-batch JSON text output (one malformed character bounces the batch, no per-item errors, output bounded by one reply); provider structured outputs (provider-specific, and they change sampling fields inside the branch prefix); a staging protocol with handles, withdraw and acknowledgement operations (a second object lifecycle for no demonstrated need); mark and skipped as knowledge operations (usage feedback and accounting are not knowledge management).
+
+### Knowledge commits and paths (user rulings 2026-09-07)
+
+Knowledge is git-like: `K<n>` is a stable identity; every change is an immutable commit with a global integer id, addressed `K<n>@<commit>`. A commit carries text, category, scope, supports, because, its parent commit (several for a merge), and the run that made it. Nothing is edited in place; `current_revision` and `status` are gone, the current commit is computed per conversation path.
+
+- **Applicability** (user, A): a commit applies on the path from the session's root to the target turn when every fact it cites (supports and because) from this session lies on that path; facts from other sessions do not restrict, and a session-scope commit applies only in its own session, a project-scope commit in its project, a global commit everywhere. The current commit of `K<n>` on a path is an applicable commit with no applicable successor. Rewind is therefore computed, not snapshotted: on an ancestor node, later commits of this session drop out by their evidence; other sessions' commits are shared regardless of time.
+- **Citation rule** (user): supports and because may cite facts on the writer's own path; a project-scope commit may also cite facts of other sessions of the project; a global commit facts of any session. A sibling branch's facts are never citable: adopt them by recording a fact on the current path first (the fact may quote the source address). Reads stay unrestricted.
+- **Concurrency** (user, B): a batch names, for each update, merge or archive, the commit it was based on (the path current when the Integrator read); at commit time that base must have no applicable successor on the writer's path, otherwise the whole batch is rejected with the current commit and the Integrator re-reads and resubmits. Cross-session edits of a shared commit therefore stay linear; branches of one session diverge; another session that sees several tips of one identity gets them as labelled alternatives and the Integrator merges them, never last-writer-wins. No shared-head registry.
+- **Archive and merge** are commits: an archive commit has no text and retires its parent on the paths where it applies; a merge commit has several parents. Other paths keep using the old commits.
+- **Marks** attach to commits (`/trace mark K1@57 verified`); a bare `K1` resolves to the caller's path current, and a write with a bare `K1` is rejected when several tips exist.
+- **Addresses**: `K1` (path current; without a path context: the single tip, or the list of tips labelled newest-created), `K1@57` (one commit), `K1@57..K1@61` (diff between two commits of the same identity), `K1..` (the commit tree, all branches). Commit ids are global integers like every other id (ruling 09:43); no hashes.
+- **Tree switch**: the summary carried to the new position lists the leaving branch's facts, its commits, and unrecorded raw, computed by evidence, labelled as from another branch for reference; nothing in it becomes a constraint of the current path until adopted.
 
 ### Schema note (from the simulation driver)
 
