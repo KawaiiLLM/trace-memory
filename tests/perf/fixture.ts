@@ -1,0 +1,229 @@
+// The shared performance fixture (ticket 22 "Workloads and acceptance"): a deterministic long-history
+// database built from a fixed seed. Nothing here is copied from a conversation — every string is
+// assembled out of the small public word pools below, in Latin and CJK, so the fixture can live in the
+// repository. 22a records its baseline against it; 22b–22d measure against the same generator.
+//
+// Shape of the baseline size (defaults): about 2,000 source entries and 15 million Raw characters on
+// one session, with tool-heavy Turns (one Turn of 40 calls), non-text user boundaries, repeated text,
+// several native occurrences of the same tool call, at least 126 applicable facts, a sibling branch
+// whose selected ancestry contains a same-Turn entry that main's does not, facts written without
+// entry bindings (the address fallback), knowledge revisions with citations, consolidated facts, and
+// a pending tail that no Noting run has taken.
+
+import { Store } from "../../src/core/store/index.ts";
+import type { FactCommitInput } from "../../src/core/store/index.ts";
+
+export interface FixtureOptions {
+  /** Target number of source entries (the baseline workload is 2,000). */
+  entries?: number;
+  /** Raw characters per tool result; the bulk of the Raw volume. */
+  resultChars?: number;
+  /** Applicable facts on the main branch (the baseline workload needs at least 126). */
+  facts?: number;
+  seed?: number;
+}
+
+export interface Fixture {
+  dbPath: string;
+  sessionId: number;
+  projectId: number;
+  branch: string;
+  siblingBranch: string;
+  headTurnId: number;
+  siblingHeadTurnId: number;
+  turnCount: number;
+  entryCount: number;
+  rawChars: number;
+  factCount: number;
+  pathFactCount: number;
+  knowledgeCount: number;
+  pendingEntryCount: number;
+  heavyTurnId: number;
+}
+
+const LATIN = ["build", "cache", "commit", "branch", "restore", "budget", "receipt", "token", "entry", "trace",
+  "session", "worker", "handle", "ordinal", "payload", "summary", "review", "capacity", "consolidate", "note"];
+const CJK = ["缓存", "提交", "分支", "恢复", "预算", "回执", "词元", "条目", "追溯", "会话",
+  "执行器", "句柄", "序号", "载荷", "摘要", "复核", "容量", "整合", "记录", "路径"];
+
+/** mulberry32: a small deterministic generator, so a fixture rebuild is byte-identical. */
+function random(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export function generate(dbPath: string, options: FixtureOptions = {}): Fixture {
+  const targetEntries = options.entries ?? 2_000;
+  const resultChars = options.resultChars ?? 20_000;
+  const targetFacts = options.facts ?? 132;
+  const rnd = random(options.seed ?? 0x7ace);
+  const store = new Store(dbPath);
+  const pick = <T>(values: T[]) => values[Math.floor(rnd() * values.length)]!;
+  const words = (chars: number): string => {
+    let out = "";
+    while (out.length < chars) out += `${pick(LATIN)} ${pick(CJK)} `;
+    return out.slice(0, chars);
+  };
+  // Repeated text: a small pool of prompts that recur verbatim across the history.
+  const prompts = Array.from({ length: 8 }, () => words(180));
+
+  try {
+    const projectId = store.createProject({ name: "perf", declaredBy: "marker" }).id;
+    const sessionId = store.createSession({ enrollmentChoice: true, host: "pi:perf", startedAt: "2026-01-01T00:00:00Z",
+      firstReplyAt: "2026-01-01T00:00:05Z", projectId }).id;
+    const branch = "main", siblingBranch = "sibling";
+
+    const result = store.transaction(() => {
+      const turnCount = Math.max(20, Math.ceil(targetEntries / 3.1)); // a Turn contributes a prompt, a reply and, on average, one tool result
+      const heavyTurn = Math.floor(turnCount / 2); // one Turn of 40 tool calls inside a long session
+      const siblingAt = Math.floor(turnCount / 3);
+      const pendingFrom = turnCount - 10; // the tail no Noting run has taken
+      const factEvery = Math.max(1, Math.floor((pendingFrom - 2) / targetFacts));
+
+      let rawChars = 0, entryCount = 0, native = 0, parent: number | null = null;
+      let headTurnId = 0, siblingHeadTurnId = 0, heavyTurnId = 0;
+      const mainEntries: number[] = [], siblingEntries: number[] = [];
+      const facts: FactCommitInput[] = [];
+      const pathFactIds: number[] = [];
+      let batchEntries: number[] = [], batchFacts: FactCommitInput[] = [];
+      let noted = 0;
+
+      const append = (turnId: number, role: "user" | "assistant" | "toolResult", text: string,
+        calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[],
+        onto: number[][] = [mainEntries, siblingEntries]) => {
+        const raw = JSON.stringify({ role, text, calls });
+        rawChars += raw.length; entryCount++;
+        const entry = store.appendSourceEntry({ sessionId, nativeLineage: "perf", nativeId: `n${native++}`, turnId, role, text, raw, calls });
+        for (const list of onto) list.push(entry.id);
+        return entry.id;
+      };
+      const flush = () => {
+        if (!batchEntries.length && !batchFacts.length) return;
+        const committed = store.commitNotingRun({
+          run: { kind: "noting", sessionId, branch, rangeFrom: `S${sessionId}/T1`, rangeTo: `S${sessionId}/T${headTurnId}`, createdAt: "2026-01-01T01:00:00Z" },
+          facts: batchFacts, entryIds: batchEntries,
+        });
+        if (!committed.ok) throw new Error(committed.problems.join("; "));
+        for (const fact of committed.facts) pathFactIds.push(fact.id);
+        noted += batchEntries.length;
+        batchEntries = []; batchFacts = [];
+      };
+
+      for (let t = 1; t <= turnCount; t++) {
+        // A non-text user boundary (an image-only message) every 17th Turn.
+        const prompt = t % 17 === 0 ? "" : prompts[t % prompts.length]!;
+        const turn = store.appendTurn({ sessionId, parentTurnId: parent, kind: "turn", userPrompt: prompt, startedAt: "2026-01-01T00:10:00Z" });
+        parent = turn.id; headTurnId = turn.id;
+        if (t === heavyTurn) heavyTurnId = turn.id;
+        const userEntry = append(turn.id, "user", prompt, []);
+        const callCount = t === heavyTurn ? 40 : t % 3 === 0 ? 2 : t % 3 === 1 ? 1 : 0;
+        const calls = [];
+        for (let i = 1; i <= callCount; i++) {
+          const input = JSON.stringify({ path: `src/${pick(LATIN)}.ts`, note: words(120) });
+          const stored = store.appendToolCall({ turnId: turn.id, name: pick(LATIN), input, status: "attempted" });
+          calls.push({ ordinal: stored.ordinal, name: stored.name, callId: `call-${stored.id}`, input, status: "attempted" });
+        }
+        const assistantText = words(400);
+        store.updateTurn(turn.id, { assistantText, endedAt: "2026-01-01T00:11:00Z" });
+        append(turn.id, "assistant", assistantText, calls.map(c => ({ ...c })));
+        for (const call of calls) {
+          const payload = JSON.stringify({ content: [{ type: "text", text: words(resultChars) }] });
+          store.completeToolCall(turn.id, call.ordinal, payload, "success");
+          append(turn.id, "toolResult", "", [{ ordinal: call.ordinal, name: call.name, callId: call.callId, result: payload, status: "success" }]);
+          // Several native occurrences of one call: a second persisted result entry for the same ordinal.
+          if (call.ordinal === 1 && t % 23 === 0) {
+            append(turn.id, "toolResult", "", [{ ordinal: call.ordinal, name: call.name, callId: call.callId, result: payload, status: "success" }]);
+          }
+        }
+        // The sibling branch: an extra assistant occurrence inside this same Turn that only the
+        // sibling's selected ancestry carries, and a Turn of its own after it.
+        if (t === siblingAt) {
+          append(turn.id, "assistant", words(300), [], [siblingEntries]);
+          const sibling = store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: prompts[1]!, startedAt: "2026-01-01T00:12:00Z" });
+          siblingHeadTurnId = sibling.id;
+          append(sibling.id, "user", prompts[1]!, [], [siblingEntries]);
+          const text = words(300);
+          store.updateTurn(sibling.id, { assistantText: text, endedAt: "2026-01-01T00:12:30Z" });
+          append(sibling.id, "assistant", text, [], [siblingEntries]);
+        }
+        if (t <= pendingFrom) {
+          batchEntries.push(...mainEntries.slice(noted + batchEntries.length));
+          if (t > 1 && prompt && t % factEvery === 0 && facts.length < targetFacts) {
+            // Most facts carry the entry bindings they were written against; a few keep the older
+            // shape with no bindings at all, which applicability answers from the addresses.
+            const bound = facts.length % 25 !== 0;
+            const fact: FactCommitInput = { turnId: turn.id, category: "observation", actor: "user",
+              text: `${pick(LATIN)} ${pick(CJK)} ${facts.length}`, source: [`T${turn.id}#user`], createdAt: "2026-01-01T01:00:00Z",
+              ...(bound ? { entryIds: [userEntry] } : {}) };
+            facts.push(fact); batchFacts.push(fact);
+          }
+          if (batchEntries.length >= 50) flush();
+        }
+        if (entryCount >= targetEntries && t >= pendingFrom) break;
+      }
+      flush();
+      store.selectSourcePath(sessionId, branch, mainEntries);
+      store.selectSourcePath(sessionId, siblingBranch, siblingEntries);
+
+      // Knowledge: a set of revisions citing path facts, with updates, an archive and a merge, plus
+      // consolidated progress for the older half of the facts.
+      let knowledgeCount = 0;
+      const cite = (n: number) => pathFactIds.slice(n * 3, n * 3 + 2);
+      const path = { sessionId, headTurnId, branch };
+      let firstKnowledge = 0, firstCommit = 0, secondKnowledge = 0, secondCommit = 0;
+      for (let i = 0; i < 20; i++) {
+        const supports = cite(i);
+        if (supports.length < 2) break;
+        const run = { kind: "consolidation" as const, sessionId, branch, createdAt: "2026-01-01T02:00:00Z" };
+        const operations = [{ op: "create" as const, handle: `perf-${i}`, author: "perf", text: `${pick(LATIN)} ${pick(CJK)} K${i}`,
+          category: "mechanism" as const, scope: "session" as const, supports, reason: "perf fixture", topics: [pick(LATIN)], createdAt: "2026-01-01T02:00:00Z" }];
+        const committed = store.commitConsolidationRun({ path, run, operations, consolidated: i < 10 ? supports : [] });
+        if (!committed.ok) throw new Error(committed.problems.join("; "));
+        knowledgeCount += committed.committed.length;
+        if (i === 0) { firstKnowledge = committed.committed[0]!.knowledgeId; firstCommit = committed.committed[0]!.commit; }
+        if (i === 1) { secondKnowledge = committed.committed[0]!.knowledgeId; secondCommit = committed.committed[0]!.commit; }
+      }
+      if (firstCommit && secondCommit) {
+        const run = { kind: "consolidation" as const, sessionId, branch, createdAt: "2026-01-01T02:10:00Z" };
+        const merged = store.commitConsolidationRun({ path, run, operations: [{ op: "merge", intoKnowledgeId: firstKnowledge, intoBaseCommit: firstCommit,
+          absorb: [{ knowledgeId: secondKnowledge, baseCommit: secondCommit }], text: "merged perf knowledge", category: "mechanism",
+          scope: "session", supports: cite(0), reason: "perf fixture merge", topics: ["merge"], createdAt: "2026-01-01T02:10:00Z" }] });
+        if (merged.ok) knowledgeCount += merged.committed.length;
+      }
+
+      return { turnCount, entryCount, rawChars, headTurnId, siblingHeadTurnId, heavyTurnId,
+        factCount: facts.length, pathFactCount: pathFactIds.length, knowledgeCount,
+        pendingEntryCount: store.pendingEntries(sessionId, branch, headTurnId).length };
+    });
+
+    return { dbPath, sessionId, projectId, branch, siblingBranch, ...result };
+  } finally {
+    store.close();
+  }
+}
+
+/** Count how often a path's membership is rebuilt. One build per operation is the contract 22a
+ * introduces; a count that grows with the fact or commit count is the per-fact rebuild coming back. */
+export function countPathBuilds(): { builds: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as { pathTurns: Store["pathTurns"] };
+  const original = prototype.pathTurns;
+  let count = 0;
+  prototype.pathTurns = function (this: Store, path) { count++; return original.call(this, path); };
+  return { builds: () => count, reset: () => { count = 0; }, restore: () => { prototype.pathTurns = original; } };
+}
+
+/** Count the reads that load and parse a whole Raw payload — the audit's "source reads". Test-only:
+ * it replaces the public method on the prototype (so a store the extension owns is counted too) and
+ * restores it afterwards; production carries no hook. */
+export function countSourceReads(): { reads: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as { getSourceEntry: Store["getSourceEntry"] };
+  const original = prototype.getSourceEntry;
+  let count = 0;
+  prototype.getSourceEntry = function (this: Store, id: number) { count++; return original.call(this, id); };
+  return { reads: () => count, reset: () => { count = 0; }, restore: () => { prototype.getSourceEntry = original; } };
+}

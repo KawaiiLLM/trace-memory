@@ -389,6 +389,15 @@ export type KnowledgeOperationInput =
  * applicability is decided per source entry, not per Turn: a sibling entry inside the same Turn is off-path. */
 export type KnowledgePath = { sessionId: number; headTurnId: number | null; branch?: string };
 
+/** One path's membership, built once per operation (22a) and passed through every applicability check.
+ * `entries` is null when the path has no selected native ancestry; `addresses` answers the address
+ * fallback for facts written without entry bindings, one Turn at a time. */
+export interface PathSnapshot {
+  turns: Set<number>;
+  entries: { ids: Set<number>; addresses: (turnId: number) => Set<string> } | null;
+  consolidatedRuns: Map<number, boolean>;
+}
+
 /** The citable source addresses of one entry: `#user` or `#assistant` when it has text, `#t<n>` per tool call. */
 export const sourceAddresses = (entry: SourceEntry): string[] => [
   ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
@@ -981,14 +990,21 @@ export class Store {
     return this.db.prepare("SELECT * FROM knowledge_revisions WHERE ? IS NULL OR knowledge_id = ? ORDER BY id").all(knowledgeId ?? null, knowledgeId ?? null).map(toKnowledgeRevision);
   }
 
+  /** The head's Turn ancestry, read in one query instead of one per Turn. The walk below still
+   * decides: a missing Turn, a Turn of another session and a cycle remain an error, never a silently
+   * shorter path. */
   pathTurns(path: KnowledgePath): Set<number> {
     if (!this.getSession(path.sessionId)) throw new Error(`session S${path.sessionId} does not exist`);
+    const parents = new Map((this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
+      SELECT t.id, t.parent_turn_id FROM turns t WHERE t.id = ? AND t.session_id = ?
+      UNION SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id WHERE t.session_id = ?
+    ) SELECT id, parent_turn_id FROM lineage`).all(path.headTurnId, path.sessionId, path.sessionId) as { id: number; parent_turn_id: number | null }[])
+      .map(r => [r.id, r.parent_turn_id]));
     const ids = new Set<number>();
     let id = path.headTurnId;
     while (id !== null) {
-      const turn = this.getTurn(id);
-      if (!turn || turn.sessionId !== path.sessionId || ids.has(id)) throw new Error("invalid path ancestry");
-      ids.add(id); id = turn.parentTurnId;
+      if (!parents.has(id) || ids.has(id)) throw new Error("invalid path ancestry");
+      ids.add(id); id = parents.get(id)!;
     }
     return ids;
   }
@@ -1017,7 +1033,7 @@ export class Store {
   /** All citations from the reader's own session constrain applicability; since 21a that is one
    * `supports` list per commit, archives included. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
-    const turns = path ? this.pathTurns(path) : undefined, entries = path ? this.pathEntries(path) : null;
+    const snapshot = path ? this.pathSnapshot(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
@@ -1025,7 +1041,7 @@ export class Store {
     }
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
       (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
-      (!path || this.commitApplies(r, path, turns, entries)));
+      (!path || this.commitApplies(r, path, snapshot!)));
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
     for (const r of applicable) {
@@ -1039,15 +1055,52 @@ export class Store {
     return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
   }
 
-  /** The branch's selected native ancestry up to the head, as entry ids and citable addresses; null when the
-   * path names no branch or the branch has no selected ancestry (headless seams keep Turn semantics). */
-  pathEntries(path: KnowledgePath): { ids: Set<number>; addresses: Set<string> } | null {
-    if (!path.branch || !path.headTurnId) return null;
-    const row = this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch);
-    if (!row) return null;
-    const entries = this.sourcePath(path.sessionId, path.branch, path.headTurnId);
-    return { ids: new Set(entries.map(e => e.id)), addresses: new Set(entries.flatMap(sourceAddresses)) };
+  /** One operation's answer to "is this on the selected path" (22a): the path's Turn set, the branch's
+   * selected source-entry identities, and the run memo Consolidation progress needs. Built once at the
+   * start of an operation and passed down; it never outlives it, so a commit, an enrollment change or a
+   * branch move by another executor between two operations is seen. Nothing here parses a Raw payload:
+   * identity comes from `turn_id` and, only where a fact was written without entry bindings, from
+   * `json_extract` over that one Turn's entries. */
+  pathSnapshot(path: KnowledgePath): PathSnapshot {
+    const turns = this.pathTurns(path);
+    return { turns, entries: this.pathEntries(path, turns), consolidatedRuns: new Map() };
   }
+
+  /** The branch's selected native ancestry up to the head, as entry ids per Turn; null when the path
+   * names no branch or the branch has no selected ancestry (headless seams keep Turn semantics).
+   * `addresses` answers one Turn at a time and keeps the answer for the rest of the operation; only a
+   * fact written without entry bindings asks. */
+  private pathEntries(path: KnowledgePath, turns: Set<number>): PathSnapshot["entries"] {
+    if (!path.branch || !path.headTurnId) return null;
+    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch) as { entry_ids: string } | undefined;
+    if (!row) return null;
+    const ids = new Set<number>(), byTurn = new Map<number, number[]>();
+    for (const { id, turn_id } of this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value")
+      .all(row.entry_ids) as { id: number; turn_id: number }[]) {
+      if (!turns.has(turn_id)) continue;
+      ids.add(id); byTurn.set(turn_id, [...(byTurn.get(turn_id) ?? []), id]);
+    }
+    const cache = new Map<number, Set<string>>();
+    return { ids, addresses: (turnId: number) => {
+      if (!cache.has(turnId)) cache.set(turnId, this.addressesOf(turnId, byTurn.get(turnId) ?? []));
+      return cache.get(turnId)!;
+    } };
+  }
+
+  /** The citable addresses of one Turn's selected entries, read from entry metadata: the role and
+   * whether there is text decide `#user`/`#assistant`, the call ordinals give `#t<n>`. */
+  private addressesOf(turnId: number, ids: number[]): Set<string> {
+    const addresses = new Set<string>();
+    for (const row of ids.length ? this.db.prepare(`SELECT json_extract(content, '$.role') AS role,
+        json_extract(content, '$.text') <> '' AS spoken,
+        (SELECT json_group_array(json_extract(value, '$.ordinal')) FROM json_each(content, '$.calls')) AS ordinals
+      FROM source_entries WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as { role: string; spoken: number; ordinals: string }[] : []) {
+      if (row.spoken) addresses.add(`T${turnId}#${row.role === "user" ? "user" : "assistant"}`);
+      for (const ordinal of JSON.parse(row.ordinals) as number[]) addresses.add(`T${turnId}#t${ordinal}`);
+    }
+    return addresses;
+  }
+
   factEntries(factId: number): number[] {
     return (this.db.prepare("SELECT entry_id FROM fact_sources WHERE fact_id = ? ORDER BY entry_id").all(factId) as { entry_id: number }[]).map(r => r.entry_id);
   }
@@ -1056,17 +1109,19 @@ export class Store {
    * selected native ancestry, the source entries it was bound to when written are all in it (review
    * 2026-09-08: T1#assistant is shared by every assistant entry of T1, so identity decides, not the address).
    * A fact written without bindings falls back to the address check. Foreign-session facts are judged by scope. */
-  factOnPath(fact: Fact, path: KnowledgePath, turns = this.pathTurns(path), entries = this.pathEntries(path)): boolean {
+  factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
     if (this.getTurn(fact.turnId)!.sessionId !== path.sessionId) return true;
+    const { turns, entries } = snapshot;
     if (!turns.has(fact.turnId) || !fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1])))) return false;
     if (entries === null) return true;
     const bound = this.factEntries(fact.id);
-    return bound.length ? bound.every(id => entries.ids.has(id)) : fact.source.every(source => entries.addresses.has(source));
+    return bound.length ? bound.every(id => entries.ids.has(id))
+      : fact.source.every(source => entries.addresses(Number(/^T([1-9]\d*)#/.exec(source)![1])).has(source));
   }
 
-  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path), entries = this.pathEntries(path)): boolean {
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
     return this.admits(commit, path.sessionId) && commit.supports
-      .every(id => this.factOnPath(this.getFact(id)!, path, turns, entries));
+      .every(id => this.factOnPath(this.getFact(id)!, path, snapshot));
   }
 
   commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {
@@ -1095,14 +1150,14 @@ export class Store {
       : this.listCurrentKnowledge(null, { projectId });
   }
 
-  citationProblem(ids: number[], scope: KnowledgeScope, path: KnowledgePath): string | null {
-    const turns = this.pathTurns(path), projectId = this.getSession(path.sessionId)!.projectId;
+  citationProblem(ids: number[], scope: KnowledgeScope, path: KnowledgePath, snapshot = this.pathSnapshot(path)): string | null {
+    const projectId = this.getSession(path.sessionId)!.projectId;
     for (const id of ids) {
       const fact = this.getFact(id);
       if (!fact) return `cited fact F${id} does not exist`;
       const sessionId = this.getTurn(fact.turnId)!.sessionId;
       if (sessionId === path.sessionId) {
-        if (!this.factOnPath(fact, path, turns)) return `F${id}: record an adoption fact on this path first`;
+        if (!this.factOnPath(fact, path, snapshot)) return `F${id}: record an adoption fact on this path first`;
       } else if (scope === "session" || (scope === "project" && this.getSession(sessionId)!.projectId !== projectId)) {
         return `F${id}: not an available fact for ${scope} scope`;
       }
@@ -1323,24 +1378,29 @@ export class Store {
 
   // -- path-aware fact progress --
   /** Facts on the branch's path: every fact whose turn lies on the ancestor chain of the head (given, or the branch's latest known turn), manual facts included. */
-  listBranchFacts(sessionId: number, branch: string, headTurnId?: number | null): Fact[] {
+  listBranchFacts(sessionId: number, branch: string, headTurnId?: number | null, snapshot?: PathSnapshot): Fact[] {
     const root = headTurnId ?? this.knowledgePath(sessionId, branch).headTurnId;
     if (!root) return [];
-    return this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
+    const candidates = this.db.prepare(`WITH RECURSIVE lineage(id, parent_turn_id) AS (
       SELECT t.id, t.parent_turn_id FROM turns t WHERE t.id = ? AND t.session_id = ?
       UNION
       SELECT t.id, t.parent_turn_id FROM turns t JOIN lineage l ON t.id = l.parent_turn_id
       WHERE t.session_id = ?
     ) SELECT f.* FROM facts f WHERE f.turn_id IN (SELECT id FROM lineage) ORDER BY f.id`)
-      .all(root, sessionId, sessionId).map(toFact)
-      .filter(fact => this.factOnPath(fact, { sessionId, headTurnId: root, branch })); // every source on the path, not only the first
+      .all(root, sessionId, sessionId).map(toFact);
+    if (!candidates.length) return [];
+    const path = { sessionId, headTurnId: root, branch };
+    const view = snapshot ?? this.pathSnapshot(path); // one path membership for the whole list, not one per fact
+    return candidates.filter(fact => this.factOnPath(fact, path, view)); // every source on the path, not only the first
   }
 
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */
   consolidationBatch(sessionId: number, branch: string, headTurnId?: number): Fact[] {
     const path = this.knowledgePath(sessionId, branch, headTurnId);
-    const runs = new Map<number, boolean>();
-    return this.listBranchFacts(sessionId, branch, path.headTurnId).filter(f => !this.consolidatedOnPath(f.id, path, runs));
+    // A head that names no Turn of this session has no facts, the answer the lineage query below gives.
+    if (this.getTurn(path.headTurnId ?? 0)?.sessionId !== sessionId) return [];
+    const snapshot = this.pathSnapshot(path);
+    return this.listBranchFacts(sessionId, branch, path.headTurnId, snapshot).filter(f => !this.consolidatedOnPath(f.id, path, snapshot));
   }
 
   markConsolidated(factId: number, runId: number, projectId: number): void {
@@ -1349,10 +1409,10 @@ export class Store {
     this.db.prepare("INSERT INTO consolidated_facts (fact_id, run_id) VALUES (?, ?)").run(factId, runId);
   }
   /** A fact is consolidated on a path when one of the runs that took it took only facts on that path (the same rule a fork applies when it inherits progress). */
-  consolidatedOnPath(factId: number, path: KnowledgePath, runs = new Map<number, boolean>()): boolean {
-    const turns = this.pathTurns(path);
+  consolidatedOnPath(factId: number, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
+    const runs = snapshot.consolidatedRuns;
     return (this.db.prepare("SELECT run_id FROM consolidated_facts WHERE fact_id = ?").all(factId) as { run_id: number }[]).some(({ run_id }) => {
-      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, turns)));
+      if (!runs.has(run_id)) runs.set(run_id, this.listConsolidatedFacts(run_id).every((f) => this.factOnPath(f, path, snapshot)));
       return runs.get(run_id)!;
     });
   }

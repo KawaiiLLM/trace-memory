@@ -12,7 +12,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "smoke:pi": "node tests/hosts/pi/smoke.ts",
-    "smoke:package": "node tests/package-smoke.mjs"
+    "smoke:package": "node tests/package-smoke.mjs",
+    "perf": "node tests/perf/run.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": ">=0.85.1",

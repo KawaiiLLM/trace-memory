@@ -180,10 +180,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const raw = pending.slice(pending.length - kept);
       const omitted = pending.length - kept;
       if (omitted) raw.push({ content: "", receipts: [`[omitted ${omitted} earlier pending entries beyond the carry budget; read them with trace]`] });
-      const path = { sessionId, headTurnId, branch }, turns = store.pathTurns(path);
-      const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, turns)).sort((a, b) => a.id - b.id);
+      const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
+      const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));
-      const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path) &&
+      const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path, snapshot) &&
         r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
