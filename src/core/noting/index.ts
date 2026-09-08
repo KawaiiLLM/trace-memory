@@ -146,7 +146,7 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
     entries: entries.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
     // The captured request precedes the head's final reply; that missing raw and the source index
     // are what an inherited-context run still needs.
-    head: head.assistantText ? renderTurn(head, [], config.render, { part: "assistant" }).content : null,
+    head: head.assistantText ? renderTurn(head, [], { part: "assistant" }).content : null,
     sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
     knowledge: budgeted.knowledge.filter((g) => g.text),
     facts: budgeted.facts,

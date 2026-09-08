@@ -2,10 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import type { KnowledgeRevision } from "../model/index.ts";
-import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, rawResultText, xmlBlock, type ResultExtractor } from "../render/index.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderEntry, rawResultText, xmlBlock, type ResultExtractor } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
-export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
+/** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
+ * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
+ * since 23b, which of a Turn's native occurrences an assembled `trace` shows. An unbound read is
+ * unrestricted, as it always was. */
+export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** Ticket 20 "Compaction escalation" (20c): what compact can produce for one frozen read snapshot.
@@ -194,7 +198,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }
       const raw = pending.slice(pending.length - kept);
       const omitted = pending.length - kept;
-      if (omitted) raw.push({ content: "", receipts: [`[omitted ${omitted} earlier pending entries beyond the carry budget; read them with trace]`] });
+      if (omitted) raw.push({ content: "", receipts: [`[omitted ${omitted} earlier pending entries beyond the carry budget; read them with trace]`], omitted: [] });
       const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));

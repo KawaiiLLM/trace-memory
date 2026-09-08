@@ -75,6 +75,13 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     // The other 11 calls are still named as metadata, and they are not full results.
     for (let ordinal = 2; ordinal <= 12; ordinal++) expect(b.text).toContain(`#t${ordinal}`);
     expect(b.text).not.toContain("result 12.11");
+    // 23b assembles the read without `full` from the same Turn-scoped occurrences, at the same cost,
+    // and shows each of them in entry order instead of merging them into one call's evidence.
+    counter.reset();
+    const assembled = memory.trace(`T${long.heavy}`);
+    expect(counter.reads()).toBe(a.reads);
+    expect(assembled.indexOf("result 12.0")).toBeGreaterThan(-1);
+    expect(assembled.indexOf("the second occurrence")).toBeGreaterThan(assembled.indexOf("result 12.0"));
     // Every ordinal of the Turn is traceable at the same Turn-scoped cost.
     for (let ordinal = 1; ordinal <= 12; ordinal++) {
       counter.reset();

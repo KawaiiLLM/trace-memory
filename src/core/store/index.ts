@@ -1480,10 +1480,21 @@ export class Store {
     return row ? this.getSourceEntry(row.id) : null;
   }
   /** 22c: `turnId` narrows the read to one Turn's native occurrences, so a full trace of one tool
-   * call loads that Turn instead of the whole session. The order — by entry id — is the same. */
-  listSourceEntries(sessionId: number, turnId?: number): SourceEntry[] {
-    return (this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
-      .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[]).map(r => this.getSourceEntry(r.id)!);
+   * call loads that Turn instead of the whole session. The order — by entry id — is the same.
+   * 23b: `branch` answers from that branch's selected native ancestry instead, in the branch's own
+   * order, so an occurrence only a sibling branch selected is not part of this branch's trace. A
+   * branch that selected none of the asked-for entries does not restrict them: explicit reads stay
+   * unrestricted (17a "shared-call fork results retain both originals"). Neither form loads a Raw
+   * payload to decide membership. */
+  listSourceEntries(sessionId: number, turnId?: number, branch?: string): SourceEntry[] {
+    const selected = branch === undefined ? [] : this.db.prepare(
+      `SELECT e.id FROM source_paths p JOIN json_each(p.entry_ids) j JOIN source_entries e ON e.id = j.value
+       WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`)
+      .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
+    const rows = selected.length ? selected
+      : this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
+        .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
+    return rows.map(r => this.getSourceEntry(r.id)!);
   }
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {

@@ -861,7 +861,7 @@ export default function (pi: ExtensionAPI) {
       ensure(context); reconcile();
       if (definition.name === "trace" || definition.name === "search") {
         const input = validateReadInput(definition.name, raw);
-        const options = { ...input, sessionId: state.sessionId, headTurnId: state.head };
+        const options = { ...input, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
         return result(definition.name === "trace" ? memory.trace(input.address as string, options)
           : memory.search(input.query as string, input.layer as import("../../core/api/index.ts").SearchScope, options));
       }

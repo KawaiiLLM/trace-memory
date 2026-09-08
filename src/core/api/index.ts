@@ -6,7 +6,7 @@ export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
-import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { finish, renderFact, renderRun, renderTurn, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
 export { tokens, renderEntry, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
@@ -35,9 +35,6 @@ export interface TraceMemoryConfig {
     /** Ticket 23 tier 2 (compaction only): the same two numbers, tighter. */
     secondaryToolCallTokens: number;
     secondaryEntryTokens: number;
-    commandTokens: number;
-    reportHeadTokens: number;
-    reportTailTokens: number;
     knowledgeBlockTokens: number;
     episodicBlockTokens: number;
   };
@@ -66,9 +63,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     entryTokens: 10_000,
     secondaryToolCallTokens: 100,
     secondaryEntryTokens: 150,
-    commandTokens: 120,
-    reportHeadTokens: 200,
-    reportTailTokens: 80,
     knowledgeBlockTokens: 10_000,
     episodicBlockTokens: 20_000,
   },
@@ -113,6 +107,12 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "render.stdoutHeadTokens": "render.toolCallTokens (one budget for the whole tool call)",
   "render.stdoutTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
   "render.stderrTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  // Ticket 23b: the per-tool branches of the explicit Turn preview they budgeted are gone — an
+  // explicit `trace` without `full` is the entry view under the tier-1 profile, and `full` renders
+  // the stored evidence uncut, so neither has a budget of its own any more.
+  "render.commandTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.reportHeadTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.reportTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: use ${REMOVED_SETTINGS[key]}`);
 
@@ -380,16 +380,21 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
+    // 23b: without `full` the read is this Turn's selected source entries, in path order, each
+    // rendered by the entry renderer under the tier-1 profile — 22c's Turn-scoped read is what it
+    // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's
+    // occurrences out of it.
+    if (!options.full) return finish(renderTrace(turn, store.listSourceEntries(turn.sessionId, turn.id, display.branch), cfg.render, options, resultText));
     // 22c: this Turn's native result occurrences, obtained once and reused across its tool ordinals
     // instead of loading the whole session per call. Every call is still described from them — the
     // unselected ones by their own character counts — so metadata and omission receipts are unchanged.
-    const occurrences = options.full ? store.listSourceEntries(turn.sessionId, turn.id).filter(e => e.role === "toolResult") : [];
-    const originals = options.full ? calls.map(call => {
+    const occurrences = store.listSourceEntries(turn.sessionId, turn.id).filter(e => e.role === "toolResult");
+    const originals = calls.map(call => {
       const results = occurrences.flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
       return results.length < 2 ? call : { ...call, status: "multiple results", result: results.map(({ entry: e, call: c }) =>
         `[entry ${JSON.stringify([e.nativeLineage, e.nativeId])}] status=${c.status}\n${c.result ?? ""}`).join("\n") };
-    }) : calls;
-    return finish(renderTurn(turn, originals, cfg.render, options));
+    });
+    return finish(renderTurn(turn, originals, options));
   };
 
   const read = readFacade(store, cfg, trace, resultText);

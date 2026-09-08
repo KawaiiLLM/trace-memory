@@ -121,30 +121,39 @@ strong|weak`; inbound relations add `inbound`. Knowledge context uses
 `[K<n>@<commit>] [category/scope] text` and a `supports:` continuation, which ends
 with ` · topics: ["<label>", "<label>"]` (a JSON array, so a label may contain a comma) when the revision carries subject labels (21b);
 labels are metadata beside the evidence, never appended to the conclusion. Turn messages
-carry source addresses; tools use `[T<n>#t<n>] tool=… status=… omitted=…`.
+carry source addresses; an entry view labels a tool call `[T<n>#t<k>] <name>` and its
+result `[T<n>#t<k>] <name> <status>`, and the stored evidence `full` returns keeps the
+older `[T<n>#t<k>] tool=… status=… omitted=…` line.
 Receipts follow all content, including assistant text, and list omitted calls
 (including partially omitted calls) and expansion addresses.
 
-`trace("T1", {tool: 2, full: true})` selects a tool ordinal and removes standard
-cuts, including read/write payloads. The optional listing cap paginates the
-rendered lines; it never becomes a tool-output token cap.
-Default explicit trace previews retain the existing field cuts and pagination.
-Full reads preserve original input/result strings; when a shared call has results
-on several forks, full trace labels and returns each original result occurrence.
-Automatic Raw instead uses `renderEntry`: tool fragments first share a fixed
-1,000-token budget, then the entire entry fits 10,000 tokens, including all labels
-and omission markers. Natural language receives only the entry limit. Huge lines
-and JSON values keep character-level head/tail excerpts; omissions never claim
-the middle was inspected. All four consumers use identical entry bytes. The
-shared segment-based token estimator remains unchanged (ruling 2026-09-07).
+An explicit `trace` of a Turn without `full` is assembled from that Turn's selected
+source entries, in path order, each rendered by `renderEntry` under the tier-1
+profile (ticket 23b): several assistant messages each show, a call with several
+native result occurrences shows each occurrence, and a sibling branch's entries do
+not appear when the reader's branch is known — an unbound read stays unrestricted.
+`trace("T1", {tool: 2})` renders that call's parts within their budgets and seals
+every other call at its label line and omission marker, with the receipt that
+fetches it whole. `trace("T1", {tool: 2, full: true})` removes every cut and
+returns the stored arguments and result envelope; when a shared call has results on
+several forks, full trace labels and returns each original result occurrence. The
+optional listing cap paginates the rendered lines; it never becomes a tool-output
+token cap.
 
-Hosts may store plain strings or JSON in tool input/result. JSON command inputs
-use `command` or `cmd`; execution results use `stdout` and `stderr`. Read/search
-names are `Read`, `read_file`, `Search`, `Grep`, or `Glob` (case-insensitive), with
-`path`/`file_path` (or a plain input); they show name plus path. Memory writes end
-in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
-`__` prefix. Other results use report head/tail cuts. The host records tool
-status; the renderer does not infer completion from text.
+`renderEntry` is the one view: a tool call is worth at most `B` tokens (arguments a
+quarter, the result three quarters) and an entry at most `E`, including all labels
+and omission markers. Natural language receives only the entry limit. Huge lines and
+JSON values keep character-level head/tail excerpts; omissions never claim the
+middle was inspected. Every consumer — Noting material, both compaction tiers,
+branch carry and the assembled `trace` — uses identical entry bytes. The shared
+segment-based token estimator remains unchanged (ruling 2026-09-07).
+
+Hosts may store plain strings or JSON in tool input/result; no rule names a tool.
+Arguments render as one `key: value` line each, cut at the head; a result is the
+text the host's extractor returns, cut head and tail. The rules that named `Read`,
+`read_file`, `Search`, `Grep`, `Glob`, `command`/`cmd`, `stdout`, `stderr` and the
+memory writers are gone (ticket 23b), and so are their budgets. The host records
+tool status; the renderer does not infer completion from text.
 
 In fork mode the run sends core's inherited increment — the range, the head reply and the frozen
 source index: the raw turns, the facts delivered after earlier notings, and the injected knowledge

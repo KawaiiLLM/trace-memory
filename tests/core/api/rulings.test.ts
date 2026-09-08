@@ -52,9 +52,10 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   const call = (command: string) => memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command }), result: JSON.stringify({ stdout: "" }), status: "success" });
   call(han); call(ascii);
   const rendered = memory.trace(`S${s.id}/T${t.id}`);
-  expect(rendered).not.toContain(han);   // 300 tokens over a 120-token command cap: cut.
-  expect(rendered).toContain(ascii);     // 100 tokens: kept whole.
-  expect(rendered).toContain("[omitted 1 lines, 400 characters]");
+  // 23b renders the arguments under a quarter of `B`; the cap is the same estimate either way.
+  expect(rendered).not.toContain(han);   // 348 tokens over a 75-token arguments share: cut.
+  expect(rendered).toContain(ascii);     // 58 tokens of the same 400 characters: kept whole.
+  expect(rendered).toMatch(/command: 一+\[omitted \d+ characters\]/);
 });
 
 test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an inherited run needs are the head reply and the source index", async () => {
@@ -353,9 +354,11 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
 test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix #%s renders only its part", (part) => {
   const { s, t } = session();
   const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
+  // 23b: a source part reads as the entry view of that part — the addresses its labels carry, and for
+  // a call both of its parts: the arguments the assistant sent and the result that came back.
   const expected = part === "user" ? `[Source entry id: T${t.id}#user]\n用 pnpm，不要 npm`
     : part === "assistant" ? `[Source entry id: T${t.id}#assistant]\n好的。`
-    : `[T${t.id}#t1] tool=Bash status=success omitted=false\ncommand:\npnpm install\nstdout:\ndone`;
+    : `[T${t.id}#t1] Bash\ncommand: pnpm install\n[T${t.id}#t1] Bash success\n{"stdout":"done","stderr":""}`;
   for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
     expect(memory.trace(`${base}#${part}`)).toBe(expected);
     expect(tool.execute({ address: `${base}#${part}` })).toBe(expected);
@@ -368,7 +371,7 @@ test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () 
   const output = "hidden evidence ".repeat(300);
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: '{"command":"second"}', result: output, status: "success" });
   const cut = memory.trace(`T${t.id}#t2`);
-  expect(cut).toContain("omitted=true");
+  expect(cut).toContain("middle not inspected"); // 23b: the entry view's own honest marker
   expect(cut).not.toContain(output);
   expect(cut).not.toContain("#t1");
   // 17a preserves the full argument object, including fields beyond command.

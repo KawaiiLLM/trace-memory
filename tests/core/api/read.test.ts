@@ -192,8 +192,10 @@ test("20c/23 2026-09-08 scenario 10: primary views over the shared ceiling becom
   // Deterministic local work: the same snapshot renders the same bytes, and no model was called.
   expect(compacted(memory.compact(s.id, "main", next.id))).toBe(text);
   expect(calls).toBe(0);
-  // The original trace output is untouched by any of it.
-  expect(memory.trace(`T${next.id}#user`)).toContain(body);
+  // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
+  // read without `full` (23b) is the same tier-1 view of the same entry, cut only where `E` bites.
+  expect(memory.trace(`T${next.id}#user`, { full: true })).toContain(body);
+  expect(memory.trace(`T${next.id}#user`)).toContain("USER_HEAD");
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_ARGUMENT");
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_RESULT");
 });

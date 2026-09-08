@@ -201,9 +201,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
 });
 
 const golden = (name: string) => readFileSync(new URL(`../../fixtures/noting/${name}.txt`, import.meta.url), "utf8").trimEnd();
-const small = { render: { commandTokens: 30 } };
 test("fixture turn golden and noting input use identical rendering with receipts last", async () => {
-  memory.close(); open(small);
   const first = turn(); turn(first.id, 1);
   expect(memory.trace("T1")).toBe(golden("turn"));
   expect(memory.trace("T2")).toBe(golden("read"));
@@ -249,28 +247,6 @@ test("an oldest entry the episodic budget cannot hold leaves Noting pending (the
   await expect(noting(second.id)).rejects.toThrow(/Noting capacity/);
   expect(calls).toHaveLength(1); // no model call ran over the budget
   expect(memory.pendingEntries(sessionId, "main", second.id)).toEqual(before);
-});
-
-test("23: stdout keeps head and tail at its own constants, stderr keeps tail, reports keep their budgets, and the three stdout keys are rejected by name", () => {
-  memory.close(); open({ render: { commandTokens: 2, reportHeadTokens: 2, reportTailTokens: 2 } });
-  const t = memory.store.appendTurn({ sessionId, kind: "turn", userPrompt: "uncut user", assistantText: "uncut assistant", startedAt: time });
-  const many = Array.from({ length: 300 }, (_, i) => `line ${i}`).join("\n");
-  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "a\nbbbbb\nc" }),
-    result: JSON.stringify({ stdout: many, stderr: "first\nlast" }), status: "failure" });
-  memory.store.appendToolCall({ turnId: t.id, name: "report", result: "a\nbbbbb\nc", status: "success" });
-  memory.store.appendToolCall({ turnId: t.id, name: "Search", input: JSON.stringify({ path: "/fixture" }), result: "hidden match", status: "success" });
-  const rendered = memory.trace(`T${t.id}`);
-  expect(rendered).toContain("command:\na\n\n[omitted 2 lines, 7 characters]");
-  expect(rendered).toMatch(/stdout:\nline 0\n[\s\S]*\[omitted \d+ lines, \d+ characters\]\n[\s\S]*line 299/);
-  expect(rendered).toContain("stderr:\nfirst\nlast"); // both lines fit the tail budget
-  expect(rendered).toContain("report:\na\n\n[omitted 1 lines, 6 characters]\nc");
-  expect(rendered).toContain("Search /fixture\n[omitted 12 characters of result]");
-  expect(rendered).not.toContain("hidden match");
-  expect(memory.trace(`T${t.id}`, { tool: 3, full: true })).toContain("hidden match");
-  // Ticket 23: the three budgets of that branch were never effective on Pi and are no longer settings.
-  for (const key of ["stdoutHeadTokens", "stdoutTailTokens", "stderrTailTokens"]) {
-    expect(() => open({ render: { [key]: 2 } as never })).toThrow(`Removed setting render.${key}: use render.toolCallTokens (one budget for the whole tool call)`);
-  }
 });
 
 test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constraints keep first priority, and omitted items stay traceable", async () => {

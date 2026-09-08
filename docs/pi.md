@@ -125,8 +125,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   occurrences immediately; a subsequent tool result is a separate source entry
   using the same stable Turn tool ordinal. Original messages, arguments and results
   are retained. `trace` with `full: true` retrieves the original tool argument and
-  result strings, including fields outside command/stdout/stderr. Default explicit
-  trace previews and pagination retain their existing protocol.
+  result strings, whatever the envelope carries. An explicit `trace` without `full`
+  is assembled from that Turn's selected source entries under the tier-1 entry view
+  (ticket 23b), so a branch's own occurrences are what a bound read shows; pagination
+  retains its existing protocol.
 - Every eligible persisted entry completion checks the active branch's queues at
   reconciliation; the unchanged native leaf-id guard keeps streaming updates O(1).
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
@@ -159,6 +161,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
   render.<key>: use render.toolCallTokens (one budget for the whole tool call)`.
+- `render.commandTokens`, `render.reportHeadTokens` and `render.reportTailTokens` are **removed**
+  (ticket 23b) with the same message and the same replacement. They shaped the per-tool branches of
+  the explicit Turn preview; that preview is now the entry view under the tier-1 profile, and `full`
+  renders the stored evidence uncut, so neither has a budget of its own.
 - Worker completion starts nothing. A fresh eligible entry completion provides
   the next opportunity; no polling or draining is added. Each runtime reserves one
   slot per phase before asynchronous admission. Quit/reload cancels its workers
@@ -1054,7 +1060,9 @@ uncut. Edit diffs live only in `details`, so they leave the Noter view with a
 marker in their place.
 
 The same entry bytes supply subagent Noting, subagent fallback, compaction
-Raw and branch-carry Raw. Existing episodic budgets count these compressed bytes
+Raw, branch-carry Raw and the explicit `trace` of a Turn without `full` (23b),
+which assembles that Turn's selected entries in path order and seals every call
+`tool` did not select at its label line and omission marker. Existing episodic budgets count these compressed bytes
 when deciding which whole facts fit. A Noting batch whose views, framing and cues cannot
 fit the episodic budget or the model's reported capacity is reduced oldest-first and
 re-frozen, or left pending with a capacity error (review 2026-09-08); compact is the one

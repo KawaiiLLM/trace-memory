@@ -1,9 +1,8 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
+import { sourceAddresses } from "../store/index.ts";
 import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
-import type { TraceMemoryConfig } from "../api/index.ts";
 
-type Budgets = TraceMemoryConfig["render"];
 export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}` }
 export interface Rendered { content: string; receipts: string[] }
 
@@ -145,9 +144,11 @@ function fit(build: (kept: number) => string, max: number, cap: number): number 
   return low;
 }
 
-/** One part of an entry: its smallest honest rendering, and its rendering under an allocation. A part
- * is never empty (it always carries its label line) and never shorter than `floor`. */
-interface Part { floor: string; minimum: number; render(cap: number): string }
+/** One part of an entry: its smallest honest rendering, the rendering it has when no budget cuts it,
+ * and its rendering under an allocation. A part is never empty (it always carries its label line) and
+ * never shorter than `floor`. `whole` is what a rendering is compared against to know whether the part
+ * was cut, which is what earns a call its omission receipt in an explicit `trace` (23b). */
+interface Part { floor: string; whole: string; minimum: number; render(cap: number): string }
 
 /** Equal shares of `total`, remainders to the earliest keys; one pass returns what a value shorter
  * than its share does not need to the others (23 budget contract). */
@@ -175,7 +176,7 @@ function textPart(label: string, body: string): Part {
   const characters = [...body];
   const excerpt = (kept: number) => [label, ...halves(characters, kept)].join("\n");
   const whole = `${label}\n${body}`;
-  return { floor: excerpt(0), minimum: tokens(excerpt(0)),
+  return { floor: excerpt(0), whole, minimum: tokens(excerpt(0)),
     render: (cap) => tokens(whole) <= cap ? whole : excerpt(fit(excerpt, characters.length, cap)) };
 }
 
@@ -191,7 +192,7 @@ function argumentsPart(label: string, input: string): Part {
     + (kept < item.characters.length ? omission(item.characters.length - kept) : "");
   const whole = [label, ...items.map((item) => line(item, item.characters.length))].join("\n");
   const floor = items.length ? `${label}\n${omission(size)}` : label;
-  return { floor, minimum: tokens(floor), render(cap) {
+  return { floor, whole, minimum: tokens(floor), render(cap) {
     if (tokens(whole) <= cap) return whole;
     const costs = items.map((item) => tokens(line(item, item.characters.length)));
     // One separator per emitted line is charged with the part, as the label line is.
@@ -214,47 +215,102 @@ function resultPart(label: string, result: ResultText): Part {
   const body = (kept: number) => structural ? [characters.slice(0, kept).join("") + omission(characters.length - kept)] : halves(characters, kept);
   const view = (kept: number) => [label, ...(characters.length ? body(kept) : []), ...(structural ? [] : [marker])].filter(Boolean).join("\n");
   const whole = [label, structural ? details : result.text, structural ? "" : marker].filter(Boolean).join("\n");
-  return { floor: view(0), minimum: tokens(view(0)),
+  return { floor: view(0), whole, minimum: tokens(view(0)),
     render: (cap) => tokens(whole) <= cap ? whole : view(fit(view, characters.length, cap)) };
 }
 
-export { sourceAddresses } from "../store/index.ts";
+export { sourceAddresses };
 
-/** One immutable view of one source entry (ticket 23), used by Noting material, both compaction tiers
- * and branch carry. An entry is a list of parts: at most one natural-text part and one part per tool
- * call. No call id and no native-identity header enters the model-facing text — native identity and
- * lineage stay in storage and in the run's entry audit, and the addresses the Noter cites are the ones
- * the labels carry. Allocation is two-staged: `B` caps each tool part first; if the entry is still
- * over `E`, tool parts give way, shared fairly down to their label-plus-marker minimum; only when they
- * are all at the minimum does the text part yield. Nothing is emitted shorter than a part's minimum
- * and no budget is exceeded to make room: when even the minima cannot fit `E`, the capacity error
- * leaves the entry pending. */
-export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText): Rendered {
-  const parts: Part[] = [], caps: number[] = [];
+/** How one part of an entry is treated by the caller that asked for the entry (23b `trace` assembly).
+ * `render` is the ordinary budgeted rendering; `floor` seals a part at its label line and its omission
+ * marker, whatever its size, which is what an unselected call keeps; `drop` leaves it out entirely,
+ * which is what a read of one source part (`T7#t3`) does to the entry's other parts. */
+export type PartChoice = "render" | "floor" | "drop";
+/** A rendered entry, plus the ordinals of the tool calls whose part was not rendered whole. The
+ * ordinals are what an explicit `trace` turns into its per-call omission receipts; every other
+ * consumer of the view ignores them, and `receipts` stays empty because the entry view states its own
+ * omissions in line, in the `[omitted … characters …]` wording the run audit detects. */
+export interface EntryView extends Rendered { omitted: number[] }
+
+/** One immutable view of one source entry (ticket 23), used by Noting material, both compaction tiers,
+ * branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one natural-text
+ * part and one part per tool call. No call id and no native-identity header enters the model-facing
+ * text — native identity and lineage stay in storage and in the run's entry audit, and the addresses
+ * the Noter cites are the ones the labels carry. Allocation is two-staged: `B` caps each tool part
+ * first; if the entry is still over `E`, tool parts give way, shared fairly down to their
+ * label-plus-marker minimum; only when they are all at the minimum does the text part yield. Nothing is
+ * emitted shorter than a part's minimum and no budget is exceeded to make room: when even the minima
+ * cannot fit `E`, the capacity error leaves the entry pending. */
+export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
+  choose: (address: string) => PartChoice = () => "render"): EntryView {
+  const parts: Part[] = [], caps: number[] = [], ordinals: (number | null)[] = [];
   const isResult = entry.role === "toolResult";
   // A user message without text (an image, say) still shows as a source with a marker.
-  const text = Boolean(entry.text) || entry.role === "user";
-  if (text) { parts.push(textPart(`[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`,
-    entry.text || "[non-text content omitted]")); caps.push(profile.entryTokens); }
+  const spoken = Boolean(entry.text) || entry.role === "user";
+  const role = entry.role === "user" ? "user" : "assistant";
+  if (spoken && choose(`T${entry.turnId}#${role}`) === "render") {
+    parts.push(textPart(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]"));
+    caps.push(profile.entryTokens); ordinals.push(null);
+  }
+  const text = ordinals[0] === null; // the text part, when it is rendered, is the entry's first part
   const share = Math.floor(profile.toolCallTokens * (isResult ? 1 - ARGUMENTS_SHARE : ARGUMENTS_SHARE));
   for (const call of entry.calls) {
+    const choice = choose(`T${entry.turnId}#t${call.ordinal}`);
+    if (choice === "drop") continue;
     const address = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
-    parts.push(isResult ? resultPart(`${address} ${call.status}`, resultText(call.result ?? "")) : argumentsPart(address, call.input ?? ""));
-    caps.push(share);
+    const part = isResult ? resultPart(`${address} ${call.status}`, resultText(call.result ?? "")) : argumentsPart(address, call.input ?? "");
+    // A sealed part is rendered at its floor whatever the allocation would allow: an unselected call
+    // keeps its label line and its omission marker even when its payload would have fitted.
+    parts.push(choice === "floor" ? { ...part, render: () => part.floor } : part);
+    caps.push(choice === "floor" ? part.minimum : share);
+    ordinals.push(call.ordinal);
   }
+  if (!parts.length) return { content: "", receipts: [], omitted: [] };
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
   // Verified before returning, with the entry against `E` below: no tool part exceeds its share of `B`.
   for (let index = text ? 1 : 0; index < parts.length; index++) if (parts[index]!.minimum > caps[index]!) throw capacity();
   const build = (tool: number, room: number) => parts.map((part, index) =>
-    part.render(text && index === 0 ? room : Math.min(caps[index]!, tool))).join("\n");
+    part.render(text && index === 0 ? room : Math.min(caps[index]!, tool)));
   const cap = profile.entryTokens;
-  let content = build(share, cap);
+  let rendered = build(share, cap), content = rendered.join("\n");
   if (tokens(content) > cap) {
-    content = build(fit((tool) => build(tool, cap), share, cap), cap);
-    if (tokens(content) > cap) content = build(0, fit((room) => build(0, room), cap, cap));
+    rendered = build(fit((tool) => build(tool, cap).join("\n"), share, cap), cap);
+    content = rendered.join("\n");
+    if (tokens(content) > cap) { rendered = build(0, fit((room) => build(0, room).join("\n"), cap, cap)); content = rendered.join("\n"); }
     if (tokens(content) > cap) throw capacity();
   }
-  return { content, receipts: [] };
+  return { content, receipts: [],
+    omitted: ordinals.filter((ordinal, index) => ordinal !== null && rendered[index] !== parts[index]!.whole) as number[] };
+}
+
+/** Ticket 23 "`trace` assembly": an explicit read of a Turn without `full` is that Turn's selected
+ * source entries, in path order, each rendered by the entry renderer under the tier-1 profile. Several
+ * assistant messages in one Turn therefore each show, a call with several native result occurrences
+ * shows each occurrence, and a sibling branch's entries never appear — the caller's branch selected the
+ * entries this assembles (`Store.listSourceEntries`). `tool` selects which call's parts are rendered
+ * within their budgets; every other call keeps its label line, its omission marker and the receipt that
+ * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
+ * reads that one source part and drops the rest. `full` is not assembled here: it is the stored
+ * evidence, uncut, rendered by `renderTurn`. */
+export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryProfile, options: TurnOptions = {},
+  resultText: ResultExtractor = rawResultText): Rendered {
+  const part = options.part;
+  if (part && !entries.some((entry) => sourceAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
+  const choose = (address: string): PartChoice => {
+    const suffix = address.slice(address.indexOf("#") + 1);
+    if (part) return suffix === part ? "render" : "drop";
+    return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
+  };
+  const lines = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
+  const omitted = new Set<number>();
+  for (const entry of entries) {
+    const view = renderEntry(entry, profile, resultText, choose);
+    if (view.content) lines.push(view.content);
+    for (const ordinal of view.omitted) omitted.add(ordinal);
+  }
+  const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
+    ...[...omitted].sort((a, b) => a - b).map((ordinal) => `expand: trace({"address":"T${turn.id}","tool":${ordinal},"full":true})`)] : [];
+  return { content: lines.join("\n"), receipts };
 }
 
 // Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
@@ -271,18 +327,18 @@ function cut(text: string, head: number, tail: number): string {
     lines.slice(last).join("")].filter(Boolean).join("\n");
 }
 
-// The stdout/stderr branch of the explicit Turn preview reads a Claude Code result shape Pi never
-// produces, so its three budgets were never effective on Pi and stopped being settings (ticket 23,
-// removed-settings table). They keep their 17a values as constants until 23b deletes the branch.
-const STDOUT_HEAD_TOKENS = 60, STDOUT_TAIL_TOKENS = 120, STDERR_TAIL_TOKENS = 120;
-
 function object(text: string | null): Record<string, unknown> {
   try { const value = JSON.parse(text ?? "null"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
   catch { return {}; }
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
-export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, options: TurnOptions = {}): Rendered {
+/** The stored evidence of one Turn, uncut: `trace` with `full` (ticket 23 leaves it unchanged), and
+ * Noting's head reply, which is one natural-text part. Every rule that named a tool is gone with 23b —
+ * the read/search path preview, the bash command with its stdout and stderr, the report head and tail,
+ * and the tool-name regex that chose between them; the budgeted preview of a Turn is the entry
+ * assembly (`renderTrace`), and this renders what was stored, so it needs no budget at all. */
+export function renderTurn(turn: Turn, calls: ToolCall[], options: TurnOptions = {}): Rendered {
   const part = options.part;
   if (part && (part === "user" ? turn.userPrompt === null : part === "assistant" ? turn.assistantText === null
     : !calls.some((call) => `t${call.ordinal}` === part))) throw new Error(`source T${turn.id}#${part} does not exist`);
@@ -292,37 +348,12 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
   let omittedCalls = 0;
   for (const call of calls) {
     if (part && part !== `t${call.ordinal}`) continue;
-    const input = object(call.input), result = object(call.result);
     const selected = options.tool === undefined || options.tool === call.ordinal;
-    let omitted = !selected;
-    const body: string[] = [];
-    const field = (label: string, text: string, head: number, tail: number) => {
-      if (!text) return;
-      const preview = options.full ? text : cut(text, head, tail);
-      if (preview !== text) omitted = true;
-      body.push(`${label}:\n${preview}`);
-    };
-    if (selected) {
-      const read = /^(read|read_file|search|grep|glob)$/i.test(call.name);
-      const memoryWrite = /(?:^|__)(?:note|memory|mark|remember|forget)$/i.test(call.name);
-      if ((read || memoryWrite) && !options.full) {
-        const path = string(input.path ?? input.file_path ?? input.pattern ?? call.input);
-        body.push(read ? `${call.name} ${path}` : `receipt: ${call.name} ${call.status}`);
-        const count = (call.result ?? "").length + (memoryWrite ? (call.input ?? "").length : 0);
-        if (count) { body.push(`[omitted ${count} characters of ${memoryWrite ? "input/result" : "result"}]`); omitted = true; }
-      } else if (options.full) {
-        field("input", call.input ?? "", budgets.commandTokens, 0);
-        field("result", call.result ?? "", budgets.reportHeadTokens, budgets.reportTailTokens);
-      } else {
-        field("command", string(input.command ?? input.cmd ?? call.input), budgets.commandTokens, 0);
-        if ("stdout" in result || "stderr" in result) {
-          field("stdout", string(result.stdout), STDOUT_HEAD_TOKENS, STDOUT_TAIL_TOKENS);
-          field("stderr", string(result.stderr), 0, STDERR_TAIL_TOKENS);
-        } else field("report", call.result ?? "", budgets.reportHeadTokens, budgets.reportTailTokens);
-      }
-    } else body.push(`[omitted ${(call.input ?? "").length + (call.result ?? "").length} characters of input/result]`);
-    lines.push(`[T${turn.id}#t${call.ordinal}] tool=${call.name} status=${call.status} omitted=${omitted}`, ...body);
-    if (omitted) {
+    const body = selected ? [["input", call.input ?? ""], ["result", call.result ?? ""]]
+      .filter(([, text]) => text).map(([label, text]) => `${label}:\n${text}`)
+      : [`[omitted ${(call.input ?? "").length + (call.result ?? "").length} characters of input/result]`];
+    lines.push(`[T${turn.id}#t${call.ordinal}] tool=${call.name} status=${call.status} omitted=${!selected}`, ...body);
+    if (!selected) {
       omittedCalls++;
       receipts.push(`expand: trace({"address":"T${turn.id}","tool":${call.ordinal},"full":true})`);
     }

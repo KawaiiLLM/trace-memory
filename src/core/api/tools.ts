@@ -172,7 +172,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     } });
   const tools = [
     definition("trace", (input) => {
-      const content = read.trace(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
+      const content = read.trace(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
       memory.reread(input.address as string);
       fetched.push({ address: input.address as string, input: structuredClone(input), content }); return content;
     }),

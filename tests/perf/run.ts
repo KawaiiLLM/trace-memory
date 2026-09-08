@@ -334,6 +334,9 @@ async function runSize(size: string) {
     // 22c: one full tool occurrence inside the Turn with 40 tool calls.
     measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
       `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),
+    // 23b: the same Turn assembled from its entries under the tier-1 profile — the same Turn-scoped read.
+    measure("trace assembled (heavy Turn, no full)", () => memory.trace(`T${fixture.heavyTurnId}`),
+      `T${fixture.heavyTurnId}, ${store.listSourceEntries(fixture.sessionId, fixture.heavyTurnId).length} entries`),
     ...await searchScenarios(fixture, size),
     ...await disabledHost(fixture, size),
     ...await triggerBacklog(fixture, size),
