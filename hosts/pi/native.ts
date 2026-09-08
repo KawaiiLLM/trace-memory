@@ -95,6 +95,13 @@ const rejected = (name: string, content: string): boolean => {
   } catch { return false; }
 };
 
+/** The SDK's stand-in usage on an errored or cancelled response: every counter zero or absent. */
+export function placeholderUsage(usage: unknown): boolean {
+  if (usage === undefined || usage === null) return true;
+  if (typeof usage !== "object") return !usage;
+  return Object.values(usage as Record<string, unknown>).every(value => !value || (typeof value === "object" && placeholderUsage(value)));
+}
+
 function addUsage(total: unknown, usage: unknown): unknown {
   if (usage === undefined || usage === null) return total;
   if (typeof usage === "number") return (typeof total === "number" ? total : 0) + usage;
@@ -239,7 +246,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     executionMode: "sequential" as const,
     async execute(_id: string, raw: unknown) {
       const bound = task.tools.find(t => t.name === tool.name);
-      calls.push({ name: tool.name, executed: !!bound });
+      calls.push({ name: tool.name, executed: !!bound && !exceeded });
+      if (exceeded) throw new Error(`rejected: tool rounds exceeded (${task.maxToolRounds})`);
       if (!bound) throw new Error(`rejected: ${tool.name} is not available to a Trace Memory worker`);
       let content: string;
       try { content = bound.execute(raw); }
@@ -272,8 +280,11 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const retries: { attempt: number; error: string }[] = [];
   let usage: unknown, request: unknown, rounds = 0, failure: string | undefined, terminal: { stopReason?: string; errorMessage?: string; content?: unknown } | undefined;
   const seen = new Set<unknown>();
-  const key = messageKey(api);
+  // Only the fork gate reads the provider's message array; a fresh child's audit assumes nothing
+  // about the body's shape, so any API the SDK can call may run it (review 2026-09-08).
+  const key = task.mode === "fork" ? messageKey(api) : undefined;
   let previous: Body | undefined;
+  let exceeded = false;
   // Whether the body this child actually sent asked the provider to cache. Anthropic caches only the
   // prefix its `cache_control` markers select, so a body without one has a disabled cache and its
   // zero read is not evidence of anything; OpenAI-family caching is automatic and not request-controlled.
@@ -286,10 +297,9 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   session.agent.onPayload = async (payload: unknown, model: unknown) => {
     task.signal?.throwIfAborted();
     const body = snapshot(payload) as Body;
-    const messages = body[key];
-    if (!Array.isArray(messages)) throw new Error(`Native child body has no ${key} array`);
     // The gate applies to a fork only: a fresh child has no parent body to reproduce.
-    if (verification && task.mode === "fork") {
+    if (verification && task.mode === "fork" && key) {
+      if (!Array.isArray(body[key])) throw new Error(`Native child body has no ${key} array`);
       if (!previous) {
         // The whole captured parent body against this body with the child's own appended messages
         // removed. Only `cache_control` markers are ignored (verifyForkRequest).
@@ -302,7 +312,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       }
     }
     if (api === "anthropic-messages") cacheEnabled = JSON.stringify(body).includes('"cache_control"');
-    if (task.maxToolRounds && rounds++ > task.maxToolRounds) throw new Error(`tool rounds exceeded (${task.maxToolRounds})`);
     previous = body;
     // The run record stores the last request sent, which embeds every earlier round (spec: Run record
     // contract). The first body's hashes are kept separately by the gate, in `verification`.
@@ -322,10 +331,21 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     const message = event.message as { role: string; usage?: unknown; stopReason?: string; errorMessage?: string; content?: unknown };
     if (message.role !== "assistant" || seen.has(event.message)) return;
     seen.add(event.message);
+    const failedOrCancelled = message.stopReason === "error" || message.stopReason === "aborted" || message.errorMessage !== undefined;
     // Only responses this run generated. The copied parent messages restored into the child were
-    // never re-sent, and native session statistics would count them.
-    usage = addUsage(usage, message.usage);
+    // never re-sent, and native session statistics would count them. An errored or cancelled response
+    // that reports only the SDK's placeholder zeros reported nothing: that is unknown usage, not a
+    // free request (ticket 19 "Usage"; review 2026-09-08). Usage it really received still counts.
+    if (!(failedOrCancelled && placeholderUsage(message.usage))) usage = addUsage(usage, message.usage);
     terminal = message;
+    // Tool rounds are model turns that call tools, never provider attempts: Pi's own retry policy may
+    // re-send a request as often as it likes without spending the cap (review 2026-09-08). The round
+    // over the cap fails the run before its tools execute; a committed batch stays committed.
+    if (task.maxToolRounds && Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === "toolCall")
+        && ++rounds > task.maxToolRounds) {
+      exceeded = true; failure = `tool rounds exceeded (${task.maxToolRounds})`;
+      void session.abort();
+    }
     // Gate 3: only a response whose request passed the deterministic prefix check can count, and it is
     // judged on its own usage. A response that failed or was cancelled carries SDK placeholder zeros,
     // which are unknown, not a miss. The run continues either way: never replayed, never cancelled for
@@ -360,7 +380,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
 
   // `prompt()` resolving is not success: the outcome comes from the child's terminal response,
   // and core keeps a committed batch when that response failed.
-  const aborted = task.signal?.aborted || terminal?.stopReason === "aborted";
+  const aborted = !exceeded && (task.signal?.aborted || terminal?.stopReason === "aborted"); // the cap aborts the child itself: a failure, not a cancellation
   const failed = failure !== undefined || terminal === undefined || terminal.stopReason === "error" || terminal.stopReason === "length" || terminal.errorMessage !== undefined;
   const outcome = aborted ? "cancelled" as const : failed ? "failure" as const : "success" as const;
   const output = outcome === "success" ? text(terminal!)

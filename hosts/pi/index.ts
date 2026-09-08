@@ -106,7 +106,7 @@ export default function (pi: ExtensionAPI) {
   const runsDirectory = (piId: string) => join(resolve(String(flat.runsDir ?? join(dirname(resolve(dbPath === ":memory:" ? join(homedir(), ".trace-memory", "trace.db") : dbPath)), "runs")).replace(/^~\//, `${homedir()}/`)), piId);
   let ctx: ExtensionContext;
   let closed = false;
-  type Capture = { entries: { id: string; raw: string }[]; payload: Body; model: string; provider: string; branch: string };
+  type Capture = { payload: Body; model: string; provider: string; branch: string };
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; notified?: boolean } = {};
@@ -279,6 +279,10 @@ export default function (pi: ExtensionAPI) {
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
   const missDetected = new Set<"noting" | "consolidation">();
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
+  /** The mode a task of this session will actually run in: a requested fork resolves to subagent while
+   * the cache-miss latch is set. Used for the delivery pause, the readiness wait and the budget; the
+   * requested mode is still what the task is launched with, so the run record keeps it. */
+  const effectiveMode = (requested: "fork" | "subagent") => requested === "fork" && suppressed() ? "subagent" as const : requested;
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to fork, consolidation to
@@ -323,7 +327,8 @@ export default function (pi: ExtensionAPI) {
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
-    if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, borrowed: options.borrowed, automatic: options.automatic,
+    const effective = effectiveMode(selected.mode); // admission pauses by what will run, not by what was asked
+    if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic,
       executorSessionId: state.sessionId!, ...(options.boundary ? { boundary: options.boundary } : {}) });
     const [provider, ...id] = selected.model.split("/");
     const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
@@ -331,11 +336,11 @@ export default function (pi: ExtensionAPI) {
       context.ui.notify("Noting capacity: unavailable model context/output limits; left pending", "error");
       return Promise.resolve({ outcome: "dropped" } as const);
     }
-    return memory.noting({ ...target, ...selected, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!,
+    return memory.noting({ ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!,
       capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
         // A session the cache-miss latch has downgraded will run this task with fresh context, so
         // there is no inherited prefix to reserve room for.
-        prefixTokens: selected.mode === "fork" && !suppressed() && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
+        prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
       ...(options.boundary ? { boundary: options.boundary } : {}) });
   };
   let savedSourceHead: number | undefined;
@@ -501,11 +506,9 @@ export default function (pi: ExtensionAPI) {
     if (!enabled()) { showSpend(context); return; }
     const previous = state.sourceHead;
     reconcile(false);
-    const ancestry = context.sessionManager.getBranch();
-    // Persisted originals before a context reset are not proof that the provider received them.
-    const reset = ancestry.reduce((last, e, i) => e.type === "compaction" || e.type === "branch_summary" ? i : last, -1);
-    if (context.model) session.capture = { entries: ancestry.slice(reset + 1).filter(e => e.type === "message").map(e => ({ id: e.id, raw: JSON.stringify(e.message) })), payload: snapshot(event.payload) as Body,
-      model: context.model.id, provider: context.model.provider, branch: state.branch };
+    // The capture is the fork gate's comparand and nothing else: the request-copy runner that also
+    // read the ancestry behind it was deleted in 19c, so only the body is kept (review 2026-09-08).
+    if (context.model) session.capture = { payload: snapshot(event.payload) as Body, model: context.model.id, provider: context.model.provider, branch: state.branch };
     if (state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   });
   pi.on("session_start", (_event, context) => restore(context));
@@ -579,8 +582,13 @@ export default function (pi: ExtensionAPI) {
     for (const kind of ["noting", "consolidation"] as const) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
+      // The delivery pause and the readiness wait follow the mode that will actually run: a session
+      // the cache-miss latch has downgraded runs fresh-context work, which reads nothing from the
+      // conversation and forks nothing. The requested mode stays what it is, for the audit
+      // (review 2026-09-08).
+      const effective = effectiveMode(selected.mode);
       let due = false, paused = false;
-      try { ({ due, paused } = memory.taskEligibility(kind, own, selected.mode)); }
+      try { ({ due, paused } = memory.taskEligibility(kind, own, effective)); }
       catch (error) { context.ui.notify(String(error), "error"); }
       if (due && paused) { activity.last = "warning"; showSpend(context); }
       // 19c "Trigger versus launch": the threshold above decides that this task is due; the checkpoint
@@ -588,7 +596,7 @@ export default function (pi: ExtensionAPI) {
       // reopenable and free of an open tool-call group waits for the next safe boundary — no timer, no
       // duplicate task, no progress, and starting later is not a new extraction trigger. Borrowed
       // closed-session work is fresh-context and is never held back by this.
-      const waiting = due && !paused ? forkWait(context, selected.mode) : undefined;
+      const waiting = due && !paused ? forkWait(context, effective) : undefined;
       const candidates = [...(due && !paused && !waiting ? [{ ...own, borrowed: false }] : []),
         ...memory.store.closedTasks(kind, own.sessionId).map(target => ({ ...target, borrowed: true }))];
       if (!candidates.length) continue;

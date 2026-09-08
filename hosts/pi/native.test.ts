@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "./fork.ts";
-import { runNative } from "./native.ts";
+import { placeholderUsage, runNative } from "./native.ts";
 import { recorded } from "../../test/source-fixture.ts";
 import { broken, call, fixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
@@ -506,4 +506,71 @@ test("19c 2026-09-08: a session model change after the capture refuses the fork 
     expect(run.model).toBe("fake/other");
     expect(JSON.parse(run.response!).fallbackReason).toContain("Session model changed since capture");
   } finally { await f.dispose(); }
+}, 20000);
+
+// ---------------------------------------------------------------- review 2026-09-08 repairs (4c7d94f..1674525)
+test("review 2026-09-08: a fresh child runs on any API the SDK can call; only the fork gate needs a known message shape", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  try {
+    const tools = [{ name: "trace" as const, description: "Read", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
+    let error: unknown;
+    try {
+      await runNative({ mode: "subagent", model: { ...f.model, api: "google-generative-ai" } as never, cwd: f.h.dir, agentDir: f.agentDir,
+        runsDir: join(f.h.dir, "runs"), systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, onRequest: () => {}, onProgress: () => {} });
+    } catch (caught) { error = caught; }
+    // Whatever the unlisted adapter makes of the stubbed wire, the adapter's own fork check is not what
+    // stops the child: the gate's message-shape table is consulted for forks only.
+    expect(String(error ?? "")).not.toMatch(/Unsupported fork payload API/);
+    expect(() => messageKey("google-generative-ai")).toThrow(/Unsupported fork payload API/); // the gate's table itself is unchanged
+  } finally { await f.dispose(); }
+}, 20000);
+
+test("review 2026-09-08: provider retries never spend the tool-round cap; the cap counts model turns that call tools", async () => {
+  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1, retry: { maxRetries: 3, baseDelayMs: 1 } });
+  try {
+    let attempt = 0;
+    f.script(body => !worker(body) ? say("好的。") : attempt++ < 2 ? broken() : toolResults(body) ? say("Done.") : call("n", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    // Two failed attempts, one tool round within the cap of one, then the final reply.
+    expect(run.outcome).toBe("success");
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(f.sent.filter(body => worker(body))).toHaveLength(4);
+    expect(JSON.parse(run.response!).retries).toHaveLength(2);
+  } finally { await f.dispose(); }
+}, 20000);
+
+test("review 2026-09-08: the tool-round cap still fails the round over it before its tools run", async () => {
+  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1 });
+  try {
+    let traces = 0;
+    f.script(body => !worker(body) ? say("好的。") : call(`t${++traces}`, "trace", { address: "T1" }));
+    await f.turn();
+    const run = await settled(f);
+    expect(run.outcome).toBe("failure");
+    expect(JSON.parse(run.response!).output).toContain("tool rounds exceeded (1)");
+    expect(f.sent.filter(body => worker(body))).toHaveLength(2); // the first round ran its tool; the second was over the cap
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+  } finally { await f.dispose(); }
+}, 20000);
+
+test("review 2026-09-08: a child cancelled before any usage arrived reports unknown usage, not zero", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  let release = () => {};
+  try {
+    f.script(() => say("好的。"));
+    const captured = await f.turn();
+    const controller = new AbortController();
+    let sent = false;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    f.script(async () => { sent = true; await held; throw new DOMException("Cancelled before usage arrived", "AbortError"); });
+    const task = runNative(f.task(captured, { signal: controller.signal }));
+    await vi.waitFor(() => expect(sent).toBe(true));
+    controller.abort(); release();
+    const result = await task;
+    expect(result.outcome).toBe("cancelled");
+    expect(result.usage).toBeUndefined(); // the SDK's placeholder zeros are not reported usage
+    expect(placeholderUsage({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { total: 0 } })).toBe(true);
+    expect(placeholderUsage({ input: 5, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 5 })).toBe(false); // really reported partial usage still counts
+  } finally { release(); await f.dispose(); }
 }, 20000);

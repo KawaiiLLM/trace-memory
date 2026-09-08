@@ -184,7 +184,13 @@ export interface RunAgentResult {
  * the freeze instant; `factIds` bounds Consolidation to the frozen pending-plus-produced fact set.
  * Absent, selection is the ordinary unbounded pending set (18b). */
 export interface TaskBoundary { maxEntryId?: number; factIds?: number[] }
-export interface TaskOptions { borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary }
+export interface TaskOptions {
+  borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
+  /** The mode the host will actually run this task in when it differs from the requested `mode`
+   * (a requested fork resolved to subagent by the host's cache-miss latch). Admission's delivery
+   * pause follows it; the requested mode is still recorded (review 2026-09-08). */
+  effectiveMode?: "fork" | "subagent";
+}
 export interface AgentControl {
   signal?: AbortSignal;
   reportProgress?: (progress: Partial<RunAgentResult>) => void;
@@ -368,7 +374,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
         if (!input.automatic || input.borrowed) return true;
         const mode = input.mode ?? (phase === "noting" ? (cfg.noting.forkModeDefault ? "fork" : "subagent") : (cfg.consolidation.subagentModeDefault ? "subagent" : "fork"));
-        const { due, paused } = taskEligibility(phase, target, mode);
+        const { due, paused } = taskEligibility(phase, target, input.effectiveMode ?? mode);
         return due && !paused;
       });
       if (!claim) return null;
