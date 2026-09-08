@@ -61,7 +61,8 @@ test("17c 2026-09-08: busy borrowed slots are not preempted or chained; later en
     await tick(h);
     expect(h.requests).toHaveLength(2);
     for (const phase of ["noting", "consolidation"] as const) expect(h.memory.store.getClaim(first.sessionId, phase)?.borrowed).toBe(true);
-    expect(h.conversations[0]!.messages[0]!.content).toContain(`S${first.sessionId}/T${first.headTurnId}`);
+    // Both borrowed phases target `first`; the two requests race to the wire, so assert on content, not arrival order.
+    expect(h.conversations.some(c => String(c.messages[0]!.content).includes(`S${first.sessionId}/T${first.headTurnId}`))).toBe(true);
     h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); expect(h.signals.every(s => !s.aborted)).toBe(true);
     release.forEach(resolve => resolve(reply("No durable material."))); await h.drain();
