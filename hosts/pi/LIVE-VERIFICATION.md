@@ -57,9 +57,10 @@ same run were cache hits. This is the whole-zero-cache noise the parent ticket r
 OpenAI-family providers, and the latch treated it as ruled: one eligible miss, one warning,
 no replay of R2. Whether one miss should downgrade a session on this provider is a policy
 question for the user, not a defect of the implementation. **Ruled the same day:** a miss counts
-only when the request's context exceeded 30,000 tokens; under that rule R2's 5,277-token miss
-would not have downgraded the session (pinned by *19c ruling 2026-09-08: a zero-cache response
-counts as a miss only when its context exceeded 30,000 tokens*).
+when the response's uncached tokens (`input + cacheWrite`) reach 30,000, at any `cacheRead`;
+under that rule R2's 5,277-token miss would not have downgraded the session (pinned by *19c
+ruling 2026-09-08: a response counts as a miss when its uncached tokens (input + cacheWrite)
+reach 30,000, at any cacheRead*).
 
 Not exercised this run: the Noter did not call `trace` on the cut `seq` result (it noted the
 instruction from the user message; R2's tool sequence was `note` only), so the "fetches full

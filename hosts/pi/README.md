@@ -664,13 +664,17 @@ An eligible miss is judged per completed fork response, on that response's own u
 | `openai-completions`, `openai-responses`, `openai-codex-responses` | 1024-token prefix | OpenAI automatic prompt caching |
 | anything else | unknown — never a miss | no universal minimum is invented |
 
-**Context threshold (user ruling 2026-09-08, after the live run):** on top of the provider
-minimum, a zero-cache response counts only when the request's real context **exceeded 30,000
-tokens** (`CACHE_MISS_CONTEXT_TOKENS`). The latch exists to stop re-sending a large inherited
-history without cache reuse; a miss on a small context costs little, and OpenAI-family providers
-return whole-zero-cache responses now and then without a deterministic cause (the live run's R2
-missed on a 5,277-token request while its neighbours hit). Below the threshold the miss is
-tolerated and nothing is recorded; the observation carries the `threshold` the input exceeded.
+**Uncached-token threshold (user ruling 2026-09-08, after the live run):** a completed fork
+response counts as a miss when the tokens it paid for uncached — `input + cacheWrite`, everything
+the provider did not serve from cache — **reach 30,000** (`CACHE_MISS_UNCACHED_TOKENS`), at any
+`cacheRead`. The latch exists to stop re-sending a large inherited history without cache reuse,
+and the cost is the uncached part: a partial hit that still re-sends 30,000 tokens counts, while a
+whole-zero-cache response on a small request does not (the live run's R2 missed on 5,277 tokens
+while its neighbours hit; OpenAI-family providers do that now and then without a deterministic
+cause). This supersedes the earlier "a nonzero read is a hit at any ratio" clause. Below the
+threshold nothing is recorded; the observation carries `uncached` and the `threshold` it reached.
+The provider table above now serves to know which providers report cache counts at all; its
+minimum is recorded on the observation for the record.
 
 pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
 `cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
@@ -678,7 +682,7 @@ copies `input_tokens`, which already excludes them). The compared quantity is th
 `input + cacheRead + cacheWrite`, never compressed Raw size. Everything unknown is not a miss:
 missing usage, non-numeric or absent cache counts, the SDK's placeholder zeros on an errored or
 cancelled response, an Anthropic body that carried no `cache_control` marker (a disabled cache),
-an unlisted provider, and any input below the minimum. A nonzero read is a hit at any ratio.
+and an unlisted provider.
 
 On the first eligible miss:
 
@@ -688,8 +692,8 @@ On the first eligible miss:
   session will use subagent.` Headless operation records the same state without any UI.
 - The detecting run continues untouched: same native session, same tool protocol, same trailing
   replies, no replay, no extra trigger, and its run record keeps `mode: "fork"`. The
-  observation is audited as `verification.cacheMiss = {model, api, minimum, input, cacheRead,
-  cacheWrite}`, and the run id is linked to the session's suppression once core has allocated it
+  observation is audited as `verification.cacheMiss = {model, api, minimum, threshold, input,
+  cacheRead, cacheWrite, uncached}`, and the run id is linked to the session's suppression once core has allocated it
   (the miss is seen before any run row exists).
 - Every later task rechecks the latch at fork admission, so a task queued before the transition
   cannot bypass it. The configured requested mode is retained: the run records

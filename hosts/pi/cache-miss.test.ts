@@ -29,7 +29,7 @@ test("19c 2026-09-08: an eligible zero-cache fork response downgrades the sessio
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // no replay, and no extra extraction trigger
     const response = JSON.parse(run.response!);
     expect(response.verification.passed).toBe(true); // the prefix check passed first (gate 3)
-    expect(response.verification.cacheMiss).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0 });
+    expect(response.verification.cacheMiss).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0, uncached: 32000 });
     // One warning, with the ruled text, although two of this run's responses reported a miss.
     expect(warnings(f.h)).toEqual([WARNING]);
     const suppression = f.h.memory.store.forkSuppression(1)!;
@@ -108,44 +108,44 @@ test("19c 2026-09-08: a provider error sets no latch, and a cancelled child repo
   } finally { await f.dispose(); }
 }, 20000);
 
-test("19c 2026-09-08: cache eligibility rejects hits, small, missing, placeholder and unsupported usage, unknown limits and a disabled cache", () => {
+test("19c 2026-09-08: cache eligibility rejects small, missing, placeholder and unsupported usage, unknown providers and a disabled cache", () => {
   const openai = { api: "openai-completions", id: "test", provider: "fake" };
   const anthropic = { api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" };
   const haiku = { api: "anthropic-messages", id: "claude-3-5-haiku", provider: "fake" };
   const zero = { input: 32000, cacheRead: 0, cacheWrite: 0 };
-  // Eligible: a documented minimum, a reported zero read, and enough actual input.
-  expect(eligibleCacheMiss(openai, zero, true)).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0 });
-  // pi-ai reports `input` without the cached tokens on both families, so the request's real input is
-  // input + cacheRead + cacheWrite: an Anthropic first write of 31,000 tokens is over both limits.
-  expect(eligibleCacheMiss(anthropic, { input: 24, cacheRead: 0, cacheWrite: 31000 }, true)?.input).toBe(31024);
+  // Eligible: a listed provider, reported cache counts, and 32,000 uncached tokens.
+  expect(eligibleCacheMiss(openai, zero, true)).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0, uncached: 32000 });
+  // pi-ai reports `input` without the cached tokens on both families; a cache write is paid uncached,
+  // so an Anthropic first write of 31,000 tokens counts in full.
+  expect(eligibleCacheMiss(anthropic, { input: 24, cacheRead: 0, cacheWrite: 31000 }, true)?.uncached).toBe(31024);
   // Not eligible, one reason each.
-  expect(eligibleCacheMiss(openai, { input: 35000, cacheRead: 4000, cacheWrite: 0 }, true)).toBeUndefined(); // a hit, at any ratio
+  expect(eligibleCacheMiss(openai, { input: 2000, cacheRead: 40000, cacheWrite: 0 }, true)).toBeUndefined(); // a hit that left little uncached
   expect(eligibleCacheMiss(openai, { input: 1, cacheRead: 1023, cacheWrite: 0 }, true)).toBeUndefined();
-  expect(eligibleCacheMiss(openai, { input: 1000, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // below the minimum
+  expect(eligibleCacheMiss(openai, { input: 1000, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // small request
   expect(eligibleCacheMiss(openai, undefined, true)).toBeUndefined(); // missing usage
   expect(eligibleCacheMiss(openai, { input: 0, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // placeholder zeros
   expect(eligibleCacheMiss(openai, { input: 32000 }, true)).toBeUndefined(); // no cache reporting at all
   expect(eligibleCacheMiss(openai, zero, false)).toBeUndefined(); // the request asked for no caching
-  expect(eligibleCacheMiss({ api: "google-generative-ai", id: "gemini", provider: "g" }, zero, true)).toBeUndefined(); // unknown minimum
-  expect(eligibleCacheMiss(haiku, { input: 2000, cacheRead: 0, cacheWrite: 0 }, true, 0)).toBeUndefined(); // 2000 < the Haiku family's 2048
-  expect(eligibleCacheMiss(haiku, { input: 2048, cacheRead: 0, cacheWrite: 0 }, true, 0)?.minimum).toBe(2048);
-  // No universal fallback minimum is invented for an unlisted provider.
+  expect(eligibleCacheMiss({ api: "google-generative-ai", id: "gemini", provider: "g" }, zero, true)).toBeUndefined(); // unlisted provider
+  // The provider table still records the documented minimum on the observation.
+  expect(eligibleCacheMiss(haiku, zero, true)?.minimum).toBe(2048);
   expect(cacheMinimum("openai-responses", "gpt-5")).toBe(1024);
   expect(cacheMinimum("google-generative-ai", "gemini")).toBeUndefined();
 });
 
-test("19c ruling 2026-09-08: a zero-cache response counts as a miss only when its context exceeded 30,000 tokens", () => {
+test("19c ruling 2026-09-08: a response counts as a miss when its uncached tokens (input + cacheWrite) reach 30,000, at any cacheRead", () => {
   const openai = { api: "openai-completions", id: "test", provider: "fake" };
   const codex = { api: "openai-codex-responses", id: "gpt-5.6-sol", provider: "openai-codex" };
-  // The live run's R2: 5,277 input tokens, nothing cached, gate passed. Over the provider minimum,
-  // far under the context threshold: tolerated, no downgrade.
+  // The live run's R2: 5,277 uncached tokens, nothing cached, gate passed: tolerated, no downgrade.
   expect(eligibleCacheMiss(codex, { input: 5277, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined();
-  expect(eligibleCacheMiss(openai, { input: 30000, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // at the threshold: not over it
-  expect(eligibleCacheMiss(openai, { input: 30001, cacheRead: 0, cacheWrite: 0 }, true)?.threshold).toBe(30000);
-  // The threshold is on the request's real context, so cached-write tokens count toward it.
-  expect(eligibleCacheMiss({ api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" }, { input: 100, cacheRead: 0, cacheWrite: 30000 }, true)?.input).toBe(30100);
-  // A hit at any size stays a hit.
-  expect(eligibleCacheMiss(openai, { input: 60000, cacheRead: 1, cacheWrite: 0 }, true)).toBeUndefined();
+  // The boundary: reaching 30,000 counts.
+  expect(eligibleCacheMiss(openai, { input: 29999, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined();
+  expect(eligibleCacheMiss(openai, { input: 30000, cacheRead: 0, cacheWrite: 0 }, true)?.threshold).toBe(30000);
+  // A partial hit that still re-sent 35,000 uncached tokens is the cost the latch exists for.
+  expect(eligibleCacheMiss(openai, { input: 35000, cacheRead: 4000, cacheWrite: 0 }, true)).toMatchObject({ cacheRead: 4000, uncached: 35000 });
+  // Cache-write tokens are paid uncached, so they count; cache-read tokens are not, so they do not.
+  expect(eligibleCacheMiss({ api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" }, { input: 100, cacheRead: 0, cacheWrite: 29900 }, true)?.uncached).toBe(30000);
+  expect(eligibleCacheMiss(openai, { input: 29000, cacheRead: 100000, cacheWrite: 0 }, true)).toBeUndefined();
 });
 
 test("19c 2026-09-08: two phases reporting a miss together produce one transition and one warning", async () => {
