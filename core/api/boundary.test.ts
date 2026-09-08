@@ -115,7 +115,7 @@ test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two s
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
-  const batch = { operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] };
+  const batch = { operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
   runAgent = async raw => {
     const input = raw as ConsolidationAgentInput;
     assertNoProviderMessage(input);
@@ -220,7 +220,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
 
-  const batch = { operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] };
+  const batch = { operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
   let integrated = "";
   runAgent = async raw => {
     const input = raw as ConsolidationAgentInput;

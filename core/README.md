@@ -247,8 +247,9 @@ commit history, and the other branches' tips. Without context it labels tips
 newest-created and never calls one current. `K1@57` reads one immutable global
 commit, `K1@57..K1@61` compares any two commits of the same identity (including
 siblings and reverse order), and `K1..` shows the commit tree across branches.
-Commit metadata includes operation, stored time, and `because` fact addresses.
-Supports and triggering facts expand through `trace("F1")`.
+Commit metadata includes operation, stored time, the commit's `supports`
+fact addresses and its `reason` (the authored commit message).
+Supports expand through `trace("F1")`.
 
 Diff metadata lists commits unique to either endpoint ancestry, preserving
 changes later reverted. Equal endpoints have no transitions. Added/removed supports use set membership in stored order;
@@ -307,12 +308,17 @@ until the provider stops. `reportRequest` captures each exact provider request b
 execution; the final returned request is the last one sent.
 
 `memory({operations, skipped})` accepts one operation shape: `op`, `id`, `absorb`,
-`text`, `category`, `scope`, `supports`, `because`. `because` is always an array of
-triggering fact addresses. Create/update/merge require complete resulting text,
-category, scope and non-empty supports; supports replaces the old set. Create forbids
+`text`, `category`, `scope`, `supports`, `reason`. Every operation requires non-empty
+`supports` — this commit's evidence, which may mix the grounds of the resulting text
+with the correction or withdrawal that prompted it — and a non-empty `reason`, its
+commit message. A reason establishes no evidence, scope, applicability or accounting,
+and core never parses addresses out of it. Create/update/merge also require complete
+resulting text, category and scope; supports replaces the old set. Create forbids
 id; update/archive/merge require it. Merge alone requires absorb. Archive permits
-only op, id and because. Inapplicable and unknown fields are rejected. Skipped items
-are `{fact, because}` with a range fact and a non-empty explanation.
+only op, id, supports and reason, and inherits category and scope from its parent.
+Inapplicable and unknown fields are rejected, and a commit-level `because` is rejected
+by name. Skipped items are `{fact, because}` with a range fact and a non-empty
+explanation; that protocol is unchanged.
 
 The first valid batch writes nothing. Its tool result contains ordered item results
 and `feedback: {role: "user", content}`. The host appends this feedback once as a user
@@ -338,13 +344,16 @@ is rechecked in the immediate transaction. Any rejection writes no operations.
 The survivor revision, merged status and links, run record and frozen Consolidation
 fact membership and a nonempty knowledge-change delivery commit together; absorbed
 items retain their own last revision. Enabled sessions receive both delivery kinds
-regardless of worker mode (2026-09-08 supersession). Supports and because cite project facts available at start.
+regardless of worker mode (2026-09-08 supersession). Supports cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
-transaction, including concurrent changes to untouched knowledge. Uncited user facts
-and questions missing from skipped yield `uncited_facts`. Other diagnostics are
+transaction, including concurrent changes to untouched knowledge. A range fact cited
+by an archive that applied in this batch counts as archival evidence and needs no
+duplicate skipped entry; a candidate-only or rejected archive does not. Uncited user
+facts and questions missing from skipped yield `uncited_facts`. Other diagnostics are
 `unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
-numeric lexemes against supporting facts' text and quotes; because is not evidence.
+numeric lexemes against supporting facts' text and quotes; the reason is never read by
+that diagnostic, and never by any other.
 All diagnostics commit and derive no fact or knowledge status.
 
 One run record retains tool inputs/results, candidate, fetched evidence, exact last

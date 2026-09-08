@@ -155,7 +155,7 @@ test("reads return every knowledge item while injection still applies the scope 
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
     note.execute({ facts: [fact(`T${sessionId}#user`)] });
     memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations:
-      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create" as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
+      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@${id}]`); // reads are unrestricted
@@ -164,7 +164,7 @@ test("reads return every knowledge item while injection still applies the scope 
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "later" }, operations: [
-    { op: "archive", knowledgeId: 3, baseCommit: 3, because: [1], createdAt: "later" },
+    { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 3, baseCommit: 3, supports: [1], createdAt: "later" },
   ] });
   expect(trace!.execute({ address: "K3@3" })).toContain("owner 1 scope session");
   expect(trace!.execute({ address: "K3" })).toContain("archive");

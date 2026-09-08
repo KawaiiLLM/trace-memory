@@ -598,3 +598,25 @@ test("review 2026-09-08: a failed response's partial tool call never spends a to
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
   } finally { await f.dispose(); }
 }, 20000);
+
+// 21a 2026-09-08: the tool schema is part of the parent body the fork gate compares, so the schema
+// change is re-verified here against a real child request rather than assumed (ticket 21a acceptance).
+test("21a 2026-09-08: the memory schema the child re-registers requires reason, offers no because, and still passes the gate", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(JSON.parse(run.response!).verification.passed).toBe(true);
+    expect(f.sent[1]!.tools).toEqual(f.sent[0]!.tools); // byte-identical definitions on both sides of the gate
+    const memory = f.sent[1]!.tools.find((t: Body) => t.function.name === "memory")!.function;
+    const operation = memory.parameters.properties.operations.items;
+    expect(operation.required).toEqual(["op", "supports", "reason"]);
+    expect(operation.properties).not.toHaveProperty("because");
+    expect(operation.properties.reason).toEqual({ type: "string", minLength: 1 });
+    expect(operation.additionalProperties).toBe(false);
+    // The declined-fact protocol keeps its own textual because.
+    expect(memory.parameters.properties.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
+    expect(memory.description).toContain("reason (the commit message, never evidence)");
+  } finally { await f.dispose(); }
+});

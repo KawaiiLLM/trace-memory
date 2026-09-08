@@ -12,7 +12,7 @@ function seeded(config: Record<string, unknown> = {}) {
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });
   const tools = m.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   const note = (text: string, extra: Record<string, unknown> = {}) => tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text, source: [`T${t.id}#user`], ...extra }] });
-  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text, category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] });
+  const knowledge = (text: string) => tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text, category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   return { m, calls, s, t, note, knowledge };
 }
 

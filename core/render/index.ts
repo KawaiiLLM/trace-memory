@@ -282,7 +282,7 @@ export const runMode = (mode: string | null): string =>
 
 /** A run record as a human summary; `full` adds the tool rounds and previews of the raw request and response. */
 export function renderRun(run: { id: number; kind: string; outcome: string; sessionId: number | null; branch: string | null; rangeFrom: string | null; rangeTo: string | null; model: string | null; mode: string | null; request: string | null; response: string | null; createdAt: string },
-  factIds: number[], commits: { knowledgeId: number; id: number; op: string }[], full = false): string {
+  factIds: number[], commits: { knowledgeId: number; id: number; op: string; reason: string }[], full = false): string {
   let response: Record<string, unknown> = {};
   try { response = JSON.parse(run.response ?? "{}") ?? {}; } catch { response = {}; }
   const usage = (response.usage ?? null) as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null;
@@ -295,7 +295,7 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
   const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
     `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
-    `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op})`)].join(", ") || "nothing"}`,
+    `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
     response.usageStatus === "unknown" ? "  usage: unknown  cost unknown"
       : `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost $${(usage?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,
     `  tools: ${[...counts].map(([n, k]) => `${n} ×${k}`).join(", ") || "none"}`,
@@ -325,8 +325,9 @@ export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevisio
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
+// 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
-  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} because: ${factAddresses(r.because ?? [])}`;
+  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} supports: ${factAddresses(r.supports)} reason: ${r.reason}`;
 export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
 
@@ -371,6 +372,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
+    ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
     renderCommitHistory(revisions)].join("\n");
 }
 

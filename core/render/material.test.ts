@@ -29,7 +29,7 @@ function seeded() {
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
-  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] })).toContain('"committed"');
+  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
   return { s, t };
 }
 /** The same session after one Consolidation run: F1 is history, F2 is this task's pending fact. */
@@ -189,8 +189,8 @@ test("20b 2026-09-08 scenario 3: at the default limits no consumer's block overf
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   for (let i = 0; i < 12; i++) tools.find(tool => tool.name === "note")!.execute({ facts: Array.from({ length: 20 }, (_, k) =>
     ({ category: "observation", actor: "user", text: `claim ${i}.${k} ` + "word ".repeat(40), source: [`T${t.id}#user`] })) });
-  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create",
-    text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "mechanism", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] });
+  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.",
+    text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "mechanism", scope: "project", supports: ["F1"] }], skipped: [] });
   for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
     role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });

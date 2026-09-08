@@ -1,5 +1,5 @@
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
-import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
+import type { CommittedKnowledgeOp, KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
 
@@ -34,9 +34,12 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     if (!["create", "update", "merge", "archive"].includes(op)) errors.push("invalid op");
-    const keys = ["op", "because", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope", "supports"] : [])];
-    for (const key of Object.keys(value)) if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
-    const because = facts(value.because, errors);
+    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope"] : [])];
+    // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
+    // model still writing the old shape is told which two fields replace it.
+    for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
+      else if (!keys.includes(key)) errors.push(`${key}: inapplicable field`);
+    if (typeof value.reason !== "string" || !value.reason.trim()) errors.push("reason: expected a non-empty commit message");
     const target = (address: unknown) => {
       const match = typeof address === "string" ? /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address) : null;
       const id = Number(match?.[1]), commitId = match?.[2] === undefined ? undefined : Number(match[2]);
@@ -62,15 +65,15 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
-    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: op === "archive" ? [] : facts(value.supports, errors, true), because, createdAt: run.createdAt };
+    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, true), reason: value.reason!, createdAt: run.createdAt };
     const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
-    if (scope && [...content.supports, ...because].every(Number.isSafeInteger)) {
-      const bad = store.citationProblem([...content.supports, ...because], scope, path);
+    if (scope && content.supports.every(Number.isSafeInteger)) {
+      const bad = store.citationProblem(content.supports, scope, path);
       if (bad) errors.push(bad);
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
-      : op === "archive" ? { op: "archive", ...dest!, because, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
+      : op === "archive" ? { op: "archive", ...dest!, supports: content.supports, reason: content.reason, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
   const declined = new Set<number>();
@@ -98,10 +101,15 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   return { results, operations, batch, diagnostics };
 }
 
-/** Called after application inside the same immediate transaction. */
-export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): ConsolidationDiagnostic[] {
-  const projectId = store.getSession(sessionId)!.projectId;
+/** Called after application inside the same immediate transaction. `committed` is this batch's applied
+ * operations: 21a accounts a range fact cited by an archive that just applied as archival evidence, since
+ * an archive leaves no active conclusion to cite it. Candidate-only or rejected archives are not here. */
+export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath,
+  committed: CommittedKnowledgeOp[] = []): ConsolidationDiagnostic[] {
   const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => k.revision.supports));
+  for (const op of committed) if (op.op === "archive") {
+    for (const id of store.getKnowledgeRevision(op.knowledgeId, op.commit)?.supports ?? []) cited.add(id);
+  }
   const skipped = new Set(batch.skipped.map(s => s.fact));
   const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));
   return uncited.length ? [{ kind: "uncited_facts", facts: uncited.map(f => `F${f.id}`) }] : [];

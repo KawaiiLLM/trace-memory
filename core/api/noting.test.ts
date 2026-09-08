@@ -182,14 +182,14 @@ test("empty output notings the range; compactions cannot acquire facts", async (
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const created = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
-    { op: "create", handle: "$e1", author: "fake", category: "mechanism", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
+    { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", category: "mechanism", scope: "project", text: memories.knowledge, supports: [1], createdAt: time },
   ] });
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
   expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   expect(calls[1]!.material.knowledge.map(g => g.text).join("\n")).toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
-    { op: "update", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
+    { op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] });
   resolve(success([])); const result = await pending;
   if (result.outcome !== "success") throw new Error("expected success");
@@ -277,7 +277,7 @@ test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constra
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
-    op: "create" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
+    op: "create", reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
   const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
   // A cap of one token holds nothing at all — not even the first-priority constraint (17b kept three)

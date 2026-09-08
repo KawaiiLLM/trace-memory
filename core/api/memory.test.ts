@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { TraceMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 let memory: TraceMemory;
 afterEach(() => memory?.close());
-const create = { op: "create", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] };
+const create = { op: "create", reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = { operations: [create], skipped: [] };
 function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult>) {
   memory = TraceMemory(":memory:", raw => agent(raw as ConsolidationAgentInput));
@@ -104,16 +104,16 @@ test("skipped validates its range, reason and shape atomically", async () => {
 test("manual memory reuses current revisions and refuses inactive or duplicate merge participants", () => {
   const write = setup(async () => success());
   write.execute({ operations: [create, create], skipped: [] });
-  const merge = { ...create, op: "merge", id: "K1", absorb: ["K2"] };
+  const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["K2"] };
   for (const absorb of [["K1"], ["K2", "K2"], ["K999"], []]) {
     expect(write.execute({ operations: [{ ...merge, absorb }], skipped: [] })).toContain("rejected:");
     expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
     expect(memory.store.currentCommit(2)[0]?.op).toBe("create");
   }
   write.execute({ operations: [merge], skipped: [] });
-  expect(write.execute({ operations: [{ ...create, op: "update", id: "K2" }], skipped: [] })).toContain("rejected:");
-  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1" }], skipped: [] })).committed[0].commit).toBe(4);
-  write.execute({ operations: [{ op: "archive", id: "K1", because: ["F1"] }], skipped: [] });
+  expect(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K2" }], skipped: [] })).toContain("rejected:");
+  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K1" }], skipped: [] })).committed[0].commit).toBe(4);
+  write.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
   expect(memory.trace("K1")).toContain("archive");
 });
@@ -122,7 +122,7 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
   const manual = setup(async input => {
     const final = { operations: [{ ...create, supports: ["F2"] }], skipped: [] };
     input.tools[3]!.execute(final);
-    manual.execute({ operations: [{ op: "archive", id: "K1", because: ["F2"] }], skipped: [] });
+    manual.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F2"] }], skipped: [] });
     input.reportRequest({ second: true }); input.tools[3]!.execute(final); return success();
   });
   manual.execute(batch);
@@ -137,7 +137,7 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
 test("inserting an archive before a retained create cannot erase its unanswered NEAR", async () => {
   const manual = setup(async input => {
     input.tools[3]!.execute(batch); input.reportRequest({ second: true });
-    input.tools[3]!.execute({ operations: [{ op: "archive", id: "K2", because: [] }, create], skipped: [] });
+    input.tools[3]!.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K2", supports: ["F1"] }, create], skipped: [] });
     return success();
   });
   manual.execute({ operations: [create, { ...create, text: "Unrelated subject" }], skipped: [] });
@@ -161,4 +161,85 @@ test("2026-09-07: an audit update that fails after the commit is reported, not t
   expect(result.problems).toEqual(["audit update failed after commit: Error: disk full"]);
   expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
   expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+});
+
+// ---- 21a 2026-09-08: one evidence list per knowledge commit, with a reason as its message ----
+
+test("21a 2026-09-08: create, update, merge and archive all carry nonempty supports and a reason", () => {
+  const write = setup(async () => success());
+  expect(JSON.parse(write.execute({ operations: [create, { ...create, text: "Commit the lockfile" }], skipped: [] })).results).toEqual(["ok", "ok"]);
+  const merge = { ...create, op: "merge", id: "K1", absorb: ["K2"], reason: "Two readings of one packaging rule." };
+  expect(JSON.parse(write.execute({ operations: [merge], skipped: [] })).results).toEqual(["ok"]);
+  expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).results).toEqual(["ok"]);
+  // The archive keeps its own evidence and inherits category and scope from the parent revision.
+  expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", text: "", supports: [1],
+    reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
+});
+
+test("21a 2026-09-08: an omitted, wrongly typed or empty reason or supports rejects the whole batch", () => {
+  const write = setup(async () => success());
+  expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
+  const archive = { op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." };
+  const drop = (operation: Record<string, unknown>, key: string) => { const copy = { ...operation }; delete copy[key]; return copy; };
+  for (const bad of [drop(create, "reason"), drop(create, "supports"), { ...create, reason: "" }, { ...create, reason: "  \n " },
+    { ...create, reason: 7 }, { ...create, reason: ["F1"] }, { ...create, supports: [] }, { ...create, supports: "F1" },
+    drop(archive, "reason"), drop(archive, "supports"), { ...archive, supports: [] }, { ...archive, reason: " " }]) {
+    const result = JSON.parse(write.execute({ operations: [{ ...create, text: "A second rule" }, bad], skipped: [] }));
+    expect(result.results[0]).toBe("ok"); expect(result.results[1]).toContain("rejected:");
+    expect(memory.store.getKnowledge(2)).toBeNull();
+    expect(memory.store.currentCommit(1)[0]?.op).toBe("create");
+  }
+});
+
+test("21a 2026-09-08: a commit-level because is rejected by name, also beside a valid reason", async () => {
+  setup(async input => {
+    const write = input.tools[3]!;
+    for (const bad of [{ ...create, because: ["F1"] }, { ...create, because: [] }, { ...create, because: "prompted by the user" },
+      { op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule.", because: ["F1"] }]) {
+      const result = JSON.parse(write.execute({ operations: [bad], skipped: [] }));
+      expect(result.results[0]).toContain("because: removed field");
+      expect(result.results[0]).toContain('supply "reason"');
+      expect(memory.store.getKnowledge(1)).toBeNull();
+    }
+    // The declined-fact protocol keeps its own textual because unchanged.
+    const declined = { operations: [], skipped: [{ fact: "F1", because: "Not durable on its own." }] };
+    expect(write.execute(declined)).toContain("feedback");
+    input.reportRequest({ second: true });
+    expect(JSON.parse(write.execute(declined)).results).toEqual(["ok"]);
+    return success();
+  });
+  expect((await integrate()).outcome).toBe("success");
+});
+
+test("21a 2026-09-08: one supports list holds both the text's grounds and the fact that prompted the change", () => {
+  const write = setup(async () => success());
+  memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
+    { category: "decision", actor: "user", text: "npm is banned outright", source: ["T1#user"], negate: [["F1", "strong"]] }] });
+  expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
+  const update = { ...create, op: "update", id: "K1", text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
+    reason: "The user withdrew the softer rule; F2 corrects F1." };
+  expect(JSON.parse(write.execute({ operations: [update], skipped: [] })).committed).toHaveLength(1);
+  // A negating fact among supports is evidence for this commit, not a contradiction, and the
+  // addresses in the reason add nothing: the stored evidence is exactly what supports listed.
+  expect(memory.store.currentCommit(1)[0]?.supports).toEqual([1, 2]);
+});
+
+test("21a 2026-09-08: reason shows in commit history, diffs and the run, never in the knowledge line or the numeric diagnostic", () => {
+  const write = setup(async () => success());
+  write.execute(batch);
+  const receipt = JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1", reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
+  expect(receipt.diagnostics).toEqual([]); // the numeric-evidence diagnostic reads text, never the reason
+  expect(memory.trace("K1")).toContain("reason: Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1@1..K1@2")).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
+  expect(memory.trace(`R${memory.store.listRuns(1).at(-1)!.id}`)).toContain("K1@2 (update: Re-checked 42 files; wording unchanged.)");
+  const automatic = memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" });
+  expect(automatic).toContain("Use pnpm"); expect(automatic).not.toContain("Re-checked 42 files");
+});
+
+test("21a 2026-09-08: a reason-only update on a stale base is rejected like any other commit", () => {
+  const write = setup(async () => success());
+  write.execute(batch);
+  write.execute({ operations: [{ ...create, op: "update", id: "K1", text: "Use pnpm, never npm", reason: "Sharpened wording." }], skipped: [] });
+  expect(write.execute({ operations: [{ ...create, op: "update", id: "K1@1", reason: "Classification cleanup only." }], skipped: [] })).toContain("rejected:");
+  expect(memory.store.currentCommit(1).map(r => r.id)).toEqual([2]);
 });

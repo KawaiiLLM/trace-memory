@@ -26,7 +26,7 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
   scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time) {
   const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "consolidation", createdAt: time },
-    operations: [{ op: "create", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
+    operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
     consolidated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
@@ -63,7 +63,7 @@ test("visibility includes global, own project and own session only, excluding in
   const outside = knowledge(foreign.id, noting(foreign.id, turn(foreign.id).id).facts[0]!.id), global = knowledge(foreign.id, f.id, "goal", "global");
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time },
-    operations: [{ op: "archive", knowledgeId: archived, baseCommit: archived, because: [f.id], createdAt: time }] });
+    operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived, baseCommit: archived, supports: [f.id], createdAt: time }] });
   for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
     expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}@`);
@@ -257,7 +257,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
   const edit = memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], because: [f.id], createdAt: time }] });
+    op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], createdAt: time }] });
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
@@ -275,7 +275,7 @@ test("literal search finds facts, historical knowledge and raw across projects",
   const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], because: [1], createdAt: time }] });
+    op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], createdAt: time }] });
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
@@ -427,9 +427,9 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
   const run = { sessionId: s.id, kind: "consolidation" as const, createdAt: time };
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "merge", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], because: [1], createdAt: time }] });
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", knowledgeId: b, baseCommit: 5, because: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "merge", reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: b, baseCommit: 5, supports: [1], createdAt: time }] });
   const hits = memory.search("pnpm", "knowledge");
   expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
   expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("note: archived");
@@ -441,7 +441,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
   const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], because: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], createdAt: time }] });
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;

@@ -131,7 +131,8 @@ export interface KnowledgeRevision {
   scope: KnowledgeScope;
   supports: number[];
   op: KnowledgeOp;
-  because: number[] | null;
+  /** The commit message: why this change was made. Never evidence, scope or applicability (ticket 21a). */
+  reason: string;
   runId: number | null;
   createdAt: string;
 }
@@ -295,7 +296,7 @@ export interface MemoryOperation {
   category?: KnowledgeCategory;
   scope?: KnowledgeScope;
   supports?: string[];
-  because: string[];
+  reason?: string;
 }
 export interface MemoryBatch {
   operations: MemoryOperation[];

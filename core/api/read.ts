@@ -158,7 +158,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, turns)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));
       const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path) &&
-        [...r.supports, ...(r.because ?? [])].some(id => factIds.has(id)))
+        r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
         "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map(knowledgeLine),

@@ -216,7 +216,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
-          op: "create",
+          op: "create", reason: "Initial admission of this conclusion.",
           handle: "$e1",
           author: "consolidation",
           text: "The project uses pnpm.",
@@ -236,14 +236,13 @@ describe("commitConsolidationRun: revision conflicts", () => {
       run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z" },
       operations: [
         {
-          op: "update",
+          op: "update", reason: "Substantive correction of the recorded conclusion.",
           knowledgeId,
           baseCommit: 1,
           text: "The project uses pnpm exclusively.",
           category: "constraint",
           scope: "project",
           supports: [factId],
-          because: [factId],
           createdAt: "2026-01-01T00:02:00Z",
         },
       ],
@@ -257,7 +256,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
       run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:03:00Z" },
       operations: [
         {
-          op: "create",
+          op: "create", reason: "Initial admission of this conclusion.",
           handle: "$e2",
           author: "consolidation",
           text: "A second, unrelated knowledge.",
@@ -267,14 +266,13 @@ describe("commitConsolidationRun: revision conflicts", () => {
           createdAt: "2026-01-01T00:03:00Z",
         },
         {
-          op: "update",
+          op: "update", reason: "Substantive correction of the recorded conclusion.",
           knowledgeId,
           baseCommit: 1, // stale: the knowledge is now at revision 2
           text: "A conflicting edit.",
           category: "constraint",
           scope: "project",
           supports: [factId],
-          because: [factId],
           createdAt: "2026-01-01T00:03:00Z",
         },
       ],
@@ -308,7 +306,7 @@ describe("project merge", () => {
       run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
         {
-          op: "create",
+          op: "create", reason: "Initial admission of this conclusion.",
           handle: "$e1",
           author: "consolidation",
           text: "The project uses pnpm.",
@@ -356,7 +354,7 @@ describe("visibility rule", () => {
       const r = store.commitConsolidationRun({
         run: { kind: "consolidation", sessionId, createdAt: "2026-01-01T00:01:00Z" },
         operations: [
-          { op: "create", handle: "$e1", author: "consolidation", text, category: "term", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
+          { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text, category: "term", scope, supports: [evidence.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
         ],
       });
       if (!r.ok) throw new Error("setup failed");
@@ -393,7 +391,7 @@ describe("marks and pending deliveries", () => {
     const consolidated = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
       operations: [
-        { op: "create", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
+        { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-01-01T00:01:00Z" },
       ],
     });
     if (!consolidated.ok) throw new Error("setup failed");
@@ -429,14 +427,14 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   const consolidationAt = "2026-01-01T00:01:00Z";
 
   test.each([
-    ["revision", "knowledge_revisions", "id, knowledge_id, parent_id, text, category, scope, supports, op, created_at"],
+    ["revision", "knowledge_revisions", "id, knowledge_id, parent_id, text, category, scope, supports, op, reason, created_at"],
     ["tool ordinal", "tool_calls", "turn_id, ordinal, name, status"],
     ["turn ordinal", "turns", "session_id, ordinal, kind, started_at"],
     ["revision mark", "knowledge_marks", "knowledge_id, commit_id, kind, created_at"],
   ])("database rejects a duplicate %s", (_name, table, columns) => {
     const { s, t, factId } = seed();
     const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
+      operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     store.appendToolCall({ turnId: t.id, name: "bash", status: "success" });
     store.addKnowledgeMark(made.committed[0]!.knowledgeId, 1, "verified", consolidationAt);
@@ -451,7 +449,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
   test("database enforces fact ownership, knowledge origin, link revisions and watermark references", () => {
     const { s, factId } = seed();
     const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
+      operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "term", scope: "session", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(() => store.db.exec("UPDATE facts SET run_id = NULL")).toThrow(/NOT NULL constraint failed/);
@@ -476,11 +474,11 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!recorded.ok) throw new Error("setup failed");
     const peerFact = recorded.facts[0]!.id;
     const made = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }] });
+      operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "term", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }] });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: peer.id, createdAt: consolidationAt },
-      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], because: [peerFact], createdAt: consolidationAt }] }).ok).toBe(true);
+      operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: id, baseCommit: 1, text: "private term", category: "term", scope: "session", supports: [peerFact], createdAt: consolidationAt }] }).ok).toBe(true);
     const target = store.declareProject(peer.id, "destination", "mark");
     const survivor = store.createProject({ name: "survivor", declaredBy: "mark" });
     store.mergeProject(target.id, survivor.id);
@@ -494,14 +492,14 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const { p, s, factId } = seed();
     const made = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: consolidationAt }],
+      operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "Use pnpm.", category: "constraint", scope: "global", supports: [factId], createdAt: consolidationAt }],
     });
     if (!made.ok) throw new Error("setup failed");
     const id = made.committed[0]!.knowledgeId;
     expect(store.getKnowledge(id)!.projectId).toBe(p.id);
     const edited = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "update", knowledgeId: id, baseCommit: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt }],
+      operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: id, baseCommit: 1, text: "Use pnpm here.", category: "constraint", scope: "project", supports: [factId], createdAt: consolidationAt }],
     });
     expect(edited.ok).toBe(true);
     store.close();
@@ -515,7 +513,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const mk = (text: string) =>
       store.commitConsolidationRun({
         run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-        operations: [{ op: "create", handle: "$e1", author: "consolidation", text, category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
+        operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text, category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
       });
     const a = mk("A");
     const b = mk("B");
@@ -524,13 +522,13 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const bId = b.committed[0]!.knowledgeId;
     const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
     const rejected = store.commitConsolidationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
+      { op: "merge", reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
     const merged = store.commitConsolidationRun({ run, operations: [
-      { op: "merge", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
+      { op: "merge", reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
     expect(merged.ok).toBe(true);
     expect(store.currentCommit(aId)[0]?.op).toBe("merge");
@@ -588,21 +586,21 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
     for (const [supports, problem] of [[ [999999], "F999999 does not exist" ], [ [], "must not be empty" ]] as const) {
       const r = store.commitConsolidationRun({ run, operations: [
-        { op: "create", handle: "$e1", author: "consolidation", text: "invalid", category: "term", scope: "project", supports: [...supports], createdAt: consolidationAt },
+        { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "invalid", category: "term", scope: "project", supports: [...supports], createdAt: consolidationAt },
       ] });
       expect(r.ok).toBe(false);
       if (r.ok) return;
       expect(r.problems.join(" ")).toContain(problem);
     }
     const r = store.commitConsolidationRun({ run, operations: [
-      { op: "create", handle: "$e3", author: "consolidation", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
+      { op: "create", reason: "Initial admission of this conclusion.", handle: "$e3", author: "consolidation", text: "fine", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const id = r.committed[0]!.knowledgeId;
     const archive = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
-      operations: [{ op: "archive", knowledgeId: id, baseCommit: 1, because: [999998], createdAt: consolidationAt }],
+      operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: id, baseCommit: 1, supports: [999998], createdAt: consolidationAt }],
     });
     expect(archive.ok).toBe(false);
     expect(store.currentCommit(id)[0]?.op).toBe("create");
@@ -615,8 +613,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     const r = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
       operations: [
-        { op: "create", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
-        { op: "update", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], because: [factId], createdAt: consolidationAt },
+        { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
+        { op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: 424242, baseCommit: 1, text: "gone", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
       ],
       consolidated: [factId],
     });
@@ -625,7 +623,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.listConsolidatedProjectFacts(store.getSession(s.id)!.projectId)).toEqual([]);
     const foreign = store.commitConsolidationRun({
       run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: consolidationAt },
-      operations: [{ op: "create", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
+      operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "consolidation", text: "ok", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt }],
       consolidated: [424242],
     });
     expect(foreign.ok).toBe(false);

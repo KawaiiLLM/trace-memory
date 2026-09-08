@@ -49,7 +49,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
       ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id),
         pendingDelivery: { sessionId, branch: run.branch ?? null } } : {}),
       finalizeResponse: ({ committed }) => {
-        if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path));
+        if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path, committed));
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };

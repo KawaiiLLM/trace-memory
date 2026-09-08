@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
   supports TEXT NOT NULL,
   op TEXT NOT NULL CHECK (op IN ('create','update','merge','archive')),
-  because TEXT,
+  reason TEXT NOT NULL,
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
   UNIQUE (knowledge_id, id)
@@ -339,12 +339,12 @@ export type KnowledgeOperationInput =
   | {
       op: "create";
       handle: string; // system-generated candidate label
-      because?: number[];
       author: string;
       text: string;
       category: KnowledgeCategory;
       scope: KnowledgeScope;
       supports: number[];
+      reason: string;
       createdAt: string;
     }
   | {
@@ -355,7 +355,7 @@ export type KnowledgeOperationInput =
       category: KnowledgeCategory;
       scope: KnowledgeScope;
       supports: number[];
-      because: number[];
+      reason: string;
       createdAt: string;
     }
   | {
@@ -367,14 +367,16 @@ export type KnowledgeOperationInput =
       category: KnowledgeCategory;
       scope: KnowledgeScope;
       supports: number[];
-      because: number[];
+      reason: string;
       createdAt: string;
     }
   | {
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
-      because: number[];
+      /** 21a: an archive carries its own evidence; text, category, scope come from the parent. */
+      supports: number[];
+      reason: string;
       createdAt: string;
     };
 
@@ -479,7 +481,7 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     scope: row.scope,
     supports: JSON.parse(row.supports),
     op: row.op,
-    because: row.because ? JSON.parse(row.because) : null,
+    reason: row.reason,
     runId: row.run_id,
     createdAt: row.created_at,
   };
@@ -1006,7 +1008,8 @@ export class Store {
     return origin != null && this.getSession(origin)?.projectId === this.getSession(sessionId)?.projectId;
   }
 
-  /** All citations from the reader's own session constrain applicability, including because. */
+  /** All citations from the reader's own session constrain applicability; since 21a that is one
+   * `supports` list per commit, archives included. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
     const turns = path ? this.pathTurns(path) : undefined, entries = path ? this.pathEntries(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
@@ -1056,7 +1059,7 @@ export class Store {
   }
 
   commitApplies(commit: KnowledgeRevision, path: KnowledgePath, turns = this.pathTurns(path), entries = this.pathEntries(path)): boolean {
-    return this.admits(commit, path.sessionId) && [...commit.supports, ...(commit.because ?? [])]
+    return this.admits(commit, path.sessionId) && commit.supports
       .every(id => this.factOnPath(this.getFact(id)!, path, turns, entries));
   }
 
@@ -1178,18 +1181,18 @@ export class Store {
     if (op.op === "merge" && !op.absorb.length) return { ok: false, reason: "merge: nothing to absorb" };
     const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
     const scope = op.op === "archive" ? prior!.scope : op.scope;
-    const supports = op.op === "archive" ? [] : op.supports;
-    if (op.op !== "archive" && !supports.length) return { ok: false, reason: "supports must not be empty" };
-    const citations = [...supports, ...(op.because ?? [])];
-    const bad = this.citationProblem(citations, scope, path ?? this.knowledgePath(sessionId));
+    const supports = op.supports;
+    if (!supports.length) return { ok: false, reason: "supports must not be empty" };
+    if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
+    const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
     const knowledgeId = op.op === "create" ? Number(this.db.prepare(
       "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
     ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
-    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, because, run_id, created_at)
+    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, reason, run_id, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
       op.op === "archive" ? prior!.category : op.category, scope, JSON.stringify(supports), op.op,
-      JSON.stringify(op.because ?? []), runId, op.createdAt);
+      op.reason, runId, op.createdAt);
     const commitId = Number(info.lastInsertRowid);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")

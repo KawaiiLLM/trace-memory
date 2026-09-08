@@ -127,7 +127,7 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs,
     await h.turn();
     const t = target(h.memory, { facts: 1, project: "Borrowed project", branch: "target-branch" });
     const f = h.memory.store.listSessionFacts(t.sessionId)[0]!;
-    const operations = [{ op: "create", text: "Target knowledge", category: "term", scope: "project", supports: [`F${f.id}`], because: [`F${f.id}`] }];
+    const operations = [{ op: "create", reason: "Initial admission of this conclusion.", text: "Target knowledge", category: "term", scope: "project", supports: [`F${f.id}`] }];
     h.provider(async c => phaseOf(c) === "noting" ? notingFact(c) : ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: { operations, skipped: [] } }] }));
     await tick(h);
     const runs = h.memory.store.listRuns(t.sessionId).filter(r => r.kind !== "manual");
