@@ -10,6 +10,12 @@ import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TI
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
+// 22d: what every candidate of every freeze pays before any material is added. The instructions and
+// the tool definitions are the same bytes for the life of the process, so they are estimated once
+// instead of once per re-freeze. Lazily, because `toolDefinitions` reaches this module through an
+// import cycle and is not yet initialized while this module's body runs.
+let fixed: { instructions: number; tools: number } | undefined;
+const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens(JSON.stringify(toolDefinitions)) });
 
 export interface NotingInput extends TaskOptions {
   sessionId: number;
@@ -77,17 +83,45 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const pendingAll = store.pendingEntries(session.id, input.branch, input.headTurnId);
   // A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
   const pending = input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!);
+  const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
+  // 22d, hotspot family 6: the instructions, the tool definitions and — for a fork — the inherited
+  // prefix are unavoidable; no batch, however small, is priced below them. An allowance under that
+  // floor is rejected here, before the first candidate view is rendered, instead of after the batch
+  // has been re-frozen once per entry down to nothing. This is a floor and not the guard: the hard
+  // budget check inside the loop below is unchanged and still decides every freeze that passes here
+  // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
+  const { instructions, tools } = fixedCost();
+  const mandatory = Math.max(instructions + tools,
+    (input.effectiveMode ?? mode) === "fork" ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
+  if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
+    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const entries: typeof pending = [];
   const views: string[] = [];
+  // 22d: an entry's view is immutable within one freeze — the same stored entry, the same profile,
+  // the same result extractor — so selection renders it once and every re-freeze below reuses it.
+  const rendered = new Map<number, ReturnType<typeof renderEntry>>();
   for (const entry of pending) {
-    const view = renderEntry(entry, config.render, resultText).content;
-    if (tokens([...views, view].join(BLOCK)) > config.noting.batchTokens) break;
-    entries.push(entry); views.push(view);
+    const view = renderEntry(entry, config.render, resultText);
+    if (tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
+    entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
   }
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
-  const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
+  // The same fact renders the same line for the whole freeze, and one Turn's tool calls are the same
+  // rows on every candidate: both are read and rendered once here rather than inside the loop.
+  const lines = new Map<number, string>();
+  const factLine = (fact: Fact) => {
+    let line = lines.get(fact.id);
+    if (line === undefined) lines.set(fact.id, line = renderFact(fact, store.listFactRelations(fact.id)));
+    return line;
+  };
+  const calls = new Map<number, ReturnType<Store["listToolCalls"]>>();
+  const toolCalls = (turnId: number) => {
+    let list = calls.get(turnId);
+    if (list === undefined) calls.set(turnId, list = store.listToolCalls(turnId));
+    return list;
+  };
   let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
@@ -96,19 +130,19 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       const ordinals = new Set(selected.flatMap(e => e.calls.map(c => c.ordinal)));
       return { turn: { ...turn, userPrompt: selected.find(e => e.role === "user")?.text ?? null,
         assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
-        calls: store.listToolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
+        calls: toolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(store, frozen, config, resultText, history);
+    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, history);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
     // frozen task — labels, titles, the range and receipts included — and never a message the host
     // composed. Popping the newest entry re-freezes the material, the write eligibility and the audit
     // membership together, so the reduced task and its progress range can never disagree.
-    const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
+    const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
+    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited);
     // Capacity is priced by the mode that will actually run (review 2026-09-08): a requested fork the
     // host resolves to subagent sends fresh material, not the inherited increment.
     const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
@@ -125,17 +159,20 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 
-function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, resultText: ResultExtractor, history = Infinity) {
+/** The material of one candidate batch. The entry views and the fact lines are supplied by the
+ * freeze, which renders each of them once for the whole negotiation (22d): re-freezing a smaller
+ * batch changes which of them are used, never what any one of them says. */
+function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, history = Infinity) {
   const { sessionId, entries, turns, knowledge, facts } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
-  const raw = entries.map(entry => renderEntry(entry, config.render, resultText));
+  const raw = entries.map(view);
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
   // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
   // — the titles and the range against the episodic budget, and the knowledge block against its own.
   const budgeted = budgetMaterial({ knowledge, current: raw.map((r) => r.content).join(BLOCK),
-    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine: (f) => renderFact(f, store.listFactRelations(f.id)), history,
+    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, history,
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;

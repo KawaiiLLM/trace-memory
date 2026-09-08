@@ -8,11 +8,13 @@
 //   npm run perf -- --rebuild    regenerate the cached fixture databases
 //   npm run perf -- --repeats=3  fewer samples per scenario (the first is always the cold one)
 
-import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generate, nativeAncestry, countSourceReads, countGraphResolutions, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, renderEntry, tokens } from "../../src/core/api/index.ts";
+import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
+import { TraceMemory, renderEntry, toolDefinitions, tokens } from "../../src/core/api/index.ts";
+import { freezeNoting } from "../../src/core/noting/index.ts";
+import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
 
@@ -232,6 +234,84 @@ async function hostReconciliation(size: string, entries: number): Promise<Sample
   return samples;
 }
 
+/** Ticket 22d, hotspot family 6: the Noting and Consolidation freezes under a model allowance. The
+ * copy has its Noting progress removed, so the whole history is pending and a freeze selects a real
+ * batch. Three allowances: none (the natural freeze), one below the fixed instruction and tool cost
+ * (impossible — no candidate material can ever bring the price under it), and one just under the
+ * natural size (feasible, but the optional history has to give way, which is the re-freeze loop).
+ * Nothing here runs a task, so no provider request is possible. */
+async function capacityScenarios(fixture: Fixture, size: string, main: ReturnType<typeof TraceMemory>): Promise<Sample[]> {
+  const copy = join(cache, `${size}-capacity.db`);
+  rmSync(copy, { force: true });
+  copyFileSync(fixture.dbPath, copy);
+  const prepared = new Store(copy);
+  prepared.db.prepare("DELETE FROM noted_entries").run();
+  prepared.close();
+  const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
+  const store = memory.store, samples: Sample[] = [];
+  const instructions = (file: string) => tokens(readFileSync(new URL(`../../src/core/prompts/${file}`, import.meta.url), "utf8"));
+  const toolCost = tokens(JSON.stringify(toolDefinitions));
+  const rejected = (name: string, note: string, run: () => unknown) => samples.push(measure(name, () => {
+    try { run(); } catch (error) { if (/capacity/.test(String(error))) return; throw error; }
+    throw new Error(`${name}: an impossible allowance must be rejected`);
+  }, note));
+  try {
+    const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId, mode: "subagent" as const };
+    const noting = instructions("noting.md");
+    const natural = freezeNoting(store, target, memory.config, memory.resultText);
+    const naturalTokens = noting + toolCost + tokens(natural.prepared!.text.fresh);
+    samples.push(measure("noting freeze (no allowance)", () => freezeNoting(store, target, memory.config, memory.resultText),
+      `${natural.entries.length} of ${store.pendingEntries(fixture.sessionId, fixture.branch, fixture.headTurnId).length} pending entries selected, ${naturalTokens} tokens priced`));
+    rejected("noting freeze (impossible 2,000-token allowance)",
+      `instructions ${noting} + tools ${toolCost} = ${noting + toolCost} mandatory tokens, allowance 2,000`,
+      () => freezeNoting(store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, memory.config, memory.resultText));
+    const tight = { ...target, capacity: { inputTokens: naturalTokens - 500, prefixTokens: 0 } };
+    const reduced = freezeNoting(store, tight, memory.config, memory.resultText);
+    samples.push(measure("noting freeze (allowance 500 under the natural size)", () => freezeNoting(store, tight, memory.config, memory.resultText),
+      `${reduced.entries.length} entries, ${reduced.prepared!.material.facts.length} historical facts kept of ${natural.prepared!.material.facts.length}`));
+
+    // The same rejection on the fixture as it stands — an ordinary session with a short pending tail,
+    // which is the workload the 100 ms target is stated against. The backlog copy above is the worst
+    // case: its own floor is the pending read, which loads 1,996 whole Raw payloads before the freeze
+    // can know it has anything to do at all.
+    rejected("noting freeze (impossible allowance, ordinary pending tail)",
+      `${fixture.pendingEntryCount} pending entries on the untouched fixture, allowance 2,000`,
+      () => freezeNoting(main.store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, main.config, main.resultText));
+
+    const consolidation = instructions("consolidation.md");
+    const batch = store.consolidationBatch(fixture.sessionId, fixture.branch, fixture.headTurnId).length;
+    samples.push(measure("consolidation freeze (no allowance)", () => freezeConsolidation(store, target, memory.config), `${batch} pending facts`));
+    rejected("consolidation freeze (impossible 2,000-token allowance)",
+      `instructions ${consolidation} + tools ${toolCost} = ${consolidation + toolCost} mandatory tokens, allowance 2,000`,
+      () => freezeConsolidation(store, { ...target, capacity: { inputTokens: 2_000, prefixTokens: 0 } }, memory.config));
+  } finally { memory.close(); rmSync(copy, { force: true }); }
+  return samples;
+}
+
+/** Ticket 22d, hotspot family 7: the session spend over about 200 runs whose audit bodies are large
+ * and whose usage records are small. "chars" is the request/response text the read pulls into
+ * JavaScript; the totals are compared against what the generator wrote, so a faster aggregation that
+ * loses an observation, or invents one for an unknown usage, fails here rather than looking fast. */
+async function spendScenarios(fixture: Fixture, size: string): Promise<Sample[]> {
+  const copy = join(cache, `${size}-spend.db`);
+  rmSync(copy, { force: true });
+  copyFileSync(fixture.dbPath, copy);
+  const written = runAudit(copy, { sessionId: fixture.sessionId, branch: fixture.branch });
+  const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
+  const bodies = countRunBodies();
+  try {
+    const totals = memory.spend(fixture.sessionId);
+    if (totals.input < written.input || totals.output < written.output || totals.cacheRead < written.cacheRead)
+      throw new Error(`spend lost an observation: ${JSON.stringify(totals)} against ${JSON.stringify(written)}`);
+    bodies.reset();
+    memory.spend(fixture.sessionId);
+    const chars = bodies.chars();
+    return [measure(`spend (${written.runs} large-audit runs)`, () => memory.spend(fixture.sessionId),
+      `${(chars / 1e6).toFixed(1)} M audit characters loaded, ${(written.chars / 1e6).toFixed(1)} M stored over ${written.runs} runs ` +
+      `(${written.observed} observed, ${written.unknown} unknown usage, ${written.malformed} non-JSON), $${totals.cost.toFixed(4)}`)];
+  } finally { bodies.restore(); memory.close(); rmSync(copy, { force: true }); }
+}
+
 /** Ticket 22c, hotspot family 5: knowledge search over 100, 500 and 1,000 matching revisions, with a
  * first-page cap of one. The corpus is written on a copy of the long-history fixture, so applicability
  * is decided against its real facts and Turns; it is cached like the fixture itself (`--rebuild`
@@ -338,6 +418,8 @@ async function runSize(size: string) {
     measure("trace assembled (heavy Turn, no full)", () => memory.trace(`T${fixture.heavyTurnId}`),
       `T${fixture.heavyTurnId}, ${store.listSourceEntries(fixture.sessionId, fixture.heavyTurnId).length} entries`),
     ...await searchScenarios(fixture, size),
+    ...await capacityScenarios(fixture, size, memory),
+    ...await spendScenarios(fixture, size),
     ...await disabledHost(fixture, size),
     ...await triggerBacklog(fixture, size),
     ...await hostReconciliation(size, options.entries),

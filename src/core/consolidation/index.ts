@@ -14,6 +14,11 @@ const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.u
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
+// 22d, as in Noting: the instructions and the tool definitions are the same bytes for the life of the
+// process, so they are estimated once instead of once per re-freeze. Lazily, because `toolDefinitions`
+// reaches this module through an import cycle and is not yet initialized while this module body runs.
+let fixed: { instructions: number; tools: number } | undefined;
+const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens(JSON.stringify(toolDefinitions)) });
 
 export type { ConsolidationDiagnostic } from "./commit.ts";
 
@@ -66,6 +71,20 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // A manual catchup (18b) freezes an explicit fact-id set: the pending facts at freeze time plus
   // whatever the frozen Noting batches went on to produce. Later unrelated facts stay outside it.
   const applicable = input.boundary?.factIds === undefined ? rangeFactsAll : rangeFactsAll.filter(f => input.boundary!.factIds!.includes(f.id));
+  const capacity = input.capacity;
+  if (capacity && (!Number.isSafeInteger(capacity.inputTokens) || capacity.inputTokens < 0 ||
+    !Number.isSafeInteger(capacity.prefixTokens) || capacity.prefixTokens < 0)) throw new Error("Invalid Consolidation capacity: expected nonnegative safe integers");
+  const mode = input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "fork");
+  // 22d, hotspot family 6, the twin of the Noting preflight: the instructions, the tool definitions
+  // and — for a fork — the inherited prefix are unavoidable, so no batch is priced below them. An
+  // allowance under that floor is rejected before a single fact line is rendered, instead of after
+  // the batch has been re-frozen once per fact down to nothing. A floor, not the guard: the hard
+  // budget check inside the loop below is unchanged and still decides every freeze that passes here.
+  const { instructions, tools } = fixedCost();
+  const mandatory = Math.max(instructions + tools,
+    (input.effectiveMode ?? mode) === "fork" ? (capacity?.prefixTokens ?? 0) + instructions : 0);
+  if (capacity && applicable.length && mandatory > capacity.inputTokens)
+    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit the episodic budget or the model context: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -83,9 +102,6 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     rangeFacts.push(fact); selected.push(line);
   }
   if (applicable.length && !rangeFacts.length) throw new Error("Consolidation capacity: oldest fact exceeds consolidation.batchTokens; left pending");
-  const capacity = input.capacity;
-  if (capacity && (!Number.isSafeInteger(capacity.inputTokens) || capacity.inputTokens < 0 ||
-    !Number.isSafeInteger(capacity.prefixTokens) || capacity.prefixTokens < 0)) throw new Error("Invalid Consolidation capacity: expected nonnegative safe integers");
   // The negated-evidence cues are mandatory material and grow with the selected facts, so they are
   // derived per candidate batch: a smaller batch has fewer cues.
   const remindersFor = (batch: Fact[]): string[] => {
@@ -103,7 +119,6 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     }
     return reminders;
   };
-  const mode = input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "fork");
   const context = store.listConsolidatedProjectFacts(session.projectId);
   // Ticket 20 "Complete task evidence" and "Capacity negotiation" (review 2026-09-08): the selected
   // facts, their mandatory cues and the framing must fit the episodic budget, and the rendered text
@@ -116,8 +131,8 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
       context: context.filter((f) => !rangeFacts.some((r) => r.id === f.id)), knowledge, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
     const prepared = consolidationMaterial(frozen, config, history);
-    const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
+    const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
+    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited);
     // Priced by the mode that will actually run (review 2026-09-08), not by the requested one.
     const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
