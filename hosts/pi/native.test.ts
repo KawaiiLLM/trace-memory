@@ -169,7 +169,7 @@ test("19a 2026-09-08: a provider error after the commit keeps the commit and rec
 });
 
 test("19a 2026-09-08: Consolidation's two submissions and its review round run natively", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false });
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1, "consolidation.subagentModeDefault": false });
   try {
     f.script(body => !worker(body, "Consolidation") ? say("好的。")
       : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
@@ -339,7 +339,7 @@ test("19b 2026-09-08: the fresh child activates no inherited extension", async (
 });
 
 test("19b 2026-09-08: Consolidation's two submissions and its review round run in the fresh child", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1 });
   try {
     f.script(body => !worker(body, "Consolidation") ? say("好的。")
       : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { tokens, budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
-import { injectionText, compactText, type SharedMaterial } from "../render/material.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
+import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
@@ -95,16 +95,21 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
       if (!store.enabled(sessionId)) return "";
-      const block = knowledge(sessionId, store.knowledgePath(sessionId, branch, headTurnId).headTurnId, branch);
+      const path = store.knowledgePath(sessionId, branch, headTurnId);
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
       const raw = pending.map(e => renderEntry(e, config.render));
-      const rawText = raw.map((r) => r.content).join("\n\n");
-      const facts = store.listSessionFacts(sessionId);
-      const episodic = budgetFacts(rawText, facts, (f) => factLine(f.id), config.render.episodicBlockTokens);
-      // The same four shared parts a task freezes; compact's own ruled order is in core/render/material.ts.
-      return compactText({ ...block, facts: episodic.recent, entries: pending.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
-        receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
+      // The same four shared parts a task freezes, budgeted by the same function against the same
+      // ceilings (ticket 20): compact reuses Noting's effective Raw ceiling rather than a second knob,
+      // and keeps every pending entry — a Raw block over that ceiling is receipted, not silently cut.
+      // (Escalating to a more lossy view or to native compaction is 20c.)
+      const budgeted = budgetMaterial({ knowledge: store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch),
+        knowledgeLine, current: raw.map((r) => r.content).join(BLOCK), framing: [xmlBlock("episodic", ""), FACTS_TITLE, RAW_TITLE],
+        facts: store.listSessionFacts(sessionId), factLine: (f) => factLine(f.id),
+        caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
+      return compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
+        entries: pending.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
+        receipts: [...raw.flatMap((r) => r.receipts), ...budgeted.receipts] });
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";

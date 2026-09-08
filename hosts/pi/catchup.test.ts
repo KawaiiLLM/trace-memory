@@ -29,7 +29,9 @@ function hold(h: ReturnType<typeof host>) {
 }
 
 test("17c 2026-09-08: two executor slots prefer own work over several closed tails and never fan out", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 20b: Consolidation is due on rendered fact tokens, so this scheduling test states its own trigger
+  // instead of relying on 17b's fifty-fact count.
+  const h = host({ "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
   try {
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory, { facts: 1 }));

@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../test/source-fixture.ts";
+import { renderKnowledge, tokens } from "../render/index.ts";
+import { knowledgeBlock } from "../render/material.ts";
 import fixture from "../../test/fixtures/noting/turns.json";
 import memories from "../../test/fixtures/noting/facts.json";
 
@@ -266,20 +268,38 @@ test("stdout keeps head and tail; stderr keeps tail; reports keep head and tail"
   expect(memory.trace(`T${t.id}`, { tool: 3, full: true })).toContain("hidden match");
 });
 
-test("knowledge budgets keep protected categories and omit whole later categories", async () => {
+// Ticket 20 "Knowledge hard cap" (user confirmation 2026-09-08), superseding 17b's soft cap: the
+// exemption that let constraints, open items and disputes exceed the knowledge budget is gone.
+// Priority and the deterministic order survive it; retained items stay whole; omitted ones stay
+// traceable; and the block, its category tags and its receipts are all charged to the same cap.
+test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constraints keep first priority, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
+  const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
+  // A cap of one token holds nothing at all: not even the first-priority constraint (17b kept three).
   memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
   const second = turn(first.id, 1); script.push(async () => success([])); await noting(second.id);
-  const input = calls[1]!.text.fresh;
-  for (const category of categories.slice(0, 3)) expect(input).toContain(`[${category}/project]`);
-  for (const category of categories.slice(3)) {
-    expect(input).not.toContain(`[${category}/project]`);
-    expect(calls[1]!.material.receipts.join("\n")).toContain(`omitted 1 ${category} knowledge; expand: K`);
-  }
+  expect(calls[1]!.material.knowledge).toEqual([]);
+  expect(calls[1]!.text.fresh).not.toContain("<knowledge>");
+  for (const category of categories) expect(calls[1]!.material.receipts.join("\n")).toContain(`omitted 1 ${category} knowledge; expand: K`);
+  for (const [i] of categories.entries()) expect(memory.trace(`K${i + 1}`)).toContain(`[K${i + 1}@`); // omitted, not deleted
+  // A binding cap keeps a whole prefix of the priority order, and the block, its category tags and its
+  // own omission receipts all stay inside it — the receipts are charged, not free.
+  const cap = 200;
+  memory.close(); open({ render: { knowledgeBlockTokens: cap } });
+  const third = turn(second.id, 1); script.push(async () => success([])); await noting(third.id);
+  const material = calls[2]!.material;
+  const kept = material.knowledge.map(g => g.category);
+  expect(kept.length).toBeGreaterThan(0);
+  expect(kept.length).toBeLessThan(categories.length); // the cap really binds
+  expect(kept).toEqual(categories.slice(0, kept.length)); // category priority, deterministically
+  expect(material.knowledge.map(g => g.text)).toEqual(kept.map((_, i) => item(i + 1))); // whole items, never rewritten
+  const receipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
+  expect(receipts).toHaveLength(categories.length - kept.length);
+  expect(tokens(knowledgeBlock(material)) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);
 });
 
 test("recent facts are ordered by timestamp freshness rather than insertion id", async () => {
@@ -298,4 +318,20 @@ test("reopening the database preserves the run, facts, watermark and delivery", 
   expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
+});
+
+/** Ticket 20 "Primary entry bound" and acceptance scenario 8. The primary renderer either returns an
+ * entry inside its configured budget or throws: it never returns an oversized view, and an entry
+ * whose mandatory labels and omission markers cannot fit leaves Noting pending with no progress. */
+test("20b 2026-09-08 scenario 8: an entry whose mandatory metadata cannot fit is a capacity failure, never an oversized success", async () => {
+  const first = turn();
+  const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content);
+  for (const view of views) expect(tokens(view)).toBeLessThanOrEqual(memory.config.render.entryTokens); // bounded, labels included
+  const before = memory.pendingEntries(sessionId, "main", first.id);
+  memory.close(); open({ render: { entryTokens: 4, toolCallTokens: 4 } });
+  script.push(async () => success([]));
+  await expect(noting(first.id)).rejects.toThrow("entry view capacity cannot hold source labels and omission markers");
+  expect(calls).toEqual([]);
+  expect(memory.store.listRuns(sessionId)).toEqual([]);
+  expect(memory.pendingEntries(sessionId, "main", first.id)).toEqual(before);
 });

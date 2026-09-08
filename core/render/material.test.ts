@@ -7,6 +7,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, renderEntry, tokens, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import type { Fact } from "../model/index.ts";
+import { charge } from "../render/index.ts";
+import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, RAW_TITLE } from "./material.ts";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
 const time = "2026-09-08T00:00:00Z";
@@ -115,8 +118,12 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
-  expect(noting.material.receipts).toEqual([`raw overage: ${tokens(raw) - 1} tokens; all unrecorded raw kept`,
-    "omitted 1 older facts; expand: F1"]);
+  const [overage, omitted] = noting.material.receipts;
+  // 20b: the overage counts the whole mandatory episodic block — the selected Raw plus the titles, the
+  // range line and the receipts themselves — not the Raw alone.
+  expect(overage).toMatch(/^raw overage: \d+ tokens; all unrecorded raw kept$/);
+  expect(Number(/\d+/.exec(overage!)![0])).toBeGreaterThan(tokens(raw) - 1);
+  expect(omitted).toBe("omitted 1 older facts; expand: F1");
   expect(noting.text.fresh.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${noting.material.receipts.join("\n")}`)).toBe(true);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
@@ -124,4 +131,76 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
   expect(consolidation.material.receipts.length).toBeGreaterThan(0);
   expect(consolidation.text.fresh.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${consolidation.material.receipts.join("\n")}`)).toBe(true);
+});
+
+// ---------------------------------------------------------------- 20b: the shared material budgets
+
+/** Ticket 20 acceptance scenario 3, at the one function that budgets the shared material. The caps
+ * are exercised at their exact boundaries, with the block titles, the range line, the joining
+ * separators and the omission receipts all charged — none of them may overflow a cap in silence. */
+test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with labels, separators and receipts charged", () => {
+  const view = "[Source entry id: T1#user]\n" + "word ".repeat(40);
+  const line = "[F9] 2026-09-08T00:00:00Z [observation/user] " + "word ".repeat(20) + "\n  source: T1#user";
+  const range = { from: "S1/T1", to: "S1/T2" }, framing = [FACTS_TITLE, RAW_TITLE];
+  const facts = [{ id: 9 } as Fact];
+  const budget = (caps: { episodic: number; current?: number }) => budgetMaterial({ knowledge: [], current: view,
+    framing, range, facts, factLine: () => line, caps: { knowledge: 1_000, current: caps.current ?? 1_000, episodic: caps.episodic } });
+  // The inner ceiling counts the current material with its own source label: exactly at it is silent,
+  // one token below it is a receipt, never a cut view.
+  expect(budget({ episodic: 5_000, current: tokens(view) }).receipts).toEqual([]);
+  expect(budget({ episodic: 5_000, current: tokens(view) - 1 }).receipts)
+    .toEqual([`raw ceiling: 1 tokens over ${tokens(view) - 1}; all unrecorded raw kept`]);
+  // The enclosing budget: the smallest episodic budget that keeps the one historical fact is strictly
+  // larger than the mandatory material plus that fact's own line, because the receipt that would
+  // report its omission is reserved as well.
+  const mandatory = tokens(view) + charge([...framing, `Range: ${range.from}..${range.to}`]);
+  const smallest = [...Array(600).keys()].find(episodic => budget({ episodic }).facts.length === 1)!;
+  expect(smallest).toBe(mandatory + charge([line])); // exactly at the budget, the fact is kept
+  expect(budget({ episodic: smallest }).facts).toEqual([line]);
+  expect(budget({ episodic: smallest }).receipts).toEqual([]);
+  expect(budget({ episodic: smallest - 1 }).facts).toEqual([]); // one token under, it is omitted
+  expect(budget({ episodic: smallest - 1 }).receipts).toContain("omitted 1 older facts; expand: F9");
+  // Whatever the budget, everything emitted fits inside it — the retained facts and the receipts that
+  // report the omitted ones. Only mandatory evidence may exceed it, and then it is receipted.
+  const three = (episodic: number) => budgetMaterial({ knowledge: [], current: view, framing, range,
+    facts: [9, 10, 11].map(id => ({ id }) as Fact), factLine: () => line, caps: { knowledge: 1_000, current: 1_000, episodic } });
+  for (let episodic = mandatory; episodic < mandatory + 4 * tokens(line); episodic++) {
+    const budgeted = three(episodic);
+    const emitted = mandatory + charge(budgeted.facts) + charge(budgeted.receipts);
+    const overflowed = budgeted.receipts.some(r => r.startsWith("raw overage:"));
+    expect([episodic, emitted <= episodic || overflowed]).toEqual([episodic, true]);
+  }
+  // Mandatory evidence is never dropped for the budget; the excess is receipted instead.
+  const tight = budget({ episodic: 1 });
+  expect(tight.facts).toEqual([]);
+  expect(tight.receipts[0]).toMatch(/^raw overage: \d+ tokens; all unrecorded raw kept$/);
+  // A large omitted list stays a bounded receipt rather than an enumeration that defeats the cap.
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 1 }) as Fact);
+  const bounded = budgetMaterial({ knowledge: [], current: view, framing, range, facts: many, factLine: () => line,
+    caps: { knowledge: 1_000, current: 1_000, episodic: mandatory + 60 } });
+  expect(bounded.receipts).toEqual(["omitted 200 older facts; expand: F1, F2, F3, F4, F5, F6, F7, F8 and 192 more up to F200"]);
+  expect(tokens(bounded.receipts.join("\n"))).toBeLessThan(60);
+});
+
+/** The same scenario end to end, at the ruled defaults: a task with more knowledge, more facts and
+ * more Raw than any budget holds still sends a knowledge block within 10,000, a Raw block within
+ * 10,000, and fresh material within the 30,000 total. */
+test("20b 2026-09-08 scenario 3: at the default limits no consumer's block overflows its cap or the 30,000-token total", async () => {
+  const { s, t } = seeded();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  for (let i = 0; i < 12; i++) tools.find(tool => tool.name === "note")!.execute({ facts: Array.from({ length: 20 }, (_, k) =>
+    ({ category: "observation", actor: "user", text: `claim ${i}.${k} ` + "word ".repeat(40), source: [`T${t.id}#user`] })) });
+  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create",
+    text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "mechanism", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] });
+  for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
+    role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const material = calls.at(-1)!.material as NotingAgentInput["material"];
+  const receipts = (kind: "knowledge" | "facts") => material.receipts.filter(r => r.includes(" knowledge; expand: ") === (kind === "knowledge"));
+  expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(true); // the caps really bind
+  expect(tokens(knowledgeBlockOf(material)) + charge(receipts("knowledge"))).toBeLessThanOrEqual(memory.config.render.knowledgeBlockTokens);
+  expect(tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.noting.batchTokens);
+  expect(charge([FACTS_TITLE, RAW_TITLE, `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, ...material.facts, ...receipts("facts")])
+    + tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens);
+  expect(tokens(calls.at(-1)!.text.fresh)).toBeLessThanOrEqual(30_000);
 });

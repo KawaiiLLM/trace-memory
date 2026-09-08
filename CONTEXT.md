@@ -10,8 +10,8 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Turn** — one user message and everything it triggered until the next user message. A compaction is also recorded as a turn, with no facts.
 - **Fact** — one claim extracted from a turn that can be overturned on its own. Six categories: question, proposal, decision, observation, interpretation, event. Carries an actor (user or agent), a source address, optional verbatim quote, and relations.
 - **Knowledge** — one durable, decontextualized conclusion consolidated from facts. Seven categories: constraint, open, dispute, goal, mechanism, term, reference. Carries a scope, its supporting facts, a revision log.
-- **Noting** — the phase in which the Noter turns raw into facts. Each eligible entry completion checks for 10,000 pending compressed-view tokens; a run processes the oldest whole-entry prefix within 50,000 tokens and the model context capacity. A partly processed Turn may still have pending entries.
-- **Consolidation** — the phase in which the Consolidator turns facts into knowledge and revises existing knowledge. Each eligible entry completion checks for fifty applicable unconsolidated committed facts, including facts of partly recorded Turns. Worker completion, compaction, shutdown and tree switching launch neither phase.
+- **Noting** — the phase in which the Noter turns raw into facts. Each eligible entry completion checks for 10,000 pending compressed-view tokens; a run processes the oldest whole-entry prefix within 10,000 tokens and the model context capacity. A partly processed Turn may still have pending entries.
+- **Consolidation** — the phase in which the Consolidator turns facts into knowledge and revises existing knowledge. Each eligible entry completion checks for 5,000 rendered tokens of applicable unconsolidated committed facts, including facts of partly recorded Turns; a run takes the oldest-first whole-fact prefix within 10,000 rendered tokens. Worker completion, compaction, shutdown and tree switching launch neither phase.
 
 ## Relations (annotations, never derived state)
 

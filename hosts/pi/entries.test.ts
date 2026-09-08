@@ -126,14 +126,16 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
     expect(carry.split("Pending raw:\n")[1]!.slice(0, -"\n</branch_carry>".length)).toBe(expected.join("\n"));
     expect(h.requests).toEqual([]); // summary preparation itself is a read; the tree-switch trigger belongs to 17b.
     let subagent!: string;
+    // 20b: the batch ceiling is 10,000 tokens, and this test is about bytes, not batching — every
+    // consumer here is given room for the whole pending set so the four renderings are comparable.
     const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
       subagent = (raw as NotingAgentInput).text.fresh;
       return { outcome: "failure", output: "leave entries pending", request: {} };
-    });
+    }, { noting: { batchTokens: 100_000 } });
     await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); noter.close();
     expect(rawOf(subagent)).toBe(expected.join("\n\n"));
     // A separate host with the normal trigger reattaches the same native fixture; attach itself is quiet.
-    const runner = host({ "noting.triggerTokens": 10000 });
+    const runner = host({ "noting.triggerTokens": 10000, "noting.batchTokens": 100000 });
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");

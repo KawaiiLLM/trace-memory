@@ -22,12 +22,14 @@ const settle = async (h: ReturnType<typeof host>, rounds = 40) => {
   let last = -1;
   for (let i = 0; i < rounds && last !== h.requests.length; i++) { last = h.requests.length; await h.drain(); }
 };
-// A backlog spanning several 50,000-token Noting batches (same construction as batching.test.ts).
+// A backlog spanning several Noting batches (same construction as batching.test.ts), sized for 20b's
+// 10,000-token batch ceiling: each batch holds a user entry and a few replies, as the drain's own
+// oldest-first prefix selects them.
 function backlog(h: ReturnType<typeof host>) {
   h.persist({ role: "user", content: "start", timestamp: 1 });
   for (let i = 0; i < 12; i++) {
     if (i) h.persist({ role: "user", content: `turn ${i}`, timestamp: 1 });
-    h.persist(reply(`entry ${i} ` + "word ".repeat(15000)));
+    h.persist(reply(`entry ${i} ` + "word ".repeat(3000)));
   }
 }
 

@@ -174,7 +174,7 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
 });
 
 test("consolidation waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
-  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, consolidationModel: "fake/Consolidator" });
+  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output : notingFact(c));
   await h.turn();
@@ -229,7 +229,7 @@ test("provider failures retain captured request and do not advance a watermark",
 });
 
 test("consolidation in-flight duplicates cannot erase the candidate continuation", async () => {
-  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const output = consolidationReply();
   let release!: (value: Reply) => void;
@@ -469,7 +469,7 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
 });
 
 test("an consolidation call carries no tools; a noting tool call for a bad address returns an error result and the noting still completes", async () => {
-  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
@@ -558,7 +558,7 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
 });
 
 test("18:39: two memory submissions in one reply cannot skip the checklist; the second commits only after the feedback was sent", async () => {
-  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const double = { ...consolidationReply(), content: [consolidationReply().content[0]!, { ...consolidationReply().content[0]!, id: "memory-2" }] } as Reply;
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? consolidationReply() : double);
@@ -720,7 +720,7 @@ test("the footer indicator follows activity: accent while noting runs, error aft
 });
 
 test("a fork sees consolidation progress exactly when every fact of that consolidation lies on its path", async () => {
-  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.maxToolRounds": 4 });
+  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 4 });
   // The fake Consolidator submits once per round and stops after any rejection instead of resubmitting forever.
   h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? notingFact(c)
     : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : consolidationReply());
@@ -744,7 +744,7 @@ test("a fork sees consolidation progress exactly when every fact of that consoli
 });
 
 test("a dropped duplicate Consolidation trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const h = host({ "noting.triggerTokens": 60, "consolidation.triggerTokens": 1 });
   let release!: (value: Reply) => void, held = false;
   h.provider(async c => { if (!c.systemPrompt!.includes("### Second-round user message")) return notingFact(c);
     if (held) return consolidationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
@@ -851,7 +851,7 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
   arguments: { operations: [{ op: "create", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] } }] });
 
 test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagents and branch Consolidators get facts and knowledge changes", async () => {
-  const settings = { "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 };
+  const settings = { "noting.triggerTokens": 60, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 };
   const subagentOnly = host({ ...settings, "consolidation.subagentModeDefault": true });
   subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
   await subagentOnly.turn(); await subagentOnly.answer("tick"); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();

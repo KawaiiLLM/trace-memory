@@ -135,7 +135,7 @@ test.each([[true, true], [true, false], [false, true], [false, false]])("18a 202
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
     operations: [{ op: "create", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"], because: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
   // The public facade shares this host's durable queues; normal completions drive both workers.
-  writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerUnconsolidatedFacts": 1 } }));
+  writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 } }));
   await h.emit("session_start");
   await h.answer("tick"); await h.drain();
   const delivered = await h.prompt("deliver facts"); expect(delivered.message.content).toContain("<noted>");
@@ -156,7 +156,7 @@ test("18a 2026-09-08: read-only settings show precedence, effective defaults and
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 11, "render.entryTokens": 222, "consolidation.triggerUnconsolidatedFacts": 7 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 11, "render.entryTokens": 222, "consolidation.triggerTokens": 7 } }));
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 22, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
@@ -164,7 +164,7 @@ test("18a 2026-09-08: read-only settings show precedence, effective defaults and
   const shown = h.notices.at(-1)!;
   expect(shown).toContain("noting.triggerTokens: 33 (Environment); Global=11 masked; Project=22 masked");
   expect(shown).toContain("render.entryTokens: 333 (Project)");
-  expect(shown).toContain("consolidation.triggerUnconsolidatedFacts: 7 (Global)");
+  expect(shown).toContain("consolidation.triggerTokens: 7 (Global)");
   expect(shown).toContain(`noting.batchTokens: ${DEFAULT_CONFIG.noting.batchTokens} (Default)`);
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
 });
@@ -265,7 +265,7 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
 });
 
 test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects late %s submission and leaves facts pending", async submit => {
-  const h = setup({ "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.maxToolRounds": 1 }); await h.turn();
+  const h = setup({ "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 1 }); await h.turn();
   const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
   note.execute({ facts: [{ category: "observation", actor: "user", text: "Pending knowledge", source: ["T1#user"] }] });
   let release!: (value: ReturnType<typeof reply>) => void;

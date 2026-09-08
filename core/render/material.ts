@@ -25,7 +25,9 @@
 // head reply and the frozen source index, because the raw turns, the facts delivered after earlier
 // runs and the injected knowledge are already in that conversation. That is the domain increment,
 // and it comes from the same frozen task as the full text.
-import { finish, renderKnowledgeBlock, xmlBlock } from "./index.ts";
+import type { Fact } from "../model/index.ts";
+import type { KnowledgeWithRevision } from "../store/index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock } from "./index.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -91,6 +93,55 @@ export const REMINDER_TITLE = "Negated-evidence reminder (review cues only; no s
 export const BLOCK = "\n\n";
 
 const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.to}`;
+
+/** Ticket 20 "Shared material budgets", the one budgeting of the shared material. Every consumer
+ * passes what it will emit and gets back what fits, with the receipts for what did not:
+ *
+ * | Component                                                   | Budget |
+ * | ----------------------------------------------------------- | ------ |
+ * | knowledge block, its category tags, its omission receipts    | `caps.knowledge` (10,000) |
+ * | selected current material: entry views or pending fact lines, with their own labels, omission markers and joining separators | `caps.current` (10,000) |
+ * | block titles, the range line, mandatory cues, block receipts, historical facts | `caps.episodic` (20,000) |
+ *
+ * The current material and the mandatory cues are reserved first; historical facts fill the rest in
+ * the existing freshness order. Selected evidence is never dropped to make room: a current material
+ * over its own ceiling, or mandatory material over the episodic budget, is receipted, and reducing
+ * the task is the phase's own oldest-first re-freeze (`freezeNoting`, `freezeConsolidation`). */
+export interface MaterialBudget {
+  knowledge: KnowledgeWithRevision[];
+  /** How one knowledge item renders; the read facade adds its marks. */
+  knowledgeLine?: (value: KnowledgeWithRevision) => string;
+  /** The selected current material, already joined with the separator this consumer emits. */
+  current: string;
+  /** The block titles and mandatory cues this consumer emits around it. */
+  framing: string[];
+  /** The frozen range, when this consumer shows one; it is a label, charged like any other line. */
+  range?: TaskRange;
+  /** Historical facts in the existing freshness order, and how one renders. */
+  facts: Fact[];
+  factLine: (fact: Fact) => string;
+  caps: { knowledge: number; episodic: number; current: number };
+  /** What the current material is called in a receipt: Raw entries, or a Consolidation's range facts. */
+  label?: "raw" | "range";
+}
+
+export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGroup[]; facts: string[]; receipts: string[] } {
+  const active = budgetKnowledge(input.knowledge, input.caps.knowledge, input.knowledgeLine);
+  const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
+  const current = tokens(input.current);
+  const receipts: string[] = [];
+  if (current > input.caps.current) receipts.push(`${label} ceiling: ${current - input.caps.current} tokens over ${input.caps.current}; all ${kept} kept`);
+  const reserved = () => current + charge([...input.framing, ...(input.range ? [rangeLine(input.range)] : [])]) + charge(receipts);
+  // Two passes: the historical-fact receipt is itself charged, and only a first pass knows whether
+  // there is one. A receipt is bounded, so the second pass is the last (ticket 20 "Budgeted receipts").
+  let filled = budgetFacts(input.facts, input.factLine, input.caps.episodic - reserved());
+  if (filled.receipts.length) filled = budgetFacts(input.facts, input.factLine, input.caps.episodic - reserved() - charge(filled.receipts));
+  receipts.push(...filled.receipts);
+  const over = reserved() - input.caps.episodic;
+  if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
+  return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts] };
+}
+
 const block = (parts: string[]): string => parts.join(BLOCK);
 const rawText = (material: SharedMaterial): string => (material.entries ?? []).map((entry) => entry.view).join(BLOCK);
 

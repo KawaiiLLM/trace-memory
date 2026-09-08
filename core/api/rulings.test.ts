@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, runMode, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { DEFAULT_CONFIG, TraceMemory, runMode, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
@@ -760,6 +760,65 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
   const summary = memory.trace(`R${run.id}`);
   expect(summary).not.toContain("problems: none");
   expect(summary).toMatch(/problems: .*(invalid source|rejected)/);
+});
+
+// ---- 20b 2026-09-08: three earlier rulings are superseded, recorded here by their own names ----
+
+// 17b, 2026-09-08: "noting.batchTokens defaults to 50,000 compressed-view tokens". Superseded by
+// ticket 20 on 2026-09-08: the Noting trigger and the batch ceiling are both 10,000 normal-view
+// tokens, and that ceiling is the one effective Raw ceiling compact shares.
+test("20b 2026-09-08: 17b's 50,000-token Noting batch is superseded by a 10,000-token ceiling shared with compact", async () => {
+  expect(DEFAULT_CONFIG.noting.batchTokens).toBe(10_000);
+  expect(DEFAULT_CONFIG.noting.triggerTokens).toBe(10_000);
+  const { s, t } = session();
+  const big = (id: string) => memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
+    role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
+  big("a"); big("b"); big("c");
+  // compact measures the same Raw against the same ceiling instead of a second knob of its own.
+  expect(memory.compact(s.id, "main", t.id)).toContain("raw ceiling: ");
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const views = calls[0]!.material.entries.map(e => e.view);
+  expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
+  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
+});
+
+// 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with
+// no batch ceiling. Superseded by ticket 20 on 2026-09-08: 5,000 rendered fact tokens trigger it and
+// one batch takes at most 10,000 of the same rendered representation.
+test("20b 2026-09-08: 17b's fifty-fact Consolidation trigger and unbounded batch are superseded by 5,000 trigger tokens and a 10,000-token batch", () => {
+  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
+  expect("triggerUnconsolidatedFacts" in DEFAULT_CONFIG.consolidation).toBe(false);
+  const { s, t } = session();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: Array.from({ length: 60 }, (_, i) => ({ category: "observation", actor: "user", text: `claim ${i}`, source: [`T${t.id}#user`] })) });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(50); // a count would be due
+  expect(tokens(memory.store.consolidationBatch(s.id, "main", t.id).map(f => memory.trace(`F${f.id}`)).join("\n"))).toBeLessThan(5_000);
+  expect(memory.taskEligibility("consolidation", target, "subagent").due).toBe(false);
+});
+
+// 17b, 2026-09-08: the knowledge budget was a soft cap — constraints, open items and disputes were
+// exempt from it. Superseded by ticket 20 and confirmed by the user on 2026-09-08: the cap is hard,
+// constraints keep first priority inside it, and omitted items remain stored and traceable.
+test("20b 2026-09-08: the knowledge-category soft-cap exemption is superseded; constraints keep first priority inside a hard cap", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
+  const write = (category: string, text: string) => expect(tools.find(tool => tool.name === "memory")!
+    .execute({ operations: [{ op: "create", text, category, scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] })).toContain('"committed"');
+  for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(60));
+  write("reference", "reference tail");
+  const cap = 200;
+  memory.config.render.knowledgeBlockTokens = cap;
+  const injected = memory.inject(s.id);
+  expect(injected).toContain("<constraint>"); // first priority, kept
+  expect(injected).not.toContain("reference tail"); // lower priority, omitted
+  const block = injected.split("\n\nReceipts:")[0]!, receipts = injected.split("\n\nReceipts:")[1]!;
+  expect(tokens(block) + tokens(receipts)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
+  expect(receipts).toContain("constraint knowledge; expand: K"); // some constraints were omitted, and are named
+  const omitted = /expand: (K\d+)/.exec(receipts)![1]!;
+  expect(memory.trace(omitted)).toContain(`[${omitted}@`); // omitted is not deleted
+  expect(t.id).toBeGreaterThan(0);
 });
 
 test("2026-09-07 superseded 2026-09-08 (17b): the Consolidation threshold triggers, the turn boundary no longer cuts; partly recorded Turns are eligible", async () => {

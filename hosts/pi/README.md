@@ -40,7 +40,9 @@ For example, either settings file can contain:
     "noting.forkModeDefault": true,
     "consolidation.subagentModeDefault": true,
     "noting.triggerTokens": 10000,
-    "noting.batchTokens": 50000
+    "noting.batchTokens": 10000,
+    "consolidation.triggerTokens": 5000,
+    "consolidation.batchTokens": 10000
   }
 }
 ```
@@ -48,7 +50,7 @@ For example, either settings file can contain:
 Environment override example:
 
 ```sh
-export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.triggerTokens":10000,"noting.batchTokens":50000,"consolidation.triggerUnconsolidatedFacts":50,"noting.maxToolRounds":0,"consolidation.maxToolRounds":0}'
+export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.triggerTokens":10000,"noting.batchTokens":10000,"consolidation.triggerTokens":5000,"consolidation.batchTokens":10000,"noting.maxToolRounds":0,"consolidation.maxToolRounds":0}'
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
@@ -127,17 +129,29 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
-- `noting.batchTokens` defaults to **50,000**: the oldest contiguous whole-entry
-  prefix, without Turn boundaries. Excess waits for another eligible completion.
-  The effective batch also reserves instructions, knowledge, tools, output and the
+- `noting.batchTokens` defaults to **10,000** (ticket 20; it was 50,000 through 17b): the oldest
+  contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
+  later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
+  another eligible completion.
+  This is also the one effective Raw ceiling compact measures its pending views against; there is no
+  second Raw knob. The effective batch also reserves instructions, knowledge, tools, output and the
   existing context: the host uses the model context window with a 15% estimation
   margin and reserves its output limit. An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity also leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
-- `consolidation.triggerUnconsolidatedFacts` stays at **50**. Committed facts are eligible
+- `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
+  `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
+  the fact line with its relations and the joining separator — the trigger over the whole applicable
+  unconsolidated set, the batch over the oldest-first whole-fact prefix it selects. Historical facts
+  and knowledge contribute to neither. Committed facts are eligible
   immediately, even from partly recorded Turns. Selection takes applicable facts
   without Turn grouping; path-aware per-fact progress is unchanged. There is no
-  first-Noting gate and no scalar fact cursor.
+  first-Noting gate and no scalar fact cursor. An oldest fact larger than the batch ceiling stays
+  pending with a capacity problem rather than being clipped or skipped.
+- `consolidation.triggerUnconsolidatedFacts` is **removed** (ticket 20). Any layer that still supplies
+  it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
+  consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
+  token budget, and the key appears nowhere in the read-only settings display.
 - Worker completion starts nothing. A fresh eligible entry completion provides
   the next opportunity; no polling or draining is added. Each runtime reserves one
   slot per phase before asynchronous admission. Quit/reload cancels its workers
@@ -306,7 +320,7 @@ fact ids. An empty target completes immediately with no model call. Repeating
 starting a second one or extending its snapshot.
 
 The drain runs bounded Noting batches — ignoring `noting.triggerTokens` and
-`consolidation.triggerUnconsolidatedFacts` but not `noting.batchTokens` or model
+`consolidation.triggerTokens` but not `noting.batchTokens`, `consolidation.batchTokens` or model
 context — against the frozen entry-id boundary, then one Consolidation batch
 against the frozen fact-id set extended with every fact those Noting batches
 went on to produce. Both phases always run in subagent mode. Batch-to-batch
@@ -424,9 +438,9 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    The search/trace tools themselves are recorded as raw tool calls.
 6. Save the actual prompt/reply transcript, `/trace` outputs, observed fact ids,
    compaction content, and trace result. Check `runs.request`, `mode`, `model`
-   and `response.usage` using the facade. Default consolidation requires 50
-   unconsolidated facts; six short turns need not produce any consolidation run. For a
-   separate consolidation exercise set `consolidation.triggerUnconsolidatedFacts` to 1 and wait
+   and `response.usage` using the facade. Default consolidation requires 5,000 rendered fact
+   tokens; six short turns need not produce any consolidation run. For a
+   separate consolidation exercise set `consolidation.triggerTokens` to 1 and wait
    for another eligible source entry completion after the Noting commits.
 
 Automated verification uses a fake provider; it does not establish live provider
@@ -971,6 +985,8 @@ are removed in 17b, along with the already-removed writable watermark table.
 Noting and Consolidation retain their exact per-entry/per-fact progress. Source-path
 membership is native ancestry, not a delivery queue. Attach reconciliation performs
 no model call; missing history is reported and retained originals remain readable.
-`noting.triggerAnsweredTurns` and every unknown setting are rejected explicitly.
-`noting.triggerTokens`, `noting.batchTokens` and both view limits accept only
+`noting.triggerAnsweredTurns`, the removed `consolidation.triggerUnconsolidatedFacts` and every
+unknown setting are rejected explicitly.
+`noting.triggerTokens`, `noting.batchTokens`, `consolidation.triggerTokens`,
+`consolidation.batchTokens` and both view limits accept only
 positive safe integers.

@@ -100,13 +100,16 @@ every subagent task — explicit, fallback or borrowed — in a fresh native chi
 same `runAgent` contract either way, and a host that cannot construct its worker at all returns
 a failed run with a reason, which leaves the queue pending.
 
-**Budget before selection (ticket 19 gate 4).** The host reports its available material budget
-(`capacity {inputTokens, prefixTokens}`, the model window minus output reserve and inherited prefix)
-in the same `noting(...)` call that starts the task. Core selects and freezes once inside it: it
-prices the material it froze part by part, drops the newest entries until the batch fits, and leaves
-every unselected entry pending. Extra context a host can supply is never evidence permission — the
-frozen range bounds what may be written whatever the model can see. If the oldest entry alone does
-not fit, core raises a capacity problem and advances nothing.
+**Budget before selection (ticket 19 gate 4, ticket 20 capacity negotiation).** The host reports its
+available material budget (`capacity {inputTokens, prefixTokens}`, the model window minus output
+reserve and inherited prefix) in the same `noting(...)` call that starts the task. Core selects and
+freezes once inside it: it prices the domain text it prepared for that frozen task — labels, titles,
+the range line and receipts included — drops the newest whole entries until the task fits, and leaves
+every unselected entry pending. The material, the write eligibility and the audit membership are
+re-frozen together, so a reduced task can never keep the larger progress range. Extra context a host
+can supply is never evidence permission — the frozen range bounds what may be written whatever the
+model can see. If the oldest entry alone does not fit, core raises a capacity problem and advances
+nothing.
 
 ## Rendering decisions
 
@@ -147,12 +150,12 @@ are already in the conversation the host appends to. The native prefix remains u
 Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
 Noting and fallback send the shared entry views below. Core freezes one material for both.
 
-Noting context uses the episodic budget for all rendered raw plus recent facts
+Noting context uses the episodic budget for the selected raw plus recent facts
 by descending timestamp, then id. Raw is never dropped; overage is receipted.
 Older facts are dropped first. Active knowledge items use the knowledge budget in glossary
-category order, dropping whole trailing categories; constraint/open/dispute
-remain even above budget. Budgets exclude framing and receipts. Every visible
+category order. Every visible
 knowledge revision read at start is recorded, including budget-omitted knowledge.
+The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Knowledge expansion addresses are emitted for future trace support; this ticket
 implements only `T<n>` and `F<n>` trace targets. The other façade methods retain
 their ticket-01 placeholders.
@@ -194,8 +197,44 @@ and are not one cache chain. The existing historical-fact freshness order was no
 
 Titles and separators are constants in that module (`FACTS_TITLE`, `RAW_TITLE`, …), and `finish`
 still appends the receipts. Nothing here knows a host message type, and no host file lays out these
-blocks (pinned by a source check in `core/api/boundary.test.ts`). Budgets are unchanged in this
-slice; they attach to these same functions in 20b.
+blocks (pinned by a source check in `core/api/boundary.test.ts`).
+
+## Material budgets (20b)
+
+`budgetMaterial` in the same module is the one budgeting of that shared material: every consumer
+passes the knowledge candidates, its selected current material (Raw entry views, or a Consolidation's
+pending fact lines), the block titles and mandatory cues it will emit, the frozen range and the
+historical facts, and gets back what fits with the receipts for what did not. The limits are hard,
+measured by the existing estimator over the exact rendered view, and every emitted component is
+charged once, to the block that emits it:
+
+| Component | Budget | Default |
+| --- | --- | ---: |
+| knowledge block, its category tags and its omission receipts | `render.knowledgeBlockTokens` | 10,000 |
+| selected current material — entry or fact views with their own source labels, omission markers and joining separators | `noting.batchTokens` (Raw, shared with compact) / `consolidation.batchTokens` (pending facts) | 10,000 |
+| block titles, the range line, mandatory cues, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
+
+The current material and the mandatory cues are reserved first; historical facts then fill whatever
+episodic space is left, in the existing freshness order. Raw consumes at most its own ceiling, not a
+guaranteed allocation, and Consolidation has no automatic Raw block at all — its selected pending
+facts take the current-material allowance. Outer framing is never charged against the inner ceiling,
+so an otherwise valid 10,000-token entry stays batchable. Fresh material is therefore at most 30,000
+estimated tokens by default; system instructions, tool definitions, the output reserve, inherited
+native history and later tool/review messages are additional context costs, which is why the host's
+real-context capacity check stays independent of these domain limits.
+
+Selected evidence is never dropped to fit: the reducible unit is the task itself
+(`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over
+its ceiling — only compact can produce one, since both phases select under it — is reported by an
+honest receipt rather than cut. Receipts are bounded: an omission names at most eight addresses and
+then says how many more it covers, so a long omitted list cannot defeat the cap it is charged
+against. Nothing is deleted; omitted knowledge and facts remain stored, readable and traceable, and
+no omission advances knowledge lifecycle or processing progress.
+
+The knowledge cap is hard (user confirmation 2026-09-08): category priority and the deterministic
+within-category order are unchanged, but constraints, open items and disputes no longer bypass the
+budget. Retained items are whole — a claim is never rewritten to make it fit — and each omitted
+category is named in its own receipt.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
@@ -244,14 +283,19 @@ without a call when there are no applicable unconsolidated committed facts on th
 selected path. Facts become eligible immediately, including on partly recorded
 Turns; there is no Turn grouping or first-Noting gate. Shared ancestors belong
 to both paths. Progress is the exact `consolidated_facts` set with the existing path
-rule, never a maximum-id cursor. The fifty-fact threshold only triggers a run.
-The range freezes these facts in allocation-id order, visible active knowledge
+rule, never a maximum-id cursor. Since 20b the threshold is `consolidation.triggerTokens`
+(default 5,000) measured over the rendered lines of the whole applicable set — the same
+representation, relations and separator the batch selects with — and it only triggers a run.
+The range is the oldest-first whole-fact prefix within `consolidation.batchTokens` (default 10,000)
+in allocation-id order; the rest stays pending for the next batch. An oldest fact that cannot fit
+alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
+or marked consolidated unpresented. The range freezes those facts, the visible active knowledge
 revisions (including budget omissions), relation lines and reminders before the
 candidate call. Context remains project-wide: already-consolidated facts outside the range,
 ordered by descending timestamp then id. All range facts are retained; their
-rendered size consumes the episodic budget before context. Knowledge follow the
-noting category budget policy. Reminders and feedback are unbudgeted so every
-matching visible knowledge and both relation strengths remain available.
+rendered size takes the current-material allowance before context. Knowledge follows the
+same hard knowledge budget. Reminders are mandatory cues charged to the episodic budget; feedback is
+unbudgeted so every matching visible knowledge and both relation strengths remain available.
 
 The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound
 `tools`, and `reportRequest`. It executes tool calls and extends the same conversation
@@ -331,7 +375,9 @@ the core cannot safely reconstruct their ownership from turn ranges alone.
 `compact(sessionId, branch = "main", headTurnId?)` returns knowledge followed by
 `<episodic>`: session facts by descending timestamp and id first, then the shared
 pending entry views (20a's ruled order: stable history before volatile task data).
-All pending views survive the outer budget with an overage receipt. No provider is called and deliveries are not consumed. Pass `headTurnId`
+All pending views survive both budgets with an overage receipt — compact measures them against the
+same effective Raw ceiling as Noting (`noting.batchTokens`), never a second knob of its own. No
+provider is called and deliveries are not consumed. Pass `headTurnId`
 for precise ancestry; without it, the latest Turn selects one path. Sibling queues
 are never combined into an automatic Raw view.
 

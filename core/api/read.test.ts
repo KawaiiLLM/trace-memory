@@ -81,11 +81,19 @@ test("category order, chronological ties, whole trailing category omissions; lin
   expect(all).not.toContain("&lt;");
   const tags = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"];
   expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
+  // 20b: the knowledge cap is hard — a zero budget keeps nothing, including the three categories
+  // 17b's exemption protected — and every omitted item is named in a bounded receipt.
   memory.config.render.knowledgeBlockTokens = 0;
   const limited = memory.inject(s.id);
-  for (const tag of tags.slice(0, 3)) expect(limited).toContain(`<${tag}>`);
-  for (const tag of tags.slice(3)) { expect(limited).not.toContain(`<${tag}>`); expect(limited).toContain(`1 ${tag} knowledge; expand:`); }
-  expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</knowledge>"));
+  for (const tag of tags) { expect(limited).not.toContain(`<${tag}>`); expect(limited).toContain(`${tag} knowledge; expand:`); }
+  expect(limited).not.toContain("<knowledge>");
+  // A budget that holds part of the list keeps a whole prefix of the priority order, receipts included.
+  memory.config.render.knowledgeBlockTokens = 200;
+  const partial = memory.inject(s.id);
+  const kept = tags.filter(tag => partial.includes(`<${tag}>`));
+  expect(kept.length).toBeGreaterThan(0);
+  expect(kept).toEqual(tags.slice(0, kept.length));
+  expect(partial.indexOf("Receipts:")).toBeGreaterThan(partial.indexOf("</knowledge>"));
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
 });
 
@@ -114,7 +122,9 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   const n = noting(s.id, selected.id, fixture.interpretation);
   const full = memory.compact(s.id, "main", selected.id);
   expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));
-  memory.config.render.episodicBlockTokens = 70;
+  // 20b charges the block titles and the joining separators too, so the same "one fact fits, the
+  // older one does not" budget is a little larger than 17a's bare fact-line arithmetic.
+  memory.config.render.episodicBlockTokens = 100;
   const limited = memory.compact(s.id, "main", selected.id);
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();

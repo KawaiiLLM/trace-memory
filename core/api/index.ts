@@ -48,7 +48,10 @@ export interface TraceMemoryConfig {
   };
   consolidation: {
     subagentModeDefault: boolean;
-    triggerUnconsolidatedFacts: number;
+    /** Ticket 20: rendered tokens of applicable unconsolidated facts that make a run due. */
+    triggerTokens: number;
+    /** Ticket 20: the most rendered fact tokens one batch may select. */
+    batchTokens: number;
     nearThreshold: number;
     maxToolRounds: number;
   };
@@ -69,13 +72,14 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   },
   noting: {
     forkModeDefault: true,
-    batchTokens: 50_000,
+    batchTokens: 10_000,
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
   consolidation: {
     subagentModeDefault: true,
-    triggerUnconsolidatedFacts: 50,
+    triggerTokens: 5_000,
+    batchTokens: 10_000,
     nearThreshold: 0.28,
     maxToolRounds: 0,
   },
@@ -95,6 +99,16 @@ export type ConfigOverride = {
  * nested `ConfigOverride` (the façade) resolve the alias through the same two functions below. */
 export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branchModeDefault": "noting.forkModeDefault" };
 
+/** Settings a ruling removed, and what replaces each (ticket 20 "Configuration"). A removed key is
+ * not an alias: an old fact count is never reinterpreted as tokens, so any layer supplying one fails
+ * the load naming the key and its replacement. The same two functions below enforce it for the flat
+ * `section.key` settings space and for the nested `ConfigOverride`, and the read-only menu shows it
+ * nowhere, because it builds itself from `DEFAULT_CONFIG`. */
+export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
+  "consolidation.triggerUnconsolidatedFacts": "consolidation.triggerTokens (tokens, not a count)",
+};
+const removedSetting = (key: string) => new Error(`Removed setting ${key}: use ${REMOVED_SETTINGS[key]}`);
+
 const aliasConflict = (legacy: string, canonical: string, legacyValue: unknown, canonicalValue: unknown) =>
   new Error(`Conflicting settings ${legacy} and ${canonical}: ${JSON.stringify(legacyValue)} vs ${JSON.stringify(canonicalValue)}; ` +
     `${legacy} is the legacy spelling of ${canonical} — supply ${canonical} alone`);
@@ -106,6 +120,7 @@ const aliasConflict = (legacy: string, canonical: string, legacyValue: unknown, 
  * still mask one another as before, so a project layer may override a global legacy spelling. */
 export function canonicalFlatConfig<T extends Record<string, unknown>>(values: T): T {
   let result: Record<string, unknown> = values;
+  for (const key of Object.keys(REMOVED_SETTINGS)) if (Object.hasOwn(result, key)) throw removedSetting(key);
   for (const [legacy, canonical] of Object.entries(CONFIG_ALIASES)) {
     if (!Object.hasOwn(result, legacy)) continue;
     const legacyValue = result[legacy], present = Object.hasOwn(result, canonical);
@@ -119,6 +134,10 @@ export function canonicalFlatConfig<T extends Record<string, unknown>>(values: T
 /** The same rule for the nested override the façade takes. */
 export function canonicalConfig(override: ConfigOverride): ConfigOverride {
   let result: Record<string, unknown> = override;
+  for (const key of Object.keys(REMOVED_SETTINGS)) {
+    const section = key.slice(0, key.indexOf(".")), values = result[section] as Record<string, unknown> | undefined;
+    if (values && typeof values === "object" && Object.hasOwn(values, key.slice(section.length + 1))) throw removedSetting(key);
+  }
   for (const [legacy, canonical] of Object.entries(CONFIG_ALIASES)) {
     const section = legacy.slice(0, legacy.indexOf("."));
     const legacyKey = legacy.slice(section.length + 1), canonicalKey = canonical.slice(canonical.indexOf(".") + 1);
@@ -352,7 +371,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
     const due = phase === "noting" ? tokens(store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
       .map(e => renderEntry(e, cfg.render).content).join("\n\n")) >= cfg.noting.triggerTokens
-      : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).length >= cfg.consolidation.triggerUnconsolidatedFacts;
+      // Ticket 20: the same rendered representation, relations and separator the batch selects with;
+      // historical facts and knowledge contribute nothing to the trigger.
+      : tokens(store.consolidationBatch(target.sessionId, target.branch, target.headTurnId)
+        .map(f => renderFact(f, store.listFactRelations(f.id))).join("\n")) >= cfg.consolidation.triggerTokens;
     const paused = mode === "fork" && store.listPendingDeliveries(target.sessionId, target.branch)
       .some(p => phase === "consolidation" || store.getRun(p.runId)?.kind === "noting");
     return { due, paused };

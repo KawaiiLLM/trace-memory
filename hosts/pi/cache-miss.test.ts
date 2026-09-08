@@ -149,7 +149,7 @@ test("19c ruling 2026-09-08: a response counts as a miss when its uncached token
 });
 
 test("19c 2026-09-08: two phases reporting a miss together produce one transition and one warning", async () => {
-  const f = await fixture({ "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false });
+  const f = await fixture({ "consolidation.triggerTokens": 1, "consolidation.subagentModeDefault": false });
   try {
     // The first turn's own Noting task must not latch the session before the two-phase opportunity
     // below, so its response reports a below-minimum input; only the two frozen fork tasks of that

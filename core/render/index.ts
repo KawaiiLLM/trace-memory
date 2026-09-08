@@ -351,32 +351,56 @@ export function renderNegationWalk(steps: NegationStep[]): string {
   ]).join("\n");
 }
 
+// A block joins its parts with one separator and the estimator prices that separator at one token, so
+// ticket 20's "Boundary accounting" is this: every emitted component, its own label and its joining
+// separator are charged once, to the budget of the block that emits it. The leading part is charged a
+// separator it does not have; over-counting is the safe direction for a budget, as it is for `tokens`.
+export const charge = (parts: string[]): number => parts.reduce((total, part) => total + tokens(part) + 1, 0);
+/** Ticket 20 "Budgeted receipts": a receipt names what it left out without becoming the unbounded
+ * enumeration that would defeat the cap it is charged against. */
+const EXPAND_LIMIT = 8;
+export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
+  : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
+
+/** The knowledge block within its hard cap (ticket 20 "Knowledge hard cap", confirmed 2026-09-08).
+ * Category priority and the deterministic within-category order are unchanged; the exemption that let
+ * constraints, open items and disputes exceed the budget is gone. Items are retained whole, in that
+ * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
+ * omitted item is named, never rewritten to fit, and remains stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge) {
-  let used = 0, omitted = false;
-  const groups: { category: string; text: string }[] = [], receipts: string[] = [];
-  for (const category of KNOWLEDGE_CATEGORIES) {
-    const group = knowledge.filter((e) => e.revision.category === category)
-      .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id);
-    const text = group.map((e) => line(e)).join("\n");
-    if (KNOWLEDGE_CATEGORIES.indexOf(category) >= 3 && (omitted || used + tokens(text) > cap)) {
-      omitted = true;
-      if (group.length) receipts.push(`omitted ${group.length} ${category} knowledge; expand: ${group.map((e) => `K${e.knowledge.id}`).join(", ")}`);
-    } else { groups.push({ category, text }); used += tokens(text); }
-  }
-  return { groups, receipts };
+  const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
+    .filter((e) => e.revision.category === category)
+    .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
+    .map((value) => ({ category, text: line(value), id: value.knowledge.id })));
+  const sizes = ordered.map((item) => tokens(item.text) + 1);
+  const receipts = (kept: number) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
+    const omitted = ordered.slice(kept).filter((item) => item.category === category);
+    return omitted.length ? [`omitted ${omitted.length} ${category} knowledge; expand: ${expandList(omitted.map((item) => `K${item.id}`))}`] : [];
+  });
+  const cost = (kept: number) => (kept ? tokens(xmlBlock("knowledge", "")) + sizes.slice(0, kept).reduce((a, b) => a + b, 0)
+    + charge([...new Set(ordered.slice(0, kept).map((item) => item.category))].map((category) => xmlBlock(category, ""))) : 0)
+    + charge(receipts(kept));
+  let kept = 0;
+  while (kept < ordered.length && cost(kept + 1) <= cap) kept++;
+  // Omitting one more item can lengthen a receipt: recheck the prefix the loop stopped on. The floor
+  // is the receipt itself, which is never dropped to fit — nothing else would say the item exists.
+  while (kept > 0 && cost(kept) > cap) kept--;
+  return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
+    text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
+    receipts: receipts(kept) };
 }
 
-export function budgetFacts(base: string, facts: Fact[], line: (fact: Fact) => string, cap: number, label = "raw") {
-  let used = tokens(base), dropped = 0;
-  const recent: string[] = [], receipts: string[] = [];
+/** Historical facts fill whatever episodic space the selected current material and the mandatory cues
+ * left over (ticket 20 "Shared episodic space"), in the existing freshness order, whole lines only. */
+export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaining: number) {
+  let used = 0, dropped = 0;
+  const recent: string[] = [];
   for (const fact of facts) {
     const text = line(fact);
-    if (dropped || used + tokens(text) > cap) { dropped++; continue; }
-    recent.push(text); used += tokens(text);
+    if (dropped || used + tokens(text) + 1 > remaining) { dropped++; continue; }
+    recent.push(text); used += tokens(text) + 1;
   }
-  if (tokens(base) > cap) receipts.push(`${label} overage: ${tokens(base) - cap} tokens; all ${label === "raw" ? "unrecorded raw" : "range facts"} kept`);
-  if (dropped) receipts.push(`omitted ${dropped} older facts; expand: ${facts.slice(-dropped).map((f) => `F${f.id}`).join(", ")}`);
-  return { recent, receipts };
+  return { recent, receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(-dropped).map((f) => `F${f.id}`))}`] : [] };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.

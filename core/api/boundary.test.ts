@@ -150,9 +150,11 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   const views = memory.pendingEntries(sessionId, "main", second.id).map(e => renderEntry(e, memory.config.render).content);
   const owned = memory.pendingEntries(sessionId, "main", second.id).filter(e => e.turnId === first.id);
   expect(views.length).toBe(4);
-  // Below the 50,000-token material ceiling, but the reported budget holds only the first Turn.
-  expect(tokens(views.join("\n\n"))).toBeLessThan(50_000);
-  const inputTokens = overhead() + views.slice(0, 2).reduce((total, view) => total + tokens(view), 0) + 20;
+  // Below the 10,000-token material ceiling, but the reported budget holds only the first Turn. The
+  // slack covers what 20b charges beyond the entry views themselves: the block titles, the range line
+  // and the joining separators of the fresh text core prices.
+  expect(tokens(views.join("\n\n"))).toBeLessThan(10_000);
+  const inputTokens = overhead() + views.slice(0, 2).reduce((total, view) => total + tokens(view), 0) + 80;
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
@@ -265,4 +267,43 @@ test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review b
     const source = readFileSync(file, "utf8");
     for (const title of titles) expect([file.pathname, source.includes(title)]).toEqual([file.pathname, false]);
   }
+});
+
+/** Ticket 20 "Capacity negotiation" and acceptance scenario 15. The host reports the context it has;
+ * core reduces the oldest-first task set and re-freezes the material, the write eligibility and the
+ * audit membership together, and prices the domain text it actually sends — titles, range and
+ * receipts included — so the reduced task provably fits the window it was given. */
+test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes the task, with evidence, audit membership and writable sources moving together", async () => {
+  const sessionId = session();
+  const first = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
+  const second = turn(sessionId, first.id, "second " + "word ".repeat(600), "reply two");
+  const pending = memory.pendingEntries(sessionId, "main", second.id);
+  const views = pending.map(e => renderEntry(e, memory.config.render).content);
+  const owned = pending.filter(e => e.turnId === first.id).map(e => e.id);
+  const inputTokens = overhead() + tokens(views.slice(0, 2).join("\n\n")) + 80;
+  let sent!: NotingAgentInput;
+  runAgent = async raw => {
+    sent = raw as NotingAgentInput;
+    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${second.id}#user`)] })).toContain("rejected:");
+    expect(sent.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${first.id}#user`)] })).toContain("ok: F1");
+    return { outcome: "success", output: "done", request: { fake: true } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "subagent",
+    capacity: { inputTokens, prefixTokens: 0 } });
+  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(calls).toHaveLength(1); // one reduction, one freeze, one model call
+  // What core priced is what it sends, and it fits the window the host reported.
+  expect(overhead() + tokens(sent.text.fresh)).toBeLessThanOrEqual(inputTokens);
+  // Evidence, frozen material, audit membership and the recorded range are the same reduced set.
+  expect(sent.entryIds).toEqual(owned);
+  expect(sent.material.entries.map(e => e.id)).toEqual(owned);
+  expect(sent.text.fresh).toContain(views[0]!);
+  expect(sent.text.fresh).not.toContain(views[2]!);
+  const run = memory.store.getRun(result.runId)!;
+  expect(JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id)).toEqual(owned);
+  expect([run.rangeFrom, run.rangeTo]).toEqual([`S${sessionId}/T${first.id}`, `S${sessionId}/T${first.id}`]);
+  expect(memory.store.sourcePath(sessionId, "main", second.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(owned);
+  // The excluded tail is untouched, for a later permitted trigger.
+  expect(memory.pendingEntries(sessionId, "main", second.id).map(e => e.turnId)).toEqual([second.id, second.id]);
 });

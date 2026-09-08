@@ -258,8 +258,9 @@ test("context uses timestamp freshness while range remains complete and categori
   expect(small).toContain(memory.trace(`F${next}`));
   expect(small).not.toContain(`[F${newest}]`); expect(small).not.toContain(`[F${oldest}]`);
   expect(small).toContain("omitted 3 older facts");
-  for (const category of categories.slice(0, 3)) expect(small).toContain(`[${category}/project]`);
-  for (const category of categories.slice(3)) { expect(small).not.toContain(`[${category}/project]`); expect(small).toContain(`omitted 1 ${category} knowledge`); }
+  // 20b: the knowledge cap is hard, so a one-token budget keeps no category at all — not even the
+  // three that 17b's exemption protected — and every omission is receipted and still traceable.
+  for (const category of categories) { expect(small).not.toContain(`[${category}/project]`); expect(small).toContain(`omitted 1 ${category} knowledge`); }
   expect(calls[2]!.readKnowledgeCommits).toHaveLength(7);
 });
 
@@ -500,4 +501,90 @@ test("19b 2026-09-08: Consolidation material carries the exact fact list, the fa
   expect(calls[0]!.mode).toBe("subagent"); expect(calls[1]!.mode).toBe("fork");
   // Core froze one material for both modes; which parts each mode sends is pinned in hosts/pi/compose.test.ts.
   expect(calls[1]!.material).toEqual(calls[0]!.material);
+});
+
+// ----------------------------------------------------------- 20b: token triggers and token batches
+
+/** The rendered representation of the applicable unconsolidated facts: the same `renderFact` lines,
+ * with their relations and their joining separator, that the trigger and the selection both count. */
+const applicableTokens = (branch = "main") =>
+  tokens(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)
+    .map(f => memory.trace(`F${f.id}`)).join("\n"));
+const due = (branch = "main") => memory.taskEligibility("consolidation",
+  { sessionId, branch, headTurnId: memory.store.knowledgePath(sessionId, branch).headTurnId! }, "subagent").due;
+
+/** Ticket 20 acceptance scenario 6, superseding 17b's fifty-fact trigger: the same rendered fact view
+ * decides both admission and selection, and neither historical facts nor knowledge contribute. */
+test("20b 2026-09-08 scenario 6: Consolidation is due on rendered fact tokens, exactly at the trigger, and one batch takes at most its token ceiling", async () => {
+  const short = Array.from({ length: 8 }, () => fact(memories.base));
+  const rendered = applicableTokens();
+  expect(short).toHaveLength(8);
+  // Exactly at the trigger the run is due; one token more of trigger and it waits — a count would see
+  // eight facts either way.
+  memory.close(); open({ consolidation: { triggerTokens: rendered } });
+  expect(due()).toBe(true);
+  memory.close(); open({ consolidation: { triggerTokens: rendered + 1 } });
+  expect(due()).toBe(false);
+  // Historical (already-consolidated) facts and knowledge are not part of the trigger.
+  watermark(short[0]!); knowledge([short[0]!], { text: "word ".repeat(400) });
+  expect(applicableTokens()).toBeLessThan(rendered);
+  // The batch takes the oldest-first whole-fact prefix that fits its own ceiling, in arrival order.
+  const lines = memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined).map(f => memory.trace(`F${f.id}`));
+  const cap = tokens(lines.slice(0, 3).join("\n"));
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: cap } });
+  queue(empty, empty);
+  const result = await consolidation();
+  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(result.range.facts.map(f => f.id)).toEqual(short.slice(1, 4)); // three facts, oldest first
+  expect(tokens(calls[0]!.material.rangeFacts.join("\n"))).toBeLessThanOrEqual(cap);
+  expect(memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined).map(f => f.id)).toEqual(short.slice(4));
+});
+
+/** Ticket 20 acceptance scenario 7. Progress is the exact selected fact ids: no Turn gate, no
+ * watermark over the range label, no cross-branch leakage, nothing advanced by a failed batch. */
+test("20b 2026-09-08 scenario 7: successive token-bounded batches advance exactly their selected fact ids, and a failed batch advances nothing", async () => {
+  const first = fact(memories.base), second = fact(memories.observation), third = fact(memories.interpretation);
+  const lines = [first, second, third].map(id => memory.trace(`F${id}`));
+  // A ceiling that holds any one of these fact lines but never two: one whole fact per batch.
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: Math.max(...lines.map(line => tokens(line))) } });
+  // A failed first batch advances nothing at all.
+  script.push(async () => ({ outcome: "failure", output: "provider failed", request: {} }));
+  expect((await consolidation()).outcome).toBe("failure");
+  expect(consolidated(first)).toBe(false);
+  queue(empty, empty);
+  const one = await consolidation();
+  expect(one.outcome === "success" && one.range.facts.map(f => f.id)).toEqual([first]);
+  expect(consolidated(first)).toBe(true);
+  expect(consolidated(second)).toBe(false); // no watermark: the range label is not an id cursor
+  queue(empty, empty);
+  const two = await consolidation();
+  expect(two.outcome === "success" && two.range.facts.map(f => f.id)).toEqual([second]);
+  // A fact committed later on an earlier Turn stays eligible and is taken by a later batch.
+  const late = memory.store.commitNotingRun({ run: { kind: "manual", sessionId, branch: "main", createdAt: time },
+    facts: [{ turnId: memory.store.getFact(first)!.turnId, category: "observation", actor: "user", text: memories.observation, source: [`T${memory.store.getFact(first)!.turnId}#user`], createdAt: time }] });
+  if (!late.ok) throw new Error(late.problems.join("; "));
+  const lateId = late.facts[0]!.id;
+  const remaining = memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined).map(f => f.id);
+  expect(remaining).toEqual([third, lateId]);
+  queue(empty, empty);
+  const three = await consolidation();
+  expect(three.outcome === "success" && three.range.facts.map(f => f.id)).toEqual([third]);
+  expect(consolidated(lateId)).toBe(false); // the hole between ids is not processed by implication
+});
+
+/** Ticket 20 "Oversized fact" and acceptance scenario 8. A fact has no primary-entry-style size
+ * bound, so an oldest one that cannot fit alone stays pending with a capacity problem: it is not
+ * clipped, not skipped for a smaller later fact, and not marked consolidated without being presented. */
+test("20b 2026-09-08 scenario 8: an oldest fact over the batch ceiling stays pending with a capacity problem and is never bypassed", async () => {
+  const huge = fact("word ".repeat(400)), small = fact(memories.base);
+  const cap = tokens(memory.trace(`F${huge}`)) - 1;
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: cap } });
+  script.push(async () => { throw new Error("no model call may happen"); });
+  await expect(consolidation()).rejects.toThrow("Consolidation capacity: oldest fact exceeds consolidation.batchTokens");
+  expect(calls).toEqual([]);
+  expect(memory.store.listRuns(sessionId).filter(r => r.kind === "consolidation")).toEqual([]);
+  expect(consolidated(huge)).toBe(false);
+  expect(consolidated(small)).toBe(false); // the smaller later fact did not jump the queue
+  expect(memory.trace(`F${huge}`)).toContain("word word"); // the evidence text is untouched
 });

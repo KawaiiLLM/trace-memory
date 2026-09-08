@@ -5,8 +5,8 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
-import { notingText, notingIncrement, type MaterialText, type NotingMaterial } from "../render/material.ts";
+import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, tokens } from "../render/index.ts";
+import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -80,7 +80,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const views: string[] = [];
   for (const entry of pending) {
     const view = renderEntry(entry, config.render).content;
-    if (tokens([...views, view].join("\n\n")) > config.noting.batchTokens) break;
+    if (tokens([...views, view].join(BLOCK)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view);
   }
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
@@ -100,13 +100,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       model: input.model ?? "session", mode };
     const prepared = notingMaterial(store, frozen, config);
     const capacity = input.capacity;
-    // Gate 4 (ruling 2026-09-08): the adapter reports its available material budget before selection;
-    // core prices the material it froze, part by part, and never a message it composed.
-    const material = prepared.material;
-    const cost = (parts: (string | null)[]) => parts.reduce<number>((total, part) => total + (part ? tokens(part) : 0), 0);
-    const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions))
-      + cost([...material.knowledge.map(g => g.text), ...material.facts, ...material.entries.map(e => e.view), ...material.receipts]);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + cost([material.head, ...material.sources]);
+    // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
+    // available material budget before selection; core prices the domain text it prepared for this
+    // frozen task — labels, titles, the range and receipts included — and never a message the host
+    // composed. Popping the newest entry re-freezes the material, the write eligibility and the audit
+    // membership together, so the reduced task and its progress range can never disagree.
+    const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
+    const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
     if (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens) return frozen;
     entries.pop();
   }
@@ -121,11 +121,13 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   const raw = entries.map(entry => renderEntry(entry, config.render));
-  const rawText = raw.map((r) => r.content).join("\n\n");
-  const receipts = raw.flatMap((r) => r.receipts);
-  const episodic = budgetFacts(rawText, facts, (f) => renderFact(f, store.listFactRelations(f.id)), config.render.episodicBlockTokens);
-  const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
-  receipts.push(...episodic.receipts, ...active.receipts);
+  // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
+  // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
+  // — the titles and the range against the episodic budget, and the knowledge block against its own.
+  const budgeted = budgetMaterial({ knowledge, current: raw.map((r) => r.content).join(BLOCK),
+    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine: (f) => renderFact(f, store.listFactRelations(f.id)),
+    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
+  const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;
   // Every part of the run's material, rendered and budgeted once. An inherited-context run does not
   // need the raw, the delivered facts or the knowledge again (ruling 08:53); core lays both
@@ -136,8 +138,8 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
     // are what an inherited-context run still needs.
     head: head.assistantText ? renderTurn(head, [], config.render, { part: "assistant" }).content : null,
     sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
-    knowledge: active.groups.filter((g) => g.text),
-    facts: episodic.recent,
+    knowledge: budgeted.knowledge.filter((g) => g.text),
+    facts: budgeted.facts,
     receipts,
   };
   // 20a: core owns the block order, the titles and the separators of both representations, from this
