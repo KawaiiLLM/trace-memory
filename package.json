@@ -1,23 +1,36 @@
 {
   "name": "trace-memory",
-  "version": "0.1.0-dev",
+  "version": "0.1.0-beta.1",
   "description": "Traceable two-layer memory for coding agents: facts recorded from conversation, consolidated into knowledge, every claim traceable back to the source turn.",
   "type": "module",
   "license": "MIT",
-  "keywords": ["memory", "agent", "claude-code", "pi", "pi-package"],
+  "keywords": ["memory", "agent", "pi", "pi-package"],
+  "engines": { "node": ">=24.6.0" },
+  "pi": { "extensions": ["./src/hosts/pi/index.ts"] },
+  "publishConfig": { "tag": "next" },
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "smoke:pi": "node hosts/pi/smoke.ts"
+    "smoke:pi": "node tests/hosts/pi/smoke.ts",
+    "smoke:package": "node tests/package-smoke.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^0.85.0",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": ">=0.85.1",
+    "@earendil-works/pi-coding-agent": ">=0.85.1"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "typescript": "^5.6.0",
     "@types/node": "^24.10.9",
     "vitest": "4.1.11"
   },
-  "files": ["core", "hosts", "README.md", "LICENSE"]
+  "files": [
+    "src/core",
+    "src/hosts/pi",
+    "docs",
+    "CONTEXT.md",
+    "README.md",
+    "LICENSE"
+  ]
 }

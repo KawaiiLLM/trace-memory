@@ -13,5 +13,5 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true
   },
-  "include": ["core", "hosts"]
+  "include": ["src", "tests"]
 }
