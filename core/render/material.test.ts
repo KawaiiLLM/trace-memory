@@ -211,7 +211,7 @@ test("21b 2026-09-08: all four consumers render topics through the one knowledge
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "update", id: "K1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
       text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
-  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  supports: F1 · topics: packaging, storage\n</constraint>\n</knowledge>";
+  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  supports: F1 · topics: [\"packaging\",\"storage\"]\n</constraint>\n</knowledge>";
   expect(memory.inject(s.id)).toBe(labelled);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -249,5 +249,5 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   const [first, later] = calls as NotingAgentInput[];
   expect(later!.range).not.toEqual(first!.range);
   expect(knowledgeBlockOf(later!.material)).toBe(knowledgeBlockOf(first!.material));
-  expect(knowledgeBlockOf(later!.material)).toContain("· topics: packaging, storage");
+  expect(knowledgeBlockOf(later!.material)).toContain('· topics: ["packaging","storage"]');
 });

@@ -1073,7 +1073,7 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   // A label is written by the ordinary batch, with no model call and no independent catalog block.
   expect(write([{ ...create, topics: ["packaging"] }]).committed).toHaveLength(1);
   const injected = memory.inject(s.id);
-  expect(injected).toContain("· topics: packaging");
+  expect(injected).toContain('· topics: ["packaging"]');
   expect(injected.match(/topics:/g)).toHaveLength(1); // the label rides its own knowledge line, nothing more
   expect(injected).not.toContain("<topics>");
   expect(calls).toEqual([]); // storing a label calls no model

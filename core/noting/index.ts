@@ -114,15 +114,14 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
     // signal too, never a receipt that lets the task run over it.
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
-    if (fits) return frozen;
+    if (fits) return { ...frozen, prepared };
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
     if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
     entries.pop(); history = Infinity;
   }
   if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved; left pending");
-  return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode };
-
+  return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 
 function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, history = Infinity) {
@@ -163,8 +162,10 @@ export async function runNoting(
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
 ): Promise<NotingResult> {
   const { sessionId, branch, entries, turns, model, mode } = frozen;
-  if (!turns.length) return { outcome: "empty" };
-  const { range, readKnowledgeCommits, raw, material, text } = notingMaterial(store, frozen, config);
+  if (!turns.length || !frozen.prepared) return { outcome: "empty" };
+  // The material the freeze priced is the material that runs (review 2026-09-08): re-rendering here
+  // would restore the historical facts the capacity negotiation trimmed.
+  const { range, readKnowledgeCommits, raw, material, text } = frozen.prepared;
   const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,

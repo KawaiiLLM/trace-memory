@@ -322,7 +322,8 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
 // prose. One representation for every consumer, the knowledge budget and the search index.
-const topicList = (topics: string[]): string => topics.length ? ` · topics: ${topics.join(", ")}` : "";
+// Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
+const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
   return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}${topicList(r.topics)}`;
 }
@@ -376,7 +377,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
-    ...(a.topics.join(", ") === b.topics.join(", ") ? [] : [`  topics: ${a.topics.join(", ") || "none"} -> ${b.topics.join(", ") || "none"}`]),
+    ...(JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`]),
     renderCommitHistory(revisions)].join("\n");
 }
 

@@ -127,3 +127,35 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
     if (!b.over.episodic) expect(tokens(text)).toBeLessThanOrEqual(20000);
   }
 }, 30000);
+
+// ---- Review of 12fa278..05133d4 (2026-09-08): the Noting freeze runs the material it priced, and
+// topic sets are compared and shown as arrays.
+
+test("review 2026-09-08: Noting runs the prepared material the capacity negotiation priced, not a fresh render that restores the trimmed history", async () => {
+  const f = seeded();
+  try {
+    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text.fresh);
+    const capacity = size(f.calls[0] as NotingAgentInput) + 500;
+    for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
+    const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Next request", assistantText: "Okay", startedAt: "2026-09-08" });
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    expect(result.outcome).toBe("success");
+    const run = f.calls.at(-1) as NotingAgentInput;
+    expect(run.material.facts.length).toBeLessThan(4); // the history the negotiation trimmed stays trimmed
+    expect(size(run)).toBeLessThanOrEqual(capacity);
+  } finally { f.m.close(); }
+});
+
+test("review 2026-09-08: topic sets that join to the same text are still different sets in the diff and the knowledge line", () => {
+  const f = seeded();
+  try {
+    expect(f.note("Use SQLite")).toContain("ok: F1");
+    const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
+    const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
+    expect(memory.execute({ operations: [{ op: "create", ...content, topics: ["a, b"] }], skipped: [] })).toContain("committed");
+    expect(memory.execute({ operations: [{ op: "update", id: "K1@1", ...content, topics: ["a", "b"] }], skipped: [] })).toContain("committed");
+    expect(f.m.trace("K1@1..K1@2")).toContain('topics: ["a, b"] -> ["a","b"]');
+    expect(f.m.trace("K1@1")).toContain('topics: ["a, b"]');
+  } finally { f.m.close(); }
+});

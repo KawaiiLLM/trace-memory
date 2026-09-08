@@ -119,7 +119,7 @@ prompt's fields with the spec's continuation lines: `[F<n>] time
 and mandatory `source:` lines. Outbound relations say `support|negate F<n>
 strong|weak`; inbound relations add `inbound`. Knowledge context uses
 `[K<n>@<commit>] [category/scope] text` and a `supports:` continuation, which ends
-with ` · topics: <label>, <label>` when the revision carries subject labels (21b);
+with ` · topics: ["<label>", "<label>"]` (a JSON array, so a label may contain a comma) when the revision carries subject labels (21b);
 labels are metadata beside the evidence, never appended to the conclusion. Turn messages
 carry source addresses; tools use `[T<n>#t<n>] tool=… status=… omitted=…`.
 Receipts follow all content, including assistant text, and list omitted calls

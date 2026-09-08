@@ -271,7 +271,7 @@ test("21b 2026-09-08: reordering the same label set renders the same metadata, a
   write.execute({ operations: [{ ...create, topics: ["storage", "auth"] }, { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
     { ...create, text: "Run the tests", topics: [] }], skipped: [] }); // the third is explicitly unclassified
   const metadata = (address: string) => memory.trace(address).split("\n")[1];
-  expect(metadata("K1@1")).toBe("  supports: F1 · topics: auth, storage");
+  expect(metadata("K1@1")).toBe('  supports: F1 · topics: ["auth","storage"]');
   expect(metadata("K2@2")).toBe(metadata("K1@1")); // the same set, submitted in another order
   expect(metadata("K3@3")).toBe("  supports: F1"); // unclassified: no metadata at all
 });
@@ -286,13 +286,13 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.store.getKnowledgeRevision(1, 2)!.text).toBe(memory.store.getKnowledgeRevision(1, 1)!.text);
   expect(memory.store.getKnowledgeRevision(1, 1)!.topics).toEqual(["packaging"]); // the old commit keeps its old classification
   expect(memory.store.getKnowledgeRevision(1, 2)!.topics).toEqual(["packaging", "tooling"]);
-  expect(memory.trace("K1@1..K1@2")).toContain("topics: packaging -> packaging, tooling");
-  expect(memory.trace("K1@1")).toContain("topics: packaging");
+  expect(memory.trace("K1@1..K1@2")).toContain('topics: ["packaging"] -> ["packaging","tooling"]');
+  expect(memory.trace("K1@1")).toContain('topics: ["packaging"]');
   // Clearing is explicit: an empty array, never an omitted field.
   write.execute({ operations: [{ ...create, op: "update", id: "K1", topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual([]);
   expect(memory.trace("K1")).not.toContain("topics:");
-  expect(memory.trace("K1@2..K1@3")).toContain("topics: packaging, tooling -> none");
+  expect(memory.trace("K1@2..K1@3")).toContain('topics: ["packaging","tooling"] -> []');
   // Merge supplies the survivor's complete set; no implicit union of every parent's labels.
   write.execute({ operations: [{ ...create, text: "Commit the lockfile", topics: ["lockfile"] }], skipped: [] });
   write.execute({ operations: [{ ...create, op: "merge", id: "K1", absorb: ["K2"], topics: ["packaging"],
@@ -302,5 +302,5 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   // Archive accepts no labels of its own and inherits the selected parent's array.
   write.execute({ operations: [{ op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", topics: ["packaging"] });
-  expect(memory.trace("K1@6")).toContain("topics: packaging");
+  expect(memory.trace("K1@6")).toContain('topics: ["packaging"]');
 });
