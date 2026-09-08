@@ -174,13 +174,19 @@ export default function (pi: ExtensionAPI) {
           const checkpoint = callContext.sessionManager.getLeafId();
           if (!checkpoint) throw new NotForkable("The parent session has no persisted leaf entry");
           const native = await runNative({
-            onCacheMiss: () => {
-              // One transition per session, decided by the store's guarded UPDATE, so two phases
-              // reporting a miss together warn once. This run continues in its own native session; the
-              // observation itself is audited under `verification.cacheMiss` in its run record.
-              if (!memory.store.suppressFork(input.sessionId)) return;
+            onCache: observation => {
+              // User rulings 2026-09-09: every eligible miss is noticed once, with its count; a hit
+              // resets the count; the second consecutive miss downgrades the session — one transition,
+              // decided by the store's guarded UPDATE, so two phases reaching it together notice once.
+              // This run continues in its own native session; the first miss of a run is audited under
+              // `verification.cacheMiss` in its run record.
+              if (!observation.miss) { cacheMisses.delete(input.sessionId); return; }
+              const misses = (cacheMisses.get(input.sessionId) ?? 0) + 1;
+              cacheMisses.set(input.sessionId, misses);
+              callContext.ui.notify(`Trace Memory: fork cache miss ${Math.min(misses, 2)}/2 (${observation.cacheRead} of ${observation.total} input tokens read from cache).`, "warning");
+              if (misses < 2 || !memory.store.suppressFork(input.sessionId)) return;
               missDetected.add(input.kind);
-              callContext.ui.notify("Trace Memory: fork cache miss. Future memory tasks in this session will use subagent.", "warning");
+              callContext.ui.notify("Trace Memory: fork downgraded after two consecutive cache misses. Future memory tasks in this session will use subagent.", "warning");
             },
             mode: "fork", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
@@ -279,6 +285,9 @@ export default function (pi: ExtensionAPI) {
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
   const missDetected = new Set<"noting" | "consolidation">();
+  // Consecutive eligible fork cache misses per memory session, in this process only (user ruling
+  // 2026-09-09): a reopen starts at zero; the persisted latch itself is the session-scoped state.
+  const cacheMisses = new Map<number, number>();
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
   /** Ticket 20 "Post-compaction worker mode". The boundary is the last compaction entry on the
    * target's currently selected ancestry. Pi writes that entry only when a compaction was persisted
@@ -883,6 +892,7 @@ export default function (pi: ExtensionAPI) {
       const choice = await ctx.ui.select(`${status()}${shared}`, [action, ...(downgrade ? ["Retry fork"] : [])]);
       if (choice === "Retry fork") {
         memory.store.clearForkSuppression(state.sessionId!);
+        cacheMisses.delete(state.sessionId!);
         showSpend(ctx);
         ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
         return;

@@ -741,17 +741,20 @@ An eligible miss is judged per completed fork response, on that response's own u
 | `openai-completions`, `openai-responses`, `openai-codex-responses` | 1024-token prefix | OpenAI automatic prompt caching |
 | anything else | unknown — never a miss | no universal minimum is invented |
 
-**Uncached-token threshold (user ruling 2026-09-08, after the live run):** a completed fork
-response counts as a miss when the tokens it paid for uncached — `input + cacheWrite`, everything
-the provider did not serve from cache — **reach 30,000** (`CACHE_MISS_UNCACHED_TOKENS`), at any
-`cacheRead`. The latch exists to stop re-sending a large inherited history without cache reuse,
-and the cost is the uncached part: a partial hit that still re-sends 30,000 tokens counts, while a
-whole-zero-cache response on a small request does not (the live run's R2 missed on 5,277 tokens
-while its neighbours hit; OpenAI-family providers do that now and then without a deterministic
-cause). This supersedes the earlier "a nonzero read is a hit at any ratio" clause. Below the
-threshold nothing is recorded; the observation carries `uncached` and the `threshold` it reached.
-The provider table above now serves to know which providers report cache counts at all; its
-minimum is recorded on the observation for the record.
+**Read-ratio rule (user rulings 2026-09-09, after the beta dogfood; supersede the 2026-09-08
+30,000-uncached-token rule):** a completed fork response is a **miss when its `cacheRead` is below
+half of its input** (`CACHE_MISS_READ_RATIO = 0.5`; input is `input + cacheRead + cacheWrite`), and
+a **hit** otherwise. A response whose input is below the provider's documented cacheable minimum
+(table above) is neither: it could not have been cached. The observation carries
+`{model, api, minimum, ratio, input, cacheRead, cacheWrite, total, miss}`.
+
+The session is downgraded only on the **second consecutive** eligible miss. The count lives in
+the executor process, per memory session: an eligible hit resets it, an unknown response neither
+counts nor resets, a reopen starts at zero (the persisted latch below is the session-scoped
+state), and the menu's **Retry fork** resets it with the latch. Every eligible miss emits one TUI
+notice with its count — `Trace Memory: fork cache miss 1/2 (… of … input tokens read from cache).`
+— and the downgrade emits its own single notice: `Trace Memory: fork downgraded after two
+consecutive cache misses. Future memory tasks in this session will use subagent.`
 
 pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
 `cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
@@ -761,17 +764,16 @@ missing usage, non-numeric or absent cache counts, the SDK's placeholder zeros o
 cancelled response, an Anthropic body that carried no `cache_control` marker (a disabled cache),
 and an unlisted provider.
 
-On the first eligible miss:
+On the second consecutive eligible miss:
 
 - `store.suppressFork(sessionId)` sets `sessions.fork_suppressed_at` with an `IS NULL` guard, so
-  two phases reporting a miss in the same instant produce **one** transition; only the winner
-  emits the single TUI warning `Trace Memory: fork cache miss. Future memory tasks in this
-  session will use subagent.` Headless operation records the same state without any UI.
+  two phases reaching the second miss in the same instant produce **one** transition; only the
+  winner emits the downgrade notice. Headless operation records the same state without any UI.
 - The detecting run continues untouched: same native session, same tool protocol, same trailing
-  replies, no replay, no extra trigger, and its run record keeps `mode: "fork"`. The
-  observation is audited as `verification.cacheMiss = {model, api, minimum, threshold, input,
-  cacheRead, cacheWrite, uncached}`, and the run id is linked to the session's suppression once core has allocated it
-  (the miss is seen before any run row exists).
+  replies, no replay, no extra trigger, and its run record keeps `mode: "fork"`. The run's first
+  miss is audited as `verification.cacheMiss = {model, api, minimum, ratio, input, cacheRead,
+  cacheWrite, total, miss}`, and the run id is linked to the session's suppression once core has
+  allocated it (the miss is seen before any run row exists).
 - Every later task rechecks the latch at fork admission, so a task queued before the transition
   cannot bypass it. The configured requested mode is retained: the run records
   `requestedMode: "fork"`, `mode: "subagent"` and `fallbackReason: "cache miss latch: …"`.
@@ -788,8 +790,8 @@ Fork: suppressed since <ISO timestamp> (cache miss on R<n>); Retry fork in the /
 The reset is menu-only. `/trace` → **Current session** lists a **Retry fork** action *only while
 the session is downgraded*; choosing it clears the suppression, says so, and starts no
 extraction. There is no `/trace retry` subcommand and no permanent top-level item, and neither a
-reopen nor a settings refresh clears the state. A later eligible miss begins a new episode and
-may warn once again.
+reopen nor a settings refresh clears the state. Two later consecutive eligible misses begin a new
+episode and may downgrade once again.
 
 ## Live prefix identity procedure
 

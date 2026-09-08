@@ -12,7 +12,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
 import type { ToolDefinition } from "../../core/api/index.ts";
 
-export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheMissObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
+export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
 
 /** A child cannot be prepared from this parent state; the caller falls back and records the reason. */
 export class NotForkable extends Error {
@@ -38,9 +38,9 @@ interface NativeCommon {
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
   /** Consolidation's review feedback, delivered to the child as a native user message. */
   feedback?(result: string): string | undefined;
-  /** 19c: one completed fork response reported an eligible server-side cache miss (gate 3). The run
-   * itself continues; the host decides what a miss means for later tasks. */
-  onCacheMiss?(observation: CacheMissObservation): void;
+  /** 19c: one completed fork response was eligible for the cache-miss policy (gate 3), hit or miss.
+   * The run itself continues; the host counts consecutive misses and decides the downgrade. */
+  onCache?(observation: CacheObservation): void;
   /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
    * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
   onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
@@ -162,19 +162,18 @@ const CACHE_MINIMUM: { api: string; model?: RegExp; tokens: number }[] = [
 export const cacheMinimum = (api: string, model: string): number | undefined =>
   CACHE_MINIMUM.find(entry => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
 
-/** User ruling 2026-09-08 (after the live run; final form 「改为未缓存 tokens 达到 30k 计一次未命中」): a
- * completed fork response counts as a miss when the tokens it paid for uncached — `input` plus
- * `cacheWrite`, i.e. everything the provider did not serve from cache — reach 30,000, whatever its
- * `cacheRead`. The latch exists to stop re-sending a large inherited history without cache reuse; the
- * cost is the uncached part, so a partial hit that still re-sends 30,000 tokens counts and a
- * whole-zero-cache response on a small request does not. This supersedes both the earlier
- * "a nonzero hit never counts" clause and the same day's "context over 30K" reading. */
-export const CACHE_MISS_UNCACHED_TOKENS = 30_000;
+/** User rulings 2026-09-09 (after the beta dogfood; supersede the 2026-09-08 30,000-uncached-token
+ * rule): a completed fork response is a miss when the tokens the provider served from cache are below
+ * half of the request's input — `cacheRead < CACHE_MISS_READ_RATIO × (input + cacheRead + cacheWrite)` —
+ * and the session is downgraded only after two consecutive eligible misses (the host counts). A
+ * response whose input is below the provider's documented cacheable minimum cannot have hit and says
+ * nothing (ticket 19 "Unknown is not zero"). */
+export const CACHE_MISS_READ_RATIO = 0.5;
 
-/** What a recorded eligible miss says: the response's own reported accounting, the model it was
- * measured on, the provider's documented minimum cacheable length, the uncached tokens it paid for and
- * the threshold they reached. */
-export interface CacheMissObservation { model: string; api: string; minimum: number; threshold: number; input: number; cacheRead: number; cacheWrite: number; uncached: number }
+/** What one eligible response says: its own reported accounting, the model it was measured on, the
+ * provider's documented minimum cacheable length, the ratio it was judged by, its input length and
+ * whether it was a miss. */
+export interface CacheObservation { model: string; api: string; minimum: number; ratio: number; input: number; cacheRead: number; cacheWrite: number; total: number; miss: boolean }
 
 /** One completed fork response, judged on its own reported usage (never a run's sum).
  *
@@ -184,20 +183,20 @@ export interface CacheMissObservation { model: string; api: string; minimum: num
  * `input + cacheRead + cacheWrite` on either. Compressed Raw size is never used.
  *
  * Everything unknown returns undefined: missing or non-numeric usage, an unreported cache count, a
- * provider cache that was not requested at all, and an unlisted provider (whose cache reporting is
- * unknown). Otherwise the decision is the uncached token count alone: `input + cacheWrite` reaching
- * the threshold is a miss, at any `cacheRead`; below it nothing is recorded. */
-export function eligibleCacheMiss(model: { api: string; id: string; provider: string }, usage: unknown, cacheEnabled: boolean, threshold = CACHE_MISS_UNCACHED_TOKENS): CacheMissObservation | undefined {
-  if (!cacheEnabled) return; // the request asked for no caching: its uncached count says nothing
+ * provider cache that was not requested at all, an unlisted provider (whose cache reporting is
+ * unknown), and an input below the provider's cacheable minimum. Otherwise the response is observed,
+ * hit or miss, and the host keeps the consecutive count. */
+export function cacheObservation(model: { api: string; id: string; provider: string }, usage: unknown, cacheEnabled: boolean, ratio = CACHE_MISS_READ_RATIO): CacheObservation | undefined {
+  if (!cacheEnabled) return; // the request asked for no caching: its cache count says nothing
   const minimum = cacheMinimum(model.api, model.id);
   if (minimum === undefined) return; // unlisted provider: cache reporting unknown
   if (!usage || typeof usage !== "object") return;
   const reported = usage as { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
   if (typeof reported.input !== "number" || typeof reported.cacheRead !== "number") return;
   const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
-  const uncached = reported.input + cacheWrite;
-  if (!Number.isFinite(uncached) || uncached < threshold) return;
-  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, threshold, input: reported.input, cacheRead: reported.cacheRead, cacheWrite, uncached };
+  const total = reported.input + reported.cacheRead + cacheWrite;
+  if (!Number.isFinite(total) || total < minimum) return; // too small to have been cached at all
+  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, ratio, input: reported.input, cacheRead: reported.cacheRead, cacheWrite, total, miss: reported.cacheRead < ratio * total };
 }
 
 export async function runNative(task: NativeTask): Promise<NativeResult> {
@@ -289,7 +288,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   // prefix its `cache_control` markers select, so a body without one has a disabled cache and its
   // zero read is not evidence of anything; OpenAI-family caching is automatic and not request-controlled.
   let cacheEnabled = api !== "anthropic-messages";
-  let observedMiss = false;
   const inherited = session.agent.onPayload;
   // Adapter decision: a fork shares the parent's cache/affinity identity; a fresh child keeps its own.
   if (task.mode === "fork") session.agent.sessionId = task.parentSessionId;
@@ -352,9 +350,9 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // judged on its own usage. A response that failed or was cancelled carries SDK placeholder zeros,
     // which are unknown, not a miss. The run continues either way: never replayed, never cancelled for
     // this, and a committed batch stays committed.
-    if (verification?.passed && !observedMiss && message.stopReason !== "error" && message.stopReason !== "aborted" && message.errorMessage === undefined) {
-      const miss = eligibleCacheMiss(task.model as { api: string; id: string; provider: string }, message.usage, cacheEnabled);
-      if (miss) { observedMiss = true; verification.cacheMiss = miss; task.onCacheMiss?.(miss); }
+    if (verification?.passed && message.stopReason !== "error" && message.stopReason !== "aborted" && message.errorMessage === undefined) {
+      const observed = cacheObservation(task.model as { api: string; id: string; provider: string }, message.usage, cacheEnabled);
+      if (observed) { if (observed.miss && !verification.cacheMiss) verification.cacheMiss = observed; task.onCache?.(observed); }
     }
     task.onProgress({ usage, retries });
   });
