@@ -11,6 +11,45 @@ chain in step 4 walks the child's own bodies (its tail is the inherited head rep
 task message, and both sides are compared with `cache_control` stripped), and each run record
 carries `nativeLog`, the child's own JSONL under `runsDir`.
 
+# Live verification record (2026-09-08, ticket 20c compaction, after fb83b41)
+
+Environment as in the record below (Pi 0.85.1, `openai-codex/gpt-5.6-sol`, `pi --mode rpc`,
+discovery off, fresh databases under `/tmp/tm-live3`, `/tmp/tm-live5`). Two things a live compaction
+check needs that a fake host does not: Pi refuses a manual compaction before calling any extension
+hook while the session is smaller than its `keepRecentTokens` (default 20,000; "Compaction failed:
+Nothing to compact (session too small)" — the plugin never sees it), so the project's
+`.pi/settings.json` set `compaction.keepRecentTokens: 200` and Pi ran with `--approve`; and the
+`noting.batchTokens` ceiling decides which tier a given backlog reaches, so the sessions used 300
+and 2,000. Extraction was quiet (`noting.triggerTokens` 10⁹) so the pending Raw only grew.
+
+| Session | Backlog at compact | Tier | Compaction entry in the session file |
+|---|---|---|---|
+| tm-live5, Raw ceiling 2,000 | three short turns plus one `seq 1 900` tool turn | **primary views** — notice `compaction used primary views`, summary begins with the `<episodic>` block and the primary `Raw:` views | `fromHook: true`, no `usage` |
+| tm-live5, two more tool turns | primary views over the ceiling | **secondary views** — notice `compaction used secondary views`, summary's Raw block titled `Raw (compact-only secondary views; …)`, `[compact-only view 20c-v1-bounded-excerpts]` headers, tool lines with `[arguments omitted]` / `[result omitted]`; `/trace status` reads `Compaction: secondary views` | `fromHook: true`, no `usage` |
+| tm-live3, Raw ceiling 300 | one tool turn (6 pending entries) | **native delegation** — notice `…secondary views of 6 pending entries exceed the raw ceiling by 244 tokens (cap 300)`; the `compact` response carries Pi's own structured summary (`## Goal …`) and its usage (1,115 in / 201 out) | no `fromHook`, `usage` present |
+| tm-live3, eight more tiny turns (20 entries) | secondary views over the ceiling | **native delegation** again (over by 1,234); status reads `Compaction: native delegation — …` | no `fromHook`, `usage` present |
+
+No Trace Memory run was recorded by any compaction (`Spend: 0 noting, 0 consolidation` after all
+four), and no progress moved: the plugin's tiers call no model, and tier 3 is Pi's call.
+
+Post-compaction admission, in a second process resuming tm-live3 with `--continue` and extraction
+on (`noting.triggerTokens` 100, `noting.batchTokens` 10,000, `consolidation.batchTokens` 150):
+
+- R1 (T1..T12), the first Noter after the two persisted Pi compactions: run record `mode subagent`,
+  response `requestedMode: "fork"`, `fallbackReason: "native runner: pre-compaction evidence: 20
+  selected entries precede the persisted compaction 9e89d8e6"`, TUI notice of the fallback; `/trace
+  status` shows **no** `Fork: suppressed` line — a per-task decision, not the latch.
+- R2 (T12..T14), entries all after the boundary: `mode fork`, no fallback reason.
+- `/trace catchup`: R3 Noting (subagent) then R4 and R5 Consolidation (`F1..F2`, `F3..F4`, both
+  subagent) under the 150-token batch ceiling; status ends `Catchup: completed (1 entries noted,
+  4 facts integrated)`. The first attempt of this session (no `keepRecentTokens` override) drained
+  four Consolidation batches the same way with no compaction ever persisted, and its Noters ran as
+  forks with no pre-compaction reason — the boundary really is the persisted entry, nothing else.
+
+Not driven: an aborted or failed native compaction (step 4 of the 20c procedure); a persisted-entry
+count before and after such an attempt remains to be observed live. Observed and fixed the same
+day: with no active knowledge the custom summary began with an empty separator (`compactText`).
+
 # Live verification record (2026-09-08, after 19c3 at 0a4429b)
 
 Environment: Pi 0.85.1 and pi-ai 0.85.1 under Node 24.6.0, provider `openai-codex`, model

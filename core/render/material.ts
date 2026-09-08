@@ -171,8 +171,8 @@ export const injectionText = (material: SharedMaterial): string =>
  * Raw title is `RAW_SECONDARY_TITLE` when the views inside it are the compact-only secondary ones
  * (ticket 20 tier 2); the order, the separators and the receipts are the same either way. */
 export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE): string =>
-  finish({ content: `${knowledgeBlock(material)}${BLOCK}${xmlBlock("episodic",
-    block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))}`, receipts: material.receipts });
+  finish({ content: block([...leading(material), xmlBlock("episodic",
+    block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });
 
 /** Noter, fresh context: knowledge, historical facts, range, the selected Raw, then receipts. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
