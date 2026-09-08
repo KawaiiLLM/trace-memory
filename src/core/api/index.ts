@@ -308,9 +308,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (from !== undefined) return describe(commit(from));
       if (knowledgeMatch[5]) return `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, undefined, display.headTurnId);
+      const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
       const tips = store.currentCommit(id!, path);
-      const applicable = history.filter(r => !path || store.commitApplies(r, path));
-      const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path)) : [];
+      const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
+      const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path, snapshot)) : [];
       return [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
@@ -362,9 +363,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
+    // 22c: this Turn's native result occurrences, obtained once and reused across its tool ordinals
+    // instead of loading the whole session per call. Every call is still described from them — the
+    // unselected ones by their own character counts — so metadata and omission receipts are unchanged.
+    const occurrences = options.full ? store.listSourceEntries(turn.sessionId, turn.id).filter(e => e.role === "toolResult") : [];
     const originals = options.full ? calls.map(call => {
-      const results = store.listSourceEntries(turn.sessionId).filter(e => e.turnId === turn.id && e.role === "toolResult")
-        .flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
+      const results = occurrences.flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
       return results.length < 2 ? call : { ...call, status: "multiple results", result: results.map(({ entry: e, call: c }) =>
         `[entry ${JSON.stringify([e.nativeLineage, e.nativeId])}] status=${c.status}\n${c.result ?? ""}`).join("\n") };
     }) : calls;

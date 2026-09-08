@@ -274,3 +274,75 @@ export function nativeAncestry(options: FixtureOptions = {}): NativeEntry[] {
   }
   return entries;
 }
+
+/** Count the whole-knowledge-graph resolutions a read performs (ticket 22c, hotspot family 5): the
+ * commit DAG walk that decides which revisions apply to a path and which of them are current. One
+ * per query is the contract; a count that grows with the hit count is the per-hit resolution coming
+ * back. Test-only, and named for both sides of the change: `currentSet` before 22c, the
+ * `commitGraph` it was extracted into after. */
+export function countGraphResolutions(): { resolutions: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const name = "commitGraph" in prototype ? "commitGraph" : "currentSet";
+  const original = prototype[name]!;
+  let count = 0;
+  prototype[name] = function (this: Store, ...args: unknown[]) { count++; return original.apply(this, args); };
+  return { resolutions: () => count, reset: () => { count = 0; }, restore: () => { prototype[name] = original; } };
+}
+
+export interface SearchCorpus { query: string; revisions: number; historical: number; divergent: number; knowledge: number }
+
+/** Knowledge for the search workload (ticket 22c): `revisions` commits that all match one literal
+ * query, on top of an existing long-history fixture, so applicability is decided against real facts
+ * and Turns. Every fifth commit opens a new knowledge; the rest are updates, so most hits are
+ * historical (superseded on this path). Every tenth knowledge ends in two updates written from two
+ * sibling Turns of the head instead of one: two tips of the same base that no single path carries
+ * together — the divergent revisions, which read as "another branch" from main. */
+export function searchCorpus(dbPath: string, options: { revisions: number; sessionId: number; branch: string; headTurnId: number }): SearchCorpus {
+  const query = "SEARCHNEEDLE";
+  const time = "2026-01-01T03:00:00Z";
+  const store = new Store(dbPath);
+  try {
+    return store.transaction(() => {
+      const { sessionId, branch, headTurnId } = options;
+      const path = { sessionId, branch, headTurnId };
+      const supports = store.listBranchFacts(sessionId, branch, headTurnId).slice(0, 2).map(f => f.id);
+      if (supports.length < 2) throw new Error("the search corpus needs at least two facts on the path");
+      // Two sibling Turns of the head, each with a fact of its own: evidence that only that sibling's
+      // path carries, so a commit citing it applies there and nowhere else.
+      const fork = (name: string) => {
+        const turn = store.appendTurn({ sessionId, parentTurnId: headTurnId, kind: "turn", userPrompt: `corpus ${name}`, startedAt: time });
+        const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: name, createdAt: time },
+          facts: [{ turnId: turn.id, category: "observation", actor: "user", text: `${name} evidence`, source: [`T${turn.id}#user`], createdAt: time }] });
+        if (!noted.ok) throw new Error(noted.problems.join("; "));
+        return { path: { sessionId, branch: name, headTurnId: turn.id }, factId: noted.facts[0]!.id };
+      };
+      const forks = [fork("corpusC"), fork("corpusD")];
+      const commit = (on: typeof path, operation: Parameters<Store["commitConsolidationRun"]>[0]["operations"][number]) => {
+        const done = store.commitConsolidationRun({ path: on, run: { kind: "consolidation", sessionId, branch: on.branch, createdAt: time }, operations: [operation] });
+        if (!done.ok) throw new Error(done.problems.join("; "));
+        return done.committed[0]!;
+      };
+      let made = 0, historical = 0, divergent = 0, knowledge = 0;
+      for (let i = 0; made < options.revisions; i++) {
+        const created = commit(path, { op: "create", handle: `corpus-${i}`, author: "perf", text: `${query} conclusion ${i}`,
+          category: "mechanism", scope: "session", supports, reason: "search corpus", topics: [i % 3 ? "corpus" : query], createdAt: time });
+        let base = created.commit;
+        made++; knowledge++;
+        for (let j = 0; j < 4 && made < options.revisions; j++) {
+          if (i % 10 === 9 && j === 3) {
+            for (const branchPoint of forks) {
+              commit(branchPoint.path, { op: "update", knowledgeId: created.knowledgeId, baseCommit: base, text: `${query} conclusion ${i} on ${branchPoint.path.branch}`,
+                category: "mechanism", scope: "session", supports: [...supports, branchPoint.factId], reason: "search corpus divergence", topics: ["corpus"], createdAt: time });
+              made++; divergent++;
+            }
+          } else {
+            base = commit(path, { op: "update", knowledgeId: created.knowledgeId, baseCommit: base, text: `${query} conclusion ${i} revision ${j + 1}`,
+              category: "mechanism", scope: "session", supports, reason: "search corpus revision", topics: ["corpus"], createdAt: time }).commit;
+            made++; historical++;
+          }
+        }
+      }
+      return { query, revisions: made, historical, divergent, knowledge };
+    });
+  } finally { store.close(); }
+}

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
+import type { KnowledgeRevision } from "../model/index.ts";
 import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, renderEntrySecondary, xmlBlock } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, RAW_SECONDARY_TITLE, type SharedMaterial } from "../render/material.ts";
 
@@ -26,22 +27,28 @@ export interface TopicGroups {
 export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
-  const cursors = new Map<string, { lines: string[]; footer: string; cap: number; owner: string }>();
-  const page = (lines: string[], options: ListingOptions = {}, footer = ""): string => {
+  // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
+  // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
+  // asked for later prints the labels that query established, and nothing but values is held between
+  // pages — no open transaction, no reserved connection.
+  interface Continuation { items: readonly unknown[]; format: (items: readonly unknown[]) => string[] }
+  const cursors = new Map<string, Continuation & { footer: string; cap: number; owner: string }>();
+  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = ""): string => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
-    if (saved) { lines = saved.lines; footer = saved.footer; }
+    const { items, format } = saved ?? (Array.isArray(source) ? { items: source, format: (lines: readonly unknown[]) => lines as string[] } : source);
+    if (saved) footer = saved.footer;
     const receipts = footer ? [footer] : [];
-    if (lines.length > cap) {
+    if (items.length > cap) {
       const cursor = randomUUID();
-      cursors.set(cursor, { lines: lines.slice(cap), footer, cap, owner });
+      cursors.set(cursor, { items: items.slice(cap), format, footer, cap, owner });
       receipts.push(`cursor=${cursor}`);
     }
     if (options.cursor) cursors.delete(options.cursor);
-    return finish({ content: lines.slice(0, cap).join("\n"), receipts });
+    return finish({ content: format(items.slice(0, cap)).join("\n"), receipts });
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -195,25 +202,32 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (options.cursor) return page([], options);
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
-      const lines = store.searchAddresses(query, scope).map((address) => {
+      const addresses = store.searchAddresses(query, scope);
+      // 22c: the path, the applicable set, the current tips and the commit ancestry are resolved once,
+      // before the first page, and every page this query ever formats is labelled from them: a commit
+      // that arrives between two pages neither joins the hits nor moves a label already established.
+      const path = options.sessionId === undefined ? null : store.knowledgePath(options.sessionId, undefined, options.headTurnId);
+      const graph = addresses.some(a => a.startsWith("K")) ? store.commitGraph(path) : null;
+      const tips = new Map<number, KnowledgeRevision[]>();
+      for (const r of graph?.current ?? []) tips.set(r.knowledgeId, [...(tips.get(r.knowledgeId) ?? []), r]);
+      const format = (hits: readonly unknown[]) => (hits as string[]).map((address) => {
         if (address.startsWith("F")) return factLine(Number(address.slice(1)));
         if (address.startsWith("T")) return expand(address);
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
-        const path = options.sessionId === undefined ? null : store.knowledgePath(options.sessionId, undefined, options.headTurnId);
-        const hit = store.getKnowledgeRevision(id!, commit!)!;
-        const current = store.currentCommit(id!, path);
-        const applicable = !path || store.commitApplies(hit, path);
-        const descendants = store.commitDescendants(hit.id);
-        const successors = [...new Set(store.listKnowledgeRevisions().filter(r => descendants.has(r.id)).map(r => r.knowledgeId))]
-          .flatMap(id => store.currentCommit(id, path)).filter(r => r.id !== hit.id && descendants.has(r.id));
+        const hit = graph!.revisions.find(r => r.id === commit)!;
+        const current = tips.get(id!) ?? [];
+        const applicable = !path || graph!.applicable.has(hit.id);
+        const descendants = graph!.descendants(hit.id);
+        const successors = [...new Set(graph!.revisions.filter(r => descendants.has(r.id)).map(r => r.knowledgeId))]
+          .flatMap(id => tips.get(id) ?? []).filter(r => r.id !== hit.id && descendants.has(r.id));
         const status = !applicable ? "another branch"
           : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
           : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
         return knowledgeLine({ knowledge, revision: hit }) + `\n  note: ${status}`;
       }).map(listingLine);
-      return page(lines, options, "Search uses literal substring search. No hit does not mean absent.");
+      return page({ items: addresses, format }, options, "Search uses literal substring search. No hit does not mean absent.");
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

@@ -11,7 +11,7 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generate, nativeAncestry, countSourceReads, type Fixture } from "./fixture.ts";
+import { generate, nativeAncestry, countSourceReads, countGraphResolutions, searchCorpus, type Fixture } from "./fixture.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
@@ -196,6 +196,49 @@ async function hostReconciliation(size: string, entries: number): Promise<Sample
   return samples;
 }
 
+/** Ticket 22c, hotspot family 5: knowledge search over 100, 500 and 1,000 matching revisions, with a
+ * first-page cap of one. The corpus is written on a copy of the long-history fixture, so applicability
+ * is decided against its real facts and Turns; it is cached like the fixture itself (`--rebuild`
+ * regenerates it) because writing 1,000 valid commits is slower than reading them. Both the first
+ * page and the complete continuation are measured, with the whole-graph resolutions each performs. */
+async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]> {
+  const samples: Sample[] = [];
+  for (const revisions of [100, 500, 1_000]) {
+    const copy = join(cache, `${size}-search-${revisions}.db`);
+    let built = 0;
+    if (rebuild || !existsSync(copy)) {
+      rmSync(copy, { force: true });
+      copyFileSync(fixture.dbPath, copy);
+      const started = performance.now();
+      searchCorpus(copy, { revisions, sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId });
+      built = performance.now() - started;
+    }
+    const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
+    try {
+      const query = "SEARCHNEEDLE";
+      const scope = { cap: 1, sessionId: fixture.sessionId, headTurnId: fixture.headTurnId };
+      const hits = memory.store.searchAddresses(query, "knowledge").length;
+      const all = () => { // the complete continuation: every page, one hit at a time
+        let page = memory.search(query, "knowledge", scope), pages = 1;
+        for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+          page = memory.search("", "knowledge", { ...scope, cursor }); pages++;
+        }
+        return pages;
+      };
+      const graphed = (run: () => unknown) => {
+        const counter = countGraphResolutions();
+        try { counter.reset(); run(); return counter.resolutions(); } finally { counter.restore(); }
+      };
+      const firstGraph = graphed(() => memory.search(query, "knowledge", scope));
+      samples.push(measure(`search first page (${revisions} matches, cap 1)`, () => memory.search(query, "knowledge", scope),
+        `${hits} hits, ${firstGraph} graph resolutions${built ? `, corpus built in ${(built / 1000).toFixed(1)} s` : ", cached corpus"}`));
+      const pages = all();
+      samples.push(measure(`search full continuation (${revisions} matches, cap 1)`, all, `${pages} pages, ${graphed(all)} graph resolutions`));
+    } finally { memory.close(); }
+  }
+  return samples;
+}
+
 async function runSize(size: string) {
   const options = SIZES[size];
   if (!options) throw new Error(`unknown size ${size}; use ${Object.keys(SIZES).join(" | ")}`);
@@ -252,6 +295,10 @@ async function runSize(size: string) {
       store.listCurrentKnowledge({ sessionId: fixture.sessionId, headTurnId: head }).length;
       memory.spend(fixture.sessionId);
     }, "the three reads showSpend makes"),
+    // 22c: one full tool occurrence inside the Turn with 40 tool calls.
+    measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
+      `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),
+    ...await searchScenarios(fixture, size),
     ...await disabledHost(fixture, size),
     ...await triggerBacklog(fixture, size),
     ...await hostReconciliation(size, options.entries),

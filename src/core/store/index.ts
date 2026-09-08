@@ -389,6 +389,16 @@ export type KnowledgeOperationInput =
  * applicability is decided per source entry, not per Turn: a sibling entry inside the same Turn is off-path. */
 export type KnowledgePath = { sessionId: number; headTurnId: number | null; branch?: string };
 
+/** One read's view of the commit DAG (22c), built by `commitGraph` and passed no further than the
+ * read that built it: every revision in id order, the ids that apply to the read's path, the current
+ * tips among them, and the descendants of a commit — the ancestry a hit's historical label needs. */
+export interface CommitGraph {
+  revisions: KnowledgeRevision[];
+  applicable: Set<number>;
+  current: KnowledgeRevision[];
+  descendants: (commitId: number) => Set<number>;
+}
+
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
  * `entries` is null when the path has no selected native ancestry; `addresses` answers the address
  * fallback for facts written without entry bindings, one Turn at a time. */
@@ -1033,6 +1043,15 @@ export class Store {
   /** All citations from the reader's own session constrain applicability; since 21a that is one
    * `supports` list per commit, archives included. */
   private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
+    return this.commitGraph(path, projectId).current.map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+  }
+
+  /** One resolution of the commit DAG (22c): every revision, which of them apply to `path` (and to
+   * `projectId`, where a scope filter is asked for), which of those are current, and the descendants
+   * of any commit. A read resolves this once and answers every hit from it instead of rebuilding the
+   * graph per hit. Like the path snapshot it is a value that never outlives its read, so the next
+   * read sees another executor's commits; a page asked for later still reports its own query's. */
+  commitGraph(path: KnowledgePath | null, projectId?: number): CommitGraph {
     const snapshot = path ? this.pathSnapshot(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
@@ -1052,7 +1071,14 @@ export class Store {
         superseded.add(id); pending.push(...parents.get(id)!);
       }
     }
-    return applicable.filter(r => !superseded.has(r.id)).map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+    let children: Map<number, number[]> | undefined; // the same edges, downwards; built only if asked for
+    return { revisions, applicable: new Set(applicable.map(r => r.id)), current: applicable.filter(r => !superseded.has(r.id)),
+      descendants: (commitId: number) => {
+        if (!children) { children = new Map(); for (const [id, up] of parents) for (const parent of up) children.set(parent, [...(children.get(parent) ?? []), id]); }
+        const ids = new Set([commitId]), pending = [commitId];
+        while (pending.length) for (const child of children.get(pending.pop()!) ?? []) if (!ids.has(child)) { ids.add(child); pending.push(child); }
+        return ids;
+      } };
   }
 
   /** One operation's answer to "is this on the selected path" (22a): the path's Turn set, the branch's
@@ -1453,8 +1479,11 @@ export class Store {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId) as { id: number } | undefined;
     return row ? this.getSourceEntry(row.id) : null;
   }
-  listSourceEntries(sessionId: number): SourceEntry[] {
-    return (this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) as { id: number }[]).map(r => this.getSourceEntry(r.id)!);
+  /** 22c: `turnId` narrows the read to one Turn's native occurrences, so a full trace of one tool
+   * call loads that Turn instead of the whole session. The order — by entry id — is the same. */
+  listSourceEntries(sessionId: number, turnId?: number): SourceEntry[] {
+    return (this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
+      .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[]).map(r => this.getSourceEntry(r.id)!);
   }
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {
