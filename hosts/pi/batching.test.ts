@@ -150,7 +150,12 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
     expect(sent).toContain(role === "user" ? "NEW USER EVIDENCE" : "NEW TOOL EVIDENCE");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
-    expect(JSON.parse(run.response!).fallbackReason).toContain("does not contain selected source entries");
+    // 19c: the request-copy runner's "captured prefix does not contain the selected source entries"
+    // check went with it. It existed because that runner replayed a captured body that could predate
+    // the evidence it claimed to cover; a fork instead branches the parent's persisted ancestry, so
+    // the newly completed entries are in the child's context by construction. This fake host has no
+    // persisted parent file at all, so the task falls back to fresh context with the whole evidence.
+    expect(JSON.parse(run.response!).fallbackReason).toContain("native runner:");
     expect(h.memory.pendingEntries(1, "main", role === "user" ? 2 : 1)).toEqual([]);
   } finally { await h.dispose(); }
 });
@@ -186,7 +191,7 @@ test("17b 2026-09-08: capture after compaction does not claim the persisted orig
     expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
-    expect(JSON.parse(run.response!).fallbackReason).toContain("does not contain selected source entries");
+    expect(JSON.parse(run.response!).fallbackReason).toContain("native runner:"); // as above: no fork here, fresh context, complete evidence
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
   } finally { await h.dispose(); }
 });
@@ -212,14 +217,12 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
 test("17b 2026-09-08: native payload overhead is capacity-checked before sending or advancing entries", async () => {
   const h = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000, maxTokens: 1000 };
-    const complete = h.ctx.modelRegistry.complete;
-    h.ctx.modelRegistry.complete = async (model, conversation, options) => {
-      const onPayload = options!.onPayload!;
-      options!.onPayload = payload => onPayload({ ...payload as object, providerMetadata: "word ".repeat(30000) }, model);
-      return complete(model, conversation, options);
-    };
-    await h.turn();
+    // The overhead is real now (19c): core prices the material it froze, while the body the child
+    // actually sends also carries the domain system prompt and the four tool schemas. This window
+    // admits the material and cannot hold the body.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 6000, maxTokens: 500 };
+    await h.prompt("word ".repeat(500)); await h.answer("word ".repeat(500));
+    await h.emit("agent_settled"); await h.drain();
     expect(h.requests).toEqual([]);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.role)).toEqual(["user", "assistant"]);
     const run = h.memory.store.listRuns(1)[0]!;

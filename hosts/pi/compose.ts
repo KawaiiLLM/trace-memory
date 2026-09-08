@@ -1,9 +1,9 @@
 // 19b: the Pi adapter's own layout of core's frozen task material. Core renders, budgets and freezes
 // the parts (entry views, fact and knowledge lines, source index, reminders, receipts) and composes
 // no message; this module is the only place that decides which parts an execution mode needs, which
-// header introduces them, how they are separated and which model message carries them. Both runners
-// — the request-copy runner in index.ts and the native runner in native.ts — use it, so an inherited
-// fork and a fresh subagent see the same bytes for the same mode.
+// header introduces them, how they are separated and which model message carries them. The one
+// runner (native.ts) uses it for both modes, so an inherited fork and a fresh subagent see the same
+// bytes for the same mode.
 //
 // Ruling 2026-09-06 08:53: an inherited-context run carries only its instruction, the range, the head
 // reply and the frozen source index, because the raw turns, the facts delivered after earlier runs

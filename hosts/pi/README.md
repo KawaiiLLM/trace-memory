@@ -6,12 +6,20 @@ its exposed store. Notings use verified branch mode by default; consolidation us
 subagent mode. Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
+**One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
+(`native.ts`): branch mode in a child forked from the parent session file at its persisted
+leaf, every fresh-context task in a private child session. Pi owns the model call, the tool
+loop, the retry policy, cancellation and persistence; this adapter keeps the byte-level gate
+on a fork's first request and the run record. The request-copy runner — its own conversation
+loop, its provider-message construction and its handwritten retry-settings reader — was
+deleted in 19c; there is no second runtime and no fallback to one.
+
 Run the extension with Pi 0.85.1 on Node 24.6.0. The core uses Node's built-in
 `node:sqlite` (`DatabaseSync`), with no native dependency to install. From the
 repository root, run `npm install`, `npm test`, `npm run typecheck`, and
 `npm run smoke:pi`. The smoke script loads the extension directly under Node
-using the host tests' stub ExtensionAPI and commits one noting through a fake
-provider into a temporary database. See below for launching a real Pi session.
+using the host tests' stub ExtensionAPI and commits one noting through the native
+runner into a temporary database, with the provider stubbed at the wire. See below for launching a real Pi session.
 
 v1 is unreleased. Databases created before the 17c closure/claim schema are not read;
 there is no migration. Start with a new database.
@@ -21,7 +29,9 @@ there is no migration. Start with a new database.
 Read configuration from the `trace-memory` namespace in Pi's global `settings.json`
 (`PI_CODING_AGENT_DIR` or `~/.pi/agent`) and project `.pi/settings.json`. Project
 values override global values; `TRACE_MEMORY_CONFIG` is the final flat JSON override.
-The same file reader supplies Pi retry settings. The plugin never writes settings.
+Pi's own runtime settings — `retry` and provider policy — are not read here at all: the
+child session is built with Pi's `SettingsManager` and uses whatever that reports (19c
+gate 6). The plugin never writes settings.
 For example, either settings file can contain:
 
 ```json
@@ -49,12 +59,14 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `noting.branchModeDefault` defaults to `true`. Set it to `false` for subagent
   notings. Branch notings always use the session model, including on fallback;
   `notingModel` applies only when subagent mode is explicitly configured.
-- `nativeRunner` (19a) defaults to `false`. Set it to `true` to run branch-mode Noting and
-  Consolidation on a native Pi child session instead of the request-copy runner. Subagent
-  mode and borrowed (closed-session) work never take the native path. When a native child
-  cannot be prepared, or its first body fails prefix verification before anything is sent,
-  the task continues on the request-copy runner and the run records `fallbackReason`
-  (`native runner: …`) together with the rejected gate result under `verification.native`.
+- `nativeRunner` (19a) is **gone** (19c). The native runner is the only runner, so the key
+  selects nothing; like any other unrecognized key it is rejected at load with
+  `Unknown setting nativeRunner`, which is 18a's rule for configuration that does not exist.
+  When a fork cannot be prepared, or its first body fails prefix verification before anything
+  is sent, the task runs in a fresh native child instead and the run records `fallbackReason`
+  (`native runner: …`) together with the rejected gate result under `verification.native`. If
+  even that child cannot be constructed, the run fails with the reason and the queue stays
+  pending for the next permitted trigger.
 - `runsDir` (19a) defaults to `<dbPath's directory>/runs`. Native worker logs are written to
   `<runsDir>/<parent Pi session id>/<timestamp>_<child id>.jsonl`, outside Pi's own sessions
   directory, so `/resume` never lists them. Each run record stores the absolute path as
@@ -208,12 +220,12 @@ and cannot recover unknown provider charges. If SQLite is locked or unavailable,
 closure/audit writes can fail; the host reports them and still closes. The absence
 of a persisted closed mark is never repaired by guessing.
 
-The runner passes its per-worker `AbortSignal` to pi-ai `complete`, registry
-`complete`, and `retryAssistantCall`. Installed `dist/types.d.ts` declares the
-signal option; `dist/utils/retry.d.ts` declares the retry signal, whose implementation
-interrupts backoff. No provider-global cancellation or foreground cancellation is
-used. A provider that ignores cancellation may keep its remote request alive,
-but cannot hold local shutdown past cleanup or write through disposed tools.
+The runner wires its per-worker `AbortSignal` into the child `AgentSession`: an abort calls
+`session.abort()`, which stops the in-flight provider request, interrupts a retry backoff and
+leaves the parent session and any sibling worker untouched. Only the child runtime and its
+subscriptions are disposed. No provider-global cancellation or foreground cancellation is used.
+A provider that ignores cancellation may keep its remote request alive, but cannot hold local
+shutdown past cleanup or write through disposed tools.
 
 ## Enrollment and native menu
 
@@ -342,29 +354,25 @@ older vendored implementation:
 | API | Declaration under the installed package |
 | --- | --- |
 | Hooks, tool execution/schema, command, `appendEntry`, context | `dist/core/extensions/types.d.ts` |
-| `ctx.modelRegistry.find(provider, id)` and `.complete(model, context, options)` | `dist/core/model-registry.d.ts` |
-| Read-only `getSessionId`, `getBranch`, `getEntries` | `dist/core/session-manager.d.ts` |
+| `ctx.modelRegistry.find(provider, id)` | `dist/core/model-registry.d.ts` |
+| Read-only `getSessionId`, `getSessionFile`, `getLeafId`, `getBranch`, `getEntries` | `dist/core/session-manager.d.ts` |
+| `createAgentSession`, `SessionManager`, `SettingsManager`, `DefaultResourceLoader` | `dist/index.d.ts` (public SDK) |
 | `Context`, `AssistantMessage`, `ProviderRequestOptions.onPayload` | `node_modules/@earendil-works/pi-ai/dist/types.d.ts` |
 
-`modelRegistry.complete` supplies Pi's configured provider/model/auth access.
-Subagent Noting and Consolidation start with the run prompt, one rendered input
-message and the four shared façade definitions. Both modes execute model tool
-calls through run-bound façade tools and continue until the model stops. Each
-round appends the assistant call and its tool results. Consolidation's first valid
-`memory` submission returns review guidance, appended as one user-role message;
-the second valid submission commits in the same conversation and run. Rejected
-batches can be corrected through further tool rounds. The former continuation
-state and separate candidate/final invocations are gone.
+The registry is used to resolve a configured `provider/model-id` only; nothing in this
+adapter calls a model. Noting and Consolidation run in a child `AgentSession`, which executes
+the model's tool calls through the run-bound façade tools and continues until the model stops.
+Consolidation's first valid `memory` submission returns review guidance, delivered to the child
+as a native user message queued with `deliverAs: "steer"`; the second valid submission commits
+in the same child session and run. Rejected batches can be corrected through further tool
+rounds.
 
-`onPayload` snapshots the provider-native body; the last request sent embeds all
-earlier rounds and is stored with tool results, output and usage. In branch
-mode the installed adapter serializes only the new assistant/tool suffix,
-preserving native IDs and thinking signatures. Suffix serialization uses
-`cacheRetention: "none"` so Anthropic does not accumulate cache markers on every
-round; all captured cache controls remain untouched. `branch.ts` appends those native
-items to the previous request and independently verifies its preserved prefix
-before sending. Session model/auth remain frozen for the whole run. No auth
-headers are included in the request-body audit.
+`agent.onPayload` snapshots the provider-native body of every round; the last request sent
+embeds all earlier rounds and is stored with tool results, output and usage. The child's own
+adapter serializes the whole body, including native tool ids and thinking signatures — this
+adapter no longer builds provider messages at all. Session model and auth stay frozen for the
+whole run (the model is resolved once, at launch). No auth headers are included in the
+request-body audit.
 
 The vendored 0.84.4 `types.ts`, extension/SDK/session/compaction docs, and
 `custom-compaction.ts`/`handoff.ts` were used for implementation patterns only.
@@ -425,91 +433,70 @@ Automated verification uses a fake provider; it does not establish live provider
 credentials or replace the manual conversation above.
 
 
-## Branch request and verification contract
+## Fork request and verification contract (the gate)
 
-Branch mode inherits the latest captured provider request: system instructions,
-messages, the four tools already registered for the main agent, and all body
-options (cache controls, sampling and reasoning settings). Nothing is added to
-the tool list per run. The first request appends one user instruction: Noting
-uses the prompt, range, head reply and frozen source index; Consolidation uses its
-prompt, range, exact fact list and reminders.
-Subsequent requests append native assistant/tool items and any Consolidation review
-message to the immediately preceding verified request.
+A fork inherits the parent's persisted conversation, not a copy of its request: the child is
+branched from the parent session file at its persisted leaf, and Pi's own adapter serializes
+the body. What the capture is still for is the **gate**: the byte-level comparison that proves
+the child's first outgoing body reproduces the parent's request prefix, so the provider's cache
+lookup walks identical bytes.
 
-`before_provider_request` captures a detached JSON snapshot for this extension instance (one per Pi session) in
-memory. It is never appended to the Pi session file. Session/tree restoration
-invalidates the capture; missing captures and model changes since capture fall
-back. Captures are the **last request**, not a reconstruction of the session:
-the assistant response to that request is not in its own input, so Noting
-appends the selected head reply. A selected user or tool source not captured in
-that prefix uses the existing subagent fallback. Persisted originals before the
-latest compaction or branch-summary boundary are conservatively excluded from
-capture coverage. As before, payload-rewriting extensions must run before this
-capture hook; native ancestry is not a proof against arbitrary later rewrites.
+`before_provider_request` captures a detached JSON snapshot for this extension instance (one
+per Pi session) in memory. It is never appended to the Pi session file. Session/tree
+restoration invalidates the capture; a missing capture, a capture from another branch and a
+session model change since the capture all refuse the fork and take the fresh-context fallback
+with a recorded reason. Persisted originals before the latest compaction or branch-summary
+boundary are conservatively excluded from capture coverage. Payload-rewriting extensions must
+run before this capture hook; native ancestry is not proof against arbitrary later rewrites.
 
-`branch.ts` supports `anthropic-messages`, `openai-completions`, and
-`openai-responses` (including `openai-codex-responses`) payloads. Other APIs fall back with an explicit reason.
-Anthropic system content blocks and OpenAI system/developer messages retain all
-fields byte for byte under deterministic serialization; Responses uses `input`
-and `instructions`. No provider-native messages are converted back into Pi
-messages. `complete` receives the new suffix as its serialization context and `onPayload`
-replaces the generated body with the built branch body. The request record is a
-snapshot of **that replacement object**, not the discarded callback argument.
-The supported installed adapters send this replacement (Anthropic enforces
-`stream: true`, already present in its captured streaming request).
+A fork needs no *new* capture: once the checkpoint is persisted and reopenable, the capture
+already held for this branch is enough, and the fork may run while the foreground is still
+inside the same Turn (19c readiness). A capture older than the newest entries is not a
+correctness problem: the child forks the real ancestry, so those entries are in its context,
+and the gate compares only the prefix.
 
-Direct completion uses `@earendil-works/pi-ai/compat.complete`, verified in
-`dist/compat.d.ts:64` of Pi's nested pi-ai **0.85.0**, and the workspace's pi-ai
-**0.85.1**. `dist/types.d.ts:52–104` declares payload replacement and auth options.
-Coding-agent **0.85.0** signatures were checked in
-`dist/core/extensions/types.d.ts:519` and `dist/core/model-registry.d.ts:30–33`.
-The host resolves auth, headers, environment and base URL with
-`getApiKeyAndHeaders`, and passes the same Pi session id for cache routing.
-All request-body options are copied. The hook does **not** expose Pi's private
-transport, retry, timeout settings, or other extensions' header rewrites; direct
-completion uses pi-ai defaults for those transport settings. Full transport-option
-parity cannot be established through this public hook.
+`branch.ts` supports `anthropic-messages`, `openai-completions`, and `openai-responses`
+(including `openai-codex-responses`) payloads: it reads the parent's system prompt and tool
+definitions out of the captured body so the child can be built with the same bytes, and it
+compares bodies. Other APIs refuse the fork with an explicit reason. It no longer builds any
+provider message — that ended with the request-copy runner (19c).
 
-Every branch attempt is compared, stronger than checking only the first per key.
-The key is `(model id, provider, SHA-256 of tool definitions)`; `firstForKey` marks
-initial verification and any change from the previous successful key. Comparison
-sorts JSON object keys recursively, preserves array order and every string
-character (including whitespace and Unicode), and compares the complete bodies
-allowing only the appended items. It therefore covers each message prefix,
-tools, system instructions and other body options. `differingPath` identifies the
-first unequal path. Hashes cover the two complete deterministically serialized
-UTF-8 bodies, so the captured hash and request hash normally **differ**.
+Every fork request is compared, first body and every later round. Comparison sorts JSON object
+keys recursively, preserves array order and every string character (including whitespace and
+Unicode), and compares the complete bodies allowing only the appended items. It therefore
+covers each message prefix, tools, system instructions and other body options. `differingPath`
+identifies the first unequal path. Hashes cover the two complete deterministically serialized
+UTF-8 bodies, so the captured hash and request hash normally **differ**. The one normalization
+is the ruled `cache_control` stripping described under The runner; nothing else is ignored.
 
 `runs.response.verification` contains `passed`, `capturedHash`, `requestHash`,
-`appendedMessages`, `differingPath`, `key`, `firstForKey`, and `rounds`.
-The top-level hashes identify the capture and first request. Each `rounds` entry
-records `capturedHash` (the previous request), `requestHash` (the new request),
-`appendedMessages`, `passed`, and `differingPath`. The final passing round's
-request hash identifies `runs.request`. Top-level `passed` becomes false if any
-round fails. Reply
-`usage.cacheRead` is also copied to `verification.cache_read` when numeric;
-it never affects `passed`. Missing usage leaves the observation absent. Pi-ai
-normalizes some absent provider counters to zero: zero is not proof of an
-explicit provider measurement. Its Anthropic adapter maps
-`cache_read_input_tokens`; OpenAI maps `cached_tokens` (verified in nested
-`dist/api/anthropic-messages.js:411`, `openai-completions.js:1180`, and
-`openai-responses-shared.js:441`). `response.usage` preserves the full SDK usage.
+`appendedMessages`, `differingPath`, `normalized`, `key`, and `rounds`. The top-level hashes
+identify the capture and the child's first request. Each `rounds` entry records `capturedHash`
+(the previous request), `requestHash` (the new request), `appendedMessages`, `passed`, and
+`differingPath`. `runs.request` is the **last** request sent, which embeds every earlier round.
+Top-level `passed` becomes false if any round fails. Reply `usage.cacheRead` is also copied to
+`verification.cache_read` when numeric; it never affects `passed`. Missing usage leaves the
+observation absent. Pi-ai normalizes some absent provider counters to zero: zero is not proof
+of an explicit provider measurement. Its Anthropic adapter maps `cache_read_input_tokens`;
+OpenAI maps `cached_tokens` (verified in nested `dist/api/anthropic-messages.js:411`,
+`openai-completions.js:1180`, and `openai-responses-shared.js:441`). `response.usage`
+preserves the full SDK usage.
 
-An initial mismatch prevents the branch provider call. The same noting run uses the full
-frozen subagent input, records `mode: subagent`, `response.fallbackReason`, and
-the failed verification with both hashes. `runs.request` is the actual fallback
-request, while the failed branch hash describes the rejected candidate. Missing
-or unsupported captures have a reason but no fabricated comparison/hashes.
-Notification happens once per Pi session. A later round mismatch rejects that
-round with no fallback; the record retains the last request actually sent and
-the failed comparison. A prior committed batch remains committed. Provider/auth failures after a passed
-comparison remain branch failures; they do not trigger another billable call.
+A rejected first body throws inside `onPayload`, before anything is sent: nothing is billed,
+the same run continues in a fresh native child with the full fresh-context material, and it
+records `mode: subagent`, `requestedMode: branch`, `response.fallbackReason` and the rejected
+gate result (both hashes and the differing path) under `verification.native`. Missing or
+unsupported captures have a reason but no fabricated comparison or hashes. Notification happens
+once per Pi session. A later round mismatch fails that round with no fallback; the record
+retains the last request actually sent and the failed comparison, and a prior committed batch
+stays committed. Provider failures after a passed comparison stay fork failures; they never
+trigger another billable call.
 
-Fallback keeps the run honest: it accepts the actual returned `mode`, records
-`requestedMode` beside it, and preserves `verification`/`fallbackReason` in the response
-envelope. Since 19b the full fresh-context context is composed from the same frozen
-material rather than shipped as a second core string, so a fallback cannot send
-range-only context or falsely record branch mode. No store schema changed.
+Fallback keeps the run honest: it accepts the actual returned `mode`, records `requestedMode`
+beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b
+the fresh-context material is composed from the same frozen parts rather than shipped as a
+second core string, so a fallback cannot send range-only context or falsely record branch mode.
+No store schema changed.
 
 ## Message composition (19b)
 
@@ -532,13 +519,13 @@ mode, and the byte-level layout rulings are pinned in `compose.test.ts`. Consoli
 guidance is read back from the `memory` receipt with core's own `input.reviewFeedback(result)`;
 the adapter only chooses how to put that message in front of the model.
 
-## Native runner (19a/19b, opt-in)
+## The runner (19a/19b, sole runner since 19c)
 
-`nativeRunner: true` replaces the request-copy runner with real Pi child sessions for **both**
-modes. Branch work runs in a child forked from the parent session file; every subagent task —
-explicit subagent mode, a fork that could not be prepared, and borrowed closed-session catch-up —
-runs in a fresh private child. With the switch on the request-copy runner is reached only if the
-native child itself cannot be constructed (19c deletes it). `native.ts` opens the parent's own JSONL through an **independent**
+The runner is real Pi child sessions for **both** modes. Branch work runs in a child forked
+from the parent session file; every fresh-context task — explicit subagent mode, a fork that
+could not be prepared, and borrowed closed-session catch-up — runs in a private child. There is
+no other runner: a child that cannot be constructed at all is a run failure with a reason, and
+the queue stays pending. `native.ts` opens the parent's own JSONL through an **independent**
 `SessionManager` whose session directory is the runs directory, calls
 `createBranchedSession` at the parent's persisted leaf, and hands that manager to
 `createAgentSession`. The foreground manager is never passed in and never mutated;
@@ -587,15 +574,16 @@ The same `runNative` serves `mode: "subagent"` with four differences and no seco
 
 A fork that cannot be prepared records `requestedMode: "branch"`, run `mode: "subagent"` and
 `fallbackReason: "native runner: <reason>"`, warns once per Pi session, and continues on the
-fresh child without a second billable attempt (nothing had been sent).
+fresh child without a second billable attempt (nothing had been sent). If that child cannot be
+constructed either, the run fails with both reasons; nothing is committed and nothing advances.
 
 `agent.onPayload` is wrapped (the extension runner's own handler is still called): the first
-body is checked against the captured parent request with `verifyNativeRequest`, appended
-messages being everything past the captured message count. Later rounds are checked against
-the previous round exactly as the request-copy runner does. A rejected first body throws
-inside `onPayload`, **before** the request leaves, so the task falls back to the request-copy
-runner with `fallbackReason: native runner: …` and the rejected result under
-`verification.native` (both hashes and the differing path). Nothing is billed twice.
+body is checked against the captured parent request with `verifyForkRequest`, appended messages
+being everything past the captured message count. Later rounds are checked the same way against
+the previous round. A rejected first body throws inside `onPayload`, **before** the request
+leaves, so the task continues in a fresh native child with `fallbackReason: native runner: …`
+and the rejected result under `verification.native` (both hashes and the differing path).
+Nothing is billed twice.
 
 **Gate result (19a).** With the production Noter and Consolidator prompts and the production
 tool definitions, driven through the real installed pi-ai adapter:
@@ -624,10 +612,10 @@ The outcome comes from the child's terminal assistant response, never from `prom
 resolving; a provider error after a memory tool committed leaves the commit in place and core
 records the problem.
 
-Limits carried into 19c: the fork path still requires the parent request capture,
-because that capture is what the gate compares against; the runs directory is never pruned;
-a gate rejection after the child file was created leaves that (unused) child log behind; and
-no live provider run was made — every check above uses stubbed HTTP with the real adapters.
+Limits: the fork path still requires the parent request capture, because that capture is what
+the gate compares against; the runs directory is never pruned; a gate rejection after the child
+file was created leaves that (unused) child log behind; and no live provider run was made —
+every check above uses stubbed HTTP with the real adapters.
 
 ## Launch readiness and the cache-miss latch (19c)
 
@@ -755,7 +743,7 @@ This is a human-run check, not an automated claim of live cache hits.
    import assert from 'node:assert/strict';
    import { readFileSync } from 'node:fs';
    import { DatabaseSync } from 'node:sqlite';
-   import { hash, serialize } from './hosts/pi/branch.ts';
+   import { hash, serialize, stripCacheControl } from './hosts/pi/branch.ts';
    const db = new DatabaseSync('/private/tmp/trace-memory-manual/branch.db', { readOnly: true });
    const run = db.prepare("SELECT * FROM runs WHERE kind='noting' ORDER BY id DESC LIMIT 1").get();
    assert.ok(run, 'Wait for the noting to finish');
@@ -767,34 +755,39 @@ This is a human-run check, not an automated claim of live cache hits.
    const key = Array.isArray(captured.messages) ? 'messages' : 'input';
    const verification = response.verification;
    assert.equal(verification.passed, true);
-   let body = sent;
+   let body = sent; // runs.request is the LAST body sent; walk the rounds back to the first
    for (const round of [...verification.rounds].reverse()) {
      assert.equal(round.passed, true);
      assert.equal(hash(body), round.requestHash);
      const count = round.appendedMessages.length;
-     assert.deepEqual(body[key].slice(-count), round.appendedMessages);
-     body = { ...body, [key]: body[key].slice(0, -count) };
+     assert.deepEqual(stripCacheControl(body[key].slice(body[key].length - count)), round.appendedMessages);
+     body = { ...body, [key]: body[key].slice(0, body[key].length - count) };
      assert.equal(hash(body), round.capturedHash);
    }
    assert.equal(hash(body), verification.requestHash);
-   assert.deepEqual(body[key].slice(-1), verification.appendedMessages);
-   const prefix = { ...body, [key]: body[key].slice(0, -1) };
-   assert.deepEqual(Buffer.from(serialize(prefix)), Buffer.from(serialize(captured)));
+   // The child's own tail: the inherited head reply plus the task message. The gate compares
+   // both bodies with cache_control stripped and nothing else (ruling 2026-09-08).
+   const appended = verification.appendedMessages.length;
+   const prefix = stripCacheControl({ ...body, [key]: body[key].slice(0, body[key].length - appended) });
+   assert.deepEqual(Buffer.from(serialize(prefix)), Buffer.from(serialize(stripCacheControl(captured))));
    assert.equal(hash(captured), verification.capturedHash);
    assert.deepEqual(sent.tools, captured.tools);
+   assert.ok(response.nativeLog); // the child's own JSONL, under runsDir
    db.close();
    JS
    ```
 
 4. Save the two bodies and printed response. Check `usage.cacheRead` and
    `verification.cache_read` for cached input tokens. A positive count is an
-   observation, not identity proof; zero/missing counts do not fail comparison.
-   Hashes should each match their respective body, not each other. Inspect the
-   appended message: noting prompt followed by range-only input, no copied raw.
-5. Change the session model, then send another prompt and wait. Repeat the check:
-   a supported model's first new run should have `firstForKey: true`. Repeat
-   after changing active tool definitions. For an unsupported API expect
-   subagent mode, a fallback reason and one notice, rather than invented hashes.
+   observation, not identity proof; zero/missing counts do not fail comparison — but note that
+   one *eligible* zero-cache fork response arms the session's cache-miss latch (19c), which the
+   `/trace` menu's Retry fork clears. Hashes should each match their respective body, not each
+   other. Inspect the appended tail: the inherited head reply, then the noting prompt with
+   range-only input and no copied raw. `response.nativeLog` points at the child's own JSONL.
+5. Change the session model, then send another prompt and wait. A model change since the
+   capture must refuse the fork with a reason, not reuse the stale body; after a new capture
+   the next run forks again. Repeat after changing active tool definitions. For an unsupported
+   API expect subagent mode, a fallback reason and one notice, rather than invented hashes.
    Compare with a separate database using `noting.branchModeDefault: false` to
    evaluate extraction quality and cost before choosing the operational default.
 
@@ -848,14 +841,14 @@ failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
 ## Retries
 
-Every model call of a run goes through pi-ai's `retryAssistantCall`, the helper
-Pi uses for its own compaction and branch-summary calls, with the policy from
-Pi's `settings.json` (`retry.enabled`, `maxRetries`, `baseDelayMs`; provider
-timeouts and SDK retries from `retry.provider`). Transient errors (429, 5xx,
-overloaded, timeouts, fetch failures) back off exponentially; other errors
-fail at once. A retry wraps one model call only: tool execution and commits
-happen after a reply, so a retried call never repeats a write. While a retry
-waits, the footer shows the warning indicator and a notice names the attempt.
+Retrying is Pi's, not this adapter's (19c gate 6). The child `AgentSession` retries with the
+policy its `SettingsManager` reports from `settings.json` (`retry.enabled`, `maxRetries`,
+`baseDelayMs`, and `retry.provider`), the same policy Pi applies to a foreground turn.
+Transient errors (429, 5xx, overloaded, timeouts, fetch failures) back off exponentially;
+other errors fail at once. A retry re-runs the assistant turn only: tool execution and commits
+happen after a reply, so a retried call never repeats a write. The adapter subscribes to Pi's
+`auto_retry_start`/`auto_retry_end`, records the attempts in the run record, shows the warning
+indicator while one waits and posts one notice per scheduled attempt.
 
 ## Run records
 
@@ -903,8 +896,12 @@ kind. Tree switching contributes no extraction usage to Pi totals.
   ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
-- `nativeRunner` is off by default; on `anthropic-messages` the gate passes only with the
-  ruled `cache_control` normalization (see Native runner). Nothing prunes `runsDir`.
+- On `anthropic-messages` the gate passes only with the ruled `cache_control` normalization
+  (see The runner). Nothing prunes `runsDir`.
+- A fork inherits the parent's persisted ancestry, so a capture older than the newest entries
+  is not a correctness problem any more: the child's context holds them and the gate compares
+  only the prefix. The request-copy runner's "captured prefix does not contain the selected
+  source entries" refusal went with it (19c).
 - The readiness probe reopens the parent's session file once per launch decision, and again at
   each boundary while a task waits. It is read-only and creates nothing, but on a very large
   session file it is repeated read I/O, bounded by how often a task is actually due.

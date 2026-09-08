@@ -137,9 +137,13 @@ test("19c 2026-09-08: cache eligibility rejects hits, small, missing, placeholde
 test("19c 2026-09-08: two phases reporting a miss together produce one transition and one warning", async () => {
   const f = await fixture({ "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false });
   try {
+    // The first turn's own Noting task must not latch the session before the two-phase opportunity
+    // below, so its response reports a below-minimum input; only the two frozen fork tasks of that
+    // opportunity report an eligible zero-cache response.
+    let notings = 0;
     f.script(body => !worker(body) && !worker(body, "Consolidation") ? say("好的。", small())
       : worker(body, "Consolidation") ? (toolResults(body) >= 2 ? say("Integrated.", big()) : call(`t${toolResults(body)}`, "memory", memoryBatch, big()))
-      : say("Nothing to note.", big()));
+      : say("Nothing to note.", ++notings === 1 ? small() : big()));
     await f.turn();
     f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
       .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
@@ -166,7 +170,7 @@ test("19c 2026-09-08: two phases reporting a miss together produce one transitio
 }, 30000);
 
 test("19c 2026-09-08: the latch survives reopen and clears only through the menu's Retry fork", async () => {
-  const h = host({ nativeRunner: true });
+  const h = host();
   try {
     await h.turn();
     h.memory.store.suppressFork(1, "2026-09-08T00:00:00.000Z");

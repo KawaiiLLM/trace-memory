@@ -21,7 +21,10 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
     // Both hashes are recorded, and they are the hashes of the two real bodies.
     expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
     expect(response.verification.requestHash).toBe(hash(f.sent[1]));
-    expect(JSON.parse(run.request!)).toEqual(f.sent[1]);
+    // The gate compares the child's FIRST body; the run record stores the LAST request sent, which
+    // embeds every earlier round (spec: Run record contract). Here the run has one round, so both
+    // name the same body.
+    expect(JSON.parse(run.request!)).toEqual(f.sent.at(-1));
     // The production Noter prompt and the production tool definitions really went out.
     expect(String(JSON.stringify(f.sent[1]!.messages.at(-1)))).toContain("Noting (fact extraction)");
     expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "trace", "search", "note", "memory"]);
@@ -58,7 +61,10 @@ test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with c
     expect(response.verification.normalized).toEqual(["cache_control"]);
     expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
     expect(response.verification.requestHash).toBe(hash(f.sent[1]));
-    expect(JSON.parse(run.request!)).toEqual(f.sent[1]);
+    // The gate compares the child's FIRST body; the run record stores the LAST request sent, which
+    // embeds every earlier round (spec: Run record contract). Here the run has one round, so both
+    // name the same body.
+    expect(JSON.parse(run.request!)).toEqual(f.sent.at(-1));
     // The raw bodies do differ, and only at the adapter-placed cache breakpoint: the parent's
     // marker sits on the message the child inherited, the child's on its appended task message.
     const key = messageKey("anthropic-messages");
@@ -413,4 +419,91 @@ test("19c 2026-09-08: /trace stop cancels the running child after its commit and
     await f.h.drain();
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
   } finally { release(); await f.dispose(); }
+}, 20000);
+
+// ------------------------------------------------- 19c cutover: one runner, Pi's own settings
+test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared runs in a fresh native child, not a hand-built request", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn("用 pnpm，不要 npm", { capture: false }); // no capture: the fork cannot be prepared
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(run.mode).toBe("subagent");
+    expect(response.requestedMode).toBe("branch");
+    // The fallback is a real child session of its own: a private native log under the runs directory,
+    // its own system prompt and only the four memory tools. A hand-built request has none of this —
+    // it would replay the captured parent prefix and leave no child session behind.
+    const log = response.nativeLog as string;
+    expect(log.startsWith(join(f.h.dir, "runs", f.manager().getSessionId()))).toBe(true);
+    expect(existsSync(log)).toBe(true);
+    const worker0 = f.sent.find(body => worker(body))!;
+    expect(worker0.messages[0].role).toBe("system");
+    expect(String(worker0.messages[0].content)).toContain("Noting (fact extraction)");
+    expect(worker0.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
+    expect(JSON.parse(readFileSync(log, "utf8").split("\n")[0]!)).toBeTruthy(); // the child really wrote its session
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+  } finally { await f.dispose(); }
+});
+
+test("19c 2026-09-08: every fork round is verified against the previous request and the run stores the last request sent", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。")
+      : toolResults(body) === 0 ? call("t1", "trace", { address: "T1" })
+      : toolResults(body) === 1 ? call("t2", "note", noteBatch) : say("Done."));
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(run.mode).toBe("branch");
+    expect(response.verification.passed).toBe(true);
+    const bodies = f.sent.filter(body => worker(body));
+    expect(bodies).toHaveLength(3);
+    // Round one is the gate against the captured parent; every later round is verified against the
+    // previous request, so the prefix cannot change mid-run.
+    expect(response.verification.rounds).toHaveLength(2);
+    for (let i = 1; i < bodies.length; i++) {
+      expect(response.verification.rounds[i - 1]).toMatchObject({ passed: true, capturedHash: hash(bodies[i - 1]), requestHash: hash(bodies[i]) });
+      expect(bodies[i]!.messages.slice(0, bodies[i - 1]!.messages.length)).toEqual(bodies[i - 1]!.messages);
+    }
+    expect(JSON.parse(run.request!)).toEqual(bodies.at(-1)); // the last request embeds every earlier round
+    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["trace", "note"]);
+  } finally { await f.dispose(); }
+}, 20000);
+
+test("19c 2026-09-08: the child's retry policy is Pi's own, read from settings.json by SettingsManager", async () => {
+  // Gate 6: the adapter keeps no retry settings of its own. `retry.maxRetries` in the agent
+  // directory's settings.json is the only thing deciding how often a failing provider is retried.
+  const f = await fixture({ retry: { maxRetries: 2, baseDelayMs: 1 } });
+  try {
+    f.script(body => !worker(body) ? say("好的。") : broken());
+    await f.turn();
+    const run = await settled(f);
+    expect(run.outcome).toBe("failure");
+    const response = JSON.parse(run.response!);
+    expect(response.retries.map((r: { attempt: number }) => r.attempt)).toEqual([1, 2]);
+    expect(response.retries.every((r: { error: string }) => r.error.includes("provider exploded"))).toBe(true);
+    expect(f.sent.filter(body => worker(body))).toHaveLength(3); // the first attempt plus two retries
+    expect(f.h.notices.filter(n => n.includes("noting retry"))).toEqual([
+      expect.stringContaining("retry 1/2"), expect.stringContaining("retry 2/2")]);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]); // nothing committed, nothing advanced
+  } finally { await f.dispose(); }
+}, 20000);
+
+test("19c 2026-09-08: a session model change after the capture refuses the fork instead of reusing a stale body", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
+    await f.turn(); // the first task forks against its own capture
+    await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(r => r.response)).toHaveLength(1), { timeout: 5000 });
+    expect(f.h.memory.store.listRuns(1)[0]!.mode).toBe("branch");
+    // The user switches the session model; the held capture belongs to the previous one, and no new
+    // provider request is captured for it.
+    (f.h.ctx as { model: unknown }).model = { ...f.model, id: "other" };
+    await f.turn("tick " + "word ".repeat(400), { capture: false });
+    const run = await vi.waitFor(() => { const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response); expect(runs).toHaveLength(2); return runs[1]!; }, { timeout: 5000 });
+    expect(run.mode).toBe("subagent");
+    expect(run.model).toBe("fake/other");
+    expect(JSON.parse(run.response!).fallbackReason).toContain("Session model changed since capture");
+  } finally { await f.dispose(); }
 }, 20000);

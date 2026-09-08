@@ -1,7 +1,8 @@
-// 19a: the Pi adapter's native execution path. A Noting or Consolidation task runs inside a real
-// child `AgentSession` forked from the parent session file, instead of the request-copy runner in
-// index.ts. Pi owns the model call, the tool loop, cancellation and persistence; this module only
-// prepares the child, whitelists tool execution, verifies the outgoing prefix and reports the run.
+// 19a/19b/19c: the Pi adapter's only execution path. A Noting or Consolidation task runs inside a
+// real child `AgentSession` — forked from the parent session file for inherited context, private
+// and fresh otherwise. Pi owns the model call, the tool loop, the retry policy, cancellation and
+// persistence; this module only prepares the child, whitelists tool execution, verifies the
+// outgoing prefix and reports the run.
 //
 // Everything here uses the public SDK entry (`createAgentSession`, `SessionManager`,
 // `DefaultResourceLoader`, `SettingsManager`) plus the public `Agent` fields Pi itself sets.
@@ -29,7 +30,7 @@ interface NativeCommon {
   /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
   task: string;
   tools: ToolDefinition[];
-  /** 0 = unlimited, matching the request-copy runner's `maxToolRounds`. */
+  /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
   signal?: AbortSignal;
   /** Called for every outgoing body, in order; in fork mode the first one is the verified one. */
@@ -40,6 +41,10 @@ interface NativeCommon {
   /** 19c: one completed fork response reported an eligible server-side cache miss (gate 3). The run
    * itself continues; the host decides what a miss means for later tasks. */
   onCacheMiss?(observation: CacheMissObservation): void;
+  /** Pi's own retry policy (settings.json `retry`, read by the child's SettingsManager) scheduled a
+   * backoff, and ended one. The host surfaces them; this module neither retries nor sleeps itself. */
+  onRetry?(event: { attempt: number; maxAttempts: number; delayMs: number; error: string }): void;
+  onRetryEnd?(): void;
 }
 /** Inherited context: a child forked from the parent's persisted checkpoint (19a). */
 export interface NativeForkTask extends NativeCommon {
@@ -80,7 +85,7 @@ export interface NativeResult {
 const text = (message: { content?: unknown }): string => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter((c: { type?: string }) => c.type === "text").map((c: { text?: string }) => c.text ?? "").join("\n") : "";
 
-// Same shape as the request-copy runner: a rejection receipt is not a commit.
+// A rejection receipt is not a commit.
 const rejected = (name: string, content: string): boolean => {
   if (content.startsWith("rejected:")) return true;
   if (name !== "note" && name !== "memory") return false;
@@ -289,13 +294,20 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     if (api === "anthropic-messages") cacheEnabled = JSON.stringify(body).includes('"cache_control"');
     if (task.maxToolRounds && rounds++ > task.maxToolRounds) throw new Error(`tool rounds exceeded (${task.maxToolRounds})`);
     previous = body;
-    if (request === undefined) request = snapshot(body); // the verified first body is the audited request
+    // The run record stores the last request sent, which embeds every earlier round (spec: Run record
+    // contract). The first body's hashes are kept separately by the gate, in `verification`.
+    request = snapshot(body);
     task.onRequest(snapshot(body));
     task.onProgress({ usage, retries });
     return inherited ? inherited(payload as never, model as never) : payload;
   };
   const unsubscribe = session.subscribe(event => {
-    if (event.type === "auto_retry_start") { retries.push({ attempt: event.attempt, error: event.errorMessage }); task.onProgress({ usage, retries }); }
+    if (event.type === "auto_retry_start") {
+      retries.push({ attempt: event.attempt, error: event.errorMessage });
+      task.onProgress({ usage, retries });
+      task.onRetry?.({ attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, error: event.errorMessage });
+    }
+    if (event.type === "auto_retry_end") task.onRetryEnd?.();
     if (event.type !== "message_end") return;
     const message = event.message as { role: string; usage?: unknown; stopReason?: string; errorMessage?: string; content?: unknown };
     if (message.role !== "assistant" || seen.has(event.message)) return;

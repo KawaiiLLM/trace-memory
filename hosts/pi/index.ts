@@ -3,16 +3,11 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { complete } from "@earendil-works/pi-ai/compat";
-import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
-import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, stripCacheControl, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
+import { hash, snapshot, type Body } from "./branch.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
 import { composeTask } from "./compose.ts";
 import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
-type Registry = ExtensionContext["modelRegistry"];
-type Conversation = Parameters<Registry["complete"]>[1];
-type Reply = Awaited<ReturnType<Registry["complete"]>>;
 type FlatConfig = Record<string, string | number | boolean>;
 type NativeModel = NativeForkTask["model"];
 const tag = "trace-memory";
@@ -29,10 +24,11 @@ function settings(cwd: string, agentDir = agentDirectory()) {
   };
   return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
 }
-// Host settings that are not core config sections. `nativeRunner` (19a) selects the native Pi fork
-// runner for branch-mode work; `runsDir` places its worker logs (default: dbPath's directory/runs).
+// Host settings that are not core config sections. `runsDir` places the native worker logs
+// (default: dbPath's directory/runs). 19c deleted `nativeRunner`: the native runner is the only
+// runner, so the key no longer selects anything and 18a's unknown-key rule rejects it like any
+// other misspelling instead of silently accepting a setting that does nothing.
 const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
-const hostFlags = ["nativeRunner"];
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
   const layers = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
@@ -53,10 +49,9 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
       }
       Object.assign(core, { [section]: values });
     }
-    for (const key of Object.keys(flat)) if (![...hostStrings, ...hostFlags].includes(key) &&
+    for (const key of Object.keys(flat)) if (!hostStrings.includes(key) &&
       !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
     for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
-    for (const key of hostFlags) if (flat[key] !== undefined && typeof flat[key] !== "boolean") throw new Error(`Invalid ${key}`);
     validateConfig(core);
     return core;
   };
@@ -85,26 +80,10 @@ function rejected(name: string, content: string): boolean {
   } catch { return false; }
 }
 
-// Sum every numeric field of the per-call usage objects so a multi-round run reports its whole cost.
-function addUsage(total: unknown, usage: unknown): unknown {
-  if (usage === undefined || usage === null) return total;
-  if (typeof usage === "number") return (typeof total === "number" ? total : 0) + usage;
-  if (typeof usage !== "object") return usage;
-  const left = (total && typeof total === "object" ? total : {}) as Record<string, unknown>;
-  return Object.fromEntries(Object.keys(usage as object).map(key => [key, addUsage(left[key], (usage as Record<string, unknown>)[key])]));
-}
-
-// Pi's own retry settings: settings.json `retry` from the agent dir (PI_CODING_AGENT_DIR or ~/.pi/agent),
-// overridden by the project's .pi/settings.json, with Pi's defaults. Read as files: a value import of Pi's
-// SettingsManager pulls the package entry, which needs @earendil-works/pi-server on this machine.
-function retrySettings(cwd: string, agentDir: string) {
-  type Retry = { enabled?: boolean; maxRetries?: number; baseDelayMs?: number; provider?: { timeoutMs?: number; maxRetries?: number; maxRetryDelayMs?: number } };
-  const files = settings(cwd, agentDir);
-  const global: Retry = files.global.retry ?? {}, project: Retry = files.project.retry ?? {};
-  const retry: Retry = { ...global, ...project, provider: { ...global.provider, ...project.provider } }; // nested like Pi's own merge
-  return { policy: { enabled: retry.enabled ?? true, maxRetries: retry.maxRetries ?? 3, baseDelayMs: retry.baseDelayMs ?? 2000 },
-    provider: { timeoutMs: retry.provider?.timeoutMs, maxRetries: retry.provider?.maxRetries, maxRetryDelayMs: retry.provider?.maxRetryDelayMs ?? 60000 } };
-}
+// 19c gate 6: retry and provider policy are Pi's own, read by the `SettingsManager` the native child
+// is built with (hosts/pi/native.ts). The handwritten `retry` merge that used to live here — and its
+// stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
+// runner; nothing in this adapter reads or duplicates Pi's runtime settings any more.
 
 export default function (pi: ExtensionAPI) {
   const environment = process.env.TRACE_MEMORY_CONFIG;
@@ -120,7 +99,7 @@ export default function (pi: ExtensionAPI) {
   type Capture = { entries: { id: string; raw: string }[]; payload: Body; model: string; provider: string; branch: string };
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
-  const session: { capture?: Capture; verified?: string; notified?: boolean } = {};
+  const session: { capture?: Capture; notified?: boolean } = {};
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     const callContext = ctx;
@@ -133,10 +112,9 @@ export default function (pi: ExtensionAPI) {
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
     let request: unknown = null;
-    // `native` keeps a rejected native gate result (both hashes and the differing path) even when
-    // the request-copy runner then completes the task with its own verification.
-    type Verified = ReturnType<typeof verifyRequest> & { key: string; firstForKey: boolean; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] };
-    let verification: (Partial<Verified> & { rounds: Verified["rounds"]; native?: NativeVerification }) | undefined;
+    // The fork gate's result: the passing verification of a fork run, or — under `native` — the
+    // rejected one a fallback still records, with both hashes and the differing path.
+    let verification: (Partial<NativeVerification> & { rounds: NativeVerification["rounds"]; native?: NativeVerification }) | undefined;
     let fallbackReason: string | undefined;
     let mode: "branch" | "subagent" = "subagent";
     let usage: unknown;
@@ -153,15 +131,23 @@ export default function (pi: ExtensionAPI) {
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
           throw new Error("Noting capacity: provider request exceeds model context with output reserved");
       };
-      // The composed messages of this run: everything about layout lives in compose.ts, and both
-      // runners below use it, so an inherited fork and a fresh subagent send the same bytes for the
-      // same mode (19b). Core supplies material only.
+      // The composed messages of this run: everything about layout lives in compose.ts, so an
+      // inherited fork and a fresh subagent send the same bytes for the same mode (19b). Core
+      // supplies material only.
       const composed = (selected: "branch" | "subagent") => composeTask(input, selected);
-      // 19a/19b: the opt-in native path. A branch task runs in Pi's own child AgentSession forked at
-      // the persisted leaf; an unforkable branch task and every subagent task (explicit, fallback or
-      // borrowed closed-session work) run in a fresh private child session. With the switch on, the
-      // request-copy runner below is not used unless the native child cannot be prepared at all.
-      if (input.mode === "branch" && flat.nativeRunner === true) {
+      // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
+      // backoff stay the adapter's, exactly as they were before the cutover.
+      const retryNotice = (event: { attempt: number; maxAttempts: number; delayMs: number; error: string }) => {
+        activity.retrying = true; showSpend(callContext);
+        callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
+      };
+      const retryFinished = () => { activity.retrying = false; showSpend(callContext); };
+      // 19a/19b/19c: the only runner. A fork task runs in Pi's own child `AgentSession` branched at
+      // the parent's persisted leaf; an unforkable fork task and every subagent task (explicit, a fork
+      // fallback, or borrowed closed-session work) run in a fresh private child session. Pi owns the
+      // model call, the tool loop, the retry policy and cancellation in both; this adapter keeps only
+      // the byte-level gate on a fork's first request.
+      if (input.mode === "branch") {
         try {
           // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
           // while this memory session is automatically downgraded. Every task rechecks it here, so a
@@ -193,6 +179,7 @@ export default function (pi: ExtensionAPI) {
             signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
             onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
             onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
+            onRetry: retryNotice, onRetryEnd: retryFinished,
           });
           mode = "branch";
           usage = native.usage; request = native.request ?? request; verification = native.verification;
@@ -209,147 +196,24 @@ export default function (pi: ExtensionAPI) {
       }
       // Native subagent parity (19b): explicit subagent mode, a fork fallback and borrowed
       // closed-session work all run in the same native runner, on a fresh private SessionManager in
-      // the runs directory. No second Pi model/tool runtime is kept for fallback.
-      if (flat.nativeRunner === true) {
-        const fresh = composed("subagent");
-        try {
-          const native = await runNative({
-            mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
-            model: model as unknown as NativeModel, systemPrompt: fresh.systemPrompt!, task: fresh.message,
-            tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
-            signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
-            onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
-            onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
-          });
-          mode = "subagent";
-          usage = native.usage; request = native.request ?? request;
-          retries.splice(0, retries.length, ...native.retries);
-          return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason,
-            ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
-        } catch (error) {
-          if (!(error instanceof NotForkable)) throw error;
-          // The child could not be prepared and nothing was sent: the request-copy runner below
-          // still serves this task until 19c deletes it.
-          fallbackReason = fallbackReason ? `${fallbackReason}; native subagent: ${error.message}` : `native subagent: ${error.message}`;
-        }
-      }
-      // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
-      // append the Consolidation feedback, call the model again until it stops. Only sending differs.
-      // Each model call goes through Pi's retry helper with Pi's settings (the one Pi uses for its
-      // own compaction and branch-summary calls): transient provider errors back off and retry;
-      // tool execution and commits happen only after a reply, so a retry never repeats a write.
-      const retry = retrySettings(callContext.cwd, agentDir);
-      // `prepare` builds one round's request context exactly once (suffix appended, base fixed) and
-      // returns the send; the retry helper re-sends that same request, never a re-appended one.
-      const converse = async (prepare: (suffix: Conversation["messages"]) => () => Promise<Reply>) => {
-        let suffix: Conversation["messages"] = [], rounds = 0, reply: Reply;
-        const cap = memory.config[input.kind].maxToolRounds; // 0 = unlimited (spec: the model is called again until it stops)
-        for (;;) {
-          input.signal?.throwIfAborted();
-          const produce = prepare(suffix);
-          reply = await retryAssistantCall(async () => {
-            input.signal?.throwIfAborted();
-            const r = await produce(); usage = addUsage(usage, r.usage); progress();
-            input.signal?.throwIfAborted();
-            return r;
-          }, retry.policy, input.signal, {
-            onRetryScheduled: (attempt, maxAttempts, delayMs, message) => { retries.push({ attempt, error: message }); progress(); activity.retrying = true; showSpend(callContext);
-              callContext.ui.notify(`Trace Memory: ${input.kind} retry ${attempt}/${maxAttempts} in ${Math.round(delayMs / 1000)}s: ${message}`, "warning"); },
-            onRetryAttemptStart: () => { activity.retrying = false; showSpend(callContext); },
-            onRetryFinished: () => { activity.retrying = false; showSpend(callContext); },
-          });
-          input.signal?.throwIfAborted();
-          const calls = reply.content.filter((c): c is ToolCall => c.type === "toolCall");
-          if (reply.stopReason !== "toolUse" || !calls.length) break;
-          if (cap && ++rounds > cap) throw new Error(`tool rounds exceeded (${cap})`); // over budget is a failure, not an empty batch
-          const results = calls.map(call => {
-            let content: string;
-            try { content = input.tools.find(t => t.name === call.name)?.execute(call.arguments) ?? `rejected: unknown tool ${call.name}`; }
-            catch (error) { content = `rejected: ${String(error)}`; }
-            return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: rejected(call.name, content), timestamp: Date.now() };
-          });
-          const feedback = input.kind === "consolidation" ? results.flatMap(r => { const f = input.reviewFeedback(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
-          suffix = [reply, ...results, ...feedback];
-        }
-        return { reply, usage, retries };
-      };
-      const outcomeOf = (reply: Reply) => reply.stopReason === "aborted" ? "cancelled" as const : (reply.stopReason === "error" || reply.stopReason === "length") ? "failure" as const : "success" as const;
-      // A stream that died mid-reply reports its error, not the partial text it managed to produce.
-      const outputOf = (reply: Reply) => outcomeOf(reply) === "success" ? text(reply)
-        : `${reply.stopReason}${reply.errorMessage ? `: ${reply.errorMessage}` : ""}${text(reply) ? ` (partial output: ${text(reply).slice(0, 200)})` : ""}`;
-      if (input.mode === "branch") {
-        let candidate: Body | undefined;
-        try {
-          // Both run kinds start with the captured prefix plus one instruction.
-          let prefix: Body, appended: Appended[];
-          {
-            const captured = session.capture;
-            if (!captured || captured.branch !== input.branch) throw new Error("No current-branch provider payload captured");
-            if (captured.model !== model.id || captured.provider !== model.provider) throw new Error("Session model changed since capture");
-            if (input.kind === "noting" && input.entryIds.some(id => {
-              const entry = memory.store.getSourceEntry(id)!;
-              if (captured.entries.some(e => e.id === entry.nativeId && e.raw === entry.raw)) return false;
-              // The unchanged branch suffix carries the head's natural-language reply in full.
-              return entry.role !== "assistant" || entry.calls.length > 0 || !input.range.to.endsWith(`/T${entry.turnId}`);
-            })) throw new Error("Captured prefix does not contain selected source entries");
-            prefix = captured.payload;
-            appended = [{ role: "user", text: composed("branch").message }];
-          }
-          candidate = buildRequest(prefix, model.api, appended);
-          // The Anthropic adapter enforces this after onPayload; audit that exact body.
-          if (model.api === "anthropic-messages") candidate.stream = true;
-          const key = JSON.stringify([model.id, model.provider, hash(prefix.tools ?? null)]);
-          verification = { ...verifyRequest(prefix, candidate, model.api, appended), key, firstForKey: session.verified !== key, rounds: [], ...(verification?.native ? { native: verification.native } : {}) };
-          if (!verification.passed) throw new Error(`Prefix mismatch at ${verification.differingPath}`);
-          session.verified = key;
-        } catch (error) {
-          // A native fallback reason (19a) is kept alongside this one; both explain the actual mode.
-          fallbackReason = fallbackReason ? `${fallbackReason}; ${String(error)}` : String(error);
-          session.verified = undefined;
-          if (!session.notified) { contextNotice(input.kind, String(error)); session.notified = true; }
-        }
-      if (!fallbackReason && candidate) {
-        mode = "branch";
-        const auth = await registry.getApiKeyAndHeaders(model);
-        input.signal?.throwIfAborted();
-        if (!auth.ok) throw new Error(auth.error);
-        const key = messageKey(model.api);
-        const { reply } = await converse(suffix => {
-          const previous = candidate!; // this round's base, fixed before any attempt: a retry rebuilds the same request
-          let verified = false;
-          return () => complete({ ...model, ...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}) },
-            { messages: suffix }, { apiKey: auth.apiKey, headers: auth.headers, env: auth.env, sessionId: callPiId, ...retry.provider, signal: input.signal,
-              onPayload(native) {
-                input.signal?.throwIfAborted();
-                // The installed adapter serializes only the new suffix (native tool ids, thinking
-                // signatures). Its cache markers are stripped so rounds add none to the captured
-                // prefix's own; the session id stays so routing and connection reuse are unchanged.
-                const append = suffix.length ? stripCacheControl((native as Body)[key]) : [];
-                if (!Array.isArray(append)) throw new Error("Missing native branch continuation messages");
-                if (suffix.length) {
-                  candidate = appendNativeRequest(previous, model.api, append);
-                  const checked = verifyNativeRequest(previous, candidate, model.api, append);
-                  if (!verified) { verification!.rounds.push(checked); verified = true; }
-                  if (!checked.passed) { verification!.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
-                }
-                checkCapacity(candidate);
-                request = snapshot(candidate); input.reportRequest(request); progress(); return snapshot(candidate);
-              } });
-        });
-        if (verification && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number") verification.cache_read = (usage as { cacheRead: number }).cacheRead;
-        return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, ...(retries.length ? { retries } : {}) };
-        }
-      }
-      // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
+      // the runs directory. A child that cannot be constructed at all is a run failure with a reason
+      // (the outer catch below): there is no second runtime to fall back to, and the queue stays
+      // pending for the next permitted trigger.
       const fresh = composed("subagent");
-      let conversation: Conversation = { systemPrompt: fresh.systemPrompt, messages: [{ role: "user", content: fresh.message, timestamp: Date.now() }],
-        tools: toolDefinitions as unknown as Tool[] };
-      const { reply } = await converse(suffix => {
-        conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round
-        const fixed = conversation;
-        return () => registry.complete(model, fixed, { ...retry.provider, signal: input.signal, onPayload(payload: unknown) { input.signal?.throwIfAborted(); checkCapacity(payload); request = JSON.parse(JSON.stringify(payload)); input.reportRequest(request); progress(); } });
+      const native = await runNative({
+        mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
+        model: model as unknown as NativeModel, systemPrompt: fresh.systemPrompt!, task: fresh.message,
+        tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+        signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
+        onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
+        onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
+        onRetry: retryNotice, onRetryEnd: retryFinished,
       });
-      return { outcome: outcomeOf(reply), output: outputOf(reply), usage, request, mode, verification, fallbackReason, ...(retries.length ? { retries } : {}) };
+      mode = "subagent";
+      usage = native.usage; request = native.request ?? request;
+      retries.splice(0, retries.length, ...native.retries);
+      return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason,
+        ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
     } catch (error) {
       return { outcome: input.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "failure",
         output: String(error), usage, retries, request, mode, verification, fallbackReason };
@@ -688,10 +552,10 @@ export default function (pi: ExtensionAPI) {
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
   });
   // The reason a due fork-mode task must wait for a later boundary, or undefined when it may launch
-  // now. Only the native runner's inherited-context path has a checkpoint to be ready: a request-copy
-  // run, a fresh-context run and a session already downgraded by the cache-miss latch have none.
+  // now. Only the inherited-context path has a checkpoint to be ready: a fresh-context run and a
+  // session already downgraded by the cache-miss latch have none.
   const forkWait = (context: ExtensionContext, mode: "branch" | "subagent"): string | undefined => {
-    if (mode !== "branch" || flat.nativeRunner !== true || suppressed()) return;
+    if (mode !== "branch" || suppressed()) return;
     const parentFile = context.sessionManager.getSessionFile?.();
     if (!parentFile) return; // no native file at all: the documented subagent fallback applies, not a wait
     const checkpoint = context.sessionManager.getLeafId();
@@ -937,7 +801,7 @@ export default function (pi: ExtensionAPI) {
       stopCatchup();
     } else if (selected === "Settings (Global, read-only)") {
       const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
-        nativeRunner: false, runsDir: "<dbPath directory>/runs",
+        runsDir: "<dbPath directory>/runs",
         ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
       ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
         const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);

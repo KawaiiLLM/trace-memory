@@ -35,7 +35,9 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     return respond(body, sent.length - 1);
   }));
   let manager: SessionManager | undefined;
-  const h = host({ nativeRunner: true, "noting.triggerTokens": 60, ...config }, undefined, { native: () => manager as never });
+  // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
+  // the child the adapter builds.
+  const h = host({ "noting.triggerTokens": 60, ...config }, undefined, { native: () => manager as never, fetch: false });
   const agentDir = join(h.dir, "agent"), sessionsDir = join(h.dir, "sessions");
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
   const model = modelRuntime.getModel(provider, "test")!;

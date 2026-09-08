@@ -187,7 +187,8 @@ test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrow
   try {
     await h.turn();
     const t = target(h.memory, { facts: 1, noted: true });
-    h.provider(async () => new Promise<Reply>(() => {})); // Intentionally ignores cancellation forever.
+    // Intentionally ignores cancellation forever: a wedged connection the child cannot end.
+    h.provider(async () => new Promise<Reply>(() => {}), { ignoreAbort: true });
     h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2);
     const ownClaim = h.memory.store.getClaim(1, "noting")!, borrowed = h.memory.store.getClaim(t.sessionId, "consolidation")!;
@@ -228,7 +229,10 @@ test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and
     expect(performance.now() - started).toBeLessThan(1000);
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.outcome).toBe("success"); expect(run.response).toContain("cancelled");
-    expect(JSON.parse(run.response!).usage.input).toBe(2); expect(JSON.parse(run.response!).retries).toHaveLength(1);
+    // Available usage is retained: the attempt that reached the provider reported 1 input token, and
+    // the attempt that died in transport reported none (19c: usage now comes from the child's own
+    // responses, and a connection error produces no usage at all).
+    expect(JSON.parse(run.response!).usage.input).toBe(1); expect(JSON.parse(run.response!).retries).toHaveLength(1);
     expect(h.requests).toHaveLength(2); expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
   } finally { await h.dispose(); }
 });

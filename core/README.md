@@ -93,11 +93,11 @@ The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
 The noting config chooses branch/subagent mode; provider prefix verification
-remains the host's responsibility, as is the choice of runner behind a mode: with its
-own `nativeRunner` switch on, the Pi host runs branch work in a native Pi child forked
-from the session file and every subagent task — explicit, fallback or borrowed — in a
-fresh native child (19a, 19b); with it off, both modes use the request-copy runner.
-Core sees the same contract either way.
+remains the host's responsibility, as is the choice of runner behind a mode. Since 19c the Pi
+host has one runner: branch work runs in a native Pi child forked from the session file, and
+every subagent task — explicit, fallback or borrowed — in a fresh native child. Core sees the
+same `runAgent` contract either way, and a host that cannot construct its worker at all returns
+a failed run with a reason, which leaves the queue pending.
 
 **Budget before selection (ticket 19 gate 4).** The host reports its available material budget
 (`capacity {inputTokens, prefixTokens}`, the model window minus output reserve and inherited prefix)

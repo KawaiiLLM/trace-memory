@@ -3,6 +3,14 @@
 Worker verification uses fake providers and installed adapters with stub HTTP.
 The historical records below do not satisfy ticket 11 live acceptance.
 
+**19c note.** Every run recorded below was produced by the request-copy runner, which was
+deleted in 19c: it copied the captured provider request and drove its own model/tool loop.
+Memory work now runs in a real Pi child `AgentSession` (a fork of the session file for branch
+mode, a private child otherwise), so a new live run differs in two visible ways: the reverse
+chain in step 4 walks the child's own bodies (its tail is the inherited head reply plus the
+task message, and both sides are compared with `cache_control` stripped), and each run record
+carries `nativeLog`, the child's own JSONL under `runsDir`.
+
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
 Set `noting.branchModeDefault: true`, `noting.triggerTokens: 100`,
