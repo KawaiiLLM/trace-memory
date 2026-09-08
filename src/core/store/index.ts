@@ -1329,6 +1329,28 @@ export class Store {
   listRuns(sessionId: number): Run[] {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
+  /** 22d: one row per run of a session, carrying its kind and the usage it recorded — projected out
+   * of `runs.response` in SQL, so the request and response audit bodies stay in the database. No
+   * schema change: `json_extract` over the existing column, the shape 22a's amendment allows.
+   * `usage` is null exactly when the run recorded no usage observation — a response without one, a
+   * cancelled run whose usage is unknown, or a response that is not JSON at all. A run whose usage
+   * object exists but is empty is an observation of zeros, and is reported as one; nothing here
+   * manufactures a zero for a missing one (parent 22, "Capacity and accounting"). */
+  listRunUsage(sessionId: number): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
+    const rows = this.db.prepare(`SELECT kind,
+        CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
+        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
+        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.output') END output,
+        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
+        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
+        CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
+      FROM runs WHERE session_id = ? ORDER BY id`).all(sessionId) as Record<string, unknown>[];
+    const count = (value: unknown) => (typeof value === "number" ? value : 0);
+    return rows.map(row => ({ kind: row.kind as RunKind,
+      // `json_type` is null for a missing key and 'null' for a recorded null: both are "no observation".
+      usage: !row.recorded || row.recorded === "null" ? null
+        : { input: count(row.input), output: count(row.output), cacheRead: count(row.cacheRead), cacheWrite: count(row.cacheWrite), cost: count(row.cost) } }));
+  }
   listFactsByRun(runId: number): Fact[] {
     return this.db.prepare("SELECT * FROM facts WHERE run_id = ? ORDER BY id").all(runId).map(toFact);
   }

@@ -80,16 +80,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
+  // 22d: the usage is projected out of the stored response by the store; the request and response
+  // audit bodies are never loaded to add up counters. A run without a usage observation — a failure,
+  // a cancelled run with unknown usage — contributes nothing at all, not a zero.
   const spend = (sessionId: number) => {
     session(sessionId);
     const totals = { runs: { noting: 0, consolidation: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-    for (const run of store.listRuns(sessionId)) {
-      totals.runs[run.kind]++;
-      let usage: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
-      try { usage = JSON.parse(run.response ?? "{}").usage ?? null; } catch { usage = null; }
+    for (const { kind, usage } of store.listRunUsage(sessionId)) {
+      totals.runs[kind]++;
       if (!usage) continue;
-      totals.input += usage.input ?? 0; totals.output += usage.output ?? 0;
-      totals.cacheRead += usage.cacheRead ?? 0; totals.cacheWrite += usage.cacheWrite ?? 0; totals.cost += usage.cost?.total ?? 0;
+      totals.input += usage.input; totals.output += usage.output;
+      totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite; totals.cost += usage.cost;
     }
     return totals;
   };

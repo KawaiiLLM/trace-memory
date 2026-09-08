@@ -346,3 +346,64 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
     });
   } finally { store.close(); }
 }
+
+/** Count the audit-body characters a read pulls into JavaScript (ticket 22d, hotspot family 7): the
+ * `request` and `response` columns of every run row a caller materializes. Test-only, in the shape
+ * `countSourceReads` established — the public methods are replaced on the prototype and restored
+ * afterwards; production carries no hook. Spend that projects usage in SQL loads none of them. */
+export function countRunBodies(): { chars: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as { listRuns: Store["listRuns"]; getRun: Store["getRun"] };
+  const list = prototype.listRuns, one = prototype.getRun;
+  let count = 0;
+  const charge = <T extends { request?: string | null; response?: string | null } | undefined | null>(run: T): T => {
+    if (run) count += (run.request?.length ?? 0) + (run.response?.length ?? 0);
+    return run;
+  };
+  prototype.listRuns = function (this: Store, sessionId: number) { return list.call(this, sessionId).map(charge); };
+  prototype.getRun = function (this: Store, id: number) { return charge(one.call(this, id)); };
+  return { chars: () => count, reset: () => { count = 0; }, restore: () => { prototype.listRuns = list; prototype.getRun = one; } };
+}
+
+/** The spend workload (ticket 22d): about 200 runs whose audit bodies are large and whose usage
+ * records are small, written onto an existing fixture's session. Deterministic: the bodies come from
+ * the seeded word pools, the usage counters from a fixed arithmetic sequence. Three shapes share the
+ * table, because spend must keep them apart — an observed usage, a cancelled run whose usage is
+ * unknown (`usage: null`, never a zero observation), and a failure whose response is not JSON. */
+export function runAudit(dbPath: string, options: { sessionId: number; branch: string; runs?: number; requestChars?: number; responseChars?: number; seed?: number }): RunAudit {
+  const total = options.runs ?? 200;
+  const requestChars = options.requestChars ?? 256 * 1024;
+  const responseChars = options.responseChars ?? 64 * 1024;
+  const rnd = random(options.seed ?? 0x5be4d);
+  const pick = <T>(values: T[]) => values[Math.floor(rnd() * values.length)]!;
+  const words = (chars: number): string => {
+    let out = "";
+    while (out.length < chars) out += `${pick(LATIN)} ${pick(CJK)} `;
+    return out.slice(0, chars);
+  };
+  const store = new Store(dbPath);
+  const totals: RunAudit = { runs: total, observed: 0, unknown: 0, malformed: 0, chars: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  try {
+    store.transaction(() => {
+      for (let i = 0; i < total; i++) {
+        const kind = i % 3 === 0 ? "consolidation" : i % 7 === 0 ? "manual" : "noting";
+        const request = JSON.stringify({ messages: [{ role: "user", content: words(requestChars) }] });
+        const shape = i % 17 === 5 ? "unknown" : i % 23 === 7 ? "malformed" : "observed";
+        const usage = { input: 1_000 + i * 13, output: 100 + i, cacheRead: 5_000 + i * 7, cacheWrite: i * 3, cost: { total: (i + 1) / 10_000 } };
+        const response = shape === "malformed" ? `provider refused: ${words(responseChars)}`
+          : JSON.stringify({ output: words(responseChars), usage: shape === "unknown" ? null : usage,
+            ...(shape === "unknown" ? { usageStatus: "unknown" } : {}), problems: [] });
+        if (shape === "observed") {
+          totals.observed++; totals.input += usage.input; totals.output += usage.output;
+          totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite; totals.cost += usage.cost.total;
+        } else totals[shape]++;
+        totals.chars += request.length + response.length;
+        store.recordRun({ kind, sessionId: options.sessionId, branch: options.branch, request, response,
+          outcome: shape === "observed" ? "success" : shape === "unknown" ? "cancelled" : "failure", createdAt: "2026-01-01T04:00:00Z" });
+      }
+    });
+  } finally { store.close(); }
+  return totals;
+}
+
+export interface RunAudit { runs: number; observed: number; unknown: number; malformed: number; chars: number;
+  input: number; output: number; cacheRead: number; cacheWrite: number; cost: number }
