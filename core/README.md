@@ -377,3 +377,19 @@ claim, even while unrelated later entries or facts remain pending outside it.
 This is the only mechanism a manual catchup needs from core: freezing,
 chaining, slots, waiting and cancellation are entirely host-local (18b), reusing
 17c's claims, token fence and `cancelTasks()` unchanged.
+
+
+## Host-observed fork suppression (19c)
+
+The `sessions` table gains `fork_suppressed_at` and `fork_suppressed_run`, and the store
+gains four methods over them: `suppressFork(sessionId, at?)`, `forkSuppression(sessionId)`,
+`linkForkSuppression(sessionId, runId)` and `clearForkSuppression(sessionId)`. They hold one
+piece of host-observed session state — a host saw an eligible inherited-context cache miss for
+this memory session — so that it is shared by every executor of that session, survives reopen
+and is not a global setting. `suppressFork` is a single UPDATE guarded by `IS NULL` and returns
+whether it changed the row, which is how two concurrent phases produce one transition and one
+warning. Core neither reads nor enforces this state: it decides no execution mode, changes no
+threshold and gates no write. The Pi adapter reads it at fork admission, records the miss in its
+own run record and clears it from its menu. `reopenSession` and enrollment leave it untouched;
+`closeSession` does too. v1 is unreleased, so the two columns are added in place with no
+migration, as the earlier tickets' schema additions were.

@@ -629,6 +629,91 @@ because that capture is what the gate compares against; the runs directory is ne
 a gate rejection after the child file was created leaves that (unused) child log behind; and
 no live provider run was made — every check above uses stubbed HTTP with the real adapters.
 
+## Launch readiness and the cache-miss latch (19c)
+
+### Readiness: trigger and launch are different authorities
+
+17b's thresholds still decide that a task is *due*. Whether it may *launch* as a fork is a
+separate question about the native checkpoint, asked in `checkQueues` before admission:
+
+- The checkpoint is the persisted leaf of the selected path. `checkpointReadiness(parentFile,
+  checkpoint)` reopens the parent's own file through an independent `SessionManager.open` — the
+  same reopen the launch performs, read-only, creating nothing — and refuses when the entry is
+  not in the file yet, when the file cannot be reopened, or when the ancestry contains an
+  assistant tool-call group whose results are missing (`forkable`). Pi's message-completion
+  callback runs *before* persistence, so a message the extension has just seen completed is not
+  a checkpoint.
+- A refusal is a **wait**, not a failure: the own-branch candidate is left out of this
+  opportunity, no claim is taken, no progress is made, no duplicate task is created and no timer
+  is set. The next persistence boundary asks again; starting there is not a new extraction
+  trigger. Borrowed closed-session work is fresh-context and is never held back by this.
+- A fork that is impossible for this task rather than merely early — no capture for this branch,
+  no persisted parent file, an unforkable checkpoint at launch — still takes 19b's documented
+  native subagent fallback with `requestedMode`, actual `mode` and `fallbackReason` recorded.
+- **No capture dependency, read with gate 1.** A fork never waits for a *new* provider request:
+  a persisted, valid checkpoint plus the capture already held for this branch is enough, and the
+  fork may run while the foreground is still inside the same Turn. It does need *that* capture,
+  because it is what the fork gate compares the child's first body against; without one the task
+  takes the subagent fallback instead of waiting.
+- A tree switch invalidates a stale launch context instead of retargeting it: `restore()` drops
+  the capture and gives the memory session a new branch identity, and the fork branch refuses to
+  run when the task's frozen branch is no longer the selected one. The waiting task's entries
+  stay pending on their own branch; the new position's work is its own task.
+
+### Cache-miss latch
+
+Gate 3: the deterministic prefix check runs first on every fork request. A body that differs
+from the parent prefix is a known miss, routed to subagent for that task **without touching the
+latch**. Only a response whose request passed the gate can count, which is why the observation is
+recorded inside `verification` and why the fresh-context runner is never given the callback.
+
+An eligible miss is judged per completed fork response, on that response's own usage:
+
+| Provider family | Minimum cacheable input | Source |
+|---|---:|---|
+| `anthropic-messages`, Haiku family | 2048 tokens | Anthropic prompt caching |
+| `anthropic-messages`, other models | 1024 tokens | Anthropic prompt caching |
+| `openai-completions`, `openai-responses`, `openai-codex-responses` | 1024-token prefix | OpenAI automatic prompt caching |
+| anything else | unknown — never a miss | no universal minimum is invented |
+
+pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
+`cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
+copies `input_tokens`, which already excludes them). The compared quantity is therefore
+`input + cacheRead + cacheWrite`, never compressed Raw size. Everything unknown is not a miss:
+missing usage, non-numeric or absent cache counts, the SDK's placeholder zeros on an errored or
+cancelled response, an Anthropic body that carried no `cache_control` marker (a disabled cache),
+an unlisted provider, and any input below the minimum. A nonzero read is a hit at any ratio.
+
+On the first eligible miss:
+
+- `store.suppressFork(sessionId)` sets `sessions.fork_suppressed_at` with an `IS NULL` guard, so
+  two phases reporting a miss in the same instant produce **one** transition; only the winner
+  emits the single TUI warning `Trace Memory: fork cache miss. Future memory tasks in this
+  session will use subagent.` Headless operation records the same state without any UI.
+- The detecting run continues untouched: same native session, same tool protocol, same trailing
+  replies, no replay, no extra trigger, and its run record keeps `mode: "branch"`. The
+  observation is audited as `verification.cacheMiss = {model, api, minimum, input, cacheRead,
+  cacheWrite}`, and the run id is linked to the session's suppression once core has allocated it
+  (the miss is seen before any run row exists).
+- Every later task rechecks the latch at fork admission, so a task queued before the transition
+  cannot bypass it. The configured requested mode is retained: the run records
+  `requestedMode: "branch"`, `mode: "subagent"` and `fallbackReason: "cache miss latch: …"`.
+  Sibling tasks already running stay frozen. Global configuration and other sessions are
+  unchanged; branches and copied hosts sharing the memory session share the latch, and it
+  survives reopen because it lives in the database.
+
+`/trace status` adds one line while the latch is set:
+
+```
+Fork: suppressed since <ISO timestamp> (cache miss on R<n>); Retry fork in the /trace menu
+```
+
+The reset is menu-only. `/trace` → **Current session** lists a **Retry fork** action *only while
+the session is downgraded*; choosing it clears the suppression, says so, and starts no
+extraction. There is no `/trace retry` subcommand and no permanent top-level item, and neither a
+reopen nor a settings refresh clears the state. A later eligible miss begins a new episode and
+may warn once again.
+
 ## Live prefix identity procedure
 
 This is a human-run check, not an automated claim of live cache hits.
@@ -818,8 +903,18 @@ kind. Tree switching contributes no extraction usage to Pi totals.
   ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
-- `nativeRunner` is off by default and, on `anthropic-messages`, its child body cannot
-  match the captured parent prefix (see Native runner). Nothing prunes `runsDir`.
+- `nativeRunner` is off by default; on `anthropic-messages` the gate passes only with the
+  ruled `cache_control` normalization (see Native runner). Nothing prunes `runsDir`.
+- The readiness probe reopens the parent's session file once per launch decision, and again at
+  each boundary while a task waits. It is read-only and creates nothing, but on a very large
+  session file it is repeated read I/O, bounded by how often a task is actually due.
+- The cacheable-minimum table is a documented constant, not a provider query. A provider that
+  changes its minimum, or a model family the table does not name, yields "unknown", which can
+  never downgrade a session — the conservative direction.
+- The latch never expires by itself and is not time-boxed: only the menu's Retry fork clears it.
+  Between the miss and the end of the detecting run, status shows the timestamp without a run id.
+- No live provider run backs any of it: the eligibility numbers in the tests are stubbed usage
+  values fed through the real pi-ai adapters, so nothing here claims a real cache hit or miss.
 
 ## Entry views and Noting progress (17a)
 

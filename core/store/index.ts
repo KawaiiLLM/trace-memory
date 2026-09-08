@@ -47,7 +47,13 @@ CREATE TABLE IF NOT EXISTS sessions (
   closed_at TEXT,
   project_id INTEGER NOT NULL REFERENCES projects(id),
   parent_session_id INTEGER REFERENCES sessions(id),
-  project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark'))
+  project_declaration TEXT NOT NULL DEFAULT 'marker' CHECK (project_declaration IN ('undeclared','marker','mark')),
+  -- 19c cache-miss latch: set once when a host observes an eligible fork cache miss for this memory
+  -- session, so later inherited-context work resolves to fresh context until the user retries. It is
+  -- session-scoped state, not configuration: a reopen, a fork or a copied host sharing this session
+  -- shares it. fork_suppressed_run is the run that detected the miss, linked once it has an id.
+  fork_suppressed_at TEXT,
+  fork_suppressed_run INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_claims (
@@ -600,6 +606,29 @@ export class Store {
   }
   requireEnabled(sessionId: number): void {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+  }
+
+  /** 19c: record one eligible fork cache miss for this session. The UPDATE is guarded by IS NULL, so
+   * two phases reporting a miss together produce one transition (and one warning): only the call
+   * that changed the row returns true. */
+  suppressFork(sessionId: number, at = new Date().toISOString()): boolean {
+    this.enrollment(sessionId); // a missing session is an error, not a silent no-op
+    return !!this.db.prepare("UPDATE sessions SET fork_suppressed_at = ? WHERE id = ? AND fork_suppressed_at IS NULL").run(at, sessionId).changes;
+  }
+  /** The session's automatic fork suppression, or null while it is not suppressed. */
+  forkSuppression(sessionId: number): { at: string; runId: number | null } | null {
+    const row = this.db.prepare("SELECT fork_suppressed_at, fork_suppressed_run FROM sessions WHERE id = ?").get(sessionId);
+    if (!row) throw new Error(`session S${sessionId} does not exist`);
+    return row.fork_suppressed_at === null ? null
+      : { at: String(row.fork_suppressed_at), runId: row.fork_suppressed_run === null ? null : Number(row.fork_suppressed_run) };
+  }
+  /** Link the detecting run once core has given it an id; never overwrites an earlier episode's run. */
+  linkForkSuppression(sessionId: number, runId: number): void {
+    this.db.prepare("UPDATE sessions SET fork_suppressed_run = ? WHERE id = ? AND fork_suppressed_at IS NOT NULL AND fork_suppressed_run IS NULL").run(runId, sessionId);
+  }
+  /** The explicit retry (menu only). A later eligible miss starts a new downgrade episode. */
+  clearForkSuppression(sessionId: number): void {
+    this.db.prepare("UPDATE sessions SET fork_suppressed_at = NULL, fork_suppressed_run = NULL WHERE id = ?").run(sessionId);
   }
 
   closeSession(sessionId: number, at = new Date().toISOString()): void {

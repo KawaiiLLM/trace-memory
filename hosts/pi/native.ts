@@ -11,7 +11,7 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
 import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./branch.ts";
 import type { ToolDefinition } from "../../core/api/index.ts";
 
-export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] };
+export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheMissObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
 
 /** A child cannot be prepared from this parent state; the caller falls back and records the reason. */
 export class NotForkable extends Error {
@@ -37,6 +37,9 @@ interface NativeCommon {
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
   /** Consolidation's review feedback, delivered to the child as a native user message. */
   feedback?(result: string): string | undefined;
+  /** 19c: one completed fork response reported an eligible server-side cache miss (gate 3). The run
+   * itself continues; the host decides what a miss means for later tasks. */
+  onCacheMiss?(observation: CacheMissObservation): void;
 }
 /** Inherited context: a child forked from the parent's persisted checkpoint (19a). */
 export interface NativeForkTask extends NativeCommon {
@@ -110,6 +113,69 @@ export function forkable(entries: SessionEntry[]): void {
     for (const part of message.content as { type?: string; id?: string }[])
       if (part.type === "toolCall" && part.id && !results.has(part.id)) throw new NotForkable(`checkpoint tool call ${part.id} has no result`);
   }
+}
+
+/** 19c "Entry readiness and fallback": may a fork launch at this checkpoint now? Returns the reason to
+ * wait for the next safe boundary, or undefined when the checkpoint is ready. The probe is read-only:
+ * the parent's own file is reopened through an independent `SessionManager` (with its own directory, so
+ * nothing is created) exactly as the launch does, the chosen entry must exist in that reopened file —
+ * Pi's message-completion callback runs before persistence, so a completed message is not yet one — and
+ * its ancestry must contain no assistant tool-call group whose results are still missing. Waiting starts
+ * nothing, advances no progress and creates no duplicate task; the next boundary decides again. */
+export function checkpointReadiness(parentFile: string, checkpoint: string): string | undefined {
+  let entries: SessionEntry[];
+  try {
+    const manager = SessionManager.open(parentFile);
+    if (!manager.getEntry(checkpoint)) return `checkpoint ${checkpoint} is not persisted yet`;
+    entries = manager.getBranch(checkpoint);
+  } catch (error) { return `the parent session file cannot be reopened: ${String(error)}`; }
+  try { forkable(entries); } catch (error) { return String((error as Error).message); }
+  return undefined;
+}
+
+// ---- Cache-miss eligibility (19c; ticket 19 "Cache-miss fallback" and gate 3) ----------------
+
+/** Minimum cacheable prefix length, by provider family and model, from the providers' own
+ * documentation. There is deliberately no universal fallback: an API or model that is not listed has
+ * an unknown minimum, and an unknown minimum can never establish an eligible miss.
+ * - `anthropic-messages`: 1024 tokens, and 2048 for the Haiku family (Anthropic prompt caching).
+ * - OpenAI-family completions/responses: a 1024-token prefix (OpenAI automatic prompt caching). */
+const CACHE_MINIMUM: { api: string; model?: RegExp; tokens: number }[] = [
+  { api: "anthropic-messages", model: /haiku/i, tokens: 2048 },
+  { api: "anthropic-messages", tokens: 1024 },
+  { api: "openai-completions", tokens: 1024 },
+  { api: "openai-responses", tokens: 1024 },
+  { api: "openai-codex-responses", tokens: 1024 },
+];
+export const cacheMinimum = (api: string, model: string): number | undefined =>
+  CACHE_MINIMUM.find(entry => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
+
+/** What a recorded eligible miss says: the response's own reported input accounting, the model it was
+ * measured on, and the minimum it had to reach. */
+export interface CacheMissObservation { model: string; api: string; minimum: number; input: number; cacheRead: number; cacheWrite: number }
+
+/** One completed fork response, judged on its own reported usage (never a run's sum).
+ *
+ * pi-ai normalizes both families to the same counting convention: `input` excludes both `cacheRead`
+ * and `cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
+ * copies `input_tokens`, which already excludes them), so the request's actual input length is
+ * `input + cacheRead + cacheWrite` on either. Compressed Raw size is never used.
+ *
+ * Everything unknown returns undefined: missing or non-numeric usage, an unsupported/unreported cache
+ * count, a provider cache that was not requested at all, an unlisted provider minimum, and an input
+ * below that minimum. A nonzero `cacheRead` is a hit — there is no ratio threshold. */
+export function eligibleCacheMiss(model: { api: string; id: string; provider: string }, usage: unknown, cacheEnabled: boolean): CacheMissObservation | undefined {
+  if (!cacheEnabled) return; // the request asked for no caching: a zero read says nothing
+  const minimum = cacheMinimum(model.api, model.id);
+  if (minimum === undefined) return;
+  if (!usage || typeof usage !== "object") return;
+  const reported = usage as { input?: unknown; cacheRead?: unknown; cacheWrite?: unknown };
+  if (typeof reported.input !== "number" || typeof reported.cacheRead !== "number") return;
+  if (reported.cacheRead !== 0) return;
+  const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
+  const input = reported.input + reported.cacheRead + cacheWrite;
+  if (!Number.isFinite(input) || input < minimum) return;
+  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, input, cacheRead: 0, cacheWrite };
 }
 
 export async function runNative(task: NativeTask): Promise<NativeResult> {
@@ -193,6 +259,11 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const seen = new Set<unknown>();
   const key = messageKey(api);
   let previous: Body | undefined;
+  // Whether the body this child actually sent asked the provider to cache. Anthropic caches only the
+  // prefix its `cache_control` markers select, so a body without one has a disabled cache and its
+  // zero read is not evidence of anything; OpenAI-family caching is automatic and not request-controlled.
+  let cacheEnabled = api !== "anthropic-messages";
+  let observedMiss = false;
   const inherited = session.agent.onPayload;
   // Adapter decision: a fork shares the parent's cache/affinity identity; a fresh child keeps its own.
   if (task.mode === "branch") session.agent.sessionId = task.parentSessionId;
@@ -215,6 +286,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
         if (!checked.passed) { verification.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
       }
     }
+    if (api === "anthropic-messages") cacheEnabled = JSON.stringify(body).includes('"cache_control"');
     if (task.maxToolRounds && rounds++ > task.maxToolRounds) throw new Error(`tool rounds exceeded (${task.maxToolRounds})`);
     previous = body;
     if (request === undefined) request = snapshot(body); // the verified first body is the audited request
@@ -232,6 +304,14 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // never re-sent, and native session statistics would count them.
     usage = addUsage(usage, message.usage);
     terminal = message;
+    // Gate 3: only a response whose request passed the deterministic prefix check can count, and it is
+    // judged on its own usage. A response that failed or was cancelled carries SDK placeholder zeros,
+    // which are unknown, not a miss. The run continues either way: never replayed, never cancelled for
+    // this, and a committed batch stays committed.
+    if (verification?.passed && !observedMiss && message.stopReason !== "error" && message.stopReason !== "aborted" && message.errorMessage === undefined) {
+      const miss = eligibleCacheMiss(task.model as { api: string; id: string; provider: string }, message.usage, cacheEnabled);
+      if (miss) { observedMiss = true; verification.cacheMiss = miss; task.onCacheMiss?.(miss); }
+    }
     task.onProgress({ usage, retries });
   });
   const abort = () => void session.abort();

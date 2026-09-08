@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, stripCacheControl, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { runNative, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
+import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
 import { composeTask } from "./compose.ts";
 import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
@@ -163,6 +163,14 @@ export default function (pi: ExtensionAPI) {
       // request-copy runner below is not used unless the native child cannot be prepared at all.
       if (input.mode === "branch" && flat.nativeRunner === true) {
         try {
+          // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
+          // while this memory session is automatically downgraded. Every task rechecks it here, so a
+          // task queued before the transition cannot bypass it.
+          const suppression = memory.store.forkSuppression(input.sessionId);
+          if (suppression) throw new NotForkable(`cache miss latch: fork suppressed for this session since ${suppression.at}`);
+          // A tree switch since admission invalidates this launch context; the new branch's history is
+          // never substituted for the task frozen on the old one.
+          if (state.branch !== input.branch) throw new NotForkable("The selected branch changed after admission");
           const captured = session.capture;
           if (!captured || captured.branch !== input.branch) throw new NotForkable("No current-branch provider payload captured");
           if (captured.model !== model.id || captured.provider !== model.provider) throw new NotForkable("Session model changed since capture");
@@ -171,6 +179,14 @@ export default function (pi: ExtensionAPI) {
           const checkpoint = callContext.sessionManager.getLeafId();
           if (!checkpoint) throw new NotForkable("The parent session has no persisted leaf entry");
           const native = await runNative({
+            onCacheMiss: () => {
+              // One transition per session, decided by the store's guarded UPDATE, so two phases
+              // reporting a miss together warn once. This run continues in its own native session; the
+              // observation itself is audited under `verification.cacheMiss` in its run record.
+              if (!memory.store.suppressFork(input.sessionId)) return;
+              missDetected.add(input.kind);
+              callContext.ui.notify("Trace Memory: fork cache miss. Future memory tasks in this session will use subagent.", "warning");
+            },
             mode: "branch", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
             task: composed("branch").message, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
@@ -385,6 +401,10 @@ export default function (pi: ExtensionAPI) {
   const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
   const slots = new Set<"noting" | "consolidation">();
+  // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
+  // session's suppression once core has allocated it (the miss is seen before any run row exists).
+  const missDetected = new Set<"noting" | "consolidation">();
+  const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to branch, consolidation to
@@ -439,7 +459,9 @@ export default function (pi: ExtensionAPI) {
     }
     return memory.noting({ ...target, ...selected, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!,
       capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
-        prefixTokens: selected.mode === "branch" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
+        // A session the cache-miss latch has downgraded will run this task with fresh context, so
+        // there is no inherited prefix to reserve room for.
+        prefixTokens: selected.mode === "branch" && !suppressed() && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
       ...(options.boundary ? { boundary: options.boundary } : {}) });
   };
   let savedSourceHead: number | undefined;
@@ -665,6 +687,17 @@ export default function (pi: ExtensionAPI) {
     if (!state.sessionId || !state.head) return;
     if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
   });
+  // The reason a due fork-mode task must wait for a later boundary, or undefined when it may launch
+  // now. Only the native runner's inherited-context path has a checkpoint to be ready: a request-copy
+  // run, a fresh-context run and a session already downgraded by the cache-miss latch have none.
+  const forkWait = (context: ExtensionContext, mode: "branch" | "subagent"): string | undefined => {
+    if (mode !== "branch" || flat.nativeRunner !== true || suppressed()) return;
+    const parentFile = context.sessionManager.getSessionFile?.();
+    if (!parentFile) return; // no native file at all: the documented subagent fallback applies, not a wait
+    const checkpoint = context.sessionManager.getLeafId();
+    if (!checkpoint) return "the parent session has no persisted leaf entry";
+    return checkpointReadiness(parentFile, checkpoint);
+  };
   const checkQueues = () => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
@@ -676,7 +709,13 @@ export default function (pi: ExtensionAPI) {
       try { ({ due, paused } = memory.taskEligibility(kind, own, selected.mode)); }
       catch (error) { context.ui.notify(String(error), "error"); }
       if (due && paused) { activity.last = "warning"; showSpend(context); }
-      const candidates = [...(due && !paused ? [{ ...own, borrowed: false }] : []),
+      // 19c "Trigger versus launch": the threshold above decides that this task is due; the checkpoint
+      // decides when it may launch. A due fork-mode task whose native checkpoint is not yet persisted,
+      // reopenable and free of an open tool-call group waits for the next safe boundary — no timer, no
+      // duplicate task, no progress, and starting later is not a new extraction trigger. Borrowed
+      // closed-session work is fresh-context and is never held back by this.
+      const waiting = due && !paused ? forkWait(context, selected.mode) : undefined;
+      const candidates = [...(due && !paused && !waiting ? [{ ...own, borrowed: false }] : []),
         ...memory.store.closedTasks(kind, own.sessionId).map(target => ({ ...target, borrowed: true }))];
       if (!candidates.length) continue;
       slots.add(kind); // Reserve before any asynchronous admission or model work.
@@ -686,6 +725,10 @@ export default function (pi: ExtensionAPI) {
           try {
             const selected = borrowed ? { mode: "subagent" as const, model: modelName(kind) } : launch(kind);
             const result = await attemptPhase(context, kind, target, selected, { borrowed, automatic: true });
+            // The run that detected the cache miss now has an id: link it, so status and the audit
+            // name the response that downgraded this session. Its own mode stays fork.
+            const runId = (result as { runId?: number }).runId;
+            if (missDetected.delete(kind) && typeof runId === "number") memory.store.linkForkSuppression(target.sessionId, runId);
             if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
           } catch (error) {
             context.ui.notify(String(error), "error");
@@ -846,8 +889,11 @@ export default function (pi: ExtensionAPI) {
   const status = () => {
     const e = enrollment();
     const base = state.sessionId ? memory.status(state.sessionId) : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no session id.`;
-    const line = catchupLine();
-    return line ? `${base}\n${line}` : base;
+    // 19c: the automatic downgrade is session state a user can act on, so status shows it and names
+    // its one reset. The run that detected it keeps its own fork mode in the run record.
+    const downgrade = suppressed();
+    const fork = downgrade ? `Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu` : undefined;
+    return [base, fork, catchupLine()].filter(Boolean).join("\n");
   };
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
@@ -872,7 +918,16 @@ export default function (pi: ExtensionAPI) {
     if (selected === "Current session") {
       const action = enabled() ? "Disable" : "Enable";
       const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
-      const choice = await ctx.ui.select(`${status()}${shared}`, [action]);
+      // 19c "Menu-only reset": Retry fork exists only while this session is automatically downgraded.
+      // No slash subcommand and no permanent menu item; it clears the suppression only.
+      const downgrade = suppressed();
+      const choice = await ctx.ui.select(`${status()}${shared}`, [action, ...(downgrade ? ["Retry fork"] : [])]);
+      if (choice === "Retry fork") {
+        memory.store.clearForkSuppression(state.sessionId!);
+        showSpend(ctx);
+        ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
+        return;
+      }
       if (choice && await ctx.ui.confirm(`${action} Trace Memory?`, shared + (action === "Disable"
         ? " Processing and future injection stop; stored memory and already-injected text remain."
         : " Available history, including the paused interval, will be queued without a model call."))) toggle(action === "Enable");
