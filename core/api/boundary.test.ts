@@ -151,7 +151,7 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
     expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${first.id}#user`)] })).toContain("ok: F1");
     return { outcome: "success", output: "done", request: { fake: true } };
   };
-  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "branch",
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: second.id, mode: "fork",
     capacity: { inputTokens, prefixTokens: 50 } });
   expect(result.outcome).toBe("success");
   if (result.outcome !== "success") throw new Error("expected success");
@@ -169,7 +169,7 @@ test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budg
   const t = turn(sessionId, null, "first " + "word ".repeat(600), "reply one");
   const before = memory.pendingEntries(sessionId, "main", t.id);
   runAgent = async () => { throw new Error("no model call may happen"); };
-  await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "branch",
+  await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "fork",
     capacity: { inputTokens: overhead(), prefixTokens: 50 } })).rejects.toThrow("oldest entry cannot fit");
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);

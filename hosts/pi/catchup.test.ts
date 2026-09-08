@@ -29,7 +29,7 @@ function hold(h: ReturnType<typeof host>) {
 }
 
 test("17c 2026-09-08: two executor slots prefer own work over several closed tails and never fan out", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory, { facts: 1 }));
@@ -51,7 +51,7 @@ test("17c 2026-09-08: two executor slots prefer own work over several closed tai
 });
 
 test("17c 2026-09-08: busy borrowed slots are not preempted or chained; later entries take oldest tails with stable branch order", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     const first = target(h.memory, { facts: 1, branch: "z" });
@@ -183,7 +183,7 @@ test("17c 2026-09-08: reopen blocks selection and immediately replaces borrowed 
 });
 
 test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrowed workers even when providers never resolve", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     const t = target(h.memory, { facts: 1, noted: true });
@@ -219,7 +219,7 @@ test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrow
 });
 
 test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and never restarts a committed batch", async () => {
-  const h = host({ "noting.branchModeDefault": false, "noting.triggerTokens": 60, retry: { baseDelayMs: 60_000 } });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60, retry: { baseDelayMs: 60_000 } });
   try {
     h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "503 overloaded" } : notingFact(c), { autoStop: false });
     await h.turn();
@@ -238,7 +238,7 @@ test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and
 });
 
 test("17c 2026-09-08: late rejection after deadline is consumed, normal restore clears closure, and late results never touch the closed store", async () => {
-  const h = host({ "noting.branchModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
   let reject!: (error: Error) => void;
   try {
     h.provider(async () => new Promise<Reply>((_, r) => { reject = r; }));
@@ -307,7 +307,7 @@ test("17c 2026-09-08: resume takes crashed claims immediately without inventing 
 });
 
 test("17c 2026-09-08: database contention cannot multiply shutdown deadline; cleanup errors are reported", async () => {
-  const h = host({ "noting.branchModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
   let holder: ReturnType<typeof spawn> | undefined;
   let exited: Promise<unknown> | undefined;
   try {
@@ -370,7 +370,7 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
 
 
 test("17c 2026-09-08: failed own capacity admission leaves the slot free for a smaller closed tail", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     h.ctx.model = { ...h.ctx.model!, contextWindow: 12000, maxTokens: 1000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });

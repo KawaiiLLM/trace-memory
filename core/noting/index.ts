@@ -17,7 +17,7 @@ export interface NotingInput extends TaskOptions {
   /** Host model capacity after reserving output; prefix includes native tools and context. */
   capacity?: { inputTokens: number; prefixTokens: number };
   model?: string;
-  mode?: "branch" | "subagent";
+  mode?: "fork" | "subagent";
 }
 /** The frozen task material of one Noting run (ticket 19b). Core renders and budgets these parts;
  * the adapter decides which of them an execution mode needs and which model message carries them.
@@ -44,7 +44,7 @@ export interface NotingAgentInput extends AgentControl {
   range: { from: string; to: string };
   readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
-  mode: "branch" | "subagent";
+  mode: "fork" | "subagent";
   /** The domain instructions; core owns the prompt file and its hash. */
   prompt: string;
   promptHash: string;
@@ -95,7 +95,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
-  const mode = input.mode ?? (config.noting.branchModeDefault ? "branch" : "subagent");
+  const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -115,8 +115,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const cost = (parts: (string | null)[]) => parts.reduce<number>((total, part) => total + (part ? tokens(part) : 0), 0);
     const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions))
       + cost([...material.knowledge, ...material.facts, ...material.entries.map(e => e.view), ...material.receipts]);
-    const branchTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + cost([material.head, ...material.sources]);
-    if (!capacity || Math.max(subagentTokens, mode === "branch" ? branchTokens : 0) <= capacity.inputTokens) return frozen;
+    const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + cost([material.head, ...material.sources]);
+    if (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens) return frozen;
     entries.pop();
   }
   if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit model context with instructions, knowledge, tools and output reserved; left pending");

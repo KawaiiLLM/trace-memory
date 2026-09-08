@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, materialText, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, materialText, runMode, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
@@ -63,11 +63,11 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   const probe = TraceMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
-  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" }); }
+  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
   finally { probe.close(); }
   await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
-  expect(branch!.mode).toBe("branch");
+  expect(branch!.mode).toBe("fork");
   // The premise repair supplies the missing final reply and the source index as their own parts.
   expect(branch!.material.head).toBe(`[Source entry id: T${t.id}#assistant]\n好的。`);
   expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
@@ -256,7 +256,7 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id });
   const input = calls[0]!;
-  expect(input.mode).toBe("branch");
+  expect(input.mode).toBe("fork");
   expect(input.material.head).toBe(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
   expect(input.material.sources).toEqual([
     `T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply`,
@@ -747,4 +747,61 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   expect(cresult.outcome).toBe("success");
   if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
   expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(1); // the later fact stays outside the frozen target
+});
+
+// ---- 19c: the execution mode is fork; branch remains the evidence path (ticket 19 "Naming and compatibility") ----
+
+test("19c 2026-09-08: the legacy branchModeDefault spelling is accepted, mapped onto forkModeDefault, and not kept", () => {
+  const legacy = TraceMemory(join(directory, "alias.sqlite"), async () => ok([]), { noting: { branchModeDefault: false } });
+  try {
+    expect(legacy.config.noting.forkModeDefault).toBe(false);              // the old key still selects the mode
+    expect(Object.hasOwn(legacy.config.noting, "branchModeDefault")).toBe(false); // only the canonical key survives
+  } finally { legacy.close(); }
+  // Both spellings supplied and agreeing: the canonical one wins, silently.
+  const agreeing = TraceMemory(join(directory, "agreeing.sqlite"), async () => ok([]), { noting: { branchModeDefault: false, forkModeDefault: false } });
+  try { expect(agreeing.config.noting.forkModeDefault).toBe(false); } finally { agreeing.close(); }
+});
+
+test("19c 2026-09-08: both execution-mode spellings with different values fail the load naming both keys", () => {
+  const load = () => TraceMemory(join(directory, "conflict.sqlite"), async () => ok([]), { noting: { branchModeDefault: true, forkModeDefault: false } });
+  expect(load).toThrow(/noting\.branchModeDefault/);
+  expect(load).toThrow(/noting\.forkModeDefault/);
+  expect(load).toThrow(/Conflicting settings/);
+});
+
+test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {
+  const { s, t } = session();
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success"); // configuration default
+  expect(calls.at(-1)!.mode).toBe("fork");
+  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("fork");
+  expect(memory.store.listRuns(s.id).some(r => r.mode === "branch")).toBe(false);
+});
+
+test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy execution and is never rewritten", async () => {
+  const seed = (m: TraceMemory) => {
+    const project = m.store.createProject({ name: "historical", declaredBy: "mark" });
+    const s = m.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
+    const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
+    return { s, t };
+  };
+  const path = join(directory, "historical.sqlite");
+  const before = TraceMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
+  const { s, t } = seed(before);
+  // A pre-rename row, exactly as the deleted request-copy runner wrote it. No migration touches it.
+  before.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", mode: "branch", model: "old/model",
+    rangeFrom: `S${s.id}/T${t.id}`, rangeTo: `S${s.id}/T${t.id}`, createdAt: time }, facts: [] });
+  const legacy = before.store.listRuns(s.id).at(-1)!.id;
+  before.close();
+  const after = TraceMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
+  try {
+    expect(after.store.getRun(legacy)!.mode).toBe("branch");   // reopening the database migrates nothing
+    expect(after.trace(`R${legacy}`)).toContain("mode legacy request-copy execution (branch)");
+    expect(after.trace(`R${legacy}`)).not.toContain("mode fork"); // an old run is never described as a native fork
+    expect(runMode("fork")).toBe("fork"); expect(runMode("subagent")).toBe("subagent"); // new modes read as themselves
+    // Reading it, and running new work in the same database afterwards, leave the stored value alone.
+    expect((await after.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+    expect(after.trace(`R${legacy}`)).toContain("legacy request-copy execution");
+    expect(after.store.getRun(legacy)!.mode).toBe("branch");
+    expect(after.store.listRuns(s.id).map(r => r.mode)).toEqual(["branch", "fork"]);
+  } finally { after.close(); }
 });

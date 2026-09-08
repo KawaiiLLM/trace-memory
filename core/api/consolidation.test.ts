@@ -84,7 +84,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
   const current = fact(memories.knowledge);
   const foreignProject = memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
   const foreign = fact(memories.observation, { sessionId: session(foreignProject) });
-  const before = memory.trace(`K${e}`), resolve = deferred(), selection = { sessionId, branch: "main", model: "fake-model", mode: "branch" as const };
+  const before = memory.trace(`K${e}`), resolve = deferred(), selection = { sessionId, branch: "main", model: "fake-model", mode: "fork" as const };
   const pending = memory.consolidate(selection);
   selection.branch = "switched";
   const late = fact(memories.observation, { negate: [{ target: `F${current}`, strength: "strong" }] });
@@ -98,7 +98,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(result.range).toEqual({ from: `F${current}`, to: `F${current}`, facts: [memory.store.getFact(current)!] });
   expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
   for (const call of calls) {
-    expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("branch");
+    expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("fork");
     expect(materialText(call)).not.toContain(`[F${late}]`); expect(materialText(call)).not.toContain(`[F${foreign}]`);
     expect(materialText(call)).not.toContain(`inbound negate F${late}`); expect(materialText(call)).not.toContain(`[K${e}@2]`);
   }
@@ -190,7 +190,7 @@ test("NEAR covers create, update and merge text, excludes each target, and uses 
   expect(feedback).not.toContain(`-> K${c}`);
   memory.close(); open({ consolidation: { nearThreshold: 1, subagentModeDefault: false } });
   fact(); queue(createOutput(f, memories.base), empty); await consolidation();
-  expect(calls[3]!.feedback).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("branch");
+  expect(calls[3]!.feedback).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("fork");
 });
 
 for (const round of ["candidate", "final"] as const) for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
@@ -490,14 +490,14 @@ test("same-project sessions commit independently while another session is pendin
 test("19b 2026-09-08: Consolidation material carries the exact fact list, the fact lines and the knowledge in either mode", async () => {
   const first = fact(); const second = fact(memories.observation);
   await memory.consolidate({ sessionId, branch: "main", mode: "subagent" }); // the queue is empty; only the frozen material matters here
-  await memory.consolidate({ sessionId, branch: "main", mode: "branch" });
+  await memory.consolidate({ sessionId, branch: "main", mode: "fork" });
   for (const call of calls) {
     // The exact set, not the F..F span: what an inherited context integrates is a membership list.
     expect(call.material.factAddresses).toEqual([`F${first}`, `F${second}`]);
     expect(call.material.rangeFacts.join("\n")).toContain(memory.trace(`F${first}`));
     expect(call.material.knowledge.join("\n")).toBe(calls[0]!.material.knowledge.join("\n"));
   }
-  expect(calls[0]!.mode).toBe("subagent"); expect(calls[1]!.mode).toBe("branch");
+  expect(calls[0]!.mode).toBe("subagent"); expect(calls[1]!.mode).toBe("fork");
   // Core froze one material for both modes; which parts each mode sends is pinned in hosts/pi/compose.test.ts.
   expect(calls[1]!.material).toEqual(calls[0]!.material);
 });

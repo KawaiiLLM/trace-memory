@@ -2,12 +2,12 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `core/api/index.ts`, including
-its exposed store. Notings use verified branch mode by default; consolidation uses
+its exposed store. Notings use verified fork mode by default; consolidation uses
 subagent mode. Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
-(`native.ts`): branch mode in a child forked from the parent session file at its persisted
+(`native.ts`): fork mode in a child forked from the parent session file at its persisted
 leaf, every fresh-context task in a private child session. Pi owns the model call, the tool
 loop, the retry policy, cancellation and persistence; this adapter keeps the byte-level gate
 on a fork's first request and the run record. The request-copy runner — its own conversation
@@ -37,7 +37,7 @@ For example, either settings file can contain:
 ```json
 {
   "trace-memory": {
-    "noting.branchModeDefault": true,
+    "noting.forkModeDefault": true,
     "consolidation.subagentModeDefault": true,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 50000
@@ -56,8 +56,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   and `session` both resolve to the current session model's audited provider/id.
 - Core settings use dotted names: every `render.*`, `noting.*`, and `consolidation.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
-- `noting.branchModeDefault` defaults to `true`. Set it to `false` for subagent
-  notings. Branch notings always use the session model, including on fallback;
+- `noting.forkModeDefault` defaults to `true`. Set it to `false` for subagent
+  notings. Fork notings always use the session model, including on fallback;
   `notingModel` applies only when subagent mode is explicitly configured.
 - `nativeRunner` (19a) is **gone** (19c). The native runner is the only runner, so the key
   selects nothing; like any other unrecognized key it is rejected at load with
@@ -72,7 +72,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   directory, so `/resume` never lists them. Each run record stores the absolute path as
   `nativeLog` inside its response JSON. Retention is a documented v1 limit: nothing prunes
   that directory.
-- `consolidation.subagentModeDefault` defaults to `true`. Set it to `false` for branch
+- `consolidation.subagentModeDefault` defaults to `true`. Set it to `false` for fork
   consolidation: the candidate round appends the consolidation prompt and input to the
   captured prefix, the final round appends the candidate reply (in the
   provider's native assistant shape) and the feedback message to the candidate
@@ -98,10 +98,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   order, chronological ordering, constraints first, and atomic delivery consumption.
 
   Enabled sessions receive both delivery kinds in every worker-mode combination
-  (2026-09-08 supersedes the 2026-09-07 consumer matrix). A branch run still waits
+  (2026-09-08 supersedes the 2026-09-07 consumer matrix). A fork run still waits
   while a delivery it would read is pending; mode controls execution, not delivery.
 
-  A branch Consolidation appends the range plus the exact list of facts to
+  A fork Consolidation appends the range plus the exact list of facts to
   integrate, never the fact lines or the knowledge block again. The list is
   explicit because other paths and already-consolidated facts can fall between the
   range ends. Anything the conversation does not
@@ -133,7 +133,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   existing context: the host uses the model context window with a 15% estimation
   margin and reserves its output limit. An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity also leaves work pending.
-  Native branch context is additional to the new-material budget and is never compressed.
+  Native fork context is additional to the new-material budget and is never compressed.
 - `consolidation.triggerUnconsolidatedFacts` stays at **50**. Committed facts are eligible
   immediately, even from partly recorded Turns. Selection takes applicable facts
   without Turn grouping; path-aware per-fact progress is unchanged. There is no
@@ -455,7 +455,7 @@ inside the same Turn (19c readiness). A capture older than the newest entries is
 correctness problem: the child forks the real ancestry, so those entries are in its context,
 and the gate compares only the prefix.
 
-`branch.ts` supports `anthropic-messages`, `openai-completions`, and `openai-responses`
+`fork.ts` supports `anthropic-messages`, `openai-completions`, and `openai-responses`
 (including `openai-codex-responses`) payloads: it reads the parent's system prompt and tool
 definitions out of the captured body so the child can be built with the same bytes, and it
 compares bodies. Other APIs refuse the fork with an explicit reason. It no longer builds any
@@ -484,7 +484,7 @@ preserves the full SDK usage.
 
 A rejected first body throws inside `onPayload`, before anything is sent: nothing is billed,
 the same run continues in a fresh native child with the full fresh-context material, and it
-records `mode: subagent`, `requestedMode: branch`, `response.fallbackReason` and the rejected
+records `mode: subagent`, `requestedMode: fork`, `response.fallbackReason` and the rejected
 gate result (both hashes and the differing path) under `verification.native`. Missing or
 unsupported captures have a reason but no fabricated comparison or hashes. Notification happens
 once per Pi session. A later round mismatch fails that round with no fallback; the record
@@ -495,7 +495,7 @@ trigger another billable call.
 Fallback keeps the run honest: it accepts the actual returned `mode`, records `requestedMode`
 beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b
 the fresh-context material is composed from the same frozen parts rather than shipped as a
-second core string, so a fallback cannot send range-only context or falsely record branch mode.
+second core string, so a fallback cannot send range-only context or falsely record fork mode.
 No store schema changed.
 
 ## Message composition (19b)
@@ -506,7 +506,7 @@ lines, fact lines, fact addresses, negated-evidence reminders, budget receipts �
 nothing. `composeMaterial(input, mode)` lays those parts out; `composeTask(input, mode)` returns
 the messages:
 
-- **Inherited context (`branch`)**: one user message, `prompt` then `Range: …`, the head turn's
+- **Inherited context (`fork`)**: one user message, `prompt` then `Range: …`, the head turn's
   final reply and the `Sources:` index — nothing else, because the raw turns, the delivered
   facts and the injected knowledge are already in that conversation (user ruling 2026-09-06
   08:53). Consolidation sends the range, `Facts to integrate: F…` and the reminders. A fork has
@@ -572,7 +572,7 @@ The same `runNative` serves `mode: "subagent"` with four differences and no seco
 - The child keeps its own `agent.sessionId`; the parent's request identity is a fork-only
   decision.
 
-A fork that cannot be prepared records `requestedMode: "branch"`, run `mode: "subagent"` and
+A fork that cannot be prepared records `requestedMode: "fork"`, run `mode: "subagent"` and
 `fallbackReason: "native runner: <reason>"`, warns once per Pi session, and continues on the
 fresh child without a second billable attempt (nothing had been sent). If that child cannot be
 constructed either, the run fails with both reasons; nothing is committed and nothing advances.
@@ -679,13 +679,13 @@ On the first eligible miss:
   emits the single TUI warning `Trace Memory: fork cache miss. Future memory tasks in this
   session will use subagent.` Headless operation records the same state without any UI.
 - The detecting run continues untouched: same native session, same tool protocol, same trailing
-  replies, no replay, no extra trigger, and its run record keeps `mode: "branch"`. The
+  replies, no replay, no extra trigger, and its run record keeps `mode: "fork"`. The
   observation is audited as `verification.cacheMiss = {model, api, minimum, input, cacheRead,
   cacheWrite}`, and the run id is linked to the session's suppression once core has allocated it
   (the miss is seen before any run row exists).
 - Every later task rechecks the latch at fork admission, so a task queued before the transition
   cannot bypass it. The configured requested mode is retained: the run records
-  `requestedMode: "branch"`, `mode: "subagent"` and `fallbackReason: "cache miss latch: …"`.
+  `requestedMode: "fork"`, `mode: "subagent"` and `fallbackReason: "cache miss latch: …"`.
   Sibling tasks already running stay frozen. Global configuration and other sessions are
   unchanged; branches and copied hosts sharing the memory session share the latch, and it
   survives reopen because it lives in the database.
@@ -719,10 +719,10 @@ This is a human-run check, not an automated claim of live cache hits.
    }
    ```
 
-2. Enable branch mode and a low compressed-token trigger with an isolated database:
+2. Enable fork mode and a low compressed-token trigger with an isolated database:
 
    ```sh
-   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/branch.db","noting.branchModeDefault":true,"noting.triggerTokens":100}'
+   export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/fork.db","noting.forkModeDefault":true,"noting.triggerTokens":100}'
    node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js \
      --extension /private/tmp/trace-memory-manual/capture.ts \
      --extension /Users/zhaoqixuan/Projects/trace-memory/hosts/pi/index.ts
@@ -743,13 +743,13 @@ This is a human-run check, not an automated claim of live cache hits.
    import assert from 'node:assert/strict';
    import { readFileSync } from 'node:fs';
    import { DatabaseSync } from 'node:sqlite';
-   import { hash, serialize, stripCacheControl } from './hosts/pi/branch.ts';
-   const db = new DatabaseSync('/private/tmp/trace-memory-manual/branch.db', { readOnly: true });
+   import { hash, serialize, stripCacheControl } from './hosts/pi/fork.ts';
+   const db = new DatabaseSync('/private/tmp/trace-memory-manual/fork.db', { readOnly: true });
    const run = db.prepare("SELECT * FROM runs WHERE kind='noting' ORDER BY id DESC LIMIT 1").get();
    assert.ok(run, 'Wait for the noting to finish');
    const response = JSON.parse(run.response);
    console.log({ mode: run.mode, model: run.model, outcome: run.outcome, ...response });
-   assert.equal(run.mode, 'branch');
+   assert.equal(run.mode, 'fork');
    const captured = JSON.parse(readFileSync('/private/tmp/trace-memory-manual/captured.json', 'utf8'));
    const sent = JSON.parse(run.request);
    const key = Array.isArray(captured.messages) ? 'messages' : 'input';
@@ -788,7 +788,7 @@ This is a human-run check, not an automated claim of live cache hits.
    capture must refuse the fork with a reason, not reuse the stale body; after a new capture
    the next run forks again. Repeat after changing active tool definitions. For an unsupported
    API expect subagent mode, a fallback reason and one notice, rather than invented hashes.
-   Compare with a separate database using `noting.branchModeDefault: false` to
+   Compare with a separate database using `noting.forkModeDefault: false` to
    evaluate extraction quality and cost before choosing the operational default.
 
 
@@ -876,7 +876,7 @@ amount is this session's cumulative spend at the model's configured API rates
 (Pi's own cost formula).
 
 The indicator uses Pi theme colours: dim `○` idle, accent `●` a Noting run in
-flight, success `●` an Consolidation run in flight, warning `●` a branch Noting
+flight, success `●` an Consolidation run in flight, warning `●` a fork Noting
 paused until the next prompt delivers or the last run committed with problems,
 error `●` the last run failed. `/trace` prints the session's breakdown by run
 kind. Tree switching contributes no extraction usage to Pi totals.
@@ -930,9 +930,9 @@ The same entry bytes supply subagent Noting, subagent fallback, compaction
 Raw and branch-carry Raw. Existing episodic budgets count these compressed bytes
 when deciding which whole facts fit. Pending Raw views remain present with an
 overage receipt when their combined views exceed that outer budget. The shared
-estimator is unchanged. **Branch-mode Noting keeps reading the uncompressed
+estimator is unchanged. **Fork-mode Noting keeps reading the uncompressed
 native provider prefix and gains nothing from the compressed view.** This is the
-accepted 2026-09-08 branch-mode choice: its value is prefix reuse. The captured
+accepted 2026-09-08 fork-mode choice: its value is prefix reuse. The captured
 prefix is never rewritten or compressed. Its one appended user message still
 contains the Noting instruction, range, head reply and source index; the index
 contains only the frozen sources. Existing exact-prefix verification and fallback

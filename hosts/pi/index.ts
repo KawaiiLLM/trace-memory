@@ -3,10 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { hash, snapshot, type Body } from "./branch.ts";
+import { hash, snapshot, type Body } from "./fork.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
 import { composeTask } from "./compose.ts";
-import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
+import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type FlatConfig = Record<string, string | number | boolean>;
 type NativeModel = NativeForkTask["model"];
@@ -31,8 +31,18 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
-  const layers = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
-  for (const [name, layer] of Object.entries(layers)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
+  const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
+  for (const [name, layer] of Object.entries(supplied)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
+  // Ticket 19 "Legacy input": every layer's legacy execution-mode key (`noting.branchModeDefault`)
+  // is mapped onto the canonical one by core's own alias table, keeping that layer as its source, so
+  // an existing settings.json keeps working and the read-only menu shows the canonical key. A layer
+  // supplying both spellings with different values fails the load naming both keys. Layers still
+  // mask one another exactly as before, so a project layer may override a global legacy spelling.
+  const layers = Object.fromEntries(Object.entries(supplied).map(([name, values]) => [name, canonicalFlatConfig(values as FlatConfig)])) as Record<keyof typeof supplied, FlatConfig>;
+  const spelling: Record<string, string> = {};
+  for (const values of Object.values(supplied)) for (const key of Object.keys(values)) spelling[CONFIG_ALIASES[key] ?? key] = key;
+  // A value rejected under an accepted legacy spelling names the key the user actually wrote (18a).
+  const named = (key: string) => spelling[key] && spelling[key] !== key ? `${key} (supplied as ${spelling[key]})` : key;
   const flat: FlatConfig = Object.assign({}, ...Object.values(layers));
   const sources: Record<string, string> = {};
   for (const [layer, values] of Object.entries(layers)) for (const key of Object.keys(values)) sources[key] = layer;
@@ -44,7 +54,7 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
       for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
         const override = flat[`${section}.${key}`];
         if (override !== undefined && (typeof override !== typeof value ||
-          (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${section}.${key}`);
+          (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${named(`${section}.${key}`)}`);
         values[key] = (override ?? value) as number | boolean;
       }
       Object.assign(core, { [section]: values });
@@ -106,7 +116,7 @@ export default function (pi: ExtensionAPI) {
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
     const slash = input.model.indexOf("/");
-    // The model is frozen with the run (a branch run freezes the session model at launch), so a
+    // The model is frozen with the run (a fork run freezes the session model at launch), so a
     // model switch during a two-round consolidation cannot redirect its final round.
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
@@ -116,7 +126,7 @@ export default function (pi: ExtensionAPI) {
     // rejected one a fallback still records, with both hashes and the differing path.
     let verification: (Partial<NativeVerification> & { rounds: NativeVerification["rounds"]; native?: NativeVerification }) | undefined;
     let fallbackReason: string | undefined;
-    let mode: "branch" | "subagent" = "subagent";
+    let mode: "fork" | "subagent" = "subagent";
     let usage: unknown;
     const retries: { attempt: number; error: string }[] = [];
     const progress = () => input.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason });
@@ -134,7 +144,7 @@ export default function (pi: ExtensionAPI) {
       // The composed messages of this run: everything about layout lives in compose.ts, so an
       // inherited fork and a fresh subagent send the same bytes for the same mode (19b). Core
       // supplies material only.
-      const composed = (selected: "branch" | "subagent") => composeTask(input, selected);
+      const composed = (selected: "fork" | "subagent") => composeTask(input, selected);
       // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
       // backoff stay the adapter's, exactly as they were before the cutover.
       const retryNotice = (event: { attempt: number; maxAttempts: number; delayMs: number; error: string }) => {
@@ -147,7 +157,7 @@ export default function (pi: ExtensionAPI) {
       // fallback, or borrowed closed-session work) run in a fresh private child session. Pi owns the
       // model call, the tool loop, the retry policy and cancellation in both; this adapter keeps only
       // the byte-level gate on a fork's first request.
-      if (input.mode === "branch") {
+      if (input.mode === "fork") {
         try {
           // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
           // while this memory session is automatically downgraded. Every task rechecks it here, so a
@@ -173,15 +183,15 @@ export default function (pi: ExtensionAPI) {
               missDetected.add(input.kind);
               callContext.ui.notify("Trace Memory: fork cache miss. Future memory tasks in this session will use subagent.", "warning");
             },
-            mode: "branch", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
+            mode: "fork", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
-            task: composed("branch").message, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            task: composed("fork").message, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
             signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
             onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
             onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
             onRetry: retryNotice, onRetryEnd: retryFinished,
           });
-          mode = "branch";
+          mode = "fork";
           usage = native.usage; request = native.request ?? request; verification = native.verification;
           retries.splice(0, retries.length, ...native.retries);
           return { outcome: native.outcome, output: native.output, usage, request, mode, verification,
@@ -271,11 +281,11 @@ export default function (pi: ExtensionAPI) {
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to branch, consolidation to
-  // subagent); branch mode always runs on the session model, subagent mode on the configured one.
+  // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to fork, consolidation to
+  // subagent); fork mode always runs on the session model, subagent mode on the configured one.
   const launch = (kind: "noting" | "consolidation") => {
-    const branch = kind === "noting" ? memory.config.noting.branchModeDefault : !memory.config.consolidation.subagentModeDefault;
-    return { mode: branch ? "branch" as const : "subagent" as const, model: branch ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
+    const fork = kind === "noting" ? memory.config.noting.forkModeDefault : !memory.config.consolidation.subagentModeDefault;
+    return { mode: fork ? "fork" as const : "subagent" as const, model: fork ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
@@ -311,7 +321,7 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target,
   // mode/model and admission flags differ. `boundary` is absent for ordinary automatic work.
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
-      selected: { mode: "branch" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
+      selected: { mode: "fork" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, borrowed: options.borrowed, automatic: options.automatic,
       executorSessionId: state.sessionId!, ...(options.boundary ? { boundary: options.boundary } : {}) });
@@ -325,7 +335,7 @@ export default function (pi: ExtensionAPI) {
       capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
         // A session the cache-miss latch has downgraded will run this task with fresh context, so
         // there is no inherited prefix to reserve room for.
-        prefixTokens: selected.mode === "branch" && !suppressed() && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
+        prefixTokens: selected.mode === "fork" && !suppressed() && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
       ...(options.boundary ? { boundary: options.boundary } : {}) });
   };
   let savedSourceHead: number | undefined;
@@ -554,8 +564,8 @@ export default function (pi: ExtensionAPI) {
   // The reason a due fork-mode task must wait for a later boundary, or undefined when it may launch
   // now. Only the inherited-context path has a checkpoint to be ready: a fresh-context run and a
   // session already downgraded by the cache-miss latch have none.
-  const forkWait = (context: ExtensionContext, mode: "branch" | "subagent"): string | undefined => {
-    if (mode !== "branch" || suppressed()) return;
+  const forkWait = (context: ExtensionContext, mode: "fork" | "subagent"): string | undefined => {
+    if (mode !== "fork" || suppressed()) return;
     const parentFile = context.sessionManager.getSessionFile?.();
     if (!parentFile) return; // no native file at all: the documented subagent fallback applies, not a wait
     const checkpoint = context.sessionManager.getLeafId();

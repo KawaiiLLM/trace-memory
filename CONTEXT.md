@@ -48,7 +48,9 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Accounting** — after each consolidation run, every user fact and every question in the range must be cited by a knowledge item or listed in `skipped` with a reason; missing accounting is a diagnostic.
 - **NEAR** — the lexically nearest existing knowledge shown for every new or edited knowledge; the Consolidator must edit, merge, or state why the claim differs.
 - **CLOSER** — new facts lexically near each open or goal knowledge, shown as candidate closing evidence.
-- **Run record** — one record per noting or consolidation run holding the exact input sent to the model, the prompt version, the model, and the output. Knowledge revisions point at the run that produced them.
+- **Fork** — inherited-context execution: the run happens in a child of the conversation itself, continuing from its persisted state. The execution mode, never the evidence path called branch. Runs recorded before this name existed carry the old spelling and are read as legacy request-copy execution.
+- **Subagent** — fresh-context execution: the run happens in a private child prepared from the frozen material alone. The alternative to fork.
+- **Run record** — one record per noting or consolidation run holding the exact input sent to the model, the prompt version, the model, the execution mode, and the output. Knowledge revisions point at the run that produced them.
 - **Completion level** — the prefix on an event fact: completed (result evidence visible), reported (claimed only), dispatched, attempted.
 - **Local handle** — `$n`, the n-th fact of the current noting batch, used for in-batch relations before ids exist; the writer resolves it.
 

@@ -9,7 +9,7 @@
 import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
-import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./branch.ts";
+import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
 import type { ToolDefinition } from "../../core/api/index.ts";
 
 export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheMissObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
@@ -48,7 +48,7 @@ interface NativeCommon {
 }
 /** Inherited context: a child forked from the parent's persisted checkpoint (19a). */
 export interface NativeForkTask extends NativeCommon {
-  mode: "branch";
+  mode: "fork";
   /** The parent's own JSONL. Opened read-only through a second manager; never mutated. */
   parentFile: string;
   /** The parent's Pi session id, supplied to the provider as the request/transport identity. */
@@ -189,7 +189,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   mkdirSync(task.runsDir, { recursive: true });
   let system: string, tools: { name: string; description: string; parameters: Body }[];
   let manager: SessionManager, nativeLog: string | undefined;
-  if (task.mode === "branch") {
+  if (task.mode === "fork") {
     try {
       system = capturedSystemPrompt(api, task.captured);
       tools = capturedTools(api, task.captured);
@@ -256,7 +256,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     noTools: "all", tools: definitions.map(d => d.name), customTools: definitions });
 
   // --- Run the child.
-  const verification: Verification | undefined = task.mode !== "branch" ? undefined
+  const verification: Verification | undefined = task.mode !== "fork" ? undefined
     : { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [], normalized: ["cache_control"],
         differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
   const retries: { attempt: number; error: string }[] = [];
@@ -271,7 +271,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   let observedMiss = false;
   const inherited = session.agent.onPayload;
   // Adapter decision: a fork shares the parent's cache/affinity identity; a fresh child keeps its own.
-  if (task.mode === "branch") session.agent.sessionId = task.parentSessionId;
+  if (task.mode === "fork") session.agent.sessionId = task.parentSessionId;
   session.agent.toolExecution = "sequential"; // Pi's tested default is parallel
   session.agent.onPayload = async (payload: unknown, model: unknown) => {
     task.signal?.throwIfAborted();
@@ -279,7 +279,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     const messages = body[key];
     if (!Array.isArray(messages)) throw new Error(`Native child body has no ${key} array`);
     // The gate applies to a fork only: a fresh child has no parent body to reproduce.
-    if (verification && task.mode === "branch") {
+    if (verification && task.mode === "fork") {
       if (!previous) {
         // The whole captured parent body against this body with the child's own appended messages
         // removed. Only `cache_control` markers are ignored (verifyForkRequest).

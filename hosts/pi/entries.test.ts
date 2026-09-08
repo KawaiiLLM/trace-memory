@@ -104,12 +104,12 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      const branchInput = raw as NotingAgentInput;
-      expect(composeMaterial(branchInput, "branch")).not.toContain("T1#user");
-      expect(composeMaterial(branchInput, "branch")).toContain("late assistant");
+      const forkInput = raw as NotingAgentInput;
+      expect(composeMaterial(forkInput, "fork")).not.toContain("T1#user");
+      expect(composeMaterial(forkInput, "fork")).toContain("late assistant");
       return { outcome: "success", output: "", request: {} };
     });
-    try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "branch" })).outcome).toBe("success"); }
+    try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "fork" })).outcome).toBe("success"); }
     finally { next.close(); }
   } finally { release?.(); noter.close(); await h.dispose(); }
 });

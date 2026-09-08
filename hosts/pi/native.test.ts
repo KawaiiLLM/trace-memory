@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "./branch.ts";
+import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "./fork.ts";
 import { runNative } from "./native.ts";
 import { recorded } from "../../test/source-fixture.ts";
 import { broken, call, fixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
@@ -17,7 +17,7 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
     const response = JSON.parse(run.response!);
     expect(response.verification.differingPath, JSON.stringify(response.verification)).toBe(null);
     expect(response.verification.passed).toBe(true);
-    expect(run.mode).toBe("branch");
+    expect(run.mode).toBe("fork");
     // Both hashes are recorded, and they are the hashes of the two real bodies.
     expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
     expect(response.verification.requestHash).toBe(hash(f.sent[1]));
@@ -53,8 +53,8 @@ test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with c
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
-    // The child really sent its request: the run is native branch mode, verified, with no fallback.
-    expect(run.mode).toBe("branch");
+    // The child really sent its request: the run is native fork mode, verified, with no fallback.
+    expect(run.mode).toBe("fork");
     expect(response.fallbackReason).toBeUndefined();
     expect(response.verification.passed).toBe(true);
     expect(response.verification.differingPath).toBe(null);
@@ -275,7 +275,7 @@ test("19a 2026-09-08: each child response's reported cache read is recorded as a
 
 // ------------------------------------------ 19b: subagent parity on the same native runner
 test("19b 2026-09-08: an explicit subagent task runs in a fresh native child with only the memory tools and no legacy loop", async () => {
-  const f = await fixture({ "noting.branchModeDefault": false });
+  const f = await fixture({ "noting.forkModeDefault": false });
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn();
@@ -311,7 +311,7 @@ test("19b 2026-09-08: an unforkable branch task falls back to the native subagen
     const run = await settled(f);
     expect(run.mode).toBe("subagent");
     const response = JSON.parse(run.response!);
-    expect(response.requestedMode).toBe("branch");
+    expect(response.requestedMode).toBe("fork");
     expect(response.fallbackReason).toContain("native runner: No current-branch provider payload captured");
     expect(response.nativeLog).toBeTruthy();
     expect(f.h.conversations).toEqual([]); // the request-copy runner did not serve the fallback
@@ -321,7 +321,7 @@ test("19b 2026-09-08: an unforkable branch task falls back to the native subagen
 });
 
 test("19b 2026-09-08: the fresh child activates no inherited extension", async () => {
-  const f = await fixture({ "noting.branchModeDefault": false });
+  const f = await fixture({ "noting.forkModeDefault": false });
   const marker = join(f.h.dir, "extension-loaded");
   try {
     // A global Pi extension the child would discover if resource discovery were on.
@@ -408,7 +408,7 @@ test("19c 2026-09-08: /trace stop cancels the running child after its commit and
     // Wait for the run record the run itself completed, not the one its commit created.
     const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]!; expect(JSON.parse(r.response ?? "{}").problems?.length).toBeTruthy(); return r; }, { timeout: 5000 });
     expect(run.outcome).toBe("success"); // a committed batch is never turned into a failure
-    expect(run.mode).toBe("branch");
+    expect(run.mode).toBe("fork");
     expect(JSON.parse(run.response!).problems.join(" ")).toContain("cancelled after commit");
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // no re-extraction because the reply died
     expect(f.h.memory.store.listSessionFacts(1)).toHaveLength(1);
@@ -430,7 +430,7 @@ test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared run
     const run = await settled(f);
     const response = JSON.parse(run.response!);
     expect(run.mode).toBe("subagent");
-    expect(response.requestedMode).toBe("branch");
+    expect(response.requestedMode).toBe("fork");
     // The fallback is a real child session of its own: a private native log under the runs directory,
     // its own system prompt and only the four memory tools. A hand-built request has none of this —
     // it would replay the captured parent prefix and leave no child session behind.
@@ -455,7 +455,7 @@ test("19c 2026-09-08: every fork round is verified against the previous request 
     await f.turn();
     const run = await settled(f);
     const response = JSON.parse(run.response!);
-    expect(run.mode).toBe("branch");
+    expect(run.mode).toBe("fork");
     expect(response.verification.passed).toBe(true);
     const bodies = f.sent.filter(body => worker(body));
     expect(bodies).toHaveLength(3);
@@ -496,7 +496,7 @@ test("19c 2026-09-08: a session model change after the capture refuses the fork 
     f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
     await f.turn(); // the first task forks against its own capture
     await vi.waitFor(() => expect(f.h.memory.store.listRuns(1).filter(r => r.response)).toHaveLength(1), { timeout: 5000 });
-    expect(f.h.memory.store.listRuns(1)[0]!.mode).toBe("branch");
+    expect(f.h.memory.store.listRuns(1)[0]!.mode).toBe("fork");
     // The user switches the session model; the held capture belongs to the previous one, and no new
     // provider request is captured for it.
     (f.h.ctx as { model: unknown }).model = { ...f.model, id: "other" };

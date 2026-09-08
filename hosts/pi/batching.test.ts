@@ -7,7 +7,7 @@ const view = (text: string, nativeId: string, role: "user" | "assistant") => ren
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nReceipts:")[0]!;
 
 test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed tokens (%s)", async size => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     const overhead = tokens(view("", "u", "user") + "\n\n" + view("a", "a", "assistant"));
     let content = "word ".repeat(size - overhead);
@@ -27,7 +27,7 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
 });
 
 test.each([false, true])("17b 2026-09-08: oldest whole-entry batches cross Turns or split one Turn (%s), with no completion chaining", async severalTurns => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
     for (let i = 0; i < 12; i++) {
@@ -60,7 +60,7 @@ test.each([false, true])("17b 2026-09-08: oldest whole-entry batches cross Turns
 }, 30000);
 
 test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest entry stays pending with a report", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
@@ -80,7 +80,7 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
 });
 
 test("17b 2026-09-08: 49 facts wait, 50 immediately committed facts trigger on a completion despite pending same-Turn sources", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     const write = (n: number) => h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: Array.from({ length: n }, (_, i) => ({ category: "observation", actor: "user", text: `claim ${i}`, source: ["T1#user"] })) });
@@ -99,7 +99,7 @@ test("17b 2026-09-08: 49 facts wait, 50 immediately committed facts trigger on a
 });
 
 test("17b 2026-09-08: lifecycle hooks launch neither phase and preserve both pending queues", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("pending"));
     await h.emit("session_start");
@@ -203,7 +203,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
     input.reportRequest({ exact: true });
     if (input.kind === "noting") input.tools[2]!.execute({ facts: [{ category: "observation", actor: "user", text: "partial source fact", source: ["T1#user"] }] });
     return { outcome: "success", output: "", request: { exact: true } };
-  }, { noting: { batchTokens: 100, branchModeDefault: false } });
+  }, { noting: { batchTokens: 100, forkModeDefault: false } });
   try {
     await h.prompt("user source"); await h.answer("word ".repeat(1000));
     expect((await runner.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).outcome).toBe("success");
@@ -215,7 +215,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
 });
 
 test("17b 2026-09-08: native payload overhead is capacity-checked before sending or advancing entries", async () => {
-  const h = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false });
+  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false });
   try {
     // The overhead is real now (19c): core prices the material it froze, while the body the child
     // actually sends also carries the domain system prompt and the four tool schemas. This window

@@ -29,16 +29,16 @@ function session() {
 
 test("19b 2026-09-08 for ruling 08:53: the adapter composes the inherited-context Noting message from the range, head reply and source index alone", async () => {
   const { s, t } = session();
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "branch" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" });
   const input = calls[0]! as NotingAgentInput;
-  expect(composeMaterial(input, "branch")).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[Source entry id: T${t.id}#assistant]\n好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
+  expect(composeMaterial(input, "fork")).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[Source entry id: T${t.id}#assistant]\n好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
   // The raw, the delivered facts and the injected knowledge are already in that conversation.
-  const inherited = composeMaterial(input, "branch");
+  const inherited = composeMaterial(input, "fork");
   expect(inherited).not.toContain("Raw:");
   expect(inherited).not.toContain("Active knowledge:");
   expect(inherited).not.toContain("Recent facts");
   // The fork has no system slot of its own: the instructions ride in the appended user message.
-  const composed = composeTask(input, "branch");
+  const composed = composeTask(input, "fork");
   expect(composed.systemPrompt).toBeUndefined();
   expect(composed.message).toBe(`${input.prompt}\n\n${inherited}`);
 });
@@ -61,12 +61,12 @@ test("19b 2026-09-08 for ruling 08:53: an inherited-context Consolidation messag
   const { s, t } = session();
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] });
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "branch" });
+  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "fork" });
   const input = calls[0]! as ConsolidationAgentInput;
-  expect(composeMaterial(input, "branch")).toBe(`Range: F1..F1\n\nFacts to integrate: F1\n\nNegated-evidence reminder (review cues only; no status derived):\nnone`);
+  expect(composeMaterial(input, "fork")).toBe(`Range: F1..F1\n\nFacts to integrate: F1\n\nNegated-evidence reminder (review cues only; no status derived):\nnone`);
   const fresh = composeMaterial(input, "subagent");
   expect(fresh).toContain("Active knowledge:");
   expect(fresh).toContain("Range facts:");
   expect(fresh).toContain(memory.trace("F1"));
-  expect(composeMaterial(input, "branch")).not.toContain("Range facts:");
+  expect(composeMaterial(input, "fork")).not.toContain("Range facts:");
 });

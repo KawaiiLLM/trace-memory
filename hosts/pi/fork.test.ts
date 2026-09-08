@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import * as branch from "./branch.ts";
+import * as fork from "./fork.ts";
 import { host as createHost, reply, notingFact, consolidationReply } from "./test-host.ts";
 
 // 19c: the request-copy runner is gone, and with it every test that drove it through a mocked
@@ -10,7 +10,7 @@ import { host as createHost, reply, notingFact, consolidationReply } from "./tes
 const consolidationOutput = consolidationReply();
 
 test("17:01 2026-09-08: a model switch during the consolidation candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.branchModeDefault": false });
+  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.forkModeDefault": false });
   try {
     await h.emit("session_start");
     let release!: () => void;
@@ -34,7 +34,7 @@ test("17:01 2026-09-08: a model switch during the consolidation candidate round 
 });
 
 test("consolidation without a usable capture falls back to fresh context for both rounds and notifies once", async () => {
-  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.branchModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
+  const h = createHost({ "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "consolidation.subagentModeDefault": false, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
   try {
     h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationOutput : notingFact(c));
     await h.turn();
@@ -56,17 +56,17 @@ test("19a ruling 2026-09-08: the fork gate ignores cache_control placement and n
     messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }, { role: "assistant", content: [{ type: "text", text: "ok" }] },
       { role: "user", content: [{ type: "text", text: "task", cache_control: { type: "ephemeral" } }] }] };
   // The raw comparison fails exactly where the adapter moved the breakpoint; the gate passes.
-  expect(branch.verifyNativeRequest(parent, child, api, child.messages.slice(2)).differingPath).toBe("$.messages.0.content.0.cache_control");
-  const gate = branch.verifyForkRequest(parent, child, api);
+  expect(fork.verifyNativeRequest(parent, child, api, child.messages.slice(2)).differingPath).toBe("$.messages.0.content.0.cache_control");
+  const gate = fork.verifyForkRequest(parent, child, api);
   expect(gate.passed).toBe(true);
   expect(gate.normalized).toEqual(["cache_control"]);
   expect(gate.appendedMessages).toEqual([{ role: "user", content: [{ type: "text", text: "task" }] }]);
   // Hashes are of the raw bodies, so the audit still records what was actually sent.
-  expect(gate.capturedHash).toBe(branch.hash(parent));
-  expect(gate.requestHash).toBe(branch.hash(child));
+  expect(gate.capturedHash).toBe(fork.hash(parent));
+  expect(gate.requestHash).toBe(fork.hash(child));
   // Any other difference still fails: a sampling field, a system prompt byte, a tool definition.
-  expect(branch.verifyForkRequest(parent, { ...child, temperature: 1 }, api).differingPath).toBe("$.temperature");
-  expect(branch.verifyForkRequest(parent, { ...child, system: [{ type: "text", text: "sys!" }] }, api).differingPath).toBe("$.system.0.text");
-  expect(branch.verifyForkRequest({ ...parent, tools: [{ name: "a", description: "d", input_schema: {} }] }, { ...child, tools: [{ name: "a", description: "e", input_schema: {} }] }, api).differingPath).toBe("$.tools.0.description");
-  expect(branch.verifyForkRequest(parent, { ...child, messages: [...child.messages.slice(0, 1), { role: "assistant", content: [{ type: "text", text: "no" }] }, child.messages[2]] }, api).differingPath).toBe("$.messages.1.content.0.text");
+  expect(fork.verifyForkRequest(parent, { ...child, temperature: 1 }, api).differingPath).toBe("$.temperature");
+  expect(fork.verifyForkRequest(parent, { ...child, system: [{ type: "text", text: "sys!" }] }, api).differingPath).toBe("$.system.0.text");
+  expect(fork.verifyForkRequest({ ...parent, tools: [{ name: "a", description: "d", input_schema: {} }] }, { ...child, tools: [{ name: "a", description: "e", input_schema: {} }] }, api).differingPath).toBe("$.tools.0.description");
+  expect(fork.verifyForkRequest(parent, { ...child, messages: [...child.messages.slice(0, 1), { role: "assistant", content: [{ type: "text", text: "no" }] }, child.messages[2]] }, api).differingPath).toBe("$.messages.1.content.0.text");
 });

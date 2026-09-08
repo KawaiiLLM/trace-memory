@@ -294,6 +294,9 @@ export interface RunInput {
   rangeTo?: string | null;
   promptHash?: string | null;
   model?: string | null;
+  /** New work writes the execution mode of ticket 19: `fork` (inherited native context) or
+   * `subagent` (fresh context). The column stays a free string because rows written before the
+   * rename carry `branch`, and reading one back — `updateRun(id, run)` — must preserve it. */
   mode?: string | null;
   request?: string | null;
   response?: string | null;
@@ -1274,7 +1277,7 @@ export class Store {
   }
 
   /** Renders the pending deliveries without consuming them; the host confirms the run ids it persisted. */
-  /** A Noting run delivers its facts, an Consolidation run its knowledge commits: what each branch-mode consumer reads out of the conversation. */
+  /** A Noting run delivers its facts, an Consolidation run its knowledge commits: what each fork-mode consumer reads out of the conversation. */
   deliver(sessionId: number, branch: string | null, render: (facts: Fact[], commits: KnowledgeRevision[]) => string): { text: string; runIds: number[] } {
     return this.transaction(() => {
       if (!this.enabled(sessionId)) return { text: "", runIds: [] };

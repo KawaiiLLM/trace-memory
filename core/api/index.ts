@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry } from "../render/index.ts";
-export { tokens, renderEntry, finish, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { tokens, renderEntry, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
@@ -35,7 +35,8 @@ export interface TraceMemoryConfig {
     episodicBlockTokens: number;
   };
   noting: {
-    branchModeDefault: boolean;
+    /** Inherited-context execution by default (ticket 19: fork, formerly branch). */
+    forkModeDefault: boolean;
     batchTokens: number;
     triggerTokens: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
@@ -63,7 +64,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     episodicBlockTokens: 20_000,
   },
   noting: {
-    branchModeDefault: true,
+    forkModeDefault: true,
     batchTokens: 50_000,
     triggerTokens: 10_000,
     maxToolRounds: 0,
@@ -76,10 +77,60 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   },
 };
 
-export type ConfigOverride = { [K in keyof TraceMemoryConfig]?: Partial<TraceMemoryConfig[K]> };
+export type ConfigOverride = {
+  render?: Partial<TraceMemoryConfig["render"]>;
+  /** `branchModeDefault` is the accepted legacy spelling of `forkModeDefault` (CONFIG_ALIASES). */
+  noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
+  consolidation?: Partial<TraceMemoryConfig["consolidation"]>;
+};
+
+/** Legacy configuration spellings accepted at the boundary, `section.key` on both sides (ticket 19
+ * "Legacy input"). The execution mode was renamed from branch to fork; the old key still selects the
+ * new one so an existing settings.json keeps working. Only the canonical spelling is ever emitted.
+ * One table for core and for every host: the flat `section.key` settings space (hosts/pi) and the
+ * nested `ConfigOverride` (the façade) resolve the alias through the same two functions below. */
+export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branchModeDefault": "noting.forkModeDefault" };
+
+const aliasConflict = (legacy: string, canonical: string, legacyValue: unknown, canonicalValue: unknown) =>
+  new Error(`Conflicting settings ${legacy} and ${canonical}: ${JSON.stringify(legacyValue)} vs ${JSON.stringify(canonicalValue)}; ` +
+    `${legacy} is the legacy spelling of ${canonical} — supply ${canonical} alone`);
+
+/** Map the legacy keys of one flat `section.key` configuration layer onto their canonical names,
+ * keeping the layer's other keys and their order. The canonical value wins when both spellings are
+ * supplied; the same layer supplying both with different values is a load error naming both keys
+ * (18a: a configuration problem is reported by name, never silently resolved). Layers themselves
+ * still mask one another as before, so a project layer may override a global legacy spelling. */
+export function canonicalFlatConfig<T extends Record<string, unknown>>(values: T): T {
+  let result: Record<string, unknown> = values;
+  for (const [legacy, canonical] of Object.entries(CONFIG_ALIASES)) {
+    if (!Object.hasOwn(result, legacy)) continue;
+    const legacyValue = result[legacy], present = Object.hasOwn(result, canonical);
+    if (present && result[canonical] !== legacyValue) throw aliasConflict(legacy, canonical, legacyValue, result[canonical]);
+    const { [legacy]: _dropped, ...rest } = result;
+    result = { ...rest, [canonical]: present ? result[canonical] : legacyValue };
+  }
+  return result as T;
+}
+
+/** The same rule for the nested override the façade takes. */
+export function canonicalConfig(override: ConfigOverride): ConfigOverride {
+  let result: Record<string, unknown> = override;
+  for (const [legacy, canonical] of Object.entries(CONFIG_ALIASES)) {
+    const section = legacy.slice(0, legacy.indexOf("."));
+    const legacyKey = legacy.slice(section.length + 1), canonicalKey = canonical.slice(canonical.indexOf(".") + 1);
+    const values = result[section] as Record<string, unknown> | undefined;
+    if (!values || typeof values !== "object" || Array.isArray(values) || !Object.hasOwn(values, legacyKey)) continue;
+    const legacyValue = values[legacyKey], present = Object.hasOwn(values, canonicalKey);
+    if (present && values[canonicalKey] !== legacyValue) throw aliasConflict(legacy, canonical, legacyValue, values[canonicalKey]);
+    const { [legacyKey]: _dropped, ...rest } = values;
+    result = { ...result, [section]: { ...rest, [canonicalKey]: present ? values[canonicalKey] : legacyValue } };
+  }
+  return result as ConfigOverride;
+}
 
 function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMemoryConfig {
   if (!override || typeof override !== "object" || Array.isArray(override)) throw new Error("Invalid configuration: expected an object");
+  override = canonicalConfig(override);
   for (const [section, values] of Object.entries(override)) {
     if (!Object.hasOwn(base, section)) throw new Error(`Unknown setting ${section}`);
     const defaults = base[section as keyof TraceMemoryConfig];
@@ -115,7 +166,7 @@ export interface RunAgentResult {
   output: unknown;
   usage?: unknown;
   request?: unknown;
-  mode?: "branch" | "subagent";
+  mode?: "fork" | "subagent";
   /** A host that cannot expose the provider request declares the limitation here instead of
    * returning `request`; core records it in the run record rather than reporting a missing request.
    * A host expected to capture a payload and returning none still gets the audit problem (19b). */
@@ -146,7 +197,7 @@ export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 export interface TraceMemory {
   readonly store: Store;
   readonly executorId: string;
-  taskEligibility(phase: Phase, target: TaskTarget, mode: "branch" | "subagent"): { due: boolean; paused: boolean };
+  taskEligibility(phase: Phase, target: TaskTarget, mode: "fork" | "subagent"): { due: boolean; paused: boolean };
   /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
   cancelTasks(stopping?: boolean): void;
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
@@ -287,12 +338,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, trace);
-  const taskEligibility = (phase: Phase, target: TaskTarget, mode: "branch" | "subagent") => {
+  const taskEligibility = (phase: Phase, target: TaskTarget, mode: "fork" | "subagent") => {
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
     const due = phase === "noting" ? tokens(store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
       .map(e => renderEntry(e, cfg.render).content).join("\n\n")) >= cfg.noting.triggerTokens
       : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).length >= cfg.consolidation.triggerUnconsolidatedFacts;
-    const paused = mode === "branch" && store.listPendingDeliveries(target.sessionId, target.branch)
+    const paused = mode === "fork" && store.listPendingDeliveries(target.sessionId, target.branch)
       .some(p => phase === "consolidation" || store.getRun(p.runId)?.kind === "noting");
     return { due, paused };
   };
@@ -316,7 +367,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
         if (!input.automatic || input.borrowed) return true;
-        const mode = input.mode ?? (phase === "noting" ? (cfg.noting.branchModeDefault ? "branch" : "subagent") : (cfg.consolidation.subagentModeDefault ? "subagent" : "branch"));
+        const mode = input.mode ?? (phase === "noting" ? (cfg.noting.forkModeDefault ? "fork" : "subagent") : (cfg.consolidation.subagentModeDefault ? "subagent" : "fork"));
         const { due, paused } = taskEligibility(phase, target, mode);
         return due && !paused;
       });

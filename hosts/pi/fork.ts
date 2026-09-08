@@ -13,7 +13,7 @@ const responsesApi = (api: string) => api === "openai-responses" || api === "ope
 export function messageKey(api: string): "messages" | "input" {
   if (responsesApi(api)) return "input";
   if (api === "anthropic-messages" || api === "openai-completions") return "messages";
-  throw new Error(`Unsupported branch payload API: ${api}`);
+  throw new Error(`Unsupported fork payload API: ${api}`);
 }
 /** The parent's own system prompt bytes, read back out of its captured body (19a). */
 export function capturedSystemPrompt(api: string, payload: Body): string {

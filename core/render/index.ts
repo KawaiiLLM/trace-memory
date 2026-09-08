@@ -241,6 +241,14 @@ export function renderSources(turn: Turn, calls: ToolCall[]): string {
   ].join(" | ");
 }
 
+/** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
+ * native context) or `subagent` (fresh context). `branch` is the pre-rename spelling and, because
+ * the rename came with the cutover, every run that carries it was executed by the deleted
+ * request-copy runner, not by an `AgentSession`: the read side says so instead of relabelling it.
+ * Stored values are never rewritten — no migration, no bulk update, no rewrite on open or on read. */
+export const runMode = (mode: string | null): string =>
+  mode === "branch" ? "legacy request-copy execution (branch)" : mode ?? "?";
+
 /** A run record as a human summary; `full` adds the tool rounds and previews of the raw request and response. */
 export function renderRun(run: { id: number; kind: string; outcome: string; sessionId: number | null; branch: string | null; rangeFrom: string | null; rangeTo: string | null; model: string | null; mode: string | null; request: string | null; response: string | null; createdAt: string },
   factIds: number[], commits: { knowledgeId: number; id: number; op: string }[], full = false): string {
@@ -255,7 +263,7 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
   if (!problems.length && run.outcome !== "success") problems.push(`no problem text recorded; response: ${cut(run.response ?? "", 40, 0)}`);
   const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
     `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
-    `  model ${run.model ?? "?"}  mode ${run.mode ?? "?"}`,
+    `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op})`)].join(", ") || "nothing"}`,
     response.usageStatus === "unknown" ? "  usage: unknown  cost unknown"
       : `  usage: ${usage ? `in ${usage.input ?? 0} out ${usage.output ?? 0} cacheRead ${usage.cacheRead ?? 0} cacheWrite ${usage.cacheWrite ?? 0}` : "none"}  cost $${(usage?.cost?.total ?? 0).toFixed(4)}${response.usageStatus === "partial" ? " (known usage only; remaining cost unknown)" : ""}`,

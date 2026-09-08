@@ -13,7 +13,7 @@ const notingRuns = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).fi
 test("19c 2026-09-08: a message completion before persistence launches nothing; the next safe boundary launches once with a real entry id", async () => {
   // Runner-independent: Pi's message-completion callback precedes persistence, and 17a reconciles
   // persisted entries only, so no runner ever sees an entry that is not in the session file yet.
-  const h = host({ "noting.branchModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
   try {
     await h.prompt("Persist first"); // short: the user entry alone is below the trigger
     const completed = reply("done. " + long);
@@ -51,7 +51,7 @@ test("19c 2026-09-08: a fork launches from the persisted checkpoint on the exist
     // A boundary inside the same foreground Turn: no agent_settled, no second parent request.
     await f.h.emit("message_start", { message: { role: "user", content: "next", timestamp: 1 } });
     const run = await vi.waitFor(() => { const r = f.h.memory.store.listRuns(1)[0]; expect(r?.response).toBeTruthy(); return r!; }, { timeout: 5000 });
-    expect(run.mode).toBe("branch");
+    expect(run.mode).toBe("fork");
     expect(JSON.parse(run.response!).verification.passed).toBe(true);
     expect(f.sent.filter(body => !worker(body))).toHaveLength(1); // one parent request, and it was the captured one
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
@@ -86,7 +86,7 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
     expect(checkpointReadiness(f.original.file, f.manager().getLeafId()!)).toBeUndefined();
     await f.h.emit("message_start", { message: reply("") });
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
-    expect(second.mode).toBe("branch"); // the deferral did not cost the task its inherited context
+    expect(second.mode).toBe("fork"); // the deferral did not cost the task its inherited context
     expect(JSON.parse(second.response!).fallbackReason).toBeUndefined();
     expect(f.h.memory.pendingEntries(1, "main", head())).toEqual([]);
   } finally { await f.dispose(); }
@@ -121,7 +121,7 @@ test("19c 2026-09-08: a tree switch before the launch does not substitute the ne
     expect(second.branch).not.toBe(beforeSwitch); // a different memory branch: not the waiting task
     expect(second.mode).toBe("subagent"); // no capture for this branch, so no inherited context
     const response = JSON.parse(second.response!);
-    expect(response.requestedMode).toBe("branch");
+    expect(response.requestedMode).toBe("fork");
     expect(response.fallbackReason).toContain("No current-branch provider payload captured");
     // The waiting task's own entries are neither covered nor advanced by this run.
     expect((response.entryAudit.entries as { nativeId: string }[]).map(e => e.nativeId)).not.toContain(waiting);
@@ -137,6 +137,6 @@ test("19c 2026-09-08: the readiness probe rejects an unpersisted checkpoint and 
     expect(checkpointReadiness(f.original.file, f.manager().getLeafId()!)).toBeUndefined();
     expect(checkpointReadiness(f.original.file, "entry-that-was-never-written")).toContain("not persisted");
     expect(checkpointReadiness(`${f.h.dir}/absent.jsonl`, "e0")).toBeTruthy();
-    expect(f.h.memory.store.listRuns(1).every(r => r.mode === "branch")).toBe(true);
+    expect(f.h.memory.store.listRuns(1).every(r => r.mode === "fork")).toBe(true);
   } finally { await f.dispose(); }
 });

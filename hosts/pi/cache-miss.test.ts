@@ -23,7 +23,7 @@ test("19c 2026-09-08: an eligible zero-cache fork response downgrades the sessio
     await f.turn();
     const run = await settled(f);
     // The task that observed the miss finished its own write protocol in its own native session.
-    expect(run.mode).toBe("branch"); // never relabelled as subagent execution
+    expect(run.mode).toBe("fork"); // never relabelled as subagent execution
     expect(run.outcome).toBe("success");
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // no replay, and no extra extraction trigger
@@ -55,13 +55,13 @@ test("19c 2026-09-08: while the latch is set a requested fork is admitted as a s
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("subagent");
     const response = JSON.parse(second.response!);
-    expect(response.requestedMode).toBe("branch"); // the configured mode is retained, not rewritten
+    expect(response.requestedMode).toBe("fork"); // the configured mode is retained, not rewritten
     expect(response.fallbackReason).toContain("cache miss latch");
     expect(response.verification).toBeUndefined();
     expect(warnings(f.h)).toEqual([WARNING]); // the same episode never warns twice
     expect(f.h.memory.store.forkSuppression(1)!.at).toBe(at);
     // Global configuration and unrelated sessions are untouched.
-    expect(f.h.memory.config.noting.branchModeDefault).toBe(true);
+    expect(f.h.memory.config.noting.forkModeDefault).toBe(true);
     const other = f.h.memory.store.createSession({ host: "pi:other", startedAt: at, firstReplyAt: at, projectId: 1 });
     expect(f.h.memory.store.forkSuppression(other.id)).toBeNull();
   } finally { await f.dispose(); }
@@ -156,7 +156,7 @@ test("19c 2026-09-08: two phases reporting a miss together produce one transitio
     }, { timeout: 8000 });
     const both = f.h.memory.store.listRuns(1).filter(r => !before.has(r.id)); // this opportunity's two runs
     expect(both.map(r => r.kind).sort()).toEqual(["consolidation", "noting"]);
-    expect(both.map(r => r.mode)).toEqual(["branch", "branch"]); // both kept their frozen fork tasks
+    expect(both.map(r => r.mode)).toEqual(["fork", "fork"]); // both kept their frozen fork tasks
     // Both really forked and both really reported a zero-cache response of their own.
     expect(both.map(r => JSON.parse(r.response!).verification.passed)).toEqual([true, true]);
     expect(both.filter(r => JSON.parse(r.response!).verification.cacheMiss)).toHaveLength(2);

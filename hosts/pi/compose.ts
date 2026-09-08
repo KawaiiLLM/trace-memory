@@ -15,20 +15,20 @@ export type AgentInput = NotingAgentInput | ConsolidationAgentInput;
 const REMINDER = "Negated-evidence reminder (review cues only; no status derived):";
 
 /** The task material as one text block, in the shape the given execution mode needs. */
-export function composeMaterial(input: AgentInput, mode: "branch" | "subagent"): string {
+export function composeMaterial(input: AgentInput, mode: "fork" | "subagent"): string {
   const range = `Range: ${input.range.from}..${input.range.to}`;
   if (input.kind === "noting") {
     const material = input.material;
     // The captured request precedes the head's final reply, so the fork appends that reply and the
     // source index; the index supplies addresses and previews, never a second copy of the raw.
-    if (mode === "branch") return [range, ...(material.head ? [material.head] : []),
+    if (mode === "fork") return [range, ...(material.head ? [material.head] : []),
       `Sources:\n${material.sources.join("\n")}`].join("\n\n");
     return finish({ content: [range, "Active knowledge:", material.knowledge.join("\n"),
       "Recent facts (newest first):", material.facts.join("\n"),
       "Raw:", material.entries.map(entry => entry.view).join("\n\n")].join("\n\n"), receipts: material.receipts });
   }
   const material = input.material;
-  if (mode === "branch") return [range, `Facts to integrate: ${material.factAddresses.join(", ")}`,
+  if (mode === "fork") return [range, `Facts to integrate: ${material.factAddresses.join(", ")}`,
     `${REMINDER}\n${material.reminders.join("\n\n") || "none"}`].join("\n\n");
   return finish({ content: [range, "Active knowledge:", material.knowledge.join("\n"),
     "Already-consolidated facts (newest first):", material.consolidated.join("\n"),
@@ -40,8 +40,8 @@ export function composeMaterial(input: AgentInput, mode: "branch" | "subagent"):
  * domain instructions and the material, because the fork has no system slot of its own to replace.
  * A fresh-context run puts the instructions in the system prompt and the material in the first user
  * message. */
-export function composeTask(input: AgentInput, mode: "branch" | "subagent"): { systemPrompt?: string; message: string } {
+export function composeTask(input: AgentInput, mode: "fork" | "subagent"): { systemPrompt?: string; message: string } {
   const material = composeMaterial(input, mode);
-  return mode === "branch" ? { message: `${input.prompt}\n\n${material}` }
+  return mode === "fork" ? { message: `${input.prompt}\n\n${material}` }
     : { systemPrompt: input.prompt, message: material };
 }

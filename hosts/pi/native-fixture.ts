@@ -71,7 +71,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     },
     /** The same child the host builds, for the checks that need it without the host's scheduling. */
     task(captured: Body, overrides: Partial<NativeForkTask> = {}): NativeForkTask {
-      return { mode: "branch", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
+      return { mode: "fork", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
         checkpoint: manager!.getLeafId()!, runsDir: join(h.dir, "runs", manager!.getSessionId()), cwd: h.dir, agentDir,
         model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };

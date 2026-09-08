@@ -93,7 +93,7 @@ test("18b 2026-09-08: an empty target completes without a model call; a disabled
 });
 
 test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on release; repeating catchup reports the same operation", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
@@ -179,7 +179,7 @@ test("18b 2026-09-08: stop during a Noting batch cancels it, leaves it pending, 
 }, 30000);
 
 test("18b 2026-09-08: stop while waiting for an occupied slot prevents the frozen batch from ever starting", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     await h.turn();
     const release = hold(h);
@@ -294,7 +294,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
 }, 30000);
 
 test("18b 2026-09-08: an ordinary worker's completion does not chain a follow-up batch outside an active manual catchup", async () => {
-  const h = host({ "noting.branchModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false });
   try {
     backlog(h); // several batches' worth of backlog: a chained second attempt has real work to find
     await h.emit("session_start");

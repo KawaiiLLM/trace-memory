@@ -53,7 +53,7 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
 });
 
 test("18a 2026-09-08: historical import and pause resume use native identities without a model call", async () => {
-  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false });
+  const h = setup({ "noting.triggerTokens": 1, "noting.forkModeDefault": false });
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   for (let i = 0; i < 3; i++) { h.persist({ role: "user", content: "same", timestamp: i }); h.persist(reply("same answer")); }
   await h.emit("session_start"); expect(h.memory.store.getSession(1)).toBeNull();
@@ -117,7 +117,7 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
 });
 
 test.each([true, false])("18a 2026-09-08: disable during Noting provider call rejects late %s submission and retains pending batch", async submit => {
-  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false, "noting.maxToolRounds": 1 });
+  const h = setup({ "noting.triggerTokens": 1, "noting.forkModeDefault": false, "noting.maxToolRounds": 1 });
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -130,7 +130,7 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
 });
 
 test.each([[true, true], [true, false], [false, true], [false, false]])("18a 2026-09-08: enabled delivery ignores worker modes (%s, %s) and disable preserves unseen deliveries", async (noting, consolidation) => {
-  const h = setup({ "noting.branchModeDefault": noting, "consolidation.subagentModeDefault": consolidation });
+  const h = setup({ "noting.forkModeDefault": noting, "consolidation.subagentModeDefault": consolidation });
   await h.turn();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
     operations: [{ op: "create", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"], because: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
@@ -205,7 +205,7 @@ test("18a 2026-09-08: all count/token keys and masked layers validate by key", a
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
     }
   }
-  for (const [key, invalid] of [["noting.branchModeDefault", "branch"], ["noting.maxToolRounds", -1], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
+  for (const [key, invalid] of [["noting.forkModeDefault", "fork"], ["noting.branchModeDefault", "fork"], ["noting.maxToolRounds", -1], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
     writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { [key as string]: invalid } }));
     await expect(h.emit("session_start")).rejects.toThrow(key as string);
   }
@@ -296,4 +296,43 @@ test("18a 2026-09-08: pre-reply choice survives loss of Pi unflushed custom entr
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
   expect(h.memory.store.listTurns(1)).toHaveLength(1);
   expect(h.memory.store.getSession(2)).toBeNull();
+});
+
+test("19c 2026-09-08: the legacy execution-mode key still selects the mode, and the menu shows the canonical key with its source", async () => {
+  // Environment layer, old spelling: it must still turn inherited-context Noting off.
+  const h = setup({ "noting.triggerTokens": 1, "noting.branchModeDefault": false });
+  await h.emit("session_start");
+  await h.turn();
+  expect(h.memory.store.listRuns(1).map(r => r.mode)).toEqual(["subagent"]); // the alias selected fresh context
+  h.ctx.hasUI = true;
+  h.answers.push("Settings (Global, read-only)"); await command(h, "");
+  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: false (Environment)"); // canonical key, honest source
+  expect(h.notices.at(-1)).not.toContain("branchModeDefault");                       // and only the canonical key
+});
+
+test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key in a later layer, as any other setting is", async () => {
+  const h = setup({ "noting.triggerTokens": 33 });
+  const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
+  mkdirSync(join(h.dir, ".pi"), { recursive: true });
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true } }));
+  await h.emit("session_start"); h.ctx.hasUI = true;
+  h.answers.push("Settings (Global, read-only)"); await command(h, "");
+  // 18a precedence decides; supplying the two spellings in two layers is migration, not a conflict.
+  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: true (Project); Global=false masked");
+  writeFileSync(globalPath, "{}"); writeFileSync(projectPath, "{}");
+});
+
+test("19c 2026-09-08: one layer supplying both execution-mode spellings with different values fails the load naming both", async () => {
+  const h = setup();
+  const globalPath = join(h.dir, "agent", "settings.json");
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": true } }));
+  await expect(h.emit("session_start")).rejects.toThrow("noting.branchModeDefault");
+  await expect(h.emit("session_start")).rejects.toThrow("noting.forkModeDefault");
+  // Agreeing values are not a conflict: the canonical key wins and the load succeeds.
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": false } }));
+  await h.emit("session_start"); h.ctx.hasUI = true;
+  h.answers.push("Settings (Global, read-only)"); await command(h, "");
+  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: false (Global)");
+  writeFileSync(globalPath, "{}");
 });

@@ -8,7 +8,7 @@ core/ is host-agnostic: it must not import any host SDK.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
-Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
+Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
 
 **Core assembles no model context (ticket 19b).** `runAgent` receives structured task material, never a
 system or user message, a provider body or a mode-specific concatenated string: the domain prompt and
@@ -92,9 +92,9 @@ retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
 The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
-The noting config chooses branch/subagent mode; provider prefix verification
+The noting config chooses fork/subagent mode; provider prefix verification
 remains the host's responsibility, as is the choice of runner behind a mode. Since 19c the Pi
-host has one runner: branch work runs in a native Pi child forked from the session file, and
+host has one runner: fork work runs in a native Pi child forked from the session file, and
 every subagent task — explicit, fallback or borrowed — in a fresh native child. Core sees the
 same `runAgent` contract either way, and a host that cannot construct its worker at all returns
 a failed run with a reason, which leaves the queue pending.
@@ -140,9 +140,9 @@ in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
 
-In branch mode the host sends the range, head reply and frozen source index from the material: the
+In fork mode the host sends the range, head reply and frozen source index from the material: the
 raw turns, the facts delivered after earlier notings, and the injected knowledge are already in the
-conversation the host appends to. The native prefix remains uncompressed; branch
+conversation the host appends to. The native prefix remains uncompressed; fork
 Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
 Noting and fallback send the shared entry views below. Core freezes one material for both.
 

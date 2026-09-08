@@ -14,7 +14,7 @@ const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionSta
 
 export type { ConsolidationDiagnostic } from "./commit.ts";
 
-export interface ConsolidateInput extends TaskOptions { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "branch" | "subagent" }
+export interface ConsolidateInput extends TaskOptions { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "fork" | "subagent" }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
 /** The frozen task material of one Consolidation run (ticket 19b). Core renders and budgets these
@@ -41,7 +41,7 @@ export interface ConsolidationAgentInput extends AgentControl {
   range: ConsolidationRange;
   readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
-  mode: "branch" | "subagent";
+  mode: "fork" | "subagent";
   /** The domain instructions; core owns the prompt file and its hash. */
   prompt: string;
   promptHash: string;
@@ -87,7 +87,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   }
   return { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context: store.listConsolidatedProjectFacts(session.projectId).filter((f) => !rangeFacts.some((r) => r.id === f.id)),
     knowledge, lines, reminders, model: input.model ?? "session",
-    mode: input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "branch"), threshold: config.consolidation.nearThreshold };
+    mode: input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "fork"), threshold: config.consolidation.nearThreshold };
 }
 
 // Unicode character bigrams retain CJK text; punctuation and whitespace are ignored.

@@ -430,8 +430,8 @@ test("removing a marker before first reply cannot turn its shared project into a
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
 
-test.each([true, false])("08:53 premise: a branch note (%s) waits until a note result committed mid-turn has been delivered; 2026-09-08 supersession: enabled sessions always receive delivery; only branch mode waits", async branchMode => {
-  const h = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": branchMode, notingModel: "fake/noter" });
+test.each([true, false])("08:53 premise: a fork note (%s) waits until a note result committed mid-turn has been delivered; 2026-09-08 supersession: enabled sessions always receive delivery; only fork mode waits", async forkMode => {
+  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": forkMode, notingModel: "fake/noter" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Noting A in flight over T1.
@@ -440,15 +440,15 @@ test.each([true, false])("08:53 premise: a branch note (%s) waits until a note r
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1); // 2026-09-08: enabled means delivered, whatever the worker mode
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(branchMode ? 2 : 4);
+  expect(h.requests).toHaveLength(forkMode ? 2 : 4);
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(true);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(branchMode ? 4 : 6);
-  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: branchMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
+  expect(h.requests).toHaveLength(forkMode ? 4 : 6);
+  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: forkMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
 });
 
 test("spec overflow policy: a subagent noting fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
-  const h = host({ "noting.triggerTokens": 1000, "noting.branchModeDefault": false, notingModel: "fake/noter" });
+  const h = host({ "noting.triggerTokens": 1000, "noting.forkModeDefault": false, notingModel: "fake/noter" });
   await h.prompt(); await h.answer();
   await h.emit("tool_result", { toolName: "Bash", input: { command: "pnpm test" }, content: [{ type: "text", text: "x".repeat(5000) + "\n1 passed" }], isError: false });
   const call = { type: "toolCall" as const, id: "call-1", name: "trace", arguments: { address: "T1", tool: 1, full: true } };
@@ -469,7 +469,7 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
 });
 
 test("an consolidation call carries no tools; a noting tool call for a bad address returns an error result and the noting still completes", async () => {
-  const h = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false, "consolidation.triggerUnconsolidatedFacts": 1 });
+  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false, "consolidation.triggerUnconsolidatedFacts": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
@@ -516,7 +516,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
 
 
 test("subagent runs receive the same four definitions registered for the main agent: name, description, schema", async () => {
-  const h = host({ "noting.branchModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
   const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
   vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
     expect(conversation.tools).toHaveLength(4);
@@ -577,14 +577,14 @@ test("18:39: two memory submissions in one reply cannot skip the checklist; the 
 });
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
-  const unlimited = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false });
+  const unlimited = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false });
   let calls = 0;
   const looping = (c: Parameters<typeof notingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
     ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "trace", arguments: { address: "T1" } }] } : notingFact(c);
   unlimited.provider(async c => looping(c)); await unlimited.turn();
   expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
   expect(unlimited.conversations.length).toBeGreaterThan(20);
-  const capped = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false, "noting.maxToolRounds": 2 });
+  const capped = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false, "noting.maxToolRounds": 2 });
   capped.provider(async c => looping(c)); await capped.turn();
   const run = capped.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
@@ -816,7 +816,7 @@ test("a transient provider error is retried with Pi's policy before the run is f
 });
 
 test("a retry re-sends the same request: a stream error after a tool round does not duplicate the tool result, failed attempts count in usage and retries are recorded", async () => {
-  const h = host({ "noting.triggerTokens": 60, "noting.branchModeDefault": false, retry: { baseDelayMs: 1 } });
+  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false, retry: { baseDelayMs: 1 } });
   let calls = 0;
   h.provider(async c => {
     calls++;
@@ -851,7 +851,7 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
   arguments: { operations: [{ op: "create", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] } }] });
 
 test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagents and branch Consolidators get facts and knowledge changes", async () => {
-  const settings = { "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "noting.branchModeDefault": false, "consolidation.maxToolRounds": 4 };
+  const settings = { "noting.triggerTokens": 60, "consolidation.triggerUnconsolidatedFacts": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 };
   const subagentOnly = host({ ...settings, "consolidation.subagentModeDefault": true });
   subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
   await subagentOnly.turn(); await subagentOnly.answer("tick"); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
@@ -859,7 +859,7 @@ test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagen
   expect(subagentOnly.memory.deliver(1, "main").text).toContain("<noted>");
   expect(subagentOnly.memory.deliver(1, "main").text).toContain("<consolidated>");
 
-  // Consolidation in branch mode: the Noting's facts and the Consolidation's own commits are both delivered.
+  // Consolidation in fork mode: the Noting's facts and the Consolidation's own commits are both delivered.
   const h = host({ ...settings, "consolidation.subagentModeDefault": false });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
   await h.turn(); // Noting commits F1 and leaves it for delivery.

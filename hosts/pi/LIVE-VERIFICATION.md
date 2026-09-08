@@ -5,7 +5,7 @@ The historical records below do not satisfy ticket 11 live acceptance.
 
 **19c note.** Every run recorded below was produced by the request-copy runner, which was
 deleted in 19c: it copied the captured provider request and drove its own model/tool loop.
-Memory work now runs in a real Pi child `AgentSession` (a fork of the session file for branch
+Memory work now runs in a real Pi child `AgentSession` (forked from the session file in fork
 mode, a private child otherwise), so a new live run differs in two visible ways: the reverse
 chain in step 4 walks the child's own bodies (its tail is the inherited head reply plus the
 task message, and both sides are compared with `cache_control` stripped), and each run record
@@ -13,20 +13,20 @@ carries `nativeLog`, the child's own JSONL under `runsDir`.
 
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
-Set `noting.branchModeDefault: true`, `noting.triggerTokens: 100`,
+Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
 `consolidation.triggerUnconsolidatedFacts: 1`; choose Consolidation mode explicitly
-(`consolidation.subagentModeDefault: false` exercises branch mode as well).
+(`consolidation.subagentModeDefault: false` exercises fork mode as well).
 
 1. Start Pi with all four tools active. Save the captured main-agent body and
    verify its tool schemas are `trace`, `search`, `note`, `memory` (alongside any
    other main-agent tools), with no `mark` tool.
-2. Produce a turn containing a cut tool result. Obtain a branch Noting that
+2. Produce a turn containing a cut tool result. Obtain a fork Noting that
    actually fetches full evidence through `trace` and submits through `note`.
    If the model elects not to fetch, that attempt does not satisfy this check.
 3. After committed facts have been delivered on the next prompt, let a turn stop
    trigger Consolidation. Obtain two valid `memory` submissions in one run: review
    guidance after the first, commit after the second, then a normal stop.
-4. Save the run records and actual request bodies. For each branch run, apply
+4. Save the run records and actual request bodies. For each fork run, apply
    the README script: strip suffixes backwards and verify each previous/new
    hash, unchanged tools/settings and exact captured-prefix bytes. Check native
    call IDs/results, the single review user message, and the final stored request.
