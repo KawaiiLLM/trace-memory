@@ -107,90 +107,154 @@ export const tokens = (text: string): number => {
   return total;
 };
 
-export const ENTRY_VIEW_VERSION = "17a-v1-fixed-halves";
+/** Ticket 23 "One entry view, two budgets": the two numbers of one profile. `B` is the most one tool
+ * call is worth, `E` the most one entry is worth. They are configuration, static per installation and
+ * never adjusted per batch — views stay immutable and versioned, and an over-full batch is handled by
+ * selecting fewer entries. */
+export interface EntryProfile { toolCallTokens: number; entryTokens: number }
+/** Ticket 23 "Host contract": one stored tool result as core renders it. The host unwraps its own
+ * envelope; core never inspects envelope fields. `details` is the structured data the host dropped,
+ * serialized, so this view can state its size — it is never rendered whole except as the fallback for
+ * a result with no text at all. */
+export interface ResultText { text: string; details?: string }
+export type ResultExtractor = (result: string) => ResultText;
+/** The default extractor: the stored result string as is. A host with an envelope registers its own. */
+export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-const excerptText = (label: string, chars: string[], kept: number): string => {
-  const head = Math.ceil(kept / 2), tail = Math.floor(kept / 2);
-  return `${label}\n${chars.slice(0, head).join("")}\n[omitted ${chars.length - kept} characters; middle not inspected]\n${tail ? chars.slice(-tail).join("") : ""}`;
-};
+export const ENTRY_VIEW_VERSION = "23-v1-uniform-parts";
+/** Arguments are rendered before their result exists and views are immutable, so the split inside `B`
+ * is fixed. A quarter for arguments and three quarters for the result supersedes 17a's permanent
+ * halves (user, 2026-09-09): measured argument needs are small, results are the volume. */
+const ARGUMENTS_SHARE = 0.25;
+// Every marker keeps the `[omitted … characters …]` wording the run audit already detects.
+const omission = (characters: number) => `[omitted ${characters} characters]`;
+const middleOmission = (characters: number) => `[omitted ${characters} characters; middle not inspected]`;
 
-/** Count the entire excerpt, including its immutable source label and honest omission marker. */
-function entryExcerpt(label: string, body: string, cap: number): string {
-  const full = `${label}\n${body}`;
-  if (tokens(full) <= cap) return full;
-  const chars = [...body];
-  const excerpt = (kept: number) => excerptText(label, chars, kept);
-  if (tokens(excerpt(0)) > cap) throw new Error("entry view capacity cannot hold source labels and omission markers");
-  let low = 0, high = chars.length - 1;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    if (tokens(excerpt(mid)) <= cap) low = mid; else high = mid - 1;
+/** The largest `kept` whose rendering fits `cap`. Every probe is measured, so the answer is a
+ * rendering that was seen to fit; doubling before bisecting keeps the probes near the kept size
+ * instead of near the whole text, which is what a 300-token budget over a 100,000-character result
+ * needs. How a cut position is found is the implementation's choice (23); the contract is the budget. */
+function fit(build: (kept: number) => string, max: number, cap: number): number {
+  if (max <= 0 || tokens(build(max)) <= cap) return max;
+  let low = 0, high = 1;
+  while (high < max && tokens(build(high)) <= cap) { low = high; high = Math.min(max, high * 2); }
+  while (low < high - 1) {
+    const mid = Math.floor((low + high) / 2);
+    if (tokens(build(mid)) <= cap) low = mid; else high = mid;
   }
-  return excerpt(low);
+  return low;
+}
+
+/** One part of an entry: its smallest honest rendering, and its rendering under an allocation. A part
+ * is never empty (it always carries its label line) and never shorter than `floor`. */
+interface Part { floor: string; minimum: number; render(cap: number): string }
+
+/** Equal shares of `total`, remainders to the earliest keys; one pass returns what a value shorter
+ * than its share does not need to the others (23 budget contract). */
+function fairShares(total: number, costs: number[]): number[] {
+  const pool = Math.max(0, total);
+  const cut = (available: number, count: number, index: number) => Math.floor(available / count) + (index < available % count ? 1 : 0);
+  const equal = costs.map((_, index) => cut(pool, costs.length, index));
+  const short = costs.filter((cost, index) => cost <= equal[index]!).length;
+  if (!short || short === costs.length) return equal;
+  const returned = costs.reduce((sum, cost, index) => sum + Math.max(0, equal[index]! - cost), 0);
+  let rank = 0;
+  return costs.map((cost, index) => cost <= equal[index]! ? cost : equal[index]! + cut(returned, costs.length - short, rank++));
+}
+
+/** The head and the tail of `kept` code points, in equal halves, around one honest marker. */
+function halves(characters: string[], kept: number): string[] {
+  const head = Math.ceil(kept / 2), tail = kept - head;
+  return [characters.slice(0, head).join(""), middleOmission(characters.length - kept),
+    tail ? characters.slice(-tail).join("") : ""].filter(line => line !== "");
+}
+
+/** Natural text: the text as stored, cut head and tail in equal halves when it must yield. Text is
+ * not exempt by rule, only by size (23). */
+function textPart(label: string, body: string): Part {
+  const characters = [...body];
+  const excerpt = (kept: number) => [label, ...halves(characters, kept)].join("\n");
+  const whole = `${label}\n${body}`;
+  return { floor: excerpt(0), minimum: tokens(excerpt(0)),
+    render: (cap) => tokens(whole) <= cap ? whole : excerpt(fit(excerpt, characters.length, cap)) };
+}
+
+/** A tool call: the label line and one `key: value` line per top-level argument, each value cut at
+ * its head under a fair share of the part's budget, so a target path after a long content string
+ * still appears. Non-string values are compact JSON; a payload that is not an object is one line. */
+function argumentsPart(label: string, input: string): Part {
+  const values = object(input), keys = Object.keys(values);
+  const items = keys.length ? keys.map((key) => ({ key: `${key}: `, characters: [...string(values[key])] }))
+    : input ? [{ key: "", characters: [...input] }] : [];
+  const size = items.reduce((total, item) => total + item.characters.length, 0);
+  const line = (item: typeof items[number], kept: number) => item.key + item.characters.slice(0, kept).join("")
+    + (kept < item.characters.length ? omission(item.characters.length - kept) : "");
+  const whole = [label, ...items.map((item) => line(item, item.characters.length))].join("\n");
+  const floor = items.length ? `${label}\n${omission(size)}` : label;
+  return { floor, minimum: tokens(floor), render(cap) {
+    if (tokens(whole) <= cap) return whole;
+    const costs = items.map((item) => tokens(line(item, item.characters.length)));
+    // One separator per emitted line is charged with the part, as the label line is.
+    const shares = fairShares(cap - tokens(label) - items.length, costs);
+    const view = [label, ...items.map((item, index) => shares[index]! >= costs[index]! ? line(item, item.characters.length)
+      : line(item, fit((kept) => line(item, kept), item.characters.length, shares[index]!)))].join("\n");
+    return tokens(view) <= cap ? view : floor;
+  } };
+}
+
+/** A tool result: the label line with the call's status, and the host-extracted text cut head and
+ * tail. Structured data the host dropped is marked with its size; when the text is empty, the head of
+ * that data's compact JSON stands in for the marker, so a tool that answers only structurally is not
+ * shown as blank (23). */
+function resultPart(label: string, result: ResultText): Part {
+  const details = result.details ?? "";
+  const marker = details ? `[details omitted: ${[...details].length} characters]` : "";
+  const structural = !result.text && details !== "";
+  const characters = [...(structural ? details : result.text)];
+  const body = (kept: number) => structural ? [characters.slice(0, kept).join("") + omission(characters.length - kept)] : halves(characters, kept);
+  const view = (kept: number) => [label, ...(characters.length ? body(kept) : []), ...(structural ? [] : [marker])].filter(Boolean).join("\n");
+  const whole = [label, structural ? details : result.text, structural ? "" : marker].filter(Boolean).join("\n");
+  return { floor: view(0), minimum: tokens(view(0)),
+    render: (cap) => tokens(whole) <= cap ? whole : view(fit(view, characters.length, cap)) };
 }
 
 export { sourceAddresses } from "../store/index.ts";
 
-/** One immutable view for all automatically supplied Raw. Each call reserves half for each occurrence. */
-export function renderEntry(entry: SourceEntry, budgets: Budgets): Rendered {
-  const header = `[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}]`;
-  const parts: { label: string; body: string; cap: number }[] = [];
-  // A user message without text (an image, say) still shows as a source with a marker; it has no citable address.
-  if (entry.text || entry.role === "user") parts.push({ label: `[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`,
-    body: entry.text || "[non-text content omitted]", cap: budgets.entryTokens });
+/** One immutable view of one source entry (ticket 23), used by Noting material, both compaction tiers
+ * and branch carry. An entry is a list of parts: at most one natural-text part and one part per tool
+ * call. No call id and no native-identity header enters the model-facing text — native identity and
+ * lineage stay in storage and in the run's entry audit, and the addresses the Noter cites are the ones
+ * the labels carry. Allocation is two-staged: `B` caps each tool part first; if the entry is still
+ * over `E`, tool parts give way, shared fairly down to their label-plus-marker minimum; only when they
+ * are all at the minimum does the text part yield. Nothing is emitted shorter than a part's minimum
+ * and no budget is exceeded to make room: when even the minima cannot fit `E`, the capacity error
+ * leaves the entry pending. */
+export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText): Rendered {
+  const parts: Part[] = [], caps: number[] = [];
+  const isResult = entry.role === "toolResult";
+  // A user message without text (an image, say) still shows as a source with a marker.
+  const text = Boolean(entry.text) || entry.role === "user";
+  if (text) { parts.push(textPart(`[Source entry id: T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}]`,
+    entry.text || "[non-text content omitted]")); caps.push(profile.entryTokens); }
+  const share = Math.floor(profile.toolCallTokens * (isResult ? 1 - ARGUMENTS_SHARE : ARGUMENTS_SHARE));
   for (const call of entry.calls) {
-    const result = entry.role === "toolResult";
-    const cap = result ? Math.floor((budgets.toolCallTokens - 2) / 2) : Math.ceil((budgets.toolCallTokens - 2) / 2);
-    parts.push({ label: `[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} ${result ? "result" : "arguments"}:`,
-      body: result ? call.result ?? "" : call.input ?? "", cap });
+    const address = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
+    parts.push(isResult ? resultPart(`${address} ${call.status}`, resultText(call.result ?? "")) : argumentsPart(address, call.input ?? ""));
+    caps.push(share);
   }
-  let views = parts.map(p => entryExcerpt(p.label, p.body, p.cap));
-  const minima = parts.map(p => {
-    const chars = [...p.body];
-    return Math.min(tokens(`${p.label}\n${p.body}`), Math.max(tokens(excerptText(p.label, chars, 0)), tokens(excerptText(p.label, chars, Math.min(8, chars.length)))));
-  });
-  const content = () => [header, ...views].join("\n");
-  // ponytail: redistribute by the largest fragment; a linear priority queue is enough for one entry.
-  while (tokens(content()) > budgets.entryTokens) {
-    const available = views.map((v, i) => tokens(v) - minima[i]!);
-    const index = available.indexOf(Math.max(...available));
-    if (available[index]! <= 0) throw new Error("entry view capacity cannot hold source labels and omission markers");
-    const part = parts[index]!;
-    part.cap = Math.max(minima[index]!, tokens(views[index]!) - Math.min(Math.ceil(available[index]! / 2), Math.max(1, tokens(content()) - budgets.entryTokens)));
-    views[index] = entryExcerpt(part.label, part.body, part.cap);
+  const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
+  // Verified before returning, with the entry against `E` below: no tool part exceeds its share of `B`.
+  for (let index = text ? 1 : 0; index < parts.length; index++) if (parts[index]!.minimum > caps[index]!) throw capacity();
+  const build = (tool: number, room: number) => parts.map((part, index) =>
+    part.render(text && index === 0 ? room : Math.min(caps[index]!, tool))).join("\n");
+  const cap = profile.entryTokens;
+  let content = build(share, cap);
+  if (tokens(content) > cap) {
+    content = build(fit((tool) => build(tool, cap), share, cap), cap);
+    if (tokens(content) > cap) content = build(0, fit((room) => build(0, room), cap, cap));
+    if (tokens(content) > cap) throw capacity();
   }
-  return { content: content(), receipts: [] };
-}
-
-/** Ticket 20 "Try secondary views" (20c): the compact-only, lossier view of one entry. It is reached
- * only when the primary views of every pending entry together exceed the shared Raw ceiling, and it
- * never replaces the primary view anywhere else — Noter input, token counters and trace keep using
- * `renderEntry`. The work is deterministic and local: no model call, no summarization loop.
- *
- * Kept: the entry's own header with its source address and native identity, the user/assistant
- * boundary, the non-text placeholder, and one line per tool fragment carrying the tool name, its
- * occurrence address `T<id>#t<n>`, its call id and its status — the minimum identity a reader needs
- * to trace the fragment back to the untouched original. Dropped: tool arguments and results
- * entirely, and everything of the user/assistant text beyond a bounded excerpt, marked with the same
- * omission wording the primary view uses.
- *
- * Versioned because a reader must be able to tell which truncation rule produced the text in front
- * of it. The excerpt budgets below are an implementation choice, not a user ruling (confirmation
- * 2026-09-08): one documented constant set, versioned with the view and exercised by the tier tests. */
-export const SECONDARY_VIEW_VERSION = "20c-v1-bounded-excerpts";
-/** Excerpt token budget per role, counting the source label and the omission marker inside it. The
- * user side keeps more than the assistant side: it is the instruction the rest of the work answers. */
-export const SECONDARY_EXCERPT_TOKENS: Readonly<Record<"user" | "assistant", number>> = { user: 120, assistant: 60 };
-
-export function renderEntrySecondary(entry: SourceEntry): string {
-  const lines = [`[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}] [compact-only view ${SECONDARY_VIEW_VERSION}]`];
-  // A user message without text (an image, say) keeps its boundary and its placeholder, as in the primary view.
-  if (entry.text || entry.role === "user") {
-    const role = entry.role === "user" ? "user" : "assistant";
-    lines.push(entryExcerpt(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]", SECONDARY_EXCERPT_TOKENS[role]));
-  }
-  for (const call of entry.calls) lines.push(`[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} [${entry.role === "toolResult" ? "result" : "arguments"} omitted]`);
-  return lines.join("\n");
+  return { content, receipts: [] };
 }
 
 // Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
@@ -206,6 +270,11 @@ function cut(text: string, head: number, tail: number): string {
     `[omitted ${last - first} lines, ${[...omitted].length} characters]`,
     lines.slice(last).join("")].filter(Boolean).join("\n");
 }
+
+// The stdout/stderr branch of the explicit Turn preview reads a Claude Code result shape Pi never
+// produces, so its three budgets were never effective on Pi and stopped being settings (ticket 23,
+// removed-settings table). They keep their 17a values as constants until 23b deletes the branch.
+const STDOUT_HEAD_TOKENS = 60, STDOUT_TAIL_TOKENS = 120, STDERR_TAIL_TOKENS = 120;
 
 function object(text: string | null): Record<string, unknown> {
   try { const value = JSON.parse(text ?? "null"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
@@ -247,8 +316,8 @@ export function renderTurn(turn: Turn, calls: ToolCall[], budgets: Budgets, opti
       } else {
         field("command", string(input.command ?? input.cmd ?? call.input), budgets.commandTokens, 0);
         if ("stdout" in result || "stderr" in result) {
-          field("stdout", string(result.stdout), budgets.stdoutHeadTokens, budgets.stdoutTailTokens);
-          field("stderr", string(result.stderr), 0, budgets.stderrTailTokens);
+          field("stdout", string(result.stdout), STDOUT_HEAD_TOKENS, STDOUT_TAIL_TOKENS);
+          field("stderr", string(result.stderr), 0, STDERR_TAIL_TOKENS);
         } else field("report", call.result ?? "", budgets.reportHeadTokens, budgets.reportTailTokens);
       }
     } else body.push(`[omitted ${(call.input ?? "").length + (call.result ?? "").length} characters of input/result]`);

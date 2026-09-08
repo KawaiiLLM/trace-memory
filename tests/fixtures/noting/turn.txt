@@ -11,7 +11,8 @@ cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'
 
 [omitted 8 lines, 219 characters]
 stdout:
-[omitted 2 lines, 97 characters]
+MD5 (refs/san11/mapC.json) = de6783f8a71dff7b79273a1c9cdc8cea
+0cd0969 mapC §14：编辑器整表导出坐实「海与荒地被对调」
 [Source entry id: T1#assistant]
 The full cell table with terrain **names** for all 40000 cells. Checking whether the name is even a function of our byte:
 

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
-import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
+import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
 type FlatConfig = Record<string, string | number | boolean>;
 type NativeModel = NativeForkTask["model"];
@@ -14,6 +14,25 @@ const contextMargin = 0.85; // reserve 15% for the shared estimator and provider
 const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
+
+/** Ticket 23 "Host contract": this adapter's result-text extractor, registered with the façade at
+ * construction. It unwraps the `{content, details}` result this host stores: the text blocks joined,
+ * every other block marked by its type, and `details` reported as dropped structured data with its
+ * serialized size — core marks the size, never the content. Evidence is unchanged: the raw message and
+ * the raw result are stored exactly as before and `trace` with `full` still renders them uncut. Edit
+ * diffs live only in `details`, so they leave the Noter view with a marker in their place. */
+export const piResultText: ResultExtractor = (result) => {
+  let envelope: { content?: unknown; details?: unknown };
+  try { envelope = JSON.parse(result); } catch { return { text: result }; }
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return { text: result };
+  const blocks = Array.isArray(envelope.content) ? envelope.content as { type?: string; text?: unknown }[] : [];
+  const text = Array.isArray(envelope.content)
+    ? blocks.map(block => block?.type === "text" ? String(block.text ?? "") : `[${block?.type ?? "unknown"} omitted]`).join("\n")
+    : typeof envelope.content === "string" ? envelope.content : "";
+  const details = envelope.details;
+  const empty = details == null || (typeof details === "object" && !Object.keys(details as object).length);
+  return { text, ...(empty ? {} : { details: JSON.stringify(details) }) };
+};
 
 const agentDirectory = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
 function settings(cwd: string, agentDir = agentDirectory()) {
@@ -232,7 +251,7 @@ export default function (pi: ExtensionAPI) {
       return { outcome: input.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "failure",
         output: String(error), usage, retries, request, mode, verification, fallbackReason };
     }
-  }, core);
+  }, core, piResultText);
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;

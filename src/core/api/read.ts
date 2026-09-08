@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, renderEntrySecondary, xmlBlock } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, RAW_SECONDARY_TITLE, type SharedMaterial } from "../render/material.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, rawResultText, xmlBlock, type ResultExtractor } from "../render/index.ts";
+import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
@@ -25,7 +25,8 @@ export interface TopicGroups {
 
 export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
 
-export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
+export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string,
+  resultText: ResultExtractor = rawResultText) {
   const cursors = new Map<string, { lines: string[]; footer: string; cap: number; owner: string }>();
   const page = (lines: string[], options: ListingOptions = {}, footer = ""): string => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
@@ -152,26 +153,33 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       // A primary view that cannot hold its own labels is a capacity failure of tier 1, not of compact:
       // tier 2 is tried next. Any other rendering error is a data error and is reported (review 2026-09-08).
       let primaryViews: { content: string; receipts: string[] }[] | undefined;
-      try { primaryViews = pending.map((e) => renderEntry(e, config.render)); }
+      try { primaryViews = pending.map((e) => renderEntry(e, config.render, resultText)); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
       const primary = primaryViews && build(primaryViews, RAW_TITLE);
       if (primary && !primary.over.current && !primary.over.episodic) return { tier: "primary", text: primary.text };
-      // 3. Try secondary views: deterministic, versioned, explicitly labelled, still all of them.
-      const secondary = build(pending.map((e) => ({ content: renderEntrySecondary(e), receipts: [] })), RAW_SECONDARY_TITLE);
-      if (!secondary.over.current && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
+      // 3. Try tier 2: the same renderer under the tier-2 profile (ticket 23, superseding 20c's
+      //    separate compact-only renderer), still every selected entry, still deterministic and local.
+      //    An entry whose minima that tighter `E` cannot hold is a capacity failure of tier 2, and the
+      //    delegation below says so rather than hiding the entry.
+      const profile = { toolCallTokens: config.render.secondaryToolCallTokens, entryTokens: config.render.secondaryEntryTokens };
+      const title = secondaryRawTitle(profile);
+      let secondary: ReturnType<typeof build> | undefined;
+      try { secondary = build(pending.map((e) => renderEntry(e, profile, resultText)), title); }
+      catch (error) { if (!/capacity/.test(String(error))) throw error; }
+      if (secondary && !secondary.over.current && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
       // 5. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
       //    can miss the cap even here. Ask for native compaction with the reason instead of hiding
       //    entries, falsifying a receipt or relaxing the cap to force a success.
-      const missed = secondary.over.current
-        ? `the raw ceiling by ${secondary.over.current} tokens (cap ${caps.current})`
+      const missed = !secondary ? `the tier-2 entry budget: their labels and omission markers exceed ${profile.entryTokens} tokens`
+        : secondary.over.current ? `the raw ceiling by ${secondary.over.current} tokens (cap ${caps.current})`
         : `the episodic budget by ${secondary.over.episodic} tokens (cap ${caps.episodic})`;
-      return { tier: "native", reason: `secondary views of ${pending.length} pending entries exceed ${missed}` };
+      return { tier: "native", reason: `tier-2 views of ${pending.length} pending entries exceed ${missed}` };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
       // Every pending entry, not Noting's next batch (review 2026-09-08: the batch cap silently cut the tail).
       // Newest kept whole within the episodic budget; older ones are named in a receipt, never dropped silently.
-      const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render));
+      const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render, resultText));
       let kept = pending.length, used = 0;
       for (let i = pending.length - 1; i >= 0; i--) {
         used += tokens(pending[i]!.content);

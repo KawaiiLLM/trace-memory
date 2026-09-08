@@ -1,9 +1,10 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
-import { TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
+import { DEFAULT_CONFIG, TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { compacted } from "../../source-fixture.ts";
 import { host, reply } from "./test-host.ts";
+import { piResultText } from "../../../src/hosts/pi/index.ts";
 
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
 // 20a: Raw is the last block of both orders (Noter and compact), before the receipts.
@@ -100,7 +101,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
     const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
-    expect(audit).toMatchObject({ branch: "main", viewVersion: "17a-v1-fixed-halves", viewBudgets: { toolCallTokens: 1000, entryTokens: 10000 } });
+    expect(audit).toMatchObject({ branch: "main", viewVersion: "23-v1-uniform-parts", viewBudgets: { toolCallTokens: 300, entryTokens: 10000 } });
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
@@ -421,4 +422,69 @@ test("21a 2026-09-08: an archive citing a sibling-entry fact retires knowledge o
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch }).map(r => r.op)).toEqual(["create"]);
     expect(h.memory.store.currentCommit(1, { sessionId: 1, headTurnId: 1, branch: "main" }).map(r => r.op)).toEqual(["archive"]);
   } finally { await h.dispose(); }
+});
+
+// ---- Ticket 23: the entry view at the Pi boundary ----
+
+test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape — text blocks joined, other blocks marked, details reported by size", async () => {
+  const h = host({ "noting.triggerTokens": 1_000_000_000 });
+  try {
+    await h.prompt("read the file");
+    const args = { file_path: "/tmp/shot.png" };
+    await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "call-1", name: "read", arguments: args }] } });
+    await h.emit("message_start", { message: reply("") });
+    const content = [{ type: "text", text: "first block" }, { type: "image", data: "AAAA", mimeType: "image/png" }, { type: "text", text: "third block" }];
+    const details = { path: "/tmp/shot.png", bytes: 4096 };
+    await h.emit("tool_result", { toolCallId: "call-1", toolName: "read", input: args, content, details, isError: false });
+    const stored = h.memory.pendingEntries(1, "main", 1).find(e => e.role === "toolResult")!;
+    // The host stores the raw envelope exactly as before; the extractor is a rendering contract only.
+    expect(JSON.parse(stored.calls[0]!.result!)).toEqual({ content, details });
+    expect(piResultText(stored.calls[0]!.result!)).toEqual({ text: "first block\n[image omitted]\nthird block", details: JSON.stringify(details) });
+    // Core applies the registered extractor and never inspects the envelope itself.
+    expect(renderEntry(stored, h.memory.config.render, h.memory.resultText).content)
+      .toBe("[T1#t1] read success\nfirst block\n[image omitted]\nthird block\n[details omitted: 37 characters]");
+    // An empty `details` object is not dropped structured data, so nothing is marked for it.
+    expect(piResultText(JSON.stringify({ content: [{ type: "text", text: "plain" }], details: {} }))).toEqual({ text: "plain" });
+    // A result string that is not this host's envelope is the string itself.
+    expect(piResultText("not json")).toEqual({ text: "not json" });
+    // `full` still renders the stored envelope uncut.
+    expect(h.memory.trace("T1#t1", { full: true })).toContain(JSON.stringify({ content, details }));
+  } finally { await h.dispose(); }
+});
+
+test("23 2026-09-09: the Noter's captured request carries the address labels and neither call ids nor native identity", async () => {
+  const h = host({ ...quiet, "noting.forkModeDefault": false });
+  try {
+    h.provider(async () => reply("Done."));
+    await h.prompt("用 pnpm，不要 npm");
+    await h.emit("message_end", { message: { ...reply("Running it."), content: [{ type: "text", text: "Running it." }, { type: "toolCall", id: "native-call-id-9", name: "bash", arguments: { command: "pnpm install" } }] } });
+    await h.emit("message_start", { message: reply("") });
+    await h.emit("tool_result", { toolCallId: "native-call-id-9", toolName: "bash", input: { command: "pnpm install" }, content: [{ type: "text", text: "done" }], details: {}, isError: false });
+    await h.answer("Installed."); await h.emit("agent_settled"); await h.drain();
+    await h.commands.get("trace").handler("catchup", h.ctx); // the whole turn, tool result included
+    for (let i = 0; i < 40 && !h.conversations.length; i++) await h.drain();
+    const sent = String(h.conversations.at(-1)!.messages[0]!.content);
+    expect(sent).toContain("[Source entry id: T1#user]");
+    expect(sent).toContain("[Source entry id: T1#assistant]");
+    expect(sent).toContain("[T1#t1] bash\ncommand: pnpm install");
+    expect(sent).toContain("[T1#t1] bash success\ndone");
+    expect(sent).not.toContain("native-call-id-9"); // no call id
+    expect(sent).not.toContain("[entry ["); // no native-identity header
+    expect(sent).not.toContain("tool="); // the 17a label shape is gone with it
+    // The identities are still bound, in storage and in the run audit.
+    const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
+    expect(audit.entries.every((e: { nativeId: string }) => Boolean(e.nativeId))).toBe(true);
+    expect(audit).toMatchObject({ viewVersion: "23-v1-uniform-parts", viewBudgets: { toolCallTokens: 300, entryTokens: 10_000 } });
+  } finally { await h.dispose(); }
+});
+
+test("23 2026-09-09: the three removed budget keys and a per-call budget above the ceiling are rejected at load, by name", () => {
+  for (const key of ["stdoutHeadTokens", "stdoutTailTokens", "stderrTailTokens"]) {
+    const message = `Removed setting render.${key}: use render.toolCallTokens (one budget for the whole tool call)`;
+    expect(() => host({ [`render.${key}`]: 60 })).toThrow(message);
+    expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render: { [key]: 60 } } as never)).toThrow(message);
+  }
+  expect(() => host({ "render.toolCallTokens": 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
+  expect(() => host({ "render.secondaryToolCallTokens": 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");
+  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 150 });
 });

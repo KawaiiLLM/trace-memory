@@ -183,7 +183,7 @@ One function per consumer renders that contract, in the ruled order (ticket 20):
 | Noter (`notingText`) | knowledge → historical facts → range → selected Raw → receipts |
 | Consolidator (`consolidationText`) | knowledge → already-consolidated facts → range → selected pending facts → negation reminders → receipts |
 | Main-agent injection (`injectionText`) | knowledge → receipts |
-| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (primary or, in tier 2, compact-only secondary views) → receipts |
+| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (tier-1 or, in tier 2, tier-2 entry views) → receipts |
 
 Both workers also get the inherited-context increment from that same frozen task (`notingIncrement`,
 `consolidationIncrement`; user ruling 2026-09-06 08:53): the instruction, the range, and then the
@@ -399,20 +399,19 @@ pending entry on the path and returns a tier, not a string (ticket 20c):
 | Tier | Condition | Result |
 | --- | --- | --- |
 | `{tier: "primary", text}` | the pending entries' normal shared views fit `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | knowledge, `<episodic>` with session facts newest-first, then those views |
-| `{tier: "secondary", text}` | the primary views miss a cap but the compact-only views of the same entries fit | the same order, with `RAW_SECONDARY_TITLE` announcing the lossier views |
-| `{tier: "native", reason}` | not even those fit | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
+| `{tier: "secondary", text}` | the tier-1 views miss a cap but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and both budgets |
+| `{tier: "native", reason}` | not even those fit, or an entry's minima exceed the tier-2 `E` | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
 
 Compact measures Raw against the same effective ceiling as Noting (`noting.batchTokens`), never a
 second knob of its own, and both tiers are rechecked under the same `budgetMaterial` accounting as
 normal material. No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
 no tier calls a provider or consumes a delivery, and core contains no summarizer — reaching a model
-is the host's native fallback alone. `renderEntrySecondary` (`src/core/render`, versioned by
-`SECONDARY_VIEW_VERSION` with per-role budgets in `SECONDARY_EXCERPT_TOKENS`) keeps entry order,
-source and native identity, user boundaries, non-text placeholders and each tool fragment's name,
-`T<id>#t<n>` occurrence, call id and status, drops tool arguments and results, and cuts user and
-assistant text with the primary view's own omission marker. It is used nowhere else: Noter input,
-token counters and trace keep the primary views, and neither view becomes a source entry, a fact or a
-processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
+is the host's native fallback alone. Tier 2 is `renderEntry` under the tier-2 profile
+(`render.secondaryToolCallTokens`, `render.secondaryEntryTokens`; ticket 23 superseded 20c's separate
+compact-only renderer and its version constant): the same parts, the same markers and the same
+addresses as tier 1, with tool parts at or near their label-plus-marker minimum and text cut to the
+tighter `E`. It is used nowhere else: Noter input, token counters and trace keep tier 1, and neither
+tier becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
 `search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal

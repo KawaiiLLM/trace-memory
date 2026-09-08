@@ -7,8 +7,9 @@ export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
-import { tokens, renderEntry } from "../render/index.ts";
-export { tokens, renderEntry, renderEntrySecondary, finish, runMode, ENTRY_VIEW_VERSION, SECONDARY_VIEW_VERSION, SECONDARY_EXCERPT_TOKENS } from "../render/index.ts";
+import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
+export { tokens, renderEntry, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
 export { notingText, notingIncrement, consolidationText, consolidationIncrement, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
@@ -27,12 +28,14 @@ export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, Cons
 
 export interface TraceMemoryConfig {
   render: {
+    /** Ticket 23 tier 1: `B`, the most one tool call is worth (ceiling `TOOL_CALL_CEILING`). */
     toolCallTokens: number;
+    /** Ticket 23 tier 1: `E`, the most one entry is worth. */
     entryTokens: number;
+    /** Ticket 23 tier 2 (compaction only): the same two numbers, tighter. */
+    secondaryToolCallTokens: number;
+    secondaryEntryTokens: number;
     commandTokens: number;
-    stdoutHeadTokens: number;
-    stdoutTailTokens: number;
-    stderrTailTokens: number;
     reportHeadTokens: number;
     reportTailTokens: number;
     knowledgeBlockTokens: number;
@@ -59,12 +62,11 @@ export interface TraceMemoryConfig {
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   render: {
-    toolCallTokens: 1_000,
+    toolCallTokens: 300,
     entryTokens: 10_000,
+    secondaryToolCallTokens: 100,
+    secondaryEntryTokens: 150,
     commandTokens: 120,
-    stdoutHeadTokens: 60,
-    stdoutTailTokens: 120,
-    stderrTailTokens: 120,
     reportHeadTokens: 200,
     reportTailTokens: 80,
     knowledgeBlockTokens: 10_000,
@@ -106,6 +108,11 @@ export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branch
  * nowhere, because it builds itself from `DEFAULT_CONFIG`. */
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerUnconsolidatedFacts": "consolidation.triggerTokens (tokens, not a count)",
+  // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
+  // were never effective on any Pi run; the uniform entry rule and `render.toolCallTokens` replace them.
+  "render.stdoutHeadTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.stdoutTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.stderrTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: use ${REMOVED_SETTINGS[key]}`);
 
@@ -167,6 +174,10 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
   };
 }
 
+/** Ticket 23: `B` has a hard upper bound — the 17a default — and is rejected above it, in either
+ * profile. A per-call budget larger than that is the volume problem this ticket exists to remove. */
+export const TOOL_CALL_CEILING = 1_000;
+
 export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
   const cfg = mergeConfig(DEFAULT_CONFIG, override);
   for (const [section, values] of Object.entries(cfg)) for (const [key, value] of Object.entries(values)) {
@@ -178,6 +189,7 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
       throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
     }
+    if (/toolCallTokens$/i.test(key) && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
   return cfg;
 }
@@ -226,6 +238,9 @@ export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
 export interface TraceMemory {
   readonly store: Store;
   readonly executorId: string;
+  /** Ticket 23 "Host contract": the result-text extractor this host registered at construction. Core
+   * applies it wherever it renders an entry and never inspects envelope fields itself. */
+  readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget, mode: "fork" | "subagent"): { due: boolean; paused: boolean };
   /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
   cancelTasks(stopping?: boolean): void;
@@ -263,7 +278,9 @@ export interface TraceMemory {
   spend(sessionId: number): { runs: { noting: number; consolidation: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
-export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {}): TraceMemory {
+export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
+  /** Ticket 23: the host's one result-text extractor, registered here (default: the stored string). */
+  resultText: ResultExtractor = rawResultText): TraceMemory {
   const cfg = validateConfig(config);
   const store = new Store(dbPath);
   const executorId = randomUUID();
@@ -371,7 +388,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return finish(renderTurn(turn, originals, cfg.render, options));
   };
 
-  const read = readFacade(store, cfg, trace);
+  const read = readFacade(store, cfg, trace, resultText);
   // Ticket 22b: the pending entries are rendered one at a time and joined with the batch's own
   // separator, and the answer is given as soon as the joined estimate reaches the threshold. The
   // estimate is still of one joined string, exactly as before — independently estimated views are
@@ -379,7 +396,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const notingDue = (target: TaskTarget): boolean => {
     let joined = "";
     for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId)) {
-      const view = renderEntry(store.getSourceEntry(id)!, cfg.render).content;
+      const view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
       joined = joined ? `${joined}\n\n${view}` : view;
       if (tokens(joined) >= cfg.noting.triggerTokens) return true;
     }
@@ -423,7 +440,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
-      return phase === "noting" ? freezeNoting(store, selected, cfg) : freezeConsolidation(store, selected, cfg);
+      return phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
     }); } catch (error) {
       throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
     }
@@ -461,7 +478,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return result;
   };
   return {
-    store, executorId, cancelTasks, taskEligibility,
+    store, executorId, resultText, cancelTasks, taskEligibility,
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
     close: () => {

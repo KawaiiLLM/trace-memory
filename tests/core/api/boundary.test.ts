@@ -8,7 +8,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONSOLIDATED_TITLE, FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
-import { TraceMemory, renderEntry, toolDefinitions, tokens,
+import { TraceMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>;
@@ -70,7 +70,8 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
     assertNoProviderMessage(input);
     // Everything this stub needs is a part it can place itself.
     expect(input.material.entries.map(e => e.view)).toEqual(memory.pendingEntries(sessionId, "main", t.id).map(e => renderEntry(e, memory.config.render).content));
-    expect(input.entryAudit.viewVersion).toBe("17a-v1-fixed-halves");
+    expect(input.entryAudit.viewVersion).toBe(ENTRY_VIEW_VERSION);
+    expect(input.entryAudit.viewBudgets).toEqual({ toolCallTokens: 300, entryTokens: 10_000 }); // the tier-1 profile (23)
     expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
     return { outcome: "success", output: "done", audit: { available: false, reason: "this host cannot expose provider requests" } };
   };

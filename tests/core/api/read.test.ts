@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory, compacted, renderEntry, SECONDARY_VIEW_VERSION } from "../../source-fixture.ts";
+import { TraceMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -158,28 +158,35 @@ test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
 });
 
-test("20c 2026-09-08 scenario 10: primary views over the shared ceiling become labelled secondary views that keep every selected entry, drop tool arguments and results, and mark truncation", () => {
+test("20c/23 2026-09-08 scenario 10: primary views over the shared ceiling become tier-2 views of the same renderer, still every entry, under the tier-2 profile", () => {
   const { s, t } = populated();
   const body = "word ".repeat(12_000);
   const next = turn(s.id, `USER_HEAD ${body} USER_TAIL`, t.id);
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: JSON.stringify({ command: "SECRET_ARGUMENT" }),
-    result: JSON.stringify({ stdout: "SECRET_RESULT" }), status: "success" });
+    result: JSON.stringify({ stdout: "SECRET_RESULT " + "x".repeat(4_000) }), status: "success" });
   const pending = memory.pendingEntries(s.id, "main", next.id);
   const result = memory.compact(s.id, "main", next.id);
   expect(result.tier).toBe("secondary");
   const text = compacted(result);
-  // Explicitly labelled, and versioned so a reader knows which truncation rule produced it.
-  expect(text).toContain("Raw (compact-only secondary views;");
+  // Explicitly labelled, and named with the view version and the profile that produced these views,
+  // so a reader knows which rule truncated the text in front of them (23, superseding 20c's own view).
+  expect(text).toContain(`Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget 100 tokens, entry budget 150 tokens):`);
   expect(text).not.toContain("\nRaw:\n");
-  expect(text).toContain(SECONDARY_VIEW_VERSION);
-  // Every selected entry is represented, in order, with its own source and native identity.
-  for (const entry of pending) expect(text).toContain(`[entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}]`);
+  // Every selected entry is represented, in order, by the addresses its labels carry; native identity
+  // stays in storage and in the run audit, never in the model-facing text.
+  const profile = { toolCallTokens: 100, entryTokens: 150 };
+  for (const entry of pending) {
+    const view = renderEntry(entry, profile, memory.resultText).content;
+    expect(text).toContain(view);
+    expect(tokens(view)).toBeLessThanOrEqual(150);
+  }
+  expect(text).not.toContain(`[entry ${JSON.stringify([pending[0]!.nativeLineage, pending[0]!.nativeId])}]`);
   expect(text.indexOf(`[Source entry id: T${next.id}#user]`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
-  // Tool identity remains; arguments and results do not.
-  expect(text).toContain(`[T${next.id}#t1] tool=Bash`);
-  expect(text).toContain("[arguments omitted]"); expect(text).toContain("[result omitted]");
-  expect(text).not.toContain("SECRET_ARGUMENT"); expect(text).not.toContain("SECRET_RESULT");
-  // User text is excerpted, and the omission is marked in the wording the primary view already uses.
+  // Tool identity and status remain, and so does what the tighter budget can hold of the payload.
+  expect(text).toContain(`[T${next.id}#t1] Bash\ncommand: SECRET_ARGUMENT`);
+  expect(text).toContain(`[T${next.id}#t1] Bash success`);
+  expect(text).toContain("SECRET_RESULT"); expect(text).not.toContain("x".repeat(4_000));
+  // User text is excerpted, and the omission is marked in the wording the tier-1 view already uses.
   expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);
   expect(text).toContain("middle not inspected");
   // Deterministic local work: the same snapshot renders the same bytes, and no model was called.
@@ -189,6 +196,55 @@ test("20c 2026-09-08 scenario 10: primary views over the shared ceiling become l
   expect(memory.trace(`T${next.id}#user`)).toContain(body);
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_ARGUMENT");
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_RESULT");
+});
+
+/** The compact-only secondary view ticket 23 deleted (20c's `renderEntrySecondary`, copied from
+ * e7cd633 and kept here alone): the conversation-dense acceptance below compares tier 2's total
+ * against the total this retired view produced on the same frozen set. Nothing else uses it. */
+function retiredSecondaryView(entry: { sessionId: number; turnId: number; nativeLineage: string; nativeId: string; role: string; text: string; calls: { ordinal: number; name: string; callId: string; status: string }[] }): string {
+  const excerpt = (label: string, body: string, cap: number) => {
+    const whole = `${label}\n${body}`, characters = [...body];
+    const at = (kept: number) => `${label}\n${characters.slice(0, Math.ceil(kept / 2)).join("")}\n[omitted ${characters.length - kept} characters; middle not inspected]\n${Math.floor(kept / 2) ? characters.slice(-Math.floor(kept / 2)).join("") : ""}`;
+    if (tokens(whole) <= cap) return whole;
+    let low = 0, high = characters.length - 1;
+    while (low < high) { const mid = Math.ceil((low + high) / 2); if (tokens(at(mid)) <= cap) low = mid; else high = mid - 1; }
+    return at(low);
+  };
+  const lines = [`[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}] [compact-only view 20c-v1-bounded-excerpts]`];
+  if (entry.text || entry.role === "user") {
+    const role = entry.role === "user" ? "user" : "assistant";
+    lines.push(excerpt(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]", role === "user" ? 120 : 60));
+  }
+  for (const call of entry.calls) lines.push(`[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} [${entry.role === "toolResult" ? "result" : "arguments"} omitted]`);
+  return lines.join("\n");
+}
+
+test("23 2026-09-09 conversation-dense acceptance: tier 1 cannot fit a set of long replies, tier 2 still can, within half again of the retired view's total", () => {
+  const s = session();
+  // Long replies with few tool calls: the shape the retired view handled and tier 1 cannot.
+  let parent: number | undefined;
+  for (let i = 0; i < 12; i++) {
+    const t = turn(s.id, `Question ${i}: ` + "word ".repeat(30), parent);
+    memory.store.updateTurn(t.id, { assistantText: `Answer ${i}: ` + "word ".repeat(1_000) });
+    parent = t.id;
+  }
+  memory.store.appendToolCall({ turnId: parent!, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
+  const pending = memory.pendingEntries(s.id, "main", parent!);
+  const profile = { toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens };
+  const total = (views: string[]) => tokens(views.join("\n\n"));
+  const tier1 = total(pending.map(e => renderEntry(e, memory.config.render).content));
+  const tier2 = total(pending.map(e => renderEntry(e, profile, memory.resultText).content));
+  const retired = total(pending.map(retiredSecondaryView));
+  // Tier 1 is over the shared Raw ceiling, so this set escalates; the retired view fitted it.
+  expect(tier1).toBeGreaterThan(memory.config.noting.batchTokens);
+  expect(retired).toBeLessThan(memory.config.noting.batchTokens);
+  // Tier 2 fits it too — no escalation to the native tier that did not happen before — and costs at
+  // most half again what the retired view cost, for tool identity and status the retired view dropped.
+  const result = memory.compact(s.id, "main", parent!);
+  expect(result.tier).toBe("secondary");
+  expect(tier2).toBeLessThan(memory.config.noting.batchTokens);
+  expect(tier2, `tier 2 ${tier2} tokens against the retired view's ${retired}`).toBeLessThanOrEqual(Math.floor(retired * 1.5));
+  for (const entry of pending) expect(compacted(result)).toContain(renderEntry(entry, profile, memory.resultText).content);
 });
 
 test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact asks for native compaction with the reason, and changes nothing", () => {
@@ -202,7 +258,7 @@ test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact a
   const outer = memory.compact(s.id, "main", parent);
   expect(outer.tier).toBe("native");
   expect(outer.tier === "native" && outer.reason).toContain("the episodic budget by");
-  expect(outer.tier === "native" && outer.reason).toContain(`secondary views of ${pending.length} pending entries`);
+  expect(outer.tier === "native" && outer.reason).toContain(`tier-2 views of ${pending.length} pending entries`);
   expect("text" in outer).toBe(false); // not an empty success, and no oversized block either
   // The same escalation on the inner ceiling names that cap instead.
   memory.config.render.episodicBlockTokens = 200_000; memory.config.noting.batchTokens = 50;

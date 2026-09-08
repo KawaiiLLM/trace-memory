@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, tokens, charge } from "../render/index.ts";
+import { renderFact, renderTurn, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
 import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
@@ -49,6 +49,7 @@ export interface EntryAudit {
   entries: { id: number; nativeLineage: string; nativeId: string; turnId: number; omissions: string[] }[];
   branch: string;
   viewVersion: string;
+  /** The profile these views were rendered under: `B` and `E` (ticket 23). */
   viewBudgets: { toolCallTokens: number; entryTokens: number };
 }
 export type NotingResult =
@@ -56,7 +57,7 @@ export type NotingResult =
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] };
 
-export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig) {
+export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
   if (typeof input.branch !== "string" || !input.branch) throw new Error("noting requires a non-empty branch");
@@ -79,7 +80,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const entries: typeof pending = [];
   const views: string[] = [];
   for (const entry of pending) {
-    const view = renderEntry(entry, config.render).content;
+    const view = renderEntry(entry, config.render, resultText).content;
     if (tokens([...views, view].join(BLOCK)) > config.noting.batchTokens) break;
     entries.push(entry); views.push(view);
   }
@@ -99,7 +100,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(store, frozen, config, history);
+    const prepared = notingMaterial(store, frozen, config, resultText, history);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -124,12 +125,12 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 
-function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, history = Infinity) {
+function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, resultText: ResultExtractor, history = Infinity) {
   const { sessionId, entries, turns, knowledge, facts } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
-  const raw = entries.map(entry => renderEntry(entry, config.render));
+  const raw = entries.map(entry => renderEntry(entry, config.render, resultText));
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
   // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
   // — the titles and the range against the episodic budget, and the knowledge block against its own.

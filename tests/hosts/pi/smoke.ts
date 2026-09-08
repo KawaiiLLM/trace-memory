@@ -11,7 +11,7 @@ import { host, notingFact } from "./test-host.ts";
 // use Pi's installed TS loader instead, as Pi does for packaged extensions. No bundled loader dependency.
 const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
 const extension = process.argv[2] ? (await createJiti(import.meta.url).import(resolve(process.argv[2]))).default : undefined;
-const h = host({ "noting.triggerTokens": 60 }, { extension });
+const h = host({ "noting.triggerTokens": 30 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
   mkdirSync(join(h.dir, ".trace-memory"));
