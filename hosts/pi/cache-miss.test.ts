@@ -9,7 +9,7 @@ import { recorded } from "../../test/source-fixture.ts";
 // counts. One eligible miss, one warning, session-scoped, reset only through the /trace menu.
 
 const WARNING = "Trace Memory: fork cache miss. Future memory tasks in this session will use subagent.";
-const big = () => usage(2000, 5, 0); // 2000 reported input tokens, nothing read from cache
+const big = () => usage(32000, 5, 0); // 32,000 reported input tokens (over the 30K context ruling), nothing read from cache
 const small = () => usage(10, 2, 0); // below every documented minimum
 const long = "word ".repeat(400);
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
@@ -29,7 +29,7 @@ test("19c 2026-09-08: an eligible zero-cache fork response downgrades the sessio
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // no replay, and no extra extraction trigger
     const response = JSON.parse(run.response!);
     expect(response.verification.passed).toBe(true); // the prefix check passed first (gate 3)
-    expect(response.verification.cacheMiss).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, input: 2000, cacheRead: 0, cacheWrite: 0 });
+    expect(response.verification.cacheMiss).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0 });
     // One warning, with the ruled text, although two of this run's responses reported a miss.
     expect(warnings(f.h)).toEqual([WARNING]);
     const suppression = f.h.memory.store.forkSuppression(1)!;
@@ -112,26 +112,40 @@ test("19c 2026-09-08: cache eligibility rejects hits, small, missing, placeholde
   const openai = { api: "openai-completions", id: "test", provider: "fake" };
   const anthropic = { api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" };
   const haiku = { api: "anthropic-messages", id: "claude-3-5-haiku", provider: "fake" };
-  const zero = { input: 2000, cacheRead: 0, cacheWrite: 0 };
+  const zero = { input: 32000, cacheRead: 0, cacheWrite: 0 };
   // Eligible: a documented minimum, a reported zero read, and enough actual input.
-  expect(eligibleCacheMiss(openai, zero, true)).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, input: 2000, cacheRead: 0, cacheWrite: 0 });
+  expect(eligibleCacheMiss(openai, zero, true)).toEqual({ model: "fake/test", api: "openai-completions", minimum: 1024, threshold: 30000, input: 32000, cacheRead: 0, cacheWrite: 0 });
   // pi-ai reports `input` without the cached tokens on both families, so the request's real input is
-  // input + cacheRead + cacheWrite: an Anthropic first write of 3000 tokens is over the minimum.
-  expect(eligibleCacheMiss(anthropic, { input: 24, cacheRead: 0, cacheWrite: 3000 }, true)?.input).toBe(3024);
+  // input + cacheRead + cacheWrite: an Anthropic first write of 31,000 tokens is over both limits.
+  expect(eligibleCacheMiss(anthropic, { input: 24, cacheRead: 0, cacheWrite: 31000 }, true)?.input).toBe(31024);
   // Not eligible, one reason each.
-  expect(eligibleCacheMiss(openai, { input: 5000, cacheRead: 4000, cacheWrite: 0 }, true)).toBeUndefined(); // a hit, at any ratio
+  expect(eligibleCacheMiss(openai, { input: 35000, cacheRead: 4000, cacheWrite: 0 }, true)).toBeUndefined(); // a hit, at any ratio
   expect(eligibleCacheMiss(openai, { input: 1, cacheRead: 1023, cacheWrite: 0 }, true)).toBeUndefined();
   expect(eligibleCacheMiss(openai, { input: 1000, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // below the minimum
   expect(eligibleCacheMiss(openai, undefined, true)).toBeUndefined(); // missing usage
   expect(eligibleCacheMiss(openai, { input: 0, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // placeholder zeros
-  expect(eligibleCacheMiss(openai, { input: 2000 }, true)).toBeUndefined(); // no cache reporting at all
+  expect(eligibleCacheMiss(openai, { input: 32000 }, true)).toBeUndefined(); // no cache reporting at all
   expect(eligibleCacheMiss(openai, zero, false)).toBeUndefined(); // the request asked for no caching
   expect(eligibleCacheMiss({ api: "google-generative-ai", id: "gemini", provider: "g" }, zero, true)).toBeUndefined(); // unknown minimum
-  expect(eligibleCacheMiss(haiku, zero, true)).toBeUndefined(); // 2000 < the Haiku family's 2048
-  expect(eligibleCacheMiss(haiku, { input: 2048, cacheRead: 0, cacheWrite: 0 }, true)?.minimum).toBe(2048);
+  expect(eligibleCacheMiss(haiku, { input: 2000, cacheRead: 0, cacheWrite: 0 }, true, 0)).toBeUndefined(); // 2000 < the Haiku family's 2048
+  expect(eligibleCacheMiss(haiku, { input: 2048, cacheRead: 0, cacheWrite: 0 }, true, 0)?.minimum).toBe(2048);
   // No universal fallback minimum is invented for an unlisted provider.
   expect(cacheMinimum("openai-responses", "gpt-5")).toBe(1024);
   expect(cacheMinimum("google-generative-ai", "gemini")).toBeUndefined();
+});
+
+test("19c ruling 2026-09-08: a zero-cache response counts as a miss only when its context exceeded 30,000 tokens", () => {
+  const openai = { api: "openai-completions", id: "test", provider: "fake" };
+  const codex = { api: "openai-codex-responses", id: "gpt-5.6-sol", provider: "openai-codex" };
+  // The live run's R2: 5,277 input tokens, nothing cached, gate passed. Over the provider minimum,
+  // far under the context threshold: tolerated, no downgrade.
+  expect(eligibleCacheMiss(codex, { input: 5277, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined();
+  expect(eligibleCacheMiss(openai, { input: 30000, cacheRead: 0, cacheWrite: 0 }, true)).toBeUndefined(); // at the threshold: not over it
+  expect(eligibleCacheMiss(openai, { input: 30001, cacheRead: 0, cacheWrite: 0 }, true)?.threshold).toBe(30000);
+  // The threshold is on the request's real context, so cached-write tokens count toward it.
+  expect(eligibleCacheMiss({ api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" }, { input: 100, cacheRead: 0, cacheWrite: 30000 }, true)?.input).toBe(30100);
+  // A hit at any size stays a hit.
+  expect(eligibleCacheMiss(openai, { input: 60000, cacheRead: 1, cacheWrite: 0 }, true)).toBeUndefined();
 });
 
 test("19c 2026-09-08: two phases reporting a miss together produce one transition and one warning", async () => {

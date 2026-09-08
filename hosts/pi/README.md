@@ -664,6 +664,14 @@ An eligible miss is judged per completed fork response, on that response's own u
 | `openai-completions`, `openai-responses`, `openai-codex-responses` | 1024-token prefix | OpenAI automatic prompt caching |
 | anything else | unknown — never a miss | no universal minimum is invented |
 
+**Context threshold (user ruling 2026-09-08, after the live run):** on top of the provider
+minimum, a zero-cache response counts only when the request's real context **exceeded 30,000
+tokens** (`CACHE_MISS_CONTEXT_TOKENS`). The latch exists to stop re-sending a large inherited
+history without cache reuse; a miss on a small context costs little, and OpenAI-family providers
+return whole-zero-cache responses now and then without a deterministic cause (the live run's R2
+missed on a 5,277-token request while its neighbours hit). Below the threshold the miss is
+tolerated and nothing is recorded; the observation carries the `threshold` the input exceeded.
+
 pi-ai normalizes both families to one counting convention: `input` excludes `cacheRead` and
 `cacheWrite` (`openai-completions` subtracts them from `prompt_tokens`; `anthropic-messages`
 copies `input_tokens`, which already excludes them). The compared quantity is therefore

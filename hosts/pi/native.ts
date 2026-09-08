@@ -155,9 +155,16 @@ const CACHE_MINIMUM: { api: string; model?: RegExp; tokens: number }[] = [
 export const cacheMinimum = (api: string, model: string): number | undefined =>
   CACHE_MINIMUM.find(entry => entry.api === api && (!entry.model || entry.model.test(model)))?.tokens;
 
+/** User ruling 2026-09-08 (after the live run, 「应该看上下文，如果上下文超过30k未命中才回退subagent」): a
+ * zero-cache response counts only when the request's context exceeded 30,000 tokens. The latch exists
+ * to stop re-sending a large inherited history without cache reuse; a miss on a small context costs
+ * little, and on OpenAI-family providers whole-zero-cache responses occur without a deterministic
+ * cause, so below this size a miss is tolerated rather than acted on. */
+export const CACHE_MISS_CONTEXT_TOKENS = 30_000;
+
 /** What a recorded eligible miss says: the response's own reported input accounting, the model it was
- * measured on, and the minimum it had to reach. */
-export interface CacheMissObservation { model: string; api: string; minimum: number; input: number; cacheRead: number; cacheWrite: number }
+ * measured on, the provider's minimum cacheable length, and the context threshold the input exceeded. */
+export interface CacheMissObservation { model: string; api: string; minimum: number; threshold: number; input: number; cacheRead: number; cacheWrite: number }
 
 /** One completed fork response, judged on its own reported usage (never a run's sum).
  *
@@ -167,9 +174,10 @@ export interface CacheMissObservation { model: string; api: string; minimum: num
  * `input + cacheRead + cacheWrite` on either. Compressed Raw size is never used.
  *
  * Everything unknown returns undefined: missing or non-numeric usage, an unsupported/unreported cache
- * count, a provider cache that was not requested at all, an unlisted provider minimum, and an input
- * below that minimum. A nonzero `cacheRead` is a hit — there is no ratio threshold. */
-export function eligibleCacheMiss(model: { api: string; id: string; provider: string }, usage: unknown, cacheEnabled: boolean): CacheMissObservation | undefined {
+ * count, a provider cache that was not requested at all, an unlisted provider minimum, an input below
+ * that minimum, and an input at or below the 30,000-token context threshold. A nonzero `cacheRead` is
+ * a hit — there is no ratio threshold. */
+export function eligibleCacheMiss(model: { api: string; id: string; provider: string }, usage: unknown, cacheEnabled: boolean, threshold = CACHE_MISS_CONTEXT_TOKENS): CacheMissObservation | undefined {
   if (!cacheEnabled) return; // the request asked for no caching: a zero read says nothing
   const minimum = cacheMinimum(model.api, model.id);
   if (minimum === undefined) return;
@@ -179,8 +187,8 @@ export function eligibleCacheMiss(model: { api: string; id: string; provider: st
   if (reported.cacheRead !== 0) return;
   const cacheWrite = typeof reported.cacheWrite === "number" ? reported.cacheWrite : 0;
   const input = reported.input + reported.cacheRead + cacheWrite;
-  if (!Number.isFinite(input) || input < minimum) return;
-  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, input, cacheRead: 0, cacheWrite };
+  if (!Number.isFinite(input) || input < minimum || input <= threshold) return;
+  return { model: `${model.provider}/${model.id}`, api: model.api, minimum, threshold, input, cacheRead: 0, cacheWrite };
 }
 
 export async function runNative(task: NativeTask): Promise<NativeResult> {
