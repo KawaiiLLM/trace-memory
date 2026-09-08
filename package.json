@@ -9,7 +9,7 @@
   "pi": { "extensions": ["./src/hosts/pi/index.ts"] },
   "publishConfig": { "tag": "next" },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --dir tests",
     "typecheck": "tsc --noEmit",
     "smoke:pi": "node tests/hosts/pi/smoke.ts",
     "smoke:package": "node tests/package-smoke.mjs",
