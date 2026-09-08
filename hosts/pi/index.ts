@@ -371,8 +371,10 @@ export default function (pi: ExtensionAPI) {
     const [provider, ...id] = selected.model.split("/");
     const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
     if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) {
-      context.ui.notify(`${kind === "noting" ? "Noting" : "Consolidation"} capacity: unavailable model context/output limits; left pending`, "error");
-      return Promise.resolve({ outcome: "dropped" } as const);
+      const permanent = `${kind === "noting" ? "Noting" : "Consolidation"} capacity: unavailable model context/output limits; left pending`;
+      context.ui.notify(permanent, "error");
+      // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
+      return Promise.resolve({ outcome: "dropped", permanent } as const);
     }
     // Both phases negotiate capacity before selection (gate 4; review 2026-09-08 for Consolidation):
     // the model window minus the output reserve, and the inherited prefix when the task will fork.
@@ -715,20 +717,26 @@ export default function (pi: ExtensionAPI) {
     const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : { factIds: [...c.factIds] };
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
     pending.add(promise);
+    let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
     const settled = promise.then(result => {
       if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
         for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
       reportProblems(result, context);
       const outcome = (result as { outcome?: string }).outcome;
       if (c.stopped) { c.outcome = "stopped"; return; } // Stop wins the race: no further chaining, whatever this batch returned.
-      if (outcome === "dropped") { c.waitingPhase = phase; return; } // A foreign claim on our own target; retry on the next opportunity.
+      const permanent = (result as { permanent?: string }).permanent;
+      if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; return; } // a configuration error ends the drain
+      if (outcome === "dropped") { c.waitingPhase = phase; waited = true; return; } // A foreign claim on our own target; retry on the next opportunity.
       if (outcome !== "success" && outcome !== "empty") {
         c.outcome = outcome === "cancelled" ? "stopped" : "failed";
         c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
       }
     }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); })
       .finally(() => { slots.delete(phase); c.runningPhase = undefined; pending.delete(settled); activity.running.delete(phase); showSpend(context);
-        driveCatchup(); }); // The explicit drain exception: only this active catchup schedules its own next batch.
+        // The explicit drain exception: only this active catchup schedules its own next batch. A batch
+        // that ended in Waiting is resumed by a slot release or the next ordinary opportunity, never by
+        // this line: re-driving a wait immediately is a loop without a wait (review 2026-09-08).
+        if (!waited) driveCatchup(); });
     pending.delete(promise); pending.add(settled);
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
   };

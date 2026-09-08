@@ -416,7 +416,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   });
   const cost = (kept: number) => (kept ? tokens(xmlBlock("knowledge", "")) + sizes.slice(0, kept).reduce((a, b) => a + b, 0)
     + charge([...new Set(ordered.slice(0, kept).map((item) => item.category))].map((category) => xmlBlock(category, ""))) : 0)
-    + charge(receipts(kept));
+    + charge(receipts(kept)) + (receipts(kept).length ? charge(["Receipts:"]) : 0); // the heading `finish` adds is emitted too
   let kept = 0;
   while (kept < ordered.length && cost(kept + 1) <= cap) kept++;
   // Omitting one more item can lengthen a receipt: recheck the prefix the loop stopped on. The floor

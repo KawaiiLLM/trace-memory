@@ -5,7 +5,7 @@ import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderKnowledge, renderFact, tokens } from "../render/index.ts";
+import { renderKnowledge, renderFact, tokens, charge } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
 import { budgetMaterial, consolidationText, consolidationIncrement, CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
@@ -110,16 +110,22 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // plus instructions and tools must fit the host's reported capacity. Neither is receipted away:
   // the batch shrinks oldest-first, whole facts only, and the reminders, the material and the write
   // eligibility re-freeze together on every step. An oldest fact that cannot fit alone stays pending.
+  let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts,
       context: context.filter((f) => !rangeFacts.some((r) => r.id === f.id)), knowledge, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
-    const prepared = consolidationMaterial(frozen, config);
+    const prepared = consolidationMaterial(frozen, config, history);
     const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
     const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
-    const fits = !prepared.over.episodic && (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens);
+    // Priced by the mode that will actually run (review 2026-09-08), not by the requested one.
+    const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
+    const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
-    rangeFacts.pop();
+    // Optional history goes first (review 2026-09-08): trim the already-consolidated facts by the excess
+    // before a selected fact is given up; only when none are left does the batch shrink.
+    if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
+    rangeFacts.pop(); history = Infinity;
   }
   if (applicable.length) throw new Error("Consolidation capacity: oldest fact with its mandatory cues cannot fit the episodic budget or the model context; left pending");
   const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context, knowledge, lines, reminders: [] as string[],
@@ -132,12 +138,12 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * block — the titles, the range and the mandatory negation cues are charged to the episodic budget,
  * and the already-consolidated facts fill what is left of it. Core lays out both representations
  * (ruling 08:53); the host only decides which native message carries the text. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; context: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; reminders: string[] }, config: TraceMemoryConfig) {
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; context: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; reminders: string[] }, config: TraceMemoryConfig, history = Infinity) {
   const { rangeFacts, context, knowledge, lines, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   const budgeted = budgetMaterial({ knowledge, current: rangeFacts.map((f) => lines.get(f.id)!).join("\n"),
     framing: [CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    facts: context, factLine: (f) => lines.get(f.id)!,
+    facts: context, factLine: (f) => lines.get(f.id)!, history,
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),

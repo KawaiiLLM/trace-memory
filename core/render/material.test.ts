@@ -118,7 +118,7 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   // carry that receipt. (Receipts no longer come from an episodic overage — since the review of
   // 2026-09-08 a budget the mandatory material cannot fit reduces or holds the task instead.)
   const receipt = "omitted 1 constraint knowledge; expand: K1";
-  memory.config.render.knowledgeBlockTokens = tokens(receipt) + 1;
+  memory.config.render.knowledgeBlockTokens = tokens(receipt) + 1 + tokens("Receipts:") + 1; // the receipt, its separator and the heading `finish` adds
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
   expect(noting.material.knowledge).toEqual([]);

@@ -149,8 +149,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       // 2. Try normal views: the shared primary views, against the shared Raw ceiling
       //    (`noting.batchTokens`, not a second knob) and the episodic budget. No batch selector here —
       //    the whole pending set is represented or this tier does not apply.
-      const primary = build(pending.map((e) => renderEntry(e, config.render)), RAW_TITLE);
-      if (!primary.over.current && !primary.over.episodic) return { tier: "primary", text: primary.text };
+      // A primary view that cannot hold its own labels is a capacity failure of tier 1, not of compact:
+      // tier 2 is tried next. Any other rendering error is a data error and is reported (review 2026-09-08).
+      let primaryViews: { content: string; receipts: string[] }[] | undefined;
+      try { primaryViews = pending.map((e) => renderEntry(e, config.render)); }
+      catch (error) { if (!/capacity/.test(String(error))) throw error; }
+      const primary = primaryViews && build(primaryViews, RAW_TITLE);
+      if (primary && !primary.over.current && !primary.over.episodic) return { tier: "primary", text: primary.text };
       // 3. Try secondary views: deterministic, versioned, explicitly labelled, still all of them.
       const secondary = build(pending.map((e) => ({ content: renderEntrySecondary(e), receipts: [] })), RAW_SECONDARY_TITLE);
       if (!secondary.over.current && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };

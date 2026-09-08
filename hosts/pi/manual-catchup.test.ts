@@ -2,6 +2,7 @@ import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
 import { host, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
+import { recorded } from "../../test/source-fixture.ts";
 
 // Ticket 18b — manual catchup and stop. Parent scenarios 18 (manual finite drain), 19 (capacity
 // and command parity), 20 (stop and resume) and 21 (drain lifecycle), plus the three named revert
@@ -456,3 +457,24 @@ test("20c 2026-09-08 scenario 16: stop between Consolidation batches discards th
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 }, 60000);
+
+test("review 2026-09-08: an unavailable Consolidator model fails the catchup once instead of re-admitting it in a loop", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, consolidationModel: "missing/model" });
+  try {
+    await h.turn();
+    recorded(h.memory, 1, "main", 1);
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
+    expect(note.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] })).toContain("ok: F1");
+    let lookups = 0;
+    // A re-admission loop has no wait a timeout could catch, so the stub itself stops it after a few lookups.
+    h.ctx.modelRegistry.find = () => { if (++lookups > 3) throw new Error("probe: the catchup re-admitted a permanent configuration error"); return undefined; };
+    await command(h, "catchup");
+    await h.drain();
+    expect(lookups).toBe(1); // one admission, one lookup: a configuration error is not a wait to retry
+    expect(h.notices.filter(n => n.includes("Consolidation capacity: unavailable model"))).toHaveLength(1);
+    expect(h.requests).toEqual([]);
+    await command(h, "status");
+    expect(h.notices.at(-1)).toContain("Catchup: failed");
+    expect(h.notices.at(-1)).toContain("unavailable model");
+  } finally { await h.dispose(); }
+}, 20000);

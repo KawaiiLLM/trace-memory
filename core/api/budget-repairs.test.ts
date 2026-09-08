@@ -2,7 +2,10 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { TraceMemory, tokens, type ConsolidationAgentInput, type NotingAgentInput } from "../../test/source-fixture.ts";
+import { TraceMemory, tokens, renderEntry, renderEntrySecondary, type ConsolidationAgentInput, type NotingAgentInput } from "../../test/source-fixture.ts";
+import type { Fact } from "../model/index.ts";
+import { renderFact } from "../render/index.ts";
+import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../render/material.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
@@ -53,3 +56,74 @@ test("review 2026-09-08: a knowledge cap that cannot hold even its omission rece
     expect(() => f.m.inject(f.s.id)).toThrow(/Knowledge capacity/);
   } finally { f.m.close(); }
 });
+
+// ---- Review of 91688b8..12fa278 (2026-09-08): capacity by effective mode, optional history first,
+// tier 1 capacity errors escalate, and the `Receipts:` heading is charged.
+
+test("review 2026-09-08: capacity is priced by the effective mode; a requested fork resolved to subagent is not charged the inherited head reply", async () => {
+  const f = seeded();
+  try {
+    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    // A 40,000-token assistant reply: its primary view is bounded (10K), but the fork increment would
+    // carry the whole head reply; a subagent run carries only the bounded view.
+    f.m.appendEntry({ sessionId: f.s.id, turnId: f.t.id, nativeLineage: "fixture", nativeId: "long-assistant", role: "assistant", text: "word ".repeat(40000), raw: "", calls: [] });
+    const input = { sessionId: f.s.id, branch: "main", headTurnId: f.t.id, capacity: { inputTokens: 30000, prefixTokens: 0 }, effectiveMode: "subagent" as const };
+    expect((await f.m.noting({ ...input, mode: "fork" })).outcome).toBe("success");
+    const run = f.calls.at(-1) as NotingAgentInput;
+    expect(run.mode).toBe("fork"); // the requested mode is still what the task carries for the audit
+  } finally { f.m.close(); }
+});
+
+test("review 2026-09-08: a smaller model window trims the optional historical facts before it drops a selected fact", async () => {
+  const f = seeded();
+  try {
+    expect(f.note("Pending fact")).toContain("ok: F1");
+    await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    const bare = f.calls[0] as ConsolidationAgentInput;
+    const capacity = tokens(bare.prompt) + tokens(JSON.stringify(bare.tools)) + tokens(bare.text.fresh) + 300;
+    for (let i = 0; i < 4; i++) f.note("Optional historical evidence " + "word ".repeat(1500));
+    await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    f.note("Pending fact");
+    const n = f.calls.length;
+    const result = await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    expect(result.outcome).toBe("success");
+    const run = f.calls[n] as ConsolidationAgentInput;
+    expect(run.range.facts.map(fact => fact.id)).toEqual([6]); // the selected fact ran
+    expect(run.material.facts.length).toBeLessThan(5); // the optional history gave way
+    expect(tokens(bare.prompt) + tokens(JSON.stringify(run.tools)) + tokens(run.text.fresh)).toBeLessThanOrEqual(capacity);
+  } finally { f.m.close(); }
+});
+
+test("review 2026-09-08: a primary view that cannot hold its labels escalates compact to the secondary views instead of failing", () => {
+  const f = seeded();
+  try {
+    f.m.config.render.toolCallTokens = 10;
+    f.m.store.appendToolCall({ turnId: f.t.id, name: "bash", input: "pwd", result: "done", status: "success" });
+    const pending = f.m.pendingEntries(f.s.id, "main", f.t.id);
+    expect(() => pending.map(e => renderEntry(e, f.m.config.render))).toThrow(/capacity/);
+    expect(tokens(pending.map(renderEntrySecondary).join("\n\n"))).toBeLessThan(10000);
+    const result = f.m.compact(f.s.id, "main", f.t.id);
+    expect(result.tier).toBe("secondary");
+  } finally { f.m.close(); }
+});
+
+test("review 2026-09-08: the Receipts heading is charged to the budgets it is emitted under", () => {
+  const f = seeded({ render: { knowledgeBlockTokens: 12 } });
+  try {
+    f.note("Evidence");
+    expect(f.knowledge("word ".repeat(100))).toContain("committed");
+    // A cap of 12 holds the omission receipt but not its heading: a capacity error, never 15 tokens.
+    expect(() => f.m.inject(f.s.id)).toThrow(/Knowledge capacity/);
+  } finally { f.m.close(); }
+  // At the default caps, no padding of the current material leaves the rendered text over the
+  // episodic budget with `over.episodic` still zero.
+  const facts = Array.from({ length: 200 }, (_, i) => ({ id: 200 - i, turnId: 1, runId: 1, createdAt: "2026-09-08", category: "observation", actor: "user", text: "short fact", quote: null, status: null, source: ["T1#user"] } as Fact));
+  const line = (fact: Fact) => renderFact(fact, []);
+  const range = { from: "S1/T1", to: "S1/T1" };
+  for (let padding = 9000; padding < 9800; padding++) {
+    const current = "[Source entry id: T1#user]\nHello" + " word".repeat(padding);
+    const b = budgetMaterial({ knowledge: [], facts, factLine: line, current, framing: [FACTS_TITLE, RAW_TITLE], range, caps: { knowledge: 10000, episodic: 20000, current: 10000 } });
+    const text = notingText({ knowledge: b.knowledge, facts: b.facts, entries: [{ id: 1, view: current }], receipts: b.receipts, head: null, sources: [] }, range);
+    if (!b.over.episodic) expect(tokens(text)).toBeLessThanOrEqual(20000);
+  }
+}, 30000);

@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, tokens } from "../render/index.ts";
+import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, tokens, charge } from "../render/index.ts";
 import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
@@ -87,6 +87,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
+  let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -98,7 +99,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(store, frozen, config);
+    const prepared = notingMaterial(store, frozen, config, history);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -107,18 +108,24 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // membership together, so the reduced task and its progress range can never disagree.
     const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
     const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
+    // Capacity is priced by the mode that will actually run (review 2026-09-08): a requested fork the
+    // host resolves to subagent sends fresh material, not the inherited increment.
+    const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
     // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
     // signal too, never a receipt that lets the task run over it.
-    const fits = !prepared.over.episodic && (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens);
+    const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return frozen;
-    entries.pop();
+    // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
+    // a selected entry is given up; only when none are left does the batch shrink.
+    if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
+    entries.pop(); history = Infinity;
   }
   if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved; left pending");
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode };
 
 }
 
-function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig) {
+function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, history = Infinity) {
   const { sessionId, entries, turns, knowledge, facts } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -128,7 +135,7 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
   // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
   // — the titles and the range against the episodic budget, and the knowledge block against its own.
   const budgeted = budgetMaterial({ knowledge, current: raw.map((r) => r.content).join(BLOCK),
-    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine: (f) => renderFact(f, store.listFactRelations(f.id)),
+    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine: (f) => renderFact(f, store.listFactRelations(f.id)), history,
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;
