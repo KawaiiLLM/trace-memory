@@ -1459,21 +1459,40 @@ export class Store {
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {
       this.requireEnabled(sessionId);
-      if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some(id => this.getSourceEntry(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
+      // 22b: ownership is an identity question, so it is counted in one query instead of loading every
+      // selected entry's Raw payload; duplicates are already rejected, so equal counts mean all owned.
+      const owned = (this.db.prepare("SELECT COUNT(*) n FROM source_entries WHERE session_id = ? AND id IN (SELECT value FROM json_each(?))")
+        .get(sessionId, JSON.stringify(entryIds)) as { n: number }).n;
+      if (!branch || new Set(entryIds).size !== entryIds.length || owned !== entryIds.length) throw new Error("invalid source path");
       this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
         .run(sessionId, branch, JSON.stringify(entryIds));
     });
   }
-  sourcePath(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
+  /** The selected path's entry ids, in the branch's own order, decided by `turn_id` alone: no Raw
+   * payload is loaded to answer membership (22b). `json_each`'s key is the position in the stored
+   * array, so the branch order survives the join. */
+  private pathEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
     const turns = this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    const entries = row ? (JSON.parse(row.entry_ids) as number[]).map(id => this.getSourceEntry(id)!) : this.listSourceEntries(sessionId);
-    return entries.filter(e => turns.has(e.turnId));
+    const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
+      : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)) as { id: number; turn_id: number }[];
+    return rows.filter(r => turns.has(r.turn_id)).map(r => r.id);
+  }
+  sourcePath(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
+    return this.pathEntryIds(sessionId, branch, headTurnId).map(id => this.getSourceEntry(id)!);
   }
   entryNoted(id: number): boolean {
     return !!this.db.prepare("SELECT 1 FROM noted_entries WHERE entry_id = ? LIMIT 1").get(id);
   }
+  /** 22b: `noted_entries` decides which of the path's ids are still pending before any content is
+   * loaded, so a caller that needs only the first views does not pay for the whole path. */
+  pendingEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
+    const ids = this.pathEntryIds(sessionId, branch, headTurnId);
+    const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ids)) as { entry_id: number }[]).map(r => r.entry_id));
+    return ids.filter(id => !noted.has(id));
+  }
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
-    return this.sourcePath(sessionId, branch, headTurnId).filter(e => !this.entryNoted(e.id));
+    return this.pendingEntryIds(sessionId, branch, headTurnId).map(id => this.getSourceEntry(id)!);
   }
 }

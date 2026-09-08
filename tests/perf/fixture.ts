@@ -227,3 +227,50 @@ export function countSourceReads(): { reads: () => number; reset: () => void; re
   prototype.getSourceEntry = function (this: Store, id: number) { count++; return original.call(this, id); };
   return { reads: () => count, reset: () => { count = 0; }, restore: () => { prototype.getSourceEntry = original; } };
 }
+
+export interface NativeEntry { id: string; parentId: string | null; timestamp: string; type: "message"; message: Record<string, unknown> }
+
+/** The same long history as `generate`, in the shape a host reconciles: the native Pi ancestry of one
+ * session (ticket 22b, hotspot families 1 and 2). The generator mirrors `generate` turn for turn — the
+ * same seeded word pools, the same tool-heavy Turn of 40 calls, the same non-text user boundaries, the
+ * same repeated prompts and the same second native occurrence of one tool call — so an import of this
+ * ancestry produces a database of the same shape as the store-level fixture. Nothing is persisted: the
+ * caller pushes these entries into the fake host's branch and lets `/trace enable` import them. */
+export function nativeAncestry(options: FixtureOptions = {}): NativeEntry[] {
+  const targetEntries = options.entries ?? 2_000;
+  const resultChars = options.resultChars ?? 20_000;
+  const rnd = random(options.seed ?? 0x7ace);
+  const pick = <T>(values: T[]) => values[Math.floor(rnd() * values.length)]!;
+  const words = (chars: number): string => {
+    let out = "";
+    while (out.length < chars) out += `${pick(LATIN)} ${pick(CJK)} `;
+    return out.slice(0, chars);
+  };
+  const prompts = Array.from({ length: 8 }, () => words(180));
+  const entries: NativeEntry[] = [];
+  const push = (message: Record<string, unknown>) => {
+    entries.push({ id: `n${entries.length}`, parentId: entries.length ? `n${entries.length - 1}` : null,
+      timestamp: "2026-01-01T00:10:00Z", type: "message", message });
+    return entries.length;
+  };
+  const turnCount = Math.max(20, Math.ceil(targetEntries / 3.1));
+  const heavyTurn = Math.floor(turnCount / 2);
+  for (let t = 1; t <= turnCount; t++) {
+    const prompt = t % 17 === 0 ? "" : prompts[t % prompts.length]!;
+    push(prompt ? { role: "user", content: prompt, timestamp: t }
+      : { role: "user", content: [{ type: "image", mimeType: "image/png", data: "synthetic-image" }], timestamp: t });
+    const callCount = t === heavyTurn ? 40 : t % 3 === 0 ? 2 : t % 3 === 1 ? 1 : 0;
+    const calls = Array.from({ length: callCount }, (_unused, i) => ({ type: "toolCall" as const, id: `call-${t}-${i + 1}`,
+      name: pick(LATIN), arguments: { path: `src/${pick(LATIN)}.ts`, note: words(120) } }));
+    push({ role: "assistant", content: [{ type: "text", text: words(400) }, ...calls], api: "openai-completions",
+      provider: "fake", model: "test", stopReason: calls.length ? "toolUse" : "stop", timestamp: t });
+    for (const call of calls) {
+      const content = [{ type: "text", text: words(resultChars) }];
+      push({ role: "toolResult", toolCallId: call.id, toolName: call.name, content, isError: false, timestamp: t });
+      // Several native occurrences of one tool call: a second persisted result entry for the same call id.
+      if (call.id.endsWith("-1") && t % 23 === 0) push({ role: "toolResult", toolCallId: call.id, toolName: call.name, content, isError: false, timestamp: t });
+    }
+    if (entries.length >= targetEntries) break;
+  }
+  return entries;
+}

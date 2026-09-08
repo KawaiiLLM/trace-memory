@@ -372,10 +372,22 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
 
   const read = readFacade(store, cfg, trace);
+  // Ticket 22b: the pending entries are rendered one at a time and joined with the batch's own
+  // separator, and the answer is given as soon as the joined estimate reaches the threshold. The
+  // estimate is still of one joined string, exactly as before — independently estimated views are
+  // never summed — but the work is bounded by `noting.triggerTokens` instead of by the backlog.
+  const notingDue = (target: TaskTarget): boolean => {
+    let joined = "";
+    for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId)) {
+      const view = renderEntry(store.getSourceEntry(id)!, cfg.render).content;
+      joined = joined ? `${joined}\n\n${view}` : view;
+      if (tokens(joined) >= cfg.noting.triggerTokens) return true;
+    }
+    return false;
+  };
   const taskEligibility = (phase: Phase, target: TaskTarget, mode: "fork" | "subagent") => {
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
-    const due = phase === "noting" ? tokens(store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
-      .map(e => renderEntry(e, cfg.render).content).join("\n\n")) >= cfg.noting.triggerTokens
+    const due = phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
       : tokens(store.consolidationBatch(target.sessionId, target.branch, target.headTurnId)

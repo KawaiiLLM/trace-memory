@@ -35,3 +35,54 @@ try {
 } finally {
   await h.dispose();
 }
+
+// 22b: the long-history regression, on the same entry the case above used — the installed one under
+// the package smoke. Enabling memory on an existing conversation imports it once, every tool result
+// finds its own Turn's call although every call id repeats, and the ordinary boundary after it costs
+// what it added. The rescan this replaced grew with the square of the history, so the gate is the
+// scaling of two sizes rather than one wall-clock sample: two and a half times the history may not
+// cost three times the time.
+const payload = "word ".repeat(1_600);
+const importOf = async (turns: number) => {
+  const long = host({ "noting.triggerTokens": 1_000_000_000 }, { extension });
+  long.setHeaderTimestamp("2000-01-01T00:00:00Z"); // disabled by default: enabling is the explicit import
+  await long.emit("session_start");
+  for (let t = 1; t <= turns; t++) {
+    long.persist({ role: "user", content: `question ${t}`, timestamp: t });
+    long.persist({ role: "assistant", content: [{ type: "text", text: `answer ${t}` }, { type: "toolCall", id: "shared-call", name: "bash", arguments: { command: `run ${t}` } }], timestamp: t });
+    long.persist({ role: "toolResult", toolCallId: "shared-call", toolName: "bash", content: [{ type: "text", text: `result ${t} ${payload}` }], isError: false, timestamp: t });
+  }
+  const started = performance.now();
+  await long.commands.get("trace").handler("enable", long.ctx);
+  return { long, turns, ms: performance.now() - started };
+};
+const small = await importOf(200), large = await importOf(500);
+try {
+  const store = large.long.memory.store;
+  const calls = store.listTurns(1).flatMap(turn => store.listToolCalls(turn.id));
+  assert.equal(store.listSourceEntries(1).length, large.turns * 3);
+  assert.equal(calls.length, large.turns);
+  assert.ok(calls.every((call, i) => call.status === "success" && JSON.parse(call.result!).content[0].text.startsWith(`result ${i + 1} `)),
+    "every tool result completed its own Turn's call");
+  assert.deepEqual(large.long.notices.filter(notice => notice.includes("missing native history")), []);
+  assert.deepEqual(large.long.requests, []);
+  assert.ok(large.ms < 3 * small.ms + 250, `the import grew faster than the history: ${small.turns * 3} entries in ${small.ms.toFixed(0)} ms, ${large.turns * 3} in ${large.ms.toFixed(0)} ms`);
+  assert.ok(large.ms < 5_000, `the one-time import of ${large.turns * 3} entries took ${large.ms.toFixed(0)} ms`);
+  // Warm-up: the imported history is taken, so the boundary below is the ordinary case. No model.
+  const head = large.long.entries.filter(e => e.customType === "trace-memory").at(-1)!.data.head;
+  const committed = store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: `S1/T${head}`, createdAt: "warm-up" },
+    facts: [], entryIds: large.long.memory.pendingEntries(1, "main", head).map(e => e.id) });
+  assert.ok(committed.ok, "the warm-up commit must succeed");
+  large.long.persist({ role: "user", content: "one short follow-up", timestamp: large.turns + 1 });
+  large.long.persist({ role: "assistant", content: [{ type: "text", text: "a short answer" }], timestamp: large.turns + 1 });
+  const startedBoundary = performance.now();
+  await large.long.emit("agent_end");
+  const boundaryMs = performance.now() - startedBoundary;
+  assert.equal(store.listSourceEntries(1).length, large.turns * 3 + 2);
+  assert.ok(boundaryMs < 1_000, `an ordinary boundary after ${large.turns * 3} entries took ${boundaryMs.toFixed(0)} ms`);
+  assert.deepEqual(large.long.requests, []);
+  console.log(`Long-history regression passed: ${small.turns * 3} entries imported in ${small.ms.toFixed(0)} ms, ${large.turns * 3} in ${large.ms.toFixed(0)} ms, ordinary boundary ${boundaryMs.toFixed(0)} ms.`);
+} finally {
+  await small.long.dispose();
+  await large.long.dispose();
+}

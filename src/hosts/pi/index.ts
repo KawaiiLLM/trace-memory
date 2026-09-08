@@ -429,7 +429,7 @@ export default function (pi: ExtensionAPI) {
       memory.cancelTasks();
     }
     current = undefined;
-    reconciledLeaf = undefined;
+    reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
     reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
@@ -454,6 +454,15 @@ export default function (pi: ExtensionAPI) {
   // The walk is linear in the ancestry with one lookup per entry, and hooks fire on every streaming
   // update, so it runs only when the persisted leaf has moved (10 ms per update at 400 entries otherwise).
   let reconciledLeaf: string | null | undefined;
+  // 22b: what the previous walk established, kept in process memory only. `ids` is the ancestry
+  // prefix it covered; the rest is the state that prefix produced, including the tool calls each
+  // Turn has offered, so a tool result finds its call without rereading the entries before it. The
+  // next walk trusts this only when the ancestry still begins with exactly `ids` — tree navigation, a
+  // fork, a lineage change or a shortened ancestry is not a prefix, and rebuilds. Restoration and the
+  // enrollment switch drop it outright. Every entry the walk does check keeps its content-identity
+  // check: this state decides what is new, never that a changed message is unchanged.
+  let reconciled: { ids: string[]; lineage: string; turnId?: number; selected: number[]; seen: Set<string>;
+    toolCalls: Map<string, { ordinal: number; name: string; callId: string }> } | undefined;
   const reconcile = (check = true) => {
     if (!enabled()) return;
     const leaf = ctx.sessionManager.getLeafId();
@@ -469,10 +478,27 @@ export default function (pi: ExtensionAPI) {
     if (!state.sessionId && ancestry.some(e => e.type === "message" && e.message.role === "assistant" &&
       (text(e.message) || e.message.content.some(c => c.type === "toolCall" || c.type === "thinking")))) allocate(ancestry[0]?.timestamp ?? now());
     if (!state.sessionId) return;
-    let lineage = state.originPiId ?? state.piId;
-    let turnId: number | undefined;
-    const selected: number[] = [], seen = new Set<string>();
-    for (const entry of ancestry) {
+    const resume = reconciled && reconciled.ids.length <= ancestry.length
+      && reconciled.ids.every((id, i) => (ancestry[i] as { id: string }).id === id) ? reconciled : undefined;
+    reconciled = undefined; // a walk that throws leaves nothing to resume from
+    let lineage = resume ? resume.lineage : state.originPiId ?? state.piId;
+    let turnId = resume?.turnId;
+    const ids = resume ? resume.ids : [], selected = resume ? resume.selected : [];
+    const seen = resume ? resume.seen : new Set<string>();
+    const toolCalls = resume ? resume.toolCalls : new Map<string, { ordinal: number; name: string; callId: string }>();
+    // One Turn's offer of a call id. A later entry supersedes an earlier one and the first occurrence
+    // inside an entry wins, which is the order the per-result rescan searched in.
+    const offer = (turn: number, list: { ordinal: number; name: string; callId: string }[]) => {
+      const own = new Set<string>();
+      for (const call of list) {
+        const key = `${turn} ${call.callId}`;
+        if (own.has(key)) continue;
+        own.add(key); toolCalls.set(key, call);
+      }
+    };
+    for (let index = ids.length; index < ancestry.length; index++) {
+      const entry = ancestry[index]!;
+      ids.push(entry.id);
       if (entry.parentId && !seen.has(entry.parentId)) missing(`parent ${entry.parentId} before ${entry.id}`);
       seen.add(entry.id);
       if (entry.type === "custom" && entry.customType === tag) {
@@ -491,7 +517,9 @@ export default function (pi: ExtensionAPI) {
       const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
         if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);
-        selected.push(known.id); turnId = known.turnId; continue;
+        selected.push(known.id); turnId = known.turnId;
+        if (known.role === "assistant") offer(known.turnId, known.calls);
+        continue;
       }
       if (message.role === "user") {
         turnId = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: turnId ?? null, kind: "turn", userPrompt: natural, startedAt: entry.timestamp }).id;
@@ -504,8 +532,7 @@ export default function (pi: ExtensionAPI) {
         fragments.push({ ordinal: stored.ordinal, name: call.name, callId: call.id, input, status: "attempted" });
       }
       if (message.role === "toolResult") {
-        const call = selected.map(id => memory.store.getSourceEntry(id)!).reverse()
-          .filter(e => e.turnId === turnId && e.role === "assistant").flatMap(e => e.calls).find(c => c.callId === message.toolCallId);
+        const call = toolCalls.get(`${turnId} ${message.toolCallId}`);
         if (!call) { missing(`tool call ${message.toolCallId} for ${entry.id}`); continue; }
         const result = JSON.stringify({ content: message.content, details: message.details });
         const status = message.isError ? "failure" : "success";
@@ -516,6 +543,7 @@ export default function (pi: ExtensionAPI) {
         role: message.role, text: natural, raw: JSON.stringify(message), calls: fragments });
       selected.push(stored.id);
       if (message.role === "assistant") {
+        offer(turnId, fragments);
         const value = memory.store.getTurn(turnId)!;
         memory.store.updateTurn(turnId, { assistantText: [value.assistantText, natural].filter(Boolean).join("\n") });
       }
@@ -524,6 +552,7 @@ export default function (pi: ExtensionAPI) {
     memory.selectEntries(state.sessionId, state.branch, selected);
     state.sourceHead = selected.at(-1);
     if (turnId) { state.head = turnId; if (current) current.id = turnId; }
+    reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
   });
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
   const flush = (ended = false) => { reconcile(false); if (enabled() && ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
@@ -833,7 +862,7 @@ export default function (pi: ExtensionAPI) {
     state.injected = false;
     unconfirmed.deliveries = []; unconfirmed.injected = false;
     save();
-    reconciledLeaf = undefined;
+    reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
     showSpend(ctx);
     ctx.ui.notify(`${status()}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");

@@ -11,7 +11,7 @@
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generate, countSourceReads, type Fixture } from "./fixture.ts";
+import { generate, nativeAncestry, countSourceReads, type Fixture } from "./fixture.ts";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
@@ -91,6 +91,111 @@ async function disabledHost(fixture: Fixture, size: string): Promise<Sample[]> {
   return samples;
 }
 
+/** Ticket 22b, hotspot family 2: the Noting trigger with a whole backlog pending. The generated
+ * fixture keeps only its tail pending, so the audit's "the trigger check alone, 1,566 pending
+ * entries" is reproduced on a copy whose Noting progress is removed — the same entries, none of them
+ * taken yet. The copy is read-only for the measurement and deleted afterwards. */
+async function triggerBacklog(fixture: Fixture, size: string): Promise<Sample[]> {
+  const copy = join(cache, `${size}-backlog.db`);
+  rmSync(copy, { force: true });
+  copyFileSync(fixture.dbPath, copy);
+  const store = new Store(copy);
+  store.db.prepare("DELETE FROM noted_entries").run();
+  store.close();
+  const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
+  const head = fixture.headTurnId;
+  const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: head };
+  try {
+    const pending = memory.pendingEntries(fixture.sessionId, fixture.branch, head).length;
+    return [
+      measure("pendingEntries (whole backlog pending)", () => memory.pendingEntries(fixture.sessionId, fixture.branch, head), `${pending} pending entries`),
+      measure("taskEligibility noting (whole backlog pending)", () => memory.taskEligibility("noting", target, "subagent"), `${pending} pending entries`),
+    ];
+  } finally { memory.close(); rmSync(copy, { force: true }); }
+}
+
+/** Ticket 22b, hotspot families 1 and 2: the host's own reconciliation. A fresh fake host is given a
+ * long native ancestry and nothing else; `/trace enable` is the one-time import, `/trace enable` again
+ * is the repeat, and the callbacks after it are the ordinary boundaries of a warmed-up session. The
+ * imported history is marked noted in batches first (no model, no facts), so the ordinary callbacks
+ * below are the ordinary case and not a due trigger; the trigger itself is measured on the store
+ * fixture, where a full pending backlog exists. */
+async function hostReconciliation(size: string, entries: number): Promise<Sample[]> {
+  const ancestry = nativeAncestry({ entries });
+  const dbPath = join(cache, `${size}-host.db`);
+  rmSync(dbPath, { force: true });
+  const samples: Sample[] = [];
+  const counter = countSourceReads();
+  const h = host({ dbPath, "noting.forkModeDefault": false }, { fetch: false });
+  const single = (name: string, ms: number, reads: number, note: string) => samples.push({ name, cold: ms, warm: ms, p95: ms, reads, note });
+  try {
+    h.setHeaderTimestamp("2000-01-01T00:00:00Z"); // disabled by default, so enabling is the explicit import
+    await h.emit("session_start");
+    h.entries.push(...ancestry); h.allEntries.push(...ancestry);
+    const command = (args: string) => (h.commands.get("trace") as { handler(args: string, ctx: unknown): Promise<void> }).handler(args, h.ctx);
+
+    counter.reset();
+    let started = performance.now();
+    await command("enable");
+    single("host /trace enable (import)", performance.now() - started, counter.reads(), `${ancestry.length} native entries, single shot`);
+    counter.reset();
+    started = performance.now();
+    await command("enable");
+    single("host /trace enable (repeat)", performance.now() - started, counter.reads(), "already reconciled");
+
+    const store = h.memory.store;
+    const state = () => (h.entries.filter(e => e.customType === "trace-memory").at(-1) as { data: { head: number } }).data;
+    const head = state().head;
+    const imported = store.pendingEntries(1, "main", head).map(e => e.id);
+    for (let i = 0; i < imported.length; i += 50) {
+      const committed = store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", rangeFrom: "S1/T1", rangeTo: `S1/T${head}`, createdAt: "2026-01-01T01:00:00Z" },
+        facts: [], entryIds: imported.slice(i, i + 50) });
+      if (!committed.ok) throw new Error(committed.problems.join("; "));
+    }
+    if (h.requests.length) throw new Error("the performance suite made a provider request");
+
+    const callback = async (name: string, prepare: () => void, event: string, payload: unknown = {}, note = "after warm-up") => {
+      const times: number[] = [];
+      let reads = 0;
+      for (let i = 0; i < REPEATS; i++) {
+        prepare();
+        counter.reset();
+        const at = performance.now();
+        await h.emit(event, payload);
+        times.push(performance.now() - at);
+        if (i === 1) reads = counter.reads();
+      }
+      const warm = [...times.slice(1)].sort((a, b) => a - b);
+      samples.push({ name, cold: times[0]!, warm: warm[Math.floor(warm.length / 2)]!, p95: warm.at(-1)!, reads, note });
+    };
+    const exchange = () => { h.persist({ role: "user", content: "one short follow-up", timestamp: 1 });
+      h.persist({ role: "assistant", content: [{ type: "text", text: "a short answer" }], timestamp: 1 }); };
+    await callback("host agent_end (short new exchange)", exchange, "agent_end");
+    await callback("host agent_settled (no new entry)", () => {}, "agent_settled");
+    await callback("host tool_result", () => {}, "tool_result", { toolName: "read", input: { path: "small" }, content: [{ type: "text", text: "small result" }], isError: false });
+    {
+      const times: number[] = [];
+      let reads = 0;
+      for (let i = 0; i < REPEATS; i++) {
+        counter.reset();
+        const at = performance.now();
+        for (let update = 0; update < 50; update++) await h.emit("message_update", { message: { role: "assistant", content: [{ type: "text", text: `delta ${update}` }], timestamp: 1 } });
+        times.push(performance.now() - at);
+        if (i === 1) reads = counter.reads();
+      }
+      const warm = [...times.slice(1)].sort((a, b) => a - b);
+      samples.push({ name: "host 50 message_update (unchanged leaf)", cold: times[0]!, warm: warm[Math.floor(warm.length / 2)]!, p95: warm.at(-1)!, reads, note: "50 updates in total" });
+    }
+    if (h.requests.length) throw new Error("the performance suite made a provider request");
+    samples.push({ name: `  imported: ${store.listTurns(1).length} turns, ${store.listSourceEntries(1).length} entries, leaf ${h.ctx.sessionManager.getLeafId()}`, cold: NaN, warm: NaN, p95: NaN, reads: 0, note: "" });
+  } finally {
+    counter.restore();
+    await h.dispose();
+    rmSync(dbPath, { force: true });
+  }
+  return samples;
+}
+
 async function runSize(size: string) {
   const options = SIZES[size];
   if (!options) throw new Error(`unknown size ${size}; use ${Object.keys(SIZES).join(" | ")}`);
@@ -139,12 +244,17 @@ async function runSize(size: string) {
     measure("consolidationBatch", () => store.consolidationBatch(fixture.sessionId, fixture.branch, head)),
     measure("branchSummary", () => memory.branchSummary(fixture.sessionId, fixture.branch, head)),
     measure("citationProblem (20 facts)", () => store.citationProblem(citations, "session", path)),
+    measure("pendingEntries (whole selected path)", () => store.pendingEntries(fixture.sessionId, fixture.branch, head)),
+    measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }, "subagent"),
+      `${fixture.pendingEntryCount} pending entries`),
     measure("footer counts (enabled)", () => {
       store.listBranchFacts(fixture.sessionId, fixture.branch, head).length;
       store.listCurrentKnowledge({ sessionId: fixture.sessionId, headTurnId: head }).length;
       memory.spend(fixture.sessionId);
     }, "the three reads showSpend makes"),
     ...await disabledHost(fixture, size),
+    ...await triggerBacklog(fixture, size),
+    ...await hostReconciliation(size, options.entries),
   ];
   memory.close();
 
