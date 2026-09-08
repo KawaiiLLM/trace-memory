@@ -11,6 +11,60 @@ chain in step 4 walks the child's own bodies (its tail is the inherited head rep
 task message, and both sides are compared with `cache_control` stripped), and each run record
 carries `nativeLog`, the child's own JSONL under `runsDir`.
 
+# Live verification record (2026-09-08, after 19c3 at 0a4429b)
+
+Environment: Pi 0.85.1 and pi-ai 0.85.1 under Node 24.6.0, provider `openai-codex`, model
+`gpt-5.6-sol` (api `openai-codex-responses`), thinking low, `pi --mode rpc` driven by a script
+(one process for the whole conversation, prompts sent after each `agent_end`, then waiting until
+no phase claim was held). Extensions: a two-line capture extension saving every
+`before_provider_request` body, then `hosts/pi/index.ts`; discovery off (`-ne -ns -np -nc`).
+Fresh database `/tmp/tm-live2/trace.db` (a stale pre-17c database in that directory first ran
+the session on an old schema without a visible error: the schema is create-if-missing, so an
+old file must be deleted, as the README says). Marker `tm-live2`; sessions dir
+`/tmp/tm-live2/sessions`; runs dir default `/tmp/tm-live2/runs/<parent id>/`. Config:
+`noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
+`consolidation.triggerUnconsolidatedFacts: 1`, `consolidation.subagentModeDefault: false`.
+
+| Turn | Prompt (abridged) | Result |
+|---|---|---|
+| 1 | use pnpm, not npm | R1 noting, fork, gate passed; F1 |
+| 2 | code comments in English | delivery of F1 at prompt start; no run (R2 waited for the next completion) |
+| 3 | bash `seq 1 600`, report last number (cut tool result) | R2 noting T2..T3, fork, 2 verified rounds; F2–F4. R3 consolidation F1..F1, fork, 3 verified rounds, two `memory` submissions (review, then commit); K1 constraint/project |
+| 4 | repeat the constraints | `<noted>` F2–F4 and `<consolidated>` K1 delivered at prompt start; reply listed both rules |
+| 5 | `/trace status` | 2 noting, 1 consolidation; 51,194 tokens; $0.1196; 4 facts; 1 knowledge; fork suppressed since R2 |
+
+Gate, recomputed offline from the captured parent bodies: R1's `capturedHash`
+`8082bcc7…` is captured body #0 and R2/R3's `f3dd0595…` is captured body #2; applying
+`verifyForkRequest` to each run's stored (last) request against that body passes with
+`differingPath: null` and the expected appended tail (5, 5 and 10 items). The parent's `input`
+array had 1 and 6 items; the children's 6, 11 and 16. Every later round verified against its
+previous request (`rounds` all `true`). Tool list identical to the parent's (`read`, `bash`,
+`edit`, `write`, `trace`, `search`, `note`, `memory`; no `mark`).
+
+Native logs: three child JSONL files under the runs directory, each linked from its run record
+as `nativeLog`; the Pi sessions directory holds only the parent file, so `/resume` shows no
+worker. The parent file, id and leaf were unchanged by the children. The session row closed at
+shutdown (`closed_at` set) and the executor's claims were released.
+
+Cache reads (observations): the fork children really reuse the parent prefix on this provider
+— R1 6,784, R2 7,040 and R3 20,224 cached tokens across their responses (the 2026-09-07 record's
+"this provider does not report cache reads" no longer holds). **The cache-miss latch fired on
+R2**: its third response (the short reply after the `note` receipt, 5,277 input tokens) reported
+`cacheRead: 0` after the gate had passed, so the session was downgraded with one warning
+(`Trace Memory: fork cache miss. Future memory tasks in this session will use subagent.`),
+`fork_suppressed_run = 2`, and status shows the Retry fork action. Both other responses of the
+same run were cache hits. This is the whole-zero-cache noise the parent ticket recorded for
+OpenAI-family providers, and the latch treated it as ruled: one eligible miss, one warning,
+no replay of R2. Whether one miss should downgrade a session on this provider is a policy
+question for the user, not a defect of the implementation.
+
+Not exercised this run: the Noter did not call `trace` on the cut `seq` result (it noted the
+instruction from the user message; R2's tool sequence was `note` only), so the "fetches full
+evidence through `trace`" check of the ticket 11 procedure is still unsatisfied; manual `note`
+and `memory` calls, `/trace project`, `/trace mark` and `/compact` were not driven.
+
+---
+
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
 Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
