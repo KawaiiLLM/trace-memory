@@ -25,6 +25,16 @@ const settle = async (h: ReturnType<typeof host>, rounds = 40) => {
 // A backlog spanning several Noting batches (same construction as batching.test.ts), sized for 20b's
 // 10,000-token batch ceiling: each batch holds a user entry and a few replies, as the drain's own
 // oldest-first prefix selects them.
+/** A `memory` batch that skips exactly the facts of the range it was handed. `consolidationBatch`
+ * always names F1, which is only in the first bounded batch; a drain of several batches needs a reply
+ * that stays valid past that one, or the child keeps resubmitting a rejected batch. */
+const consolidateRange = (conversation: { messages: { content: unknown }[] }): Reply => {
+  const input = String(conversation.messages[0]!.content);
+  const range = input.split("Range facts:\n")[1]?.split("\nNegated-evidence")[0] ?? "";
+  const facts = [...range.matchAll(/\[F(\d+)\]/g)].map(m => `F${m[1]}`);
+  return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
+    arguments: { operations: [], skipped: facts.map(fact => ({ fact, because: "Not durable." })) } }] };
+};
 function backlog(h: ReturnType<typeof host>) {
   h.persist({ role: "user", content: "start", timestamp: 1 });
   for (let i = 0; i < 12; i++) {
@@ -52,8 +62,8 @@ test("18b 2026-09-08: manual catchup drains bounded Noting batches then integrat
     const allFacts = h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b);
     expect(allFacts.length).toBe(2 + notingRuns.length); // 2 pre-existing plus one fact per Noting batch
     const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
-    expect(consolidationRuns).toHaveLength(1); // Consolidation is not chunked like Noting; one frozen batch
-    expect(h.memory.store.listConsolidatedFacts(consolidationRuns[0]!.id).map(f => f.id).sort((a, b) => a - b)).toEqual(allFacts);
+    expect(consolidationRuns).toHaveLength(1); // these few short facts fit one bounded batch; the multi-batch drain is 20c's scenario 16
+    expect(consolidationRuns.flatMap(r => h.memory.store.listConsolidatedFacts(r.id)).map(f => f.id).sort((a, b) => a - b)).toEqual(allFacts);
     expect(h.memory.store.consolidationBatch(1, "main", head)).toEqual([]);
     const requestsBefore = h.requests.length;
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
@@ -358,3 +368,91 @@ test("18b 2026-09-08: stop invalidates only this executor's own claims, never a 
     } finally { other.close(); }
   } finally { await h.dispose(); }
 });
+
+// ---- Ticket 20c: 18b's single Consolidation call is superseded ------------------------------------
+
+// 18b, 2026-09-08: "the drain runs bounded Noting batches against the frozen entry-id boundary, then
+// ONE Consolidation batch against the frozen fact set". Superseded by ticket 20 on 2026-09-08: both
+// phases drain successive bounded batches until the frozen target is exhausted, under the same host-
+// local controller, the same executor phase slots and the same target claims.
+test("20c 2026-09-08 scenario 16: 18b's single Consolidation call is superseded — catchup drains successive bounded batches in both phases until the frozen target is exhausted", async () => {
+  // A frozen target of more than one batch in each phase, with a below-trigger tail in both: nothing
+  // here is due automatically, so every run below belongs to the manual drain.
+  const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1_000_000_000, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
+  try {
+    backlog(h);
+    await h.emit("session_start");
+    const head = h.memory.store.listTurns(1).at(-1)!.id;
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
+      Array.from({ length: 12 }, (_, i) => ({ category: "observation", actor: "user", text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#user"] })) });
+    const frozenFacts = h.memory.store.consolidationBatch(1, "main", head).map(f => f.id);
+    expect(frozenFacts.length).toBe(12);
+    h.provider(async c => phaseOf(c) === "consolidation" ? consolidateRange(c) : notingFact(c));
+    await command(h, "catchup");
+    await settle(h);
+    const notingRuns = h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success");
+    const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
+    expect(notingRuns.length).toBeGreaterThan(1);        // successive bounded Noting batches
+    expect(consolidationRuns.length).toBeGreaterThan(1); // then successive bounded Consolidation batches
+    // Noting comes first and is exhausted before Consolidation starts.
+    expect(Math.max(...notingRuns.map(r => r.id))).toBeLessThan(Math.min(...consolidationRuns.map(r => r.id)));
+    // Both phases always run in subagent mode and ignore the triggers, but not the batch ceilings.
+    expect([...notingRuns, ...consolidationRuns].every(r => r.mode === "subagent")).toBe(true);
+    for (const run of consolidationRuns) expect(h.memory.store.listConsolidatedFacts(run.id).length).toBeLessThan(frozenFacts.length);
+    // The frozen target — the pending entries plus the frozen facts and the ones those batches produced
+    // — is exhausted exactly, with no fact consolidated twice.
+    const all = consolidationRuns.flatMap(r => h.memory.store.listConsolidatedFacts(r.id).map(f => f.id));
+    expect(new Set(all).size).toBe(all.length);
+    expect(all.sort((a, b) => a - b)).toEqual(h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b));
+    expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
+    expect(h.memory.store.consolidationBatch(1, "main", head)).toEqual([]);
+    // Later entries and unrelated later facts were never pulled into the frozen target.
+    const requests = h.requests.length;
+    await h.turn();
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
+      { category: "observation", actor: "user", text: "Later, unrelated", source: ["T1#user"] } ] });
+    expect(h.requests.length).toBe(requests);
+    const later = h.memory.store.listTurns(1).at(-1)!.id;
+    expect(h.memory.pendingEntries(1, "main", later).length).toBeGreaterThan(0);
+    expect(h.memory.store.consolidationBatch(1, "main", later).length).toBeGreaterThan(0);
+  } finally { await h.dispose(); }
+}, 60000);
+
+test("20c 2026-09-08 scenario 16: stop between Consolidation batches discards the remaining plan only, leaving the committed batch and the rest of the frozen target", async () => {
+  const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1_000_000_000, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
+  try {
+    await h.turn();
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
+      Array.from({ length: 12 }, (_, i) => ({ category: "observation", actor: "user", text: `Pre-existing ${i} ` + "word ".repeat(40), source: ["T1#user"] })) });
+    const frozen = h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id);
+    // Stop fires after the first Consolidation batch has already committed, so the race is decided:
+    // that batch stands, and the drain must schedule nothing further.
+    let stoppedOnce = false;
+    const original = Store.prototype.commitConsolidationRun;
+    const spy = vi.spyOn(Store.prototype, "commitConsolidationRun").mockImplementation(function (this: Store, ...args: Parameters<typeof original>) {
+      const result = original.apply(this, args);
+      if (result.ok && !stoppedOnce) { stoppedOnce = true; void command(h, "stop"); }
+      return result;
+    });
+    try {
+      h.provider(async c => phaseOf(c) === "consolidation" ? consolidateRange(c) : notingFact(c));
+      await command(h, "catchup");
+      await settle(h);
+    } finally { spy.mockRestore(); }
+    expect(stoppedOnce).toBe(true);
+    const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
+    expect(consolidationRuns).toHaveLength(1); // the committed batch survives; no further batch was scheduled
+    // Durable pending facts are not deleted: the rest of the frozen target waits for a new invocation.
+    const remaining = h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id);
+    expect(remaining.length).toBeGreaterThan(0);
+    expect(remaining.every(id => frozen.includes(id) || !frozen.includes(id))).toBe(true);
+    await command(h, "status");
+    expect(h.notices.at(-1)).toContain("Catchup: stopped");
+    // A new catchup freezes a fresh target over what is left and drains it.
+    await command(h, "catchup");
+    await settle(h);
+    expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
+    await command(h, "status");
+    expect(h.notices.at(-1)).toContain("Catchup: completed");
+  } finally { await h.dispose(); }
+}, 60000);

@@ -162,11 +162,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
   session on its first reply. The before-tree hook returns a read-only summary as described below.
-- Compaction reconciles persisted source entries and returns `memory.compact(...)` as
-  `compaction.summary`. `firstKeptEntryId: ""` retains no old Pi messages: the
-  facade block replaces the context. Pi 0.85.0's context builder searches for
-  that id, finds none, and keeps the compaction plus later messages. Successful
-  compaction is then recorded as a `compaction` turn; it receives no facts.
+- Compaction reconciles persisted source entries and asks core to escalate over that
+  frozen snapshot (see **Compaction tiers** below). For tiers 1 and 2 the adapter
+  returns the prepared text as `compaction.summary`; for tier 3 it returns nothing at
+  all, so Pi runs its own compaction. `firstKeptEntryId: ""` retains no old Pi
+  messages: the facade block replaces the context. Pi 0.85.0's context builder
+  searches for that id, finds none, and keeps the compaction plus later messages.
+  Successful compaction is then recorded as a `compaction` turn; it receives no facts.
   Pre-reply compaction returns project injection without allocating a session.
 - Main-agent registration and subagent requests use the exact same four definition
   objects, with façade descriptions and schema objects. Pi execution fields are
@@ -308,6 +310,52 @@ still fails with a capacity message and retains pending sources. Changing `dbPat
 requires reloading the extension. The footer adds `Disabled` to its existing shape;
 Enabled but idle retains the dim hollow indicator without that label.
 
+## Compaction tiers and the post-compaction boundary (20c)
+
+`session_before_compact` reconciles persisted history, then asks core to escalate over
+one frozen read snapshot of every pending entry on the selected path. Rendering never
+changes that set: compact takes no claim, waits for no worker, starts no worker and
+advances no progress, so a Noter finishing concurrently can make the snapshot redundant
+but never incomplete. `memory.compact(...)` returns a tier rather than a string:
+
+| Tier | When | What the adapter returns |
+|---|---|---|
+| `primary` | every pending entry's normal shared view fits `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
+| `secondary` | the primary views miss a cap but the compact-only views of *all* the same entries fit | the text, as `compaction.summary` |
+| `native` | not even the secondary views fit | nothing at all, with a reason naming the cap and the overage |
+
+The secondary view (`SECONDARY_VIEW_VERSION`, `core/render/index.ts`) is deterministic
+local work: entry order, the entry header with its source address and native identity,
+user boundaries and the non-text placeholder are preserved; each tool fragment keeps its
+name, its `T<id>#t<n>` occurrence address, its call id and its status but neither its
+arguments nor its result; user and assistant text are cut to a per-role token budget with
+the same `[omitted N characters; middle not inspected]` marker the primary view uses. It
+is never a Noter's input and never a token counter's input — those keep using the primary
+views — and no view or summary becomes a source entry, a fact or a processing receipt.
+
+Tier 3 is the one place where compaction reaches a model, and the call is Pi's: the
+adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
+is cancelled under its own outcome handling. The adapter manufactures no summary, appends
+no oversized block to Pi's result and starts no extraction flush; an unused custom summary
+prepared before the fallback confirms no delivery and no initial injection. The tier used
+and its reason go to a `ui.notify` info line and to a `Compaction:` line in `/trace status`.
+
+**Post-compaction worker mode.** A compaction entry that Pi persisted on the target's
+selected ancestry — whatever produced its summary — is the boundary. A request to compact,
+a failed or cancelled attempt and a compaction on a sibling path establish nothing, by
+construction: Pi writes the entry only on success, and only on the path it happened on.
+After such a boundary, a Noter whose frozen entry set contains any entry preceding it runs
+as a fresh subagent child for the whole batch, because a fork would inherit a context those
+entries are no longer in. The check is made from `sessionManager.getBranch()` at admission
+and again at the actual launch, so a task prepared before the compaction but held for a
+slot, a claim or native readiness is caught too; nothing is cached, so reopening and tree
+navigation give the same answer. A fork already running against its own frozen context is
+never restarted, replayed or cancelled for this. It is a per-task evidence-readiness
+decision, not the cache-miss latch: the requested/configured mode is preserved in the run
+record, the actual `subagent` mode and a `pre-compaction evidence: …` fallback reason are
+recorded, and enrollment, configuration and fork suppression are untouched. A batch whose
+entries all follow the boundary uses the normal configured mode.
+
 ## Manual catchup and stop (18b)
 
 `/trace catchup` operates on the current enabled session's selected branch, not
@@ -319,11 +367,14 @@ fact ids. An empty target completes immediately with no model call. Repeating
 `/trace catchup` while one is active reports its current state instead of
 starting a second one or extending its snapshot.
 
-The drain runs bounded Noting batches — ignoring `noting.triggerTokens` and
-`consolidation.triggerTokens` but not `noting.batchTokens`, `consolidation.batchTokens` or model
-context — against the frozen entry-id boundary, then one Consolidation batch
-against the frozen fact-id set extended with every fact those Noting batches
-went on to produce. Both phases always run in subagent mode. Batch-to-batch
+The drain runs successive bounded Noting batches — ignoring `noting.triggerTokens`
+and `consolidation.triggerTokens` but not `noting.batchTokens`,
+`consolidation.batchTokens` or model context — against the frozen entry-id boundary,
+then successive bounded Consolidation batches against the frozen fact-id set
+extended with every fact those Noting batches went on to produce, until the frozen
+target is exhausted. (Ticket 20 superseded 18b's single Consolidation call on
+2026-09-08: with a 10,000-token Consolidation batch ceiling, one call can no longer
+be assumed to cover a frozen target.) Both phases always run in subagent mode. Batch-to-batch
 chaining happens only inside this host-local controller (`driveCatchup`), which
 is the sole exception to 17b/17c's no-completion-chaining rule; ordinary entry
 events never expand the frozen target or start a second scheduling loop. The
@@ -432,7 +483,12 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    entry audit and exact progress. Deliveries are confirmed only after a prompt
    takes them and settles. Invalid model output may bounce; inspect the run result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
-   pending compressed Raw views, recent facts, and no compaction model request.
+   pending compressed Raw views, recent facts, and no compaction model request. The
+   notice names the tier that was used. To see the other two tiers, set
+   `render.episodicBlockTokens` low enough that the pending views no longer fit
+   (secondary views, labelled `Raw (compact-only secondary views; …)`) and then low
+   enough that even those miss the cap (native delegation, where Pi runs its own
+   summarization call and writes its own `compaction` entry).
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
    its source turn. Expect the original conversation text and source addresses.
    The search/trace tools themselves are recorded as raw tool calls.

@@ -1,4 +1,4 @@
-import { TraceMemory as createMemory, type SourceEntry } from "../core/api/index.ts";
+import { TraceMemory as createMemory, type CompactResult, type SourceEntry } from "../core/api/index.ts";
 export type TraceMemory = ReturnType<typeof createMemory>;
 export * from "../core/api/index.ts";
 
@@ -39,4 +39,12 @@ export function recorded(memory: ReturnType<typeof createMemory>, sessionId: num
   const result = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, branch,
     rangeFrom: `S${sessionId}/T${entries[0]?.turnId ?? head}`, rangeTo: `S${sessionId}/T${head}`, createdAt: "fixture" }, facts: [], entryIds: entries.map(e => e.id) });
   if (!result.ok) throw new Error(result.problems.join("; "));
+}
+
+/** 20c: `compact` returns a tier, not a string. A case that asserts the custom replacement's bytes
+ * reads it through this, so reaching native delegation instead fails loudly with its reason rather
+ * than silently comparing against `undefined`. */
+export function compacted(result: CompactResult): string {
+  if (result.tier === "native") throw new Error(`compact delegated to native compaction: ${result.reason}`);
+  return result.text;
 }

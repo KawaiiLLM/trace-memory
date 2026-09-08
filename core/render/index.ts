@@ -162,6 +162,37 @@ export function renderEntry(entry: SourceEntry, budgets: Budgets): Rendered {
   return { content: content(), receipts: [] };
 }
 
+/** Ticket 20 "Try secondary views" (20c): the compact-only, lossier view of one entry. It is reached
+ * only when the primary views of every pending entry together exceed the shared Raw ceiling, and it
+ * never replaces the primary view anywhere else — Noter input, token counters and trace keep using
+ * `renderEntry`. The work is deterministic and local: no model call, no summarization loop.
+ *
+ * Kept: the entry's own header with its source address and native identity, the user/assistant
+ * boundary, the non-text placeholder, and one line per tool fragment carrying the tool name, its
+ * occurrence address `T<id>#t<n>`, its call id and its status — the minimum identity a reader needs
+ * to trace the fragment back to the untouched original. Dropped: tool arguments and results
+ * entirely, and everything of the user/assistant text beyond a bounded excerpt, marked with the same
+ * omission wording the primary view uses.
+ *
+ * Versioned because a reader must be able to tell which truncation rule produced the text in front
+ * of it. The excerpt budgets below are an implementation choice, not a user ruling (confirmation
+ * 2026-09-08): one documented constant set, versioned with the view and exercised by the tier tests. */
+export const SECONDARY_VIEW_VERSION = "20c-v1-bounded-excerpts";
+/** Excerpt token budget per role, counting the source label and the omission marker inside it. The
+ * user side keeps more than the assistant side: it is the instruction the rest of the work answers. */
+export const SECONDARY_EXCERPT_TOKENS: Readonly<Record<"user" | "assistant", number>> = { user: 120, assistant: 60 };
+
+export function renderEntrySecondary(entry: SourceEntry): string {
+  const lines = [`[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}] [compact-only view ${SECONDARY_VIEW_VERSION}]`];
+  // A user message without text (an image, say) keeps its boundary and its placeholder, as in the primary view.
+  if (entry.text || entry.role === "user") {
+    const role = entry.role === "user" ? "user" : "assistant";
+    lines.push(entryExcerpt(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]", SECONDARY_EXCERPT_TOKENS[role]));
+  }
+  for (const call of entry.calls) lines.push(`[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} [${entry.role === "toolResult" ? "result" : "arguments"} omitted]`);
+  return lines.join("\n");
+}
+
 // Head and tail are token budgets; lines are kept whole, so a line over its budget is dropped.
 function cut(text: string, head: number, tail: number): string {
   if (tokens(text) <= head + tail) return text;

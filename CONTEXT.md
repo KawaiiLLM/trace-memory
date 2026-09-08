@@ -38,7 +38,9 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 ## Reading
 
 - **Injection** — the memory block placed into context at session start (knowledge) and at compaction (knowledge, recent facts, pending compressed Raw views). Grouped by category in a fixed order; bytes change only when content changes.
-- **Compaction** — instant replacement of the context with the injection block. No model call.
+- **Compaction** — replacement of the context with the injection block. It escalates through three tiers over a frozen snapshot of every pending entry: the normal compressed Raw views, then a compact-only secondary view of the same entries, then a request that the host's own native compaction take over. The first two are instant and call no model; only the third reaches one, and that call is the host's.
+- **Compact-only secondary view** — the lossier, versioned, explicitly labelled rendering of a source entry that compaction uses when the normal views no longer fit: identity, order, user boundaries and tool names kept, tool arguments and results dropped, text cut to a bounded excerpt with an omission marker. Never a Noter's input, never a source.
+- **Compaction boundary** — the last compaction the host successfully persisted on the selected ancestry. A request to compact, a failed or cancelled attempt and a compaction on a sibling path are not one. A Noter whose frozen entries include any entry before it runs with fresh context for the whole batch.
 - **Trace** — the tool that walks addresses: knowledge → its facts → the source turn; knowledge revisions (`K7@2`, `K7@2..4`); a fact's later strong negations (`F101..`). Also the project name.
 - **Search** — lexical lookup over facts and knowledge (and optionally a session's raw) returning addresses. No hit does not mean absent.
 - **Mark** — the user's verified / flagged / clear annotation on a knowledge revision, applied through `/trace mark K<n> <kind>` and the façade. Project declaration is a separate user command.

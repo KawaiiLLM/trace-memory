@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONSOLIDATED_TITLE, FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../render/material.ts";
 import { TraceMemory, renderEntry, toolDefinitions, tokens,
-  type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+  compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>;
 let calls: (NotingAgentInput | ConsolidationAgentInput)[];
@@ -240,7 +240,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   const injected = memory.inject(sessionId);
   expect(injected).toContain("The project uses pnpm");
   const knowledgeBlock = injected.split("\n\nReceipts:")[0]!;
-  expect(memory.compact(sessionId, "main", t.id).startsWith(`${knowledgeBlock}\n\n<episodic>`)).toBe(true);
+  expect(compacted(memory.compact(sessionId, "main", t.id)).startsWith(`${knowledgeBlock}\n\n<episodic>`)).toBe(true);
   // Injection is knowledge-only: sharing the material type adds no facts and no Raw to it.
   expect(injected).not.toContain(FACTS_TITLE);
   expect(injected).not.toContain("\nRaw:");

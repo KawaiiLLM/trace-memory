@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../core/api/index.ts";
+import { compacted } from "../../test/source-fixture.ts";
 import { host, reply } from "./test-host.ts";
 
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
@@ -115,7 +116,10 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
 });
 
 test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bounded entry bytes", async () => {
-  const h = host(quiet);
+  // 20c: compact escalates to its lossier secondary views once the primary ones exceed the shared
+  // Raw ceiling, so this byte-comparison case gives every consumer — the host included — room for the
+  // whole pending set, exactly as the subagent Noter below is given it.
+  const h = host({ ...quiet, "noting.batchTokens": 100_000 });
   try {
     await h.prompt("HEAD " + "word ".repeat(30000) + " TAIL");
     await h.answer();
@@ -158,7 +162,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     const entries = h.memory.pendingEntries(1, "main", 1);
     expect(tokens(entries.map(e => e.raw).join("\n\n"))).toBeGreaterThan(20000);
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBeLessThan(20000);
-    const block = h.memory.compact(1, "main", 1);
+    const block = compacted(h.memory.compact(1, "main", 1));
     expect(block.split("Recent facts (newest first):\n\n")[1]!.split("\n\nRaw:")[0]).toBe("[F1] " + h.memory.store.getTurn(1)!.startedAt + " [observation/user] A useful fact\n  source: T1#user");
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
@@ -237,7 +241,7 @@ test("17a 2026-09-08: thinking-only reply remains answered for the existing trig
     await h.emit("agent_settled"); await h.drain();
     expect(h.conversations).toHaveLength(0); // answered-Turn trigger superseded 2026-09-08 by 17b
     expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toEqual(["user"]);
-    expect(h.memory.compact(1, "main", 1)).not.toContain("private reasoning");
+    expect(compacted(h.memory.compact(1, "main", 1))).not.toContain("private reasoning");
   } finally { await h.dispose(); }
 });
 
@@ -260,7 +264,7 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });
     expect(renderEntry(h.memory.store.getSourceEntry(before.id)!, h.memory.config.render).content).toBe(argumentView);
     expect(tokens(argumentView.split("\n").slice(1).join("\n") + "\n" + renderEntry(result, h.memory.config.render).content.split("\n").slice(1).join("\n"))).toBeLessThanOrEqual(1000);
-    expect(h.memory.compact(1, "main", 1)).not.toContain(JSON.stringify(args));
+    expect(compacted(h.memory.compact(1, "main", 1))).not.toContain(JSON.stringify(args));
   } finally { await h.dispose(); }
 });
 
@@ -321,7 +325,7 @@ test("review 2026-09-08 P2: an image-only user message still starts a new user T
     expect(turns[1]!.assistantText).toBe("The image shows a red chart.");
     const users = h.memory.store.listSourceEntries(1).filter(e => e.role === "user");
     expect(users.map(e => e.raw.includes("synthetic-image"))).toEqual([false, true]);
-    expect(h.memory.compact(1, "main", 2)).toContain("[non-text content omitted]"); // the shared view shows the source; it has no citable text
+    expect(compacted(h.memory.compact(1, "main", 2))).toContain("[non-text content omitted]"); // the shared view shows the source; it has no citable text
   } finally { await h.dispose(); }
 });
 
@@ -354,7 +358,7 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
     expect(carry).toMatch(/omitted \d+ earlier pending entries beyond the carry budget/);
-    expect(h.memory.compact(1, "main", 1)).toContain("LAST_PENDING_SENTINEL");
+    expect(compacted(h.memory.compact(1, "main", 1))).toContain("LAST_PENDING_SENTINEL");
   } finally { await h.dispose(); }
 });
 

@@ -179,6 +179,15 @@ export function host(config: Record<string, unknown> = {}, marker?: string, opti
     if (native()) return entry; // the real Pi session already persisted this message
     entries.push(entry); allEntries.push(entry); return entry;
   };
+  /** 20c: a successfully persisted native compaction entry on the selected ancestry — the only thing
+   * that establishes the post-compaction boundary, and the entry Pi appends only after a compaction
+   * succeeded. `sibling` writes it outside the selected ancestry, where it must establish nothing. */
+  const compaction = (summary = "native summary", options: { sibling?: boolean } = {}) => {
+    const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(),
+      type: "compaction", summary, firstKeptEntryId: entries.at(-1)?.id ?? "", tokensBefore: 0 };
+    if (!options.sibling) entries.push(entry);
+    allEntries.push(entry); return entry;
+  };
   const emit = async (name: string, event: any = {}) => {
     if (name === "tool_result") {
       const id = event.toolCallId ?? `call-${allEntries.length}`;
@@ -227,7 +236,7 @@ export function host(config: Record<string, unknown> = {}, marker?: string, opti
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
   const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close();
     if (stubbed) uninstall(origin); rmSync(dir, { recursive: true, force: true }); };
-  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
 export function notingFact(conversation: Conversation) {

@@ -178,7 +178,7 @@ One function per consumer renders that contract, in the ruled order (ticket 20):
 | Noter (`notingText`) | knowledge → historical facts → range → selected Raw → receipts |
 | Consolidator (`consolidationText`) | knowledge → already-consolidated facts → range → selected pending facts → negation reminders → receipts |
 | Main-agent injection (`injectionText`) | knowledge → receipts |
-| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw → receipts |
+| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (primary or, in tier 2, compact-only secondary views) → receipts |
 
 Both workers also get the inherited-context increment from that same frozen task (`notingIncrement`,
 `consolidationIncrement`; user ruling 2026-09-06 08:53): the instruction, the range, and then the
@@ -225,8 +225,9 @@ real-context capacity check stays independent of these domain limits.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
 (`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over
-its ceiling — only compact can produce one, since both phases select under it — is reported by an
-honest receipt rather than cut. Receipts are bounded: an omission names at most eight addresses and
+its ceiling — which since 20c only a Noter's or Consolidator's *outer* framing can produce, because
+compact escalates instead of keeping an over-ceiling block — is reported by an honest receipt rather
+than cut. Receipts are bounded: an omission names at most eight addresses and
 then says how many more it covers, so a long omitted list cannot defeat the cap it is charged
 against. Nothing is deleted; omitted knowledge and facts remain stored, readable and traceable, and
 no omission advances knowledge lifecycle or processing progress.
@@ -372,14 +373,27 @@ this identifies exact deliveries even when runs overlap in their source turns.
 Legacy pending runs without this metadata raise an error and remain pending;
 the core cannot safely reconstruct their ownership from turn ranges alone.
 
-`compact(sessionId, branch = "main", headTurnId?)` returns knowledge followed by
-`<episodic>`: session facts by descending timestamp and id first, then the shared
-pending entry views (20a's ruled order: stable history before volatile task data).
-All pending views survive both budgets with an overage receipt — compact measures them against the
-same effective Raw ceiling as Noting (`noting.batchTokens`), never a second knob of its own. No
-provider is called and deliveries are not consumed. Pass `headTurnId`
-for precise ancestry; without it, the latest Turn selects one path. Sibling queues
-are never combined into an automatic Raw view.
+`compact(sessionId, branch = "main", headTurnId?)` escalates over one frozen read snapshot of every
+pending entry on the path and returns a tier, not a string (ticket 20c):
+
+| Tier | Condition | Result |
+| --- | --- | --- |
+| `{tier: "primary", text}` | the pending entries' normal shared views fit `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | knowledge, `<episodic>` with session facts newest-first, then those views |
+| `{tier: "secondary", text}` | the primary views miss a cap but the compact-only views of the same entries fit | the same order, with `RAW_SECONDARY_TITLE` announcing the lossier views |
+| `{tier: "native", reason}` | not even those fit | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
+
+Compact measures Raw against the same effective ceiling as Noting (`noting.batchTokens`), never a
+second knob of its own, and both tiers are rechecked under the same `budgetMaterial` accounting as
+normal material. No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
+no tier calls a provider or consumes a delivery, and core contains no summarizer — reaching a model
+is the host's native fallback alone. `renderEntrySecondary` (`core/render`, versioned by
+`SECONDARY_VIEW_VERSION` with per-role budgets in `SECONDARY_EXCERPT_TOKENS`) keeps entry order,
+source and native identity, user boundaries, non-text placeholders and each tool fragment's name,
+`T<id>#t<n>` occurrence, call id and status, drops tool arguments and results, and cuts user and
+assistant text with the primary view's own omission marker. It is used nowhere else: Noter input,
+token counters and trace keep the primary views, and neither view becomes a source entry, a fact or a
+processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
+path. Sibling queues are never combined into an automatic Raw view.
 
 `search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
 substring matching over fact text, knowledge commits and original Raw. Trace and

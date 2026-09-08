@@ -1,14 +1,14 @@
 export { toolDefinitions, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope } from "./read.ts";
-export type { ListingOptions, SearchScope } from "./read.ts";
+import { readFacade, type ListingOptions, type SearchScope, type CompactResult } from "./read.ts";
+export type { ListingOptions, SearchScope, CompactResult } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry } from "../render/index.ts";
-export { tokens, renderEntry, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { tokens, renderEntry, renderEntrySecondary, finish, runMode, ENTRY_VIEW_VERSION, SECONDARY_VIEW_VERSION, SECONDARY_EXCERPT_TOKENS } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
 export { notingText, notingIncrement, consolidationText, consolidationIncrement, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
@@ -241,7 +241,9 @@ export interface TraceMemory {
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
   /** Committed lineage facts and unrecorded raw, without consuming deliveries or dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
-  compact(sessionId: number, branch?: string, headTurnId?: number): string;
+  /** Ticket 20: the escalating compaction result — primary views, secondary views, or the explicit
+   * ask that the host decline and let its native compaction run (20c). */
+  compact(sessionId: number, branch?: string, headTurnId?: number): CompactResult;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
   /** Pending noting results for this session and branch, rendered once and marked delivered; "" when none. */

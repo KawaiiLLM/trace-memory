@@ -163,6 +163,16 @@ export default function (pi: ExtensionAPI) {
           // task queued before the transition cannot bypass it.
           const suppression = memory.store.forkSuppression(input.sessionId);
           if (suppression) throw new NotForkable(`cache miss latch: fork suppressed for this session since ${suppression.at}`);
+          // Ticket 20 "Post-compaction worker mode", rechecked here at the actual launch against the
+          // exact frozen entry set — a task prepared before a compaction but held for a slot, a claim
+          // or native readiness reaches this line with its evidence range already frozen. A fork
+          // would inherit a context those entries are no longer in, so the whole batch runs as a
+          // fresh child instead, recorded like any other fallback: requested mode fork, actual mode
+          // subagent, reason named. This is a per-task readiness decision, not the cache-miss latch.
+          if (input.kind === "noting") {
+            const evidence = preCompactionEvidence(callContext, input.entryAudit.entries.map(e => e.nativeId));
+            if (evidence) throw new NotForkable(evidence);
+          }
           // A tree switch since admission invalidates this launch context; the new branch's history is
           // never substituted for the task frozen on the old one.
           if (state.branch !== input.branch) throw new NotForkable("The selected branch changed after admission");
@@ -243,6 +253,9 @@ export default function (pi: ExtensionAPI) {
     diagnostic?: string;
   };
   let catchup: Catchup | undefined;
+  /** Which tier the last compaction of this executor used, for `/trace status` (ticket 20 "Failure
+   * visibility"). A diagnostic string, not a state machine: nothing reads it back. */
+  let lastCompaction: string | undefined;
   let baseline: string;
   const baselinePath = join(agentDir, "trace-memory-baseline.json");
   const enrollment = () => state.sessionId ? memory.store.enrollment(state.sessionId) : state.enrollment!;
@@ -277,10 +290,37 @@ export default function (pi: ExtensionAPI) {
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
   const missDetected = new Set<"noting" | "consolidation">();
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
+  /** Ticket 20 "Post-compaction worker mode". The boundary is the last compaction entry on the
+   * target's currently selected ancestry. Pi writes that entry only when a compaction was persisted
+   * successfully, whatever produced its summary, so a request to compact, a failed or cancelled
+   * attempt and a compaction on a sibling path establish nothing here by construction. The ancestry
+   * is re-read on every call — never cached, never compared by wall clock, database entry id or a
+   * current-context flag — so reopen and tree navigation restore the same answer.
+   *
+   * An entry the selected ancestry no longer carries is counted as preceding the boundary: a fork
+   * would not inherit evidence Pi is not carrying either, and entries Pi happens to have retained
+   * past a compaction do not waive the rule. */
+  const preCompactionEvidence = (context: ExtensionContext, nativeIds: string[]): string | undefined => {
+    const ancestry = context.sessionManager.getBranch() as { id: string; type: string }[];
+    let boundary = -1;
+    for (let i = 0; i < ancestry.length; i++) if (ancestry[i]!.type === "compaction") boundary = i;
+    if (boundary < 0) return;
+    const position = new Map(ancestry.map((entry, i) => [entry.id, i]));
+    const before = nativeIds.filter(id => (position.get(id) ?? -1) < boundary).length;
+    return before ? `pre-compaction evidence: ${before} selected ${before === 1 ? "entry precedes" : "entries precede"} the persisted compaction ${ancestry[boundary]!.id}` : undefined;
+  };
   /** The mode a task of this session will actually run in: a requested fork resolves to subagent while
-   * the cache-miss latch is set. Used for the delivery pause, the readiness wait and the budget; the
-   * requested mode is still what the task is launched with, so the run record keeps it. */
-  const effectiveMode = (requested: "fork" | "subagent") => requested === "fork" && suppressed() ? "subagent" as const : requested;
+   * the cache-miss latch is set, and — ticket 20's admission rule — while the entries a Noter would
+   * select include evidence from before a persisted compaction. Used for the delivery pause, the
+   * readiness wait and the budget; the requested mode is still what the task is launched with, so the
+   * run record keeps it. Neither resolution is a latch: both are re-decided for every task. */
+  const effectiveMode = (requested: "fork" | "subagent", task?: { kind: "noting" | "consolidation"; target: { sessionId: number; branch: string; headTurnId: number } }) => {
+    if (requested !== "fork") return requested;
+    if (suppressed()) return "subagent" as const;
+    // Noting's batch is the oldest pending prefix, so any pending pre-boundary entry is in it.
+    if (task?.kind === "noting" && preCompactionEvidence(ctx, memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId).map(e => e.nativeId))) return "subagent" as const;
+    return "fork" as const;
+  };
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to fork, consolidation to
@@ -325,7 +365,7 @@ export default function (pi: ExtensionAPI) {
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
-    const effective = effectiveMode(selected.mode); // admission pauses by what will run, not by what was asked
+    const effective = effectiveMode(selected.mode, { kind, target }); // admission pauses by what will run, not by what was asked
     if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic,
       executorSessionId: state.sessionId!, ...(options.boundary ? { boundary: options.boundary } : {}) });
     const [provider, ...id] = selected.model.split("/");
@@ -584,7 +624,7 @@ export default function (pi: ExtensionAPI) {
       // the cache-miss latch has downgraded runs fresh-context work, which reads nothing from the
       // conversation and forks nothing. The requested mode stays what it is, for the audit
       // (review 2026-09-08).
-      const effective = effectiveMode(selected.mode);
+      const effective = effectiveMode(selected.mode, { kind, target: own });
       let due = false, paused = false;
       try { ({ due, paused } = memory.taskEligibility(kind, own, effective)); }
       catch (error) { context.ui.notify(String(error), "error"); }
@@ -715,10 +755,20 @@ export default function (pi: ExtensionAPI) {
     if (!sessionId || !head) return { summary: { summary: "" } };
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
+  // Ticket 20 "Compaction escalation": core escalates over its own frozen read snapshot and this
+  // handler only binds the outcome. Tiers 1 and 2 are a complete custom replacement; tier 3 returns
+  // nothing at all, so Pi proceeds through its normal compaction path — which may call a model, and
+  // may fail or be cancelled, with Pi's own outcome handling (this is the one place where compaction
+  // reaches a model, and it is Pi's call, not ours). Nothing here waits for or starts a worker, and
+  // an unused custom summary confirms no delivery and no injection.
   pi.on("session_before_compact", (event, context) => {
     ensure(context); if (!enabled()) return; flush();
-    return { compaction: { summary: state.sessionId ? memory.compact(state.sessionId, state.branch, state.head) : memory.inject({ projectId: state.projectId }),
-      firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore } };
+    const result = state.sessionId ? memory.compact(state.sessionId, state.branch, state.head)
+      : { tier: "primary" as const, text: memory.inject({ projectId: state.projectId }) };
+    lastCompaction = result.tier === "native" ? `native delegation — ${result.reason}` : `${result.tier} views`;
+    context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
+    if (result.tier === "native") return; // no custom replacement: Pi's own compaction runs and reports
+    return { compaction: { summary: result.text, firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore } };
   });
   pi.on("session_compact", event => {
     if (enabled() && state.sessionId) {
@@ -773,7 +823,7 @@ export default function (pi: ExtensionAPI) {
     // its one reset. The run that detected it keeps its own fork mode in the run record.
     const downgrade = suppressed();
     const fork = downgrade ? `Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu` : undefined;
-    return [base, fork, catchupLine()].filter(Boolean).join("\n");
+    return [base, fork, lastCompaction && `Compaction: ${lastCompaction}`, catchupLine()].filter(Boolean).join("\n");
   };
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, renderEntry, tokens, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, compacted, renderEntry, tokens, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import type { Fact } from "../model/index.ts";
 import { charge } from "../render/index.ts";
 import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, RAW_TITLE } from "./material.ts";
@@ -86,7 +86,7 @@ test("20a 2026-09-08 for ruling 08:53: the Consolidator's inherited increment is
 test("20a 2026-09-08: the main agent's initial injection is knowledge and receipts only, and compact is knowledge, historical facts, pending Raw, receipts", async () => {
   const { s, t } = seeded();
   expect(memory.inject(s.id)).toBe(knowledgeBlock); // knowledge-only: no facts, no Raw, no range
-  expect(memory.compact(s.id, "main", t.id)).toBe([knowledgeBlock,
+  expect(compacted(memory.compact(s.id, "main", t.id))).toBe([knowledgeBlock,
     `<episodic>\nRecent facts (newest first):\n\n${memory.trace("F1")}\n\nRaw:\n\n${views(s.id, t.id)}\n</episodic>`].join("\n\n"));
 });
 

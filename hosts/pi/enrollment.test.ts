@@ -5,6 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact } from "./test-host.ts";
 import { TraceMemory, DEFAULT_CONFIG } from "../../core/api/index.ts";
+import { compacted } from "../../test/source-fixture.ts";
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
 afterEach(async () => { for (const h of hosts.splice(0)) await h.dispose(); });
@@ -67,7 +68,7 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   expect(h.memory.store.listTurns(1)).toHaveLength(3); expect(h.requests).toEqual([]);
   expect(await h.emit("session_before_tree")).toBeUndefined();
   expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 42 } })).toBeUndefined();
-  expect(h.memory.compact(1)).toBe(""); expect(h.memory.branchSummary(1, "main", 3)).toBe("");
+  expect(compacted(h.memory.compact(1))).toBe(""); expect(h.memory.branchSummary(1, "main", 3)).toBe("");
   for (const name of ["note", "memory"]) await expect(h.tools.get(name).execute("id", {}, undefined, undefined, h.ctx)).rejects.toThrow("/trace enable");
   expect((await h.tools.get("trace").execute("id", { address: "T1" }, undefined, undefined, h.ctx)).content[0].text).toContain("same");
   expect((await h.tools.get("search").execute("id", { query: "same", layer: "raw" }, undefined, undefined, h.ctx)).content[0].text).toContain("T1");

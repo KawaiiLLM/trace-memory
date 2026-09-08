@@ -1,4 +1,4 @@
-import { recorded } from "../../test/source-fixture.ts";
+import { compacted, recorded } from "../../test/source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -140,7 +140,7 @@ test("20a 2026-09-08: nothing task-specific enters the leading knowledge block, 
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const block = calls[0]!.text.fresh.split("\n\nRecent facts")[0]!;
   expect(block).toBe(memory.inject(s.id)); // the initial injection and the Noter share one block
-  expect(memory.compact(s.id, "main", t.id).startsWith(`${block}\n\n<episodic>`)).toBe(true);
+  expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");
   expect(block).not.toContain(calls[0]!.range.from);
   expect(block).not.toContain("[entry ");
@@ -422,7 +422,7 @@ test("2026-09-07 A: C/D paths see c2/c3, fork ancestor sees c1, D's later commit
   expect(tips(root)).toEqual([1]); expect(tips(c)).toEqual([2]); expect(tips(d)).toEqual([3]); expect(tips(later)).toEqual([4]);
   for (const [path, text] of [[c, "C version"], [d, "D version"], [root, "Use blue tiles"]] as const) {
     expect(memory.inject(path)).toContain(text);
-    expect(memory.compact(path.sessionId, path.branch, path.headTurnId)).toContain(text);
+    expect(compacted(memory.compact(path.sessionId, path.branch, path.headTurnId))).toContain(text);
     expect(memory.trace("K1", path).split("\n")[1]).toContain(text);
   }
   expect(memory.store.getKnowledge(1)).not.toHaveProperty("currentRevision");
@@ -774,12 +774,55 @@ test("20b 2026-09-08: 17b's 50,000-token Noting batch is superseded by a 10,000-
   const big = (id: string) => memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
     role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
   big("a"); big("b"); big("c");
-  // compact measures the same Raw against the same ceiling instead of a second knob of its own.
-  expect(memory.compact(s.id, "main", t.id)).toContain("raw ceiling: ");
+  // compact measures the same Raw against the same ceiling instead of a second knob of its own: these
+  // primary views are over it, so 20c's compact escalates rather than keeping them; raising that one
+  // ceiling (there is no second) puts the same Raw back inside tier 1.
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
+  memory.config.noting.batchTokens = 100_000; memory.config.render.episodicBlockTokens = 200_000;
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
+  memory.config.noting.batchTokens = DEFAULT_CONFIG.noting.batchTokens;
+  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const views = calls[0]!.material.entries.map(e => e.view);
   expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
   expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
+});
+
+// ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----
+
+// The specification's "Compaction is instant and never calls a model" (spec.md; user story 6).
+// Superseded by ticket 20 on 2026-09-08, and superseded ONLY by the native fallback: core still calls
+// no model in any tier, and there is no summarizer inside core. When no complete representation of
+// every selected entry fits, compact returns an explicit request for native compaction, and Pi's own
+// compaction — which may call a model, and may fail or be cancelled — runs under Pi's outcome
+// handling. Neither the secondary views nor any summary becomes a source, a fact or a receipt.
+test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi's native fallback, and no core tier calls one", async () => {
+  const { s, t } = session();
+  const sources = memory.store.listSourceEntries(s.id).length;
+  const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
+  // Over the shared Raw ceiling: the lossier secondary views, still deterministic local work.
+  for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
+    role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
+  // Over the enclosing budget even then: the one route to a model, and it is Pi's, not core's.
+  memory.config.render.episodicBlockTokens = 10;
+  const delegated = memory.compact(s.id, "main", t.id);
+  expect(delegated.tier).toBe("native");
+  expect(delegated).not.toHaveProperty("text"); // a request, never an empty or manufactured summary
+  expect(delegated.tier === "native" && delegated.reason).toBeTruthy();
+  expect(calls).toHaveLength(0); // no tier reached this façade's runAgent at all
+  // No tier changed the sources, the facts or the processing progress it read.
+  expect(memory.store.listSourceEntries(s.id).length).toBe(sources + 3);
+  expect(memory.store.listSessionFacts(s.id)).toHaveLength(0);
+  expect(pending.length).toBeGreaterThan(0);
+  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual(expect.arrayContaining(pending));
+  // Normal Noter input keeps using the primary views; the compact-only view exists nowhere else.
+  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.material.entries.every(e => !e.view.includes("compact-only"))).toBe(true);
+  expect(calls[0]!.text.fresh).not.toContain("compact-only");
 });
 
 // 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with

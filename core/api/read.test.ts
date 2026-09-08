@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory } from "../../test/source-fixture.ts";
+import { TraceMemory, compacted, renderEntry, SECONDARY_VIEW_VERSION } from "../../test/source-fixture.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../test/fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../test/fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -42,7 +42,7 @@ test("injection and compaction match Chinese fixture goldens without a model cal
   const { s, t } = populated();
   turn(s.id, rawFixture[1].userPrompt, t.id);
   expect(memory.inject(s.id)).toBe(golden("inject"));
-  expect(memory.compact(s.id, "main")).toBe(golden("compact"));
+  expect(compacted(memory.compact(s.id, "main"))).toBe(golden("compact"));
   expect(calls).toBe(0);
 });
 
@@ -64,7 +64,7 @@ test("visibility includes global, own project and own session only, excluding in
   const archived = knowledge(s.id, f.id, "reference");
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time },
     operations: [{ op: "archive", knowledgeId: archived, baseCommit: archived, because: [f.id], createdAt: time }] });
-  for (const block of [memory.inject(s.id), memory.compact(s.id)]) {
+  for (const block of [memory.inject(s.id), compacted(memory.compact(s.id))]) {
     expect(block).toContain(`[K${own}@${own}]`); expect(block).toContain(`[K${global}@${global}]`);
     for (const id of [other, outside, archived]) expect(block).not.toContain(`[K${id}@`);
   }
@@ -97,37 +97,123 @@ test("category order, chronological ties, whole trailing category omissions; lin
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
 });
 
-test("compaction retains oversized raw with standard tool cuts and receipts outside XML", () => {
+test("compaction retains oversized raw with standard tool cuts, in its primary views", () => {
   const { s, t } = populated(), raw = fixture.observation.repeat(1000);
   const next = turn(s.id, raw, t.id);
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: "pwd", result: JSON.stringify({ stdout: "x".repeat(10000) }), status: "success" });
-  memory.config.render.episodicBlockTokens = 70;
-  const result = memory.compact(s.id, "main", next.id);
+  // 20c: tier 1 applies only while the primary views fit both shared caps. This case is about those
+  // views' own cuts, not about escalation, so it gives them the room; the tiers have their own tests.
+  memory.config.noting.batchTokens = 100_000; memory.config.render.episodicBlockTokens = 200_000;
+  const compaction = memory.compact(s.id, "main", next.id);
+  expect(compaction.tier).toBe("primary");
+  const result = compacted(compaction);
   // 17a supersedes unbounded user Raw: both excerpts retain head, omission count and tail.
   expect(result).not.toContain(raw); expect(result).toContain("middle not inspected");
   expect(result).toContain(raw.slice(0, 40)); expect(result).toContain(raw.slice(-40));
-  expect(result).toContain("raw overage:"); expect(result).toContain("all unrecorded raw kept");
-  expect(result).toContain("omitted 1 older facts; expand: F1");
-  expect(result.indexOf("Receipts:")).toBeGreaterThan(result.indexOf("</episodic>"));
   expect(calls).toBe(0);
 });
 
 test("compaction uses supplied ancestry and newest facts fit before older facts", () => {
   const { s, t } = populated();
   const abandoned = turn(s.id, "abandoned raw", t.id), selected = turn(s.id, "selected raw", t.id);
-  const precise = memory.compact(s.id, "main", selected.id);
+  const precise = compacted(memory.compact(s.id, "main", selected.id));
   expect(precise).toContain("selected raw"); expect(precise).not.toContain("abandoned raw");
   // 17a: an omitted head resolves one path, never a union of sibling queues.
-  expect(memory.compact(s.id)).not.toContain("abandoned raw");
+  expect(compacted(memory.compact(s.id))).not.toContain("abandoned raw");
   const n = noting(s.id, selected.id, fixture.interpretation);
-  const full = memory.compact(s.id, "main", selected.id);
+  const full = compacted(memory.compact(s.id, "main", selected.id));
   expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));
   // 20b charges the block titles and the joining separators too, so the same "one fact fits, the
   // older one does not" budget is a little larger than 17a's bare fact-line arithmetic.
   memory.config.render.episodicBlockTokens = 100;
-  const limited = memory.compact(s.id, "main", selected.id);
+  const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();
+});
+
+// ---- Ticket 20 "Compaction escalation" (20c): the three tiers over one frozen read snapshot ----
+
+test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts take the remaining shared space, and no worker starts or progress changes", () => {
+  const { s, t } = populated();
+  const selected = turn(s.id, "selected raw", t.id);
+  const second = noting(s.id, t.id, fixture.interpretation).facts[0]!; // a newer fact on an already-processed turn
+  const pending = memory.pendingEntries(s.id, "main", selected.id);
+  const runsBefore = memory.store.listRuns(s.id).length;
+  const result = memory.compact(s.id, "main", selected.id);
+  expect(result.tier).toBe("primary");
+  const text = compacted(result);
+  // Every pending entry is present in its normal shared view, and both historical facts fit beside them.
+  for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
+  expect(text).toContain(`[F${second.id}]`); expect(text).toContain("[F1]");
+  expect(text).not.toContain("compact-only");
+  // Reading a snapshot is not extraction: no model call, no run, no progress, no claim.
+  expect(calls).toBe(0);
+  expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
+  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual(pending.map(e => e.id));
+  // Historical facts fill only what the selected material and the framing left, and the honest
+  // omission receipt for the rest sits outside the block, as every other receipt does.
+  memory.config.render.episodicBlockTokens = 120; // room for the selected Raw, the framing and one fact line
+  const limited = compacted(memory.compact(s.id, "main", selected.id));
+  expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
+  expect(limited).toContain("omitted 1 older facts; expand: F1");
+  expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
+});
+
+test("20c 2026-09-08 scenario 10: primary views over the shared ceiling become labelled secondary views that keep every selected entry, drop tool arguments and results, and mark truncation", () => {
+  const { s, t } = populated();
+  const body = "word ".repeat(12_000);
+  const next = turn(s.id, `USER_HEAD ${body} USER_TAIL`, t.id);
+  memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: JSON.stringify({ command: "SECRET_ARGUMENT" }),
+    result: JSON.stringify({ stdout: "SECRET_RESULT" }), status: "success" });
+  const pending = memory.pendingEntries(s.id, "main", next.id);
+  const result = memory.compact(s.id, "main", next.id);
+  expect(result.tier).toBe("secondary");
+  const text = compacted(result);
+  // Explicitly labelled, and versioned so a reader knows which truncation rule produced it.
+  expect(text).toContain("Raw (compact-only secondary views;");
+  expect(text).not.toContain("\nRaw:\n");
+  expect(text).toContain(SECONDARY_VIEW_VERSION);
+  // Every selected entry is represented, in order, with its own source and native identity.
+  for (const entry of pending) expect(text).toContain(`[entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}]`);
+  expect(text.indexOf(`[Source entry id: T${next.id}#user]`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
+  // Tool identity remains; arguments and results do not.
+  expect(text).toContain(`[T${next.id}#t1] tool=Bash`);
+  expect(text).toContain("[arguments omitted]"); expect(text).toContain("[result omitted]");
+  expect(text).not.toContain("SECRET_ARGUMENT"); expect(text).not.toContain("SECRET_RESULT");
+  // User text is excerpted, and the omission is marked in the wording the primary view already uses.
+  expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);
+  expect(text).toContain("middle not inspected");
+  // Deterministic local work: the same snapshot renders the same bytes, and no model was called.
+  expect(compacted(memory.compact(s.id, "main", next.id))).toBe(text);
+  expect(calls).toBe(0);
+  // The original trace output is untouched by any of it.
+  expect(memory.trace(`T${next.id}#user`)).toContain(body);
+  expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_ARGUMENT");
+  expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_RESULT");
+});
+
+test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact asks for native compaction with the reason, and changes nothing", () => {
+  const { s, t } = populated();
+  let parent = t.id;
+  for (let i = 0; i < 40; i++) parent = turn(s.id, `entry ${i}`, parent).id;
+  const pending = memory.pendingEntries(s.id, "main", parent).map(e => e.id);
+  expect(pending.length).toBeGreaterThanOrEqual(40);
+  // Many tiny entries: their identities and labels alone exceed the enclosing budget.
+  memory.config.render.episodicBlockTokens = 200;
+  const outer = memory.compact(s.id, "main", parent);
+  expect(outer.tier).toBe("native");
+  expect(outer.tier === "native" && outer.reason).toContain("the episodic budget by");
+  expect(outer.tier === "native" && outer.reason).toContain(`secondary views of ${pending.length} pending entries`);
+  expect("text" in outer).toBe(false); // not an empty success, and no oversized block either
+  // The same escalation on the inner ceiling names that cap instead.
+  memory.config.render.episodicBlockTokens = 200_000; memory.config.noting.batchTokens = 50;
+  const inner = memory.compact(s.id, "main", parent);
+  expect(inner.tier).toBe("native");
+  expect(inner.tier === "native" && inner.reason).toContain("the raw ceiling by");
+  // Delegation is a request, not a summary: nothing was read differently, processed or erased.
+  expect(memory.pendingEntries(s.id, "main", parent).map(e => e.id)).toEqual(pending);
+  expect(memory.trace(`T${parent}#user`)).toContain("entry 39");
+  expect(calls).toBe(0);
 });
 
 test("pending delivery is exact to its run and branch, consumed once, including after later commits", () => {

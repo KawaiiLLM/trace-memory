@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, renderEntrySecondary, xmlBlock } from "../render/index.ts";
+import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, RAW_SECONDARY_TITLE, type SharedMaterial } from "../render/material.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
+
+/** Ticket 20 "Compaction escalation" (20c): what compact can produce for one frozen read snapshot.
+ * `primary` and `secondary` are complete custom replacements the host may hand to Pi — every pending
+ * entry is represented in both, and the tier says which view built them. `native` is the explicit
+ * ask that the host decline the custom summary and let Pi's own compaction run, with the reason it
+ * could not be avoided: which cap the smallest complete representation missed, and by how much.
+ * There is no fourth outcome: compact never hides selected entries to make a tier fit, and core
+ * never summarizes with a model. */
+export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
   const cursors = new Map<string, { lines: string[]; footer: string; cap: number; owner: string }>();
@@ -93,23 +102,44 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // Ruling 2026-09-07: a delivery is confirmed only after the host persisted it (at the turn's stop);
     // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.
     confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
-    compact: (sessionId: number, branch = "main", headTurnId?: number): string => {
-      if (!store.enabled(sessionId)) return "";
+    // Ticket 20 "Compaction escalation" (20c). Five ruled steps, in order, over one frozen snapshot.
+    // Nothing here waits for, cancels or starts a memory worker, touches a claim or advances any
+    // progress: a Noter finishing concurrently may make this snapshot redundant, never incomplete.
+    compact: (sessionId: number, branch = "main", headTurnId?: number): CompactResult => {
+      if (!store.enabled(sessionId)) return { tier: "primary", text: "" };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
+      // 1. Freeze a read snapshot: every pending original entry on this path, selected once. The
+      //    tiers below re-render this same set; none of them may change it.
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
-      const raw = pending.map(e => renderEntry(e, config.render));
-      // The same four shared parts a task freezes, budgeted by the same function against the same
-      // ceilings (ticket 20): compact reuses Noting's effective Raw ceiling rather than a second knob,
-      // and keeps every pending entry — a Raw block over that ceiling is receipted, not silently cut.
-      // (Escalating to a more lossy view or to native compaction is 20c.)
-      const budgeted = budgetMaterial({ knowledge: store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch),
-        knowledgeLine, current: raw.map((r) => r.content).join(BLOCK), framing: [xmlBlock("episodic", ""), FACTS_TITLE, RAW_TITLE],
-        facts: store.listSessionFacts(sessionId), factLine: (f) => factLine(f.id),
-        caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
-      return compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
-        entries: pending.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
-        receipts: [...raw.flatMap((r) => r.receipts), ...budgeted.receipts] });
+      const knowledge = store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch);
+      const facts = store.listSessionFacts(sessionId);
+      const caps = { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens };
+      // 4. Recheck the whole block: one accounting for both tiers. Identities, labels, retained tool
+      //    names, excerpts and omission markers are charged exactly as normal material is — the inner
+      //    ceiling for the joined views, the enclosing episodic budget for the framing around them.
+      const build = (views: { content: string; receipts: string[] }[], title: string) => {
+        const budgeted = budgetMaterial({ knowledge, knowledgeLine, current: views.map((v) => v.content).join(BLOCK),
+          framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), caps });
+        return { over: budgeted.over, text: compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
+          entries: pending.map((entry, i) => ({ id: entry.id, view: views[i]!.content })),
+          receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title) };
+      };
+      // 2. Try normal views: the shared primary views, against the shared Raw ceiling
+      //    (`noting.batchTokens`, not a second knob) and the episodic budget. No batch selector here —
+      //    the whole pending set is represented or this tier does not apply.
+      const primary = build(pending.map((e) => renderEntry(e, config.render)), RAW_TITLE);
+      if (!primary.over.current && !primary.over.episodic) return { tier: "primary", text: primary.text };
+      // 3. Try secondary views: deterministic, versioned, explicitly labelled, still all of them.
+      const secondary = build(pending.map((e) => ({ content: renderEntrySecondary(e), receipts: [] })), RAW_SECONDARY_TITLE);
+      if (!secondary.over.current && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
+      // 5. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
+      //    can miss the cap even here. Ask for native compaction with the reason instead of hiding
+      //    entries, falsifying a receipt or relaxing the cap to force a success.
+      const missed = secondary.over.current
+        ? `the raw ceiling by ${secondary.over.current} tokens (cap ${caps.current})`
+        : `the episodic budget by ${secondary.over.episodic} tokens (cap ${caps.episodic})`;
+      return { tier: "native", reason: `secondary views of ${pending.length} pending entries exceed ${missed}` };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";

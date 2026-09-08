@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, consolidationReply, usage, type Reply } from "./test-host.ts";
+import { compacted } from "../../test/source-fixture.ts";
 
 const disposers: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const dispose of disposers.splice(0)) await dispose(); });
@@ -95,7 +96,7 @@ test("raw is incremental and compaction contains intermediate assistant text wit
   await h.emit("tool_result", { toolName: "bash", input: { command: "pwd" }, content: [{ type: "text", text: "result" }], isError: false });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 99, firstKeptEntryId: "old" } });
-  expect(block.compaction.summary).toBe(h.memory.compact(1, "main", 1));
+  expect(block.compaction.summary).toBe(compacted(h.memory.compact(1, "main", 1)));
   expect(block.compaction.summary).not.toContain("partial"); expect(block.compaction.firstKeptEntryId).toBe("");
   expect(h.requests).toHaveLength(0);
   await h.emit("session_compact", { compactionEntry: { summary: block.compaction.summary } });

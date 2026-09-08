@@ -85,6 +85,10 @@ export interface MaterialText {
 export const FACTS_TITLE = "Recent facts (newest first):";
 export const CONSOLIDATED_TITLE = "Already-consolidated facts (newest first):";
 export const RAW_TITLE = "Raw:";
+/** Ticket 20 "Try secondary views" (20c): the compact-only block title. It replaces `RAW_TITLE` —
+ * never joins it — so the block says in its own text that these views are lossier than the primary
+ * ones every other consumer receives, and one title is charged to the episodic budget either way. */
+export const RAW_SECONDARY_TITLE = "Raw (compact-only secondary views; tool arguments and results omitted, text excerpted):";
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
 export const INTEGRATE_TITLE = "Facts to integrate:";
@@ -125,7 +129,10 @@ export interface MaterialBudget {
   label?: "raw" | "range";
 }
 
-export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGroup[]; facts: string[]; receipts: string[] } {
+export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGroup[]; facts: string[]; receipts: string[];
+  /** How far past each cap this material is, in tokens; zero when it fits. Every consumer receipts an
+   * overage; only compact escalates on it (ticket 20 "Compaction escalation", steps 2 and 4). */
+  over: { current: number; episodic: number } } {
   const active = budgetKnowledge(input.knowledge, input.caps.knowledge, input.knowledgeLine);
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
@@ -139,7 +146,8 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
-  return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts] };
+  return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts],
+    over: { current: Math.max(0, current - input.caps.current), episodic: Math.max(0, over) } };
 }
 
 const block = (parts: string[]): string => parts.join(BLOCK);
@@ -159,10 +167,12 @@ const leading = (material: SharedMaterial): string[] => {
 export const injectionText = (material: SharedMaterial): string =>
   finish({ content: knowledgeBlock(material), receipts: material.receipts });
 
-/** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. */
-export const compactText = (material: SharedMaterial): string =>
+/** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. The
+ * Raw title is `RAW_SECONDARY_TITLE` when the views inside it are the compact-only secondary ones
+ * (ticket 20 tier 2); the order, the separators and the receipts are the same either way. */
+export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE): string =>
   finish({ content: `${knowledgeBlock(material)}${BLOCK}${xmlBlock("episodic",
-    block([FACTS_TITLE, (material.facts ?? []).join("\n"), RAW_TITLE, rawText(material)]))}`, receipts: material.receipts });
+    block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))}`, receipts: material.receipts });
 
 /** Noter, fresh context: knowledge, historical facts, range, the selected Raw, then receipts. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
