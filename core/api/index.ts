@@ -1,8 +1,8 @@
 export { toolDefinitions, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope, type CompactResult } from "./read.ts";
-export type { ListingOptions, SearchScope, CompactResult } from "./read.ts";
+import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type TopicGroups } from "./read.ts";
+export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
@@ -244,6 +244,9 @@ export interface TraceMemory {
   /** Ticket 20: the escalating compaction result — primary views, secondary views, or the explicit
    * ask that the host decline and let its native compaction run (20c). */
   compact(sessionId: number, branch?: string, headTurnId?: number): CompactResult;
+  /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
+   * read projection only — it neither reorders injection nor changes what is applicable. */
+  topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
   /** Pending noting results for this session and branch, rendered once and marked delivered; "" when none. */

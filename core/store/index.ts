@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   supports TEXT NOT NULL,
   op TEXT NOT NULL CHECK (op IN ('create','update','merge','archive')),
   reason TEXT NOT NULL,
+  topics TEXT NOT NULL DEFAULT '[]',
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
   UNIQUE (knowledge_id, id)
@@ -345,6 +346,8 @@ export type KnowledgeOperationInput =
       scope: KnowledgeScope;
       supports: number[];
       reason: string;
+      /** 21b: the complete replacement label set of this revision; empty means unclassified. */
+      topics: string[];
       createdAt: string;
     }
   | {
@@ -356,6 +359,7 @@ export type KnowledgeOperationInput =
       scope: KnowledgeScope;
       supports: number[];
       reason: string;
+      topics: string[];
       createdAt: string;
     }
   | {
@@ -368,13 +372,14 @@ export type KnowledgeOperationInput =
       scope: KnowledgeScope;
       supports: number[];
       reason: string;
+      topics: string[];
       createdAt: string;
     }
   | {
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
-      /** 21a: an archive carries its own evidence; text, category, scope come from the parent. */
+      /** 21a/21b: an archive carries its own evidence; text, category, scope and topics come from the parent. */
       supports: number[];
       reason: string;
       createdAt: string;
@@ -482,6 +487,7 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     supports: JSON.parse(row.supports),
     op: row.op,
     reason: row.reason,
+    topics: JSON.parse(row.topics),
     runId: row.run_id,
     createdAt: row.created_at,
   };
@@ -1189,10 +1195,11 @@ export class Store {
     const knowledgeId = op.op === "create" ? Number(this.db.prepare(
       "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
     ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
-    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, reason, run_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
+    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, reason, topics, run_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
       op.op === "archive" ? prior!.category : op.category, scope, JSON.stringify(supports), op.op,
-      op.reason, runId, op.createdAt);
+      // 21b: labels belong to this immutable revision; an archive inherits its parent's, as it does category and scope.
+      op.reason, JSON.stringify(op.op === "archive" ? prior!.topics : op.topics), runId, op.createdAt);
     const commitId = Number(info.lastInsertRowid);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
@@ -1304,9 +1311,13 @@ export class Store {
         .all(pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     if (scope === "raw") return raw();
     const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT id FROM facts WHERE text LIKE ? ESCAPE '\\' ORDER BY id").all(pattern) as { id: number }[]).map((r) => `F${r.id}`);
+    // 21b: a label matches under the same literal semantics and escaping as the text. EXISTS over
+    // json_each reads label values, never the JSON punctuation around them, and returns one row per
+    // revision however many labels (or text and labels together) match.
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
-      WHERE text LIKE ? ESCAPE '\\' ORDER BY knowledge_id, id`)
-      .all(pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
+      WHERE text LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\')
+      ORDER BY knowledge_id, id`)
+      .all(pattern, pattern) as { knowledge_id: number; id: number }[]).map((r) => `K${r.knowledge_id}@${r.id}`);
     return scope === "all" ? [...facts, ...knowledge, ...raw()] : [...facts, ...knowledge];
   }
 

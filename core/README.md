@@ -118,7 +118,9 @@ prompt's fields with the spec's continuation lines: `[F<n>] time
 [category/actor] text`, relations at line end, then optional JSON-quoted `quote:`
 and mandatory `source:` lines. Outbound relations say `support|negate F<n>
 strong|weak`; inbound relations add `inbound`. Knowledge context uses
-`[K<n>@<commit>] [category/scope] text` and a `supports:` continuation. Turn messages
+`[K<n>@<commit>] [category/scope] text` and a `supports:` continuation, which ends
+with ` · topics: <label>, <label>` when the revision carries subject labels (21b);
+labels are metadata beside the evidence, never appended to the conclusion. Turn messages
 carry source addresses; tools use `[T<n>#t<n>] tool=… status=… omitted=…`.
 Receipts follow all content, including assistant text, and list omitted calls
 (including partially omitted calls) and expansion addresses.
@@ -253,7 +255,8 @@ Supports expand through `trace("F1")`.
 
 Diff metadata lists commits unique to either endpoint ancestry, preserving
 changes later reverted. Equal endpoints have no transitions. Added/removed supports use set membership in stored order;
-unchanged category and scope fields are omitted. Text uses lossless lexical
+unchanged category, scope, reason and topics fields are omitted, so a diff reports a
+reason, topic or evidence change even when the conclusion text is identical. Text uses lossless lexical
 LCS tokens: individual Han characters, other word/number runs, whitespace runs,
 and individual punctuation/symbols. Adjacent removals use `[-text-]`, additions
 use `{+text+}`, and unchanged spans remain in place. LCS ties prefer removal.
@@ -308,14 +311,19 @@ until the provider stops. `reportRequest` captures each exact provider request b
 execution; the final returned request is the last one sent.
 
 `memory({operations, skipped})` accepts one operation shape: `op`, `id`, `absorb`,
-`text`, `category`, `scope`, `supports`, `reason`. Every operation requires non-empty
+`text`, `category`, `scope`, `supports`, `reason`, `topics`. Every operation requires non-empty
 `supports` — this commit's evidence, which may mix the grounds of the resulting text
 with the correction or withdrawal that prompted it — and a non-empty `reason`, its
 commit message. A reason establishes no evidence, scope, applicability or accounting,
 and core never parses addresses out of it. Create/update/merge also require complete
-resulting text, category and scope; supports replaces the old set. Create forbids
+resulting text, category, scope and `topics`; supports replaces the old set, and so
+does topics — an empty array is unclassified or an explicit clearing, and a merge
+states the survivor's own labels rather than the union of its parents'. Labels are
+strings, trimmed, non-empty, deduplicated and stored in code-point order; case,
+language and spelling are untouched, and the submitted order carries no meaning.
+Create forbids
 id; update/archive/merge require it. Merge alone requires absorb. Archive permits
-only op, id, supports and reason, and inherits category and scope from its parent.
+only op, id, supports and reason, and inherits category, scope and topics from its parent.
 Inapplicable and unknown fields are rejected, and a commit-level `because` is rejected
 by name. Skipped items are `{fact, because}` with a range fact and a non-empty
 explanation; that protocol is unchanged.
@@ -408,7 +416,18 @@ processing receipt. Pass `headTurnId` for precise ancestry; without it, the late
 path. Sibling queues are never combined into an automatic Raw view.
 
 `search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
-substring matching over fact text, knowledge commits and original Raw. Trace and
+substring matching over fact text, knowledge commits and original Raw. A knowledge
+hit matches the conclusion text or any of the revision's topic labels, under the
+same escaping; matching runs over the label values (SQLite `json_each`), so the
+serialized JSON's punctuation and escapes never match, and a commit whose text and
+several labels all match is still one result.
+
+`topicGroups(sessionId, headTurnId?, branch?)` projects the same path-selected
+applicable knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
+is the `{knowledgeId, commit}` reference of the revision it was read from. A
+multi-topic commit appears in each of its groups, divergent applicable tips stay
+separate entries, and nothing is cloned or ranked: this is read organization, not a
+second injection order. Trace and
 search reads are unrestricted; source eligibility constrains writes only. Unbound
 facade reads remain available to hosts. Raw uses literal substring LIKE
 (including tool names, inputs and results); `%` and `_` are escaped. `all` in a

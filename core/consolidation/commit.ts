@@ -29,12 +29,25 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return id;
     });
   };
+  // 21b: labels are strings, trimmed, non-empty, exact duplicates removed, ordered by code point. Case,
+  // language and spelling are kept as written: no folding, translation, synonym merge, hierarchy read out
+  // of punctuation, or primary-topic meaning attached to the submitted order.
+  const labels = (raw: unknown, errors: string[]): string[] => {
+    if (!Array.isArray(raw)) { errors.push("topics: expected an array of subject labels"); return []; }
+    const out: string[] = [];
+    for (const label of raw) {
+      if (typeof label !== "string") { errors.push("topics: expected string labels"); continue; }
+      if (!label.trim()) { errors.push("topics: a label must not be empty"); continue; }
+      out.push(label.trim());
+    }
+    return [...new Set(out)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  };
   batch.operations.forEach((raw, index) => {
     const errors: string[] = [];
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     if (!["create", "update", "merge", "archive"].includes(op)) errors.push("invalid op");
-    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope"] : [])];
+    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
@@ -65,7 +78,8 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
-    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, true), reason: value.reason!, createdAt: run.createdAt };
+    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, true), reason: value.reason!,
+      topics: op === "archive" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
     const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports, scope, path);

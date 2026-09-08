@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, compacted, renderEntry, tokens, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import type { Fact } from "../model/index.ts";
-import { charge } from "../render/index.ts";
+import { budgetKnowledge, charge } from "../render/index.ts";
 import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, RAW_TITLE } from "./material.ts";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
@@ -29,7 +29,7 @@ function seeded() {
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command: "pnpm install" }), result: JSON.stringify({ stdout: "done", stderr: "" }), status: "success" });
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
-  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
+  expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
   return { s, t };
 }
 /** The same session after one Consolidation run: F1 is history, F2 is this task's pending fact. */
@@ -189,7 +189,7 @@ test("20b 2026-09-08 scenario 3: at the default limits no consumer's block overf
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   for (let i = 0; i < 12; i++) tools.find(tool => tool.name === "note")!.execute({ facts: Array.from({ length: 20 }, (_, k) =>
     ({ category: "observation", actor: "user", text: `claim ${i}.${k} ` + "word ".repeat(40), source: [`T${t.id}#user`] })) });
-  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.",
+  for (let i = 0; i < 30; i++) tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.",
     text: `rule ${i} ` + "word ".repeat(500), category: i % 2 ? "constraint" : "mechanism", scope: "project", supports: ["F1"] }], skipped: [] });
   for (let i = 0; i < 6; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "big", nativeId: `b${i}`, turnId: t.id,
     role: "assistant", text: `entry ${i} ` + "word ".repeat(3000), raw: "", calls: [] });
@@ -202,4 +202,52 @@ test("20b 2026-09-08 scenario 3: at the default limits no consumer's block overf
   expect(charge([FACTS_TITLE, RAW_TITLE, `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, ...material.facts, ...receipts("facts")])
     + tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens);
   expect(tokens(calls.at(-1)!.text.fresh)).toBeLessThanOrEqual(30_000);
+});
+
+// ---- 21b 2026-09-08: the labels ride the one shared knowledge renderer, inside ticket 20's cap ----
+
+test("21b 2026-09-08: all four consumers render topics through the one knowledge renderer, and a multi-topic item appears once", async () => {
+  const { s, t } = seeded();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
+    .execute({ operations: [{ op: "update", id: "K1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
+      text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  supports: F1 · topics: packaging, storage\n</constraint>\n</knowledge>";
+  expect(memory.inject(s.id)).toBe(labelled);
+  expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  expect((calls.at(-1)! as NotingAgentInput).text.fresh.startsWith(labelled)).toBe(true);
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
+  const consolidation = calls.at(-1)! as ConsolidationAgentInput;
+  expect(consolidation.text.fresh.startsWith(labelled)).toBe(true);
+  // Two subjects, one automatic copy: grouping is a read projection, never a second injected line.
+  for (const text of [memory.inject(s.id), consolidation.text.fresh]) expect(text.match(/\[K1@2\]/g)).toHaveLength(1);
+});
+
+test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
+  const { s, t } = seeded();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
+    .execute({ operations: [{ op: "update", id: "K1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
+      text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
+  const bare = { ...value, revision: { ...value.revision, topics: [] } };
+  // The smallest cap that still keeps this one item whole; below the receipt's own cost the budget
+  // reports a capacity error instead, which is not "kept" either.
+  const fits = (item: typeof value, cap: number) => { try { return budgetKnowledge([item], cap).groups.some(g => g.text); } catch { return false; } };
+  const minimum = (item: typeof value) => { let cap = 1; while (!fits(item, cap)) cap++; return cap; };
+  // 20b charges every rendered line: the labelled revision needs a strictly larger cap than the same
+  // revision without them, so labels cannot ride along outside the budget.
+  expect(minimum(value)).toBeGreaterThan(minimum(bare));
+  memory.config.render.knowledgeBlockTokens = minimum(value) - 1;
+  expect(memory.inject(s.id)).toContain("omitted 1 constraint knowledge; expand: K1");
+  memory.config.render.knowledgeBlockTokens = minimum(value);
+  // Identical selected revisions and topics render the same leading bytes when only the range and Raw change.
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const second = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "再来一次", assistantText: "好。", startedAt: "2026-09-09T00:00:00Z" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id, mode: "subagent" });
+  const [first, later] = calls as NotingAgentInput[];
+  expect(later!.range).not.toEqual(first!.range);
+  expect(knowledgeBlockOf(later!.material)).toBe(knowledgeBlockOf(first!.material));
+  expect(knowledgeBlockOf(later!.material)).toContain("· topics: packaging, storage");
 });

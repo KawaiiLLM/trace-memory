@@ -16,10 +16,10 @@ function consolidation(...operations: Operation[]) {
   return result.committed;
 }
 function create(text = "use red tiles now") {
-  return consolidation({ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
+  return consolidation({ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text, category: "reference", scope: "project", supports: [1], createdAt: time })[0]!.knowledgeId;
 }
 function edit(knowledgeId: number, baseCommit: number, text: string, extra: Partial<Extract<Operation, { op: "update" }>> = {}) {
-  consolidation({ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId, baseCommit, text, category: "reference", scope: "project", supports: [1], createdAt: time, ...extra });
+  consolidation({ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId, baseCommit, text, category: "reference", scope: "project", supports: [1], createdAt: time, ...extra });
 }
 beforeEach(() => {
   memory = TraceMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
@@ -78,7 +78,7 @@ test("Chinese token edits preserve surrounding characters from the simulation fi
 
 test("merged knowledge retain their snapshot and frozen survivor revision; archives show the archive revision", () => {
   const absorbed = create("absorbed"), survivor = create("survivor");
-  consolidation({ op: "merge", reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: survivor, intoBaseCommit: 2, absorb: [{ knowledgeId: absorbed, baseCommit: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time });
+  consolidation({ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: survivor, intoBaseCommit: 2, absorb: [{ knowledgeId: absorbed, baseCommit: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time });
   edit(survivor, 3, "later survivor");
   expect(memory.trace(`K${absorbed}`)).toContain("merged_into: K2@3 (from K1@1)");
   expect(memory.trace(`K${absorbed}`)).toContain("children: K2@3");
@@ -113,7 +113,7 @@ test("simulation knowledge and strong negation goldens preserve Chinese memory c
   })) });
   expect(committed.ok).toBe(true);
   fixture.knowledge.log.forEach((r, i) => {
-    const fields = { text: r.text, category: "reference" as const, scope: "project" as const, supports: r.supports.map((id) => ids.get(id)!), createdAt: r.at, reason: r.reason };
+    const fields = { text: r.text, category: "reference" as const, scope: "project" as const, supports: r.supports.map((id) => ids.get(id)!), createdAt: r.at, reason: r.reason, topics: r.topics };
     if (!i) consolidation({ ...fields, op: "create", handle: "$e1", author: "consolidation" });
     else consolidation({ ...fields, op: "update", knowledgeId: 1, baseCommit: i, reason: r.reason });
   });

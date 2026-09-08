@@ -304,7 +304,7 @@ test("review 2026-09-08 P1: a sibling entry of the same Turn is off-path for fac
     tools = h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", source: ["T1#t2"] }] })).toContain("rejected:");
     expect(h.memory.store.listBranchFacts(1, branch, 1)).toHaveLength(0); // F1 cites the sibling entry: off this path
-    const knowledge = tools[3]!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
+    const knowledge = tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
     expect(knowledge).toContain("rejected:");
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("Always use alpha");
     // On the original path the fact and knowledge built on it are applicable.
@@ -338,7 +338,7 @@ test("review 2026-09-08 P1b: a shared T1#assistant address does not make a sibli
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(tools[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Adopt alpha", quote: "ALPHA_ONLY: adopt alpha.", source: ["T1#assistant"] }] })).not.toContain("rejected:");
     expect(h.memory.store.factEntries(1)).toHaveLength(2); // both assistant entries of T1 carry that address; the fact is bound to both
-    expect(tools[3]!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Always use alpha", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.store.sourcePath(1, branch, 1).some(e => e.text.includes("ALPHA_ONLY"))).toBe(false);
@@ -370,7 +370,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "alpha", name: "bash", arguments: { command: "adopt alpha" } }] }); await h.emit("agent_end");
     const t = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     expect(t[2]!.execute({ facts: [{ category: "proposal", actor: "agent", text: "Use alpha", source: ["T1#t1"] }] })).not.toContain("rejected:");
-    expect(t[3]!.execute({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
+    expect(t[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "SIBLING_POLICY_ALPHA", category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
@@ -405,7 +405,7 @@ test("21a 2026-09-08: an archive citing a sibling-entry fact retires knowledge o
     const write = (branch: string) => h.memory.tools({ kind: "manual", sessionId: 1, branch, currentTurnId: 1 });
     let tools = write("main");
     expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Use alpha everywhere", source: ["T1#user"] }] })).not.toContain("rejected:");
-    expect(tools[3]!.execute({ operations: [{ op: "create", text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
+    expect(tools[3]!.execute({ operations: [{ op: "create", topics: [], text: "ALPHA_IS_THE_RULE", category: "constraint", scope: "session",
       supports: ["F1"], reason: "Admitted from the shared ancestry." }], skipped: [] })).not.toContain("rejected:");
     // The withdrawal is bound to a sibling entry of the same Turn: only this path holds it.
     h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });

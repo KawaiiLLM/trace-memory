@@ -12,7 +12,7 @@ async function checkMemoryBatch(output: unknown) {
       facts: Array.from({ length: 6 }, (_, i) => ({ turnId: t.id, category: "observation" as const, actor: "agent" as const, text: `Evidence ${i}`, source: [`T${t.id}#assistant`], createdAt: "now" })),
       entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) });
     memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", createdAt: "now" },
-      operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "term" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
+      operations: Array.from({ length: 10 }, (_, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category: "term" as const, scope: "project" as const, text: `Seed ${i}`, supports: [1], createdAt: "now" })) });
     const result = await memory.consolidate({ sessionId: s.id, branch: "main" });
     const run = memory.store.listRuns(s.id).at(-1)!;
     const audit = JSON.parse(run.response!);
@@ -23,9 +23,9 @@ async function checkMemoryBatch(output: unknown) {
 describe("checkMemoryBatch", async () => {
   test("accepts all four operations and skipped facts", async () => {
     const { problems, value } = await checkMemoryBatch({ operations: [
-      { op: "create", reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] },
-      { op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"] },
-      { op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: "K4", absorb: ["K6"], text: "Merged text.", scope: "project", category: "constraint", supports: ["F2", "F3"] },
+      { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] },
+      { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"] },
+      { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K4", absorb: ["K6"], text: "Merged text.", scope: "project", category: "constraint", supports: ["F2", "F3"] },
       { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K9", supports: ["F5"] },
     ], skipped: [{ fact: "F6", because: "duplicate of F2" }] });
     expect(problems).toEqual([]);
@@ -46,37 +46,37 @@ describe("checkMemoryBatch", async () => {
   });
 
   test("rejects a model-supplied knowledge handle", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "e1", text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("handle"))).toBe(true);
   });
 
   test("rejects an unknown scope", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "term", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "team", category: "term", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("scope"))).toBe(true);
   });
 
   test("rejects an unknown category", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "noting", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("category"))).toBe(true);
   });
 
   test("rejects a supports knowledge that is not a fact id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "term", supports: ["K1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "x", scope: "project", category: "term", supports: ["K1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("K1"))).toBe(true);
   });
 
   test("rejects a knowledge item id embedded in knowledge text", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Supersedes K3.", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("text"))).toBe(true);
   });
 
   test("rejects a malformed update id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "5", text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("visible"))).toBe(true);
   });
 
   test("rejects a merge whose absorb list holds a non-knowledge-id", async () => {
-    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
+    const { problems = [] } = await checkMemoryBatch({ operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["not-an-id"], text: "x", scope: "project", category: "term", supports: ["F1"] }], skipped: [] });
     expect(problems.some((p) => p.includes("not-an-id"))).toBe(true);
   });
 

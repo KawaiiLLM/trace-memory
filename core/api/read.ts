@@ -14,6 +14,15 @@ export type SearchScope = "facts" | "knowledge" | "all" | "raw";
  * could not be avoided: which cap the smallest complete representation missed, and by how much.
  * There is no fourth outcome: compact never hides selected entries to make a tier fit, and core
  * never summarizes with a model. */
+/** 21b "Group projection": the topics of the path-selected applicable knowledge, as references to the
+ * exact commits they were read from. A commit with several labels is referenced by each of its groups,
+ * a commit with none stays available under `unclassified`, and divergent tips remain separate entries:
+ * nothing here clones a knowledge record, collapses two tips or picks a winner. */
+export interface TopicGroups {
+  topics: { topic: string; commits: { knowledgeId: number; commit: number }[] }[];
+  unclassified: { knowledgeId: number; commit: number }[];
+}
+
 export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string) {
@@ -79,6 +88,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   return {
     spend,
     trace,
+    // 21b: a read organization projection over the same selected set the automatic material uses; it
+    // changes no injection order, no scope and no applicability.
+    topicGroups: (sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups => {
+      const groups = new Map<string, { knowledgeId: number; commit: number }[]>();
+      const unclassified: { knowledgeId: number; commit: number }[] = [];
+      for (const { knowledge, revision } of store.listVisibleKnowledge(sessionId, session(sessionId).projectId, headTurnId, branch)) {
+        const reference = { knowledgeId: knowledge.id, commit: revision.id };
+        if (!revision.topics.length) unclassified.push(reference);
+        for (const topic of revision.topics) groups.set(topic, [...(groups.get(topic) ?? []), reference]);
+      }
+      return { topics: [...groups.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(topic => ({ topic, commits: groups.get(topic)! })), unclassified };
+    },
     // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: noting results are injected with the next user message). Two reads, one job each.
     inject: (target: number | { projectId: number } | KnowledgePath): string => {

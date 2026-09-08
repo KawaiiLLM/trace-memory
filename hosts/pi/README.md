@@ -176,7 +176,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   tool, full, cursor, cap})` and `search({query, layer, cursor, cap})` read session-visible
   evidence without visibility restrictions; `note({facts})` writes facts and `memory({operations, skipped})` writes
   knowledge; every knowledge operation carries its own `supports` evidence and a
-  `reason` commit message, whose schema core owns. Main-agent executions call `tools(context)` with kind `manual` and
+  `reason` commit message, and create/update/merge also carry the revision's complete
+  `topics` label set, whose schema core owns. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
 - `/trace` opens the native menu described below; `/trace status` reads status. `/trace project <name>`

@@ -71,8 +71,8 @@ test("first prompt injects project/global knowledge without allocating a session
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   const seeded = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: "now" }, operations: [
-    { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
-    { op: "create", reason: "Initial admission of this conclusion.", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
+    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" },
+    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e2", author: "fixture", text: "全局规则", supports: [recorded.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" },
   ] });
   expect(seeded.ok).toBe(true);
   const injection = await h.prompt();
@@ -137,7 +137,7 @@ test("2026-09-07: deliveries and the first injection are confirmed at agent_sett
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
-  store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" }] });
+  store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" }] });
   // Injection prepared at the prompt, persisted only at settle: a turn that never settles injects again.
   expect((await h.prompt())?.message?.content).toContain("<knowledge>");
   expect(h.entries.some(e => e.data?.injected === true)).toBe(false);
@@ -252,7 +252,7 @@ test("knowledge are injected once per session, only once something exists; later
     facts: [{ turnId: t.id, category: "decision", actor: "user", text: "用 pnpm", source: ["T1#user"], createdAt: "2026-09-06T00:00:00Z" }] });
   if (!recorded.ok) throw new Error("setup");
   h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "2026-09-06T00:00:00Z" }, operations: [
-    { op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
+    { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "t", text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [recorded.facts[0]!.id], createdAt: "2026-09-06T00:00:00Z" }] });
   void p;
   const second = await h.prompt("again");
   expect(second?.message?.content).toContain("<knowledge>");
@@ -302,7 +302,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
     const commit = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations: scopes.map((scope, i) => ({
-      op: "create", reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
+      op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fixture", text: scope === "project" ? "用 pnpm，不要 npm" : "仅当前会话", supports: [fact],
       createdAt: "now", category: "constraint" as const, scope,
     })) });
     expect(commit.ok).toBe(true);
@@ -500,7 +500,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
   expect(h.memory.store.listRuns(1)[0]).toMatchObject({ kind: "manual", branch: "main", rangeFrom: "S1/T1", request: JSON.stringify(note) });
   expect(h.memory.store.listToolCalls(1)).toHaveLength(1);
   await h.prompt("Make it durable"); await h.answer();
-  const batch = { operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
+  const batch = { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] };
   expect(await call("memory", batch)).not.toContain("rejected:");
   expect(h.memory.store.getKnowledge(1)).not.toBeNull();
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ kind: "manual", rangeFrom: "S1/T2", request: JSON.stringify(batch) });
@@ -618,7 +618,7 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   const write = (head: number, branch: string, op: "create" | "update", text: string) => {
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: head, branch });
     const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${head}#user`] }] })).factIds[0];
-    expect(tools[3]!.execute({ operations: [{ op, ...(op === "update" ? { id: "K1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], reason: `${op} from the ${branch} path` }], skipped: [] })).not.toContain("rejected:");
+    expect(tools[3]!.execute({ operations: [{ op, topics: [], ...(op === "update" ? { id: "K1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], reason: `${op} from the ${branch} path` }], skipped: [] })).not.toContain("rejected:");
   };
   write(1, "main", "create", "Root rule");
   const root = [...h.entries];
@@ -849,7 +849,7 @@ test("the footer shows the warning indicator while a retry waits", async () => {
 });
 
 const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-  arguments: { operations: [{ op: "create", reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] } }] });
+  arguments: { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] } }] });
 
 test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagents and branch Consolidators get facts and knowledge changes", async () => {
   const settings = { "noting.triggerTokens": 60, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 };

@@ -24,9 +24,9 @@ function noting(sessionId: number, turnId: number, text = fixture.base, branch =
   return result;
 }
 function knowledge(sessionId: number, factId: number, category: "constraint" | "open" | "dispute" | "goal" | "mechanism" | "term" | "reference" = "constraint",
-  scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time) {
+  scope: "session" | "project" | "global" = "project", text = fixture.knowledge, createdAt = time, topics: string[] = []) {
   const result = memory.store.commitConsolidationRun({ run: { sessionId, branch: "main", kind: "consolidation", createdAt: time },
-    operations: [{ op: "create", reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
+    operations: [{ op: "create", topics, reason: "Initial admission of this conclusion.", handle: "$e1", author: "fake", text, category, scope, supports: [factId], createdAt }],
     consolidated: memory.store.getSession(sessionId)!.projectId === memory.store.getSession(memory.store.getTurn(memory.store.getFact(factId)!.turnId)!.sessionId)!.projectId ? [factId] : [] });
   if (!result.ok) throw new Error(JSON.stringify(result));
   return result.committed[0]!.knowledgeId;
@@ -257,7 +257,7 @@ test("marks bind to current revision, replace its mark, clear it, and do not car
   expect(memory.inject(s.id)).toContain("· verified");
   expect(memory.trace(`K${e}`)).toContain("· verified");
   const edit = memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], createdAt: time }] });
+    op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: fixture.editedKnowledge, category: "constraint", scope: "project", supports: [f.id], createdAt: time }] });
   expect(edit.ok).toBe(true); expect(memory.inject(s.id)).not.toContain("verified");
   expect(memory.trace(`K${e}`)).not.toContain("· verified");
   expect(memory.trace(`K${e}@1`)).toContain("· verified");
@@ -275,7 +275,7 @@ test("literal search finds facts, historical knowledge and raw across projects",
   const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
-    op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], createdAt: time }] });
+    op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], createdAt: time }] });
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
   expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
@@ -427,8 +427,8 @@ test("search marks historical, merged and archived knowledge hits so they do not
   const b = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm is the package manager");
   const c = knowledge(s.id, n.facts[0]!.id, "constraint", "project", "pnpm lockfile is committed");
   const run = { sessionId: s.id, kind: "consolidation" as const, createdAt: time };
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
-  memory.store.commitConsolidationRun({ run, operations: [{ op: "merge", reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
   memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: b, baseCommit: 5, supports: [1], createdAt: time }] });
   const hits = memory.search("pnpm", "knowledge");
   expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
@@ -441,7 +441,7 @@ test("search marks historical, merged and archived knowledge hits so they do not
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {
   const s = session(), t = turn(s.id, "scope raw"), n = noting(s.id, t.id, "scoped fact");
   const k = knowledge(s.id, n.facts[0]!.id, "goal", "project", "shared-then-private goal");
-  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", reason: "Substantive correction of the recorded conclusion.", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], createdAt: time }] });
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: k, baseCommit: 1, text: "private goal now", category: "goal", scope: "session", supports: [1], createdAt: time }] });
   const peer = session(memory.store.getSession(s.id)!.projectId), pt = turn(peer.id, "peer raw");
   memory.store.updateTurn(pt.id, { assistantText: "ok" });
   const trace = memory.tools({ kind: "manual", sessionId: peer.id, branch: "main", currentTurnId: pt.id }).find((d) => d.name === "trace")!;
@@ -450,4 +450,47 @@ test("reads resolve any existing address: another session's history, current rev
   expect(trace.execute({ address: `K${k}` })).toContain("shared-then-private goal");
   expect(trace.execute({ address: `K${k}@2` })).toContain("private goal now");
   expect(trace.execute({ address: `K${k}@3` })).toContain("does not exist");
+});
+
+// ---- 21b 2026-09-08: topic grouping and literal label retrieval ----
+
+test("21b 2026-09-08: one topic spans categories, one commit joins two groups, and a label absent from the text finds that commit once", () => {
+  const { s, f, e } = populated();
+  const a = knowledge(s.id, f.id, "constraint", "project", "The extractor keeps every raw entry", time, ["extraction", "database"]);
+  const b = knowledge(s.id, f.id, "mechanism", "project", "One row per entry, written in the same transaction", time, ["database"]);
+  const c = knowledge(s.id, f.id, "term", "project", "An entry is one native message", time);
+  const groups = memory.topicGroups(s.id);
+  // One subject holds knowledge of two categories; the groups reference the exact commits.
+  expect(groups.topics).toEqual([
+    { topic: "database", commits: [{ knowledgeId: a, commit: a }, { knowledgeId: b, commit: b }] },
+    { topic: "extraction", commits: [{ knowledgeId: a, commit: a }] }]);
+  expect(groups.unclassified).toEqual([{ knowledgeId: e, commit: e }, { knowledgeId: c, commit: c }]);
+  // Sharing a label merges no identity and clones no record: both groups name the same K@commit.
+  expect(memory.store.getKnowledge(a)!.id).not.toBe(memory.store.getKnowledge(b)!.id);
+  expect(memory.store.listKnowledgeRevisions(a)).toHaveLength(1);
+  // The label is absent from every conclusion, and the hit is one line per exact commit.
+  for (const id of [a, b]) expect(memory.store.getKnowledgeRevision(id, id)!.text).not.toContain("database");
+  const hits = memory.search("database", "knowledge").split("\n").filter(l => l.startsWith("[K"));
+  expect(hits).toHaveLength(2);
+  // Several labels, or text and labels together, still return one result per commit.
+  const d = knowledge(s.id, f.id, "reference", "project", "The database schema lives in core/store", time, ["database", "database design"]);
+  const again = memory.search("database", "knowledge").split("\n").filter(l => l.startsWith("[K"));
+  expect(again).toHaveLength(3);
+  expect(again.filter(l => l.startsWith(`[K${d}@${d}]`))).toHaveLength(1);
+});
+
+test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty topics hide nothing", () => {
+  const { s, f } = populated();
+  const labelled = knowledge(s.id, f.id, "goal", "project", "带标签的结论", time,
+    ["禁书目录", "read path", "100%_done", 'say "hi"', "core\\store"]);
+  const plain = knowledge(s.id, f.id, "open", "project", "unlabelled but searchable", time);
+  for (const query of ["禁书目录", "read path", "100%_done", '"hi"', "core\\store"]) {
+    expect(memory.search(query, "knowledge")).toContain(`[K${labelled}@${labelled}]`);
+  }
+  // The serialized JSON around the labels is not searchable content: neither its punctuation nor its escapes.
+  for (const query of ['", "', '["', '\\"hi\\"', '","']) expect(memory.search(query, "knowledge")).not.toContain("[K");
+  // A percent or underscore is a literal character here, exactly as in text search.
+  expect(memory.search("100%", "knowledge")).toContain(`[K${labelled}@`);
+  expect(memory.search("100X_done", "knowledge")).not.toContain("[K");
+  expect(memory.search("unlabelled but searchable", "knowledge")).toContain(`[K${plain}@${plain}]`);
 });

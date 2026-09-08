@@ -155,7 +155,7 @@ test("reads return every knowledge item while injection still applies the scope 
     const note = memory.tools(manual(sessionId, sessionId))[2]!;
     note.execute({ facts: [fact(`T${sessionId}#user`)] });
     memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: "now" }, operations:
-      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
+      (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@${id}]`); // reads are unrestricted

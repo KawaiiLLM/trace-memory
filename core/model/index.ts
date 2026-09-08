@@ -133,6 +133,8 @@ export interface KnowledgeRevision {
   op: KnowledgeOp;
   /** The commit message: why this change was made. Never evidence, scope or applicability (ticket 21a). */
   reason: string;
+  /** Subject labels of this revision: classification only, never scope, lifecycle or citation rights (21b). */
+  topics: string[];
   runId: number | null;
   createdAt: string;
 }
@@ -297,6 +299,7 @@ export interface MemoryOperation {
   scope?: KnowledgeScope;
   supports?: string[];
   reason?: string;
+  topics?: string[];
 }
 export interface MemoryBatch {
   operations: MemoryOperation[];

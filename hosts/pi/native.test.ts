@@ -615,8 +615,14 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(operation.properties).not.toHaveProperty("because");
     expect(operation.properties.reason).toEqual({ type: "string", minLength: 1 });
     expect(operation.additionalProperties).toBe(false);
+    // 21b: the child re-registers the topic labels too — required for the content operations through
+    // the same conditional branch that rejects them on archive.
+    expect(operation.properties.topics).toEqual({ type: "array", items: { type: "string", minLength: 1 } });
+    expect(operation.allOf.at(-1).else.required).toEqual(["text", "category", "scope", "topics"]);
+    expect(operation.allOf.at(-1).then.not.anyOf).toContainEqual({ required: ["topics"] });
     // The declined-fact protocol keeps its own textual because.
     expect(memory.parameters.properties.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
     expect(memory.description).toContain("reason (the commit message, never evidence)");
+    expect(memory.description).toContain("topics (subject labels; the complete replacement set, empty when unclassified)");
   } finally { await f.dispose(); }
 });
