@@ -4,7 +4,7 @@ import { expect, test, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { toolDefinitions } from "../../core/api/index.ts";
-import { hash, messageKey, verifyNativeRequest } from "./branch.ts";
+import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "./branch.ts";
 import { runNative, NotForkable, type NativeTask } from "./native.ts";
 import { recorded } from "../../test/source-fixture.ts";
 
@@ -108,7 +108,7 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
   } finally { await f.dispose(); }
 });
 
-test("19a 2026-09-08: the anthropic-messages child cannot reproduce the parent's cache breakpoint", async () => {
+test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with cache_control stripped from both sides and nothing else", async () => {
   const f = await fixture({}, "fakeanthropic");
   const anthropic = (events: Body[]) => new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
   const reply = (text: string) => anthropic([
@@ -122,17 +122,24 @@ test("19a 2026-09-08: the anthropic-messages child cannot reproduce the parent's
     f.script(() => reply("好的。"));
     await f.turn();
     const run = await settled(f);
-    // The child never sent a request: the gate rejected its body inside onPayload, and the task
-    // fell back to the request-copy runner with the differing path recorded.
     const response = JSON.parse(run.response!);
-    expect(response.fallbackReason).toMatch(/native runner: native prefix mismatch at \$\.messages\.\d+\.content\.\d+\.cache_control/);
-    expect(response.verification.native.passed).toBe(false);
-    expect(response.verification.native.differingPath).toMatch(/^\$\.messages\.\d+\.content\.\d+\.cache_control$/);
-    expect(response.verification.native.capturedHash).toBe(hash(f.sent[0]));
-    expect(response.verification.native.requestHash).not.toBe(response.verification.native.capturedHash);
-    // The child sent nothing: the gate rejected its body inside onPayload, before the request left.
-    // The task completed on the request-copy runner, whose own byte-copied prefix still verifies.
+    // The child really sent its request: the run is native branch mode, verified, with no fallback.
+    expect(run.mode).toBe("branch");
+    expect(response.fallbackReason).toBeUndefined();
     expect(response.verification.passed).toBe(true);
+    expect(response.verification.differingPath).toBe(null);
+    expect(response.verification.normalized).toEqual(["cache_control"]);
+    expect(response.verification.capturedHash).toBe(hash(f.sent[0]));
+    expect(response.verification.requestHash).toBe(hash(f.sent[1]));
+    expect(JSON.parse(run.request!)).toEqual(f.sent[1]);
+    // The raw bodies do differ, and only at the adapter-placed cache breakpoint: the parent's
+    // marker sits on the message the child inherited, the child's on its appended task message.
+    const key = messageKey("anthropic-messages");
+    const raw = verifyNativeRequest(f.sent[0]!, f.sent[1]!, "anthropic-messages", f.sent[1]![key].slice(f.sent[0]![key].length));
+    expect(raw.passed).toBe(false);
+    expect(raw.differingPath).toMatch(/^\$\.messages\.\d+\.content\.\d+\.cache_control$/);
+    expect(JSON.stringify(f.sent[1]![key].at(-1))).toContain("cache_control");
+    expect(verifyForkRequest(f.sent[0]!, f.sent[1]!, "anthropic-messages").passed).toBe(true);
     expect(run.outcome).toBe("success");
   } finally { await f.dispose(); }
 });

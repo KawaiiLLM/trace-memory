@@ -560,15 +560,17 @@ tool definitions, driven through the real installed pi-ai adapter:
   cache markers): **passes**. The child's first body is byte-identical to the captured parent
   body outside the appended messages — system prompt, tool definitions and order, model
   parameters, and the whole message prefix.
-- `anthropic-messages`: **fails**, always, at
-  `$.messages.<parent's last user message>.content.<n>.cache_control`. The adapter places the
-  ephemeral cache breakpoint on *the last user message of the body it is building*. In the
-  parent that was the message the child now inherits; in the child the breakpoint moves to the
-  appended task message, so the inherited message loses a field the captured body has. No
-  public option changes that placement (`cacheRetention: "none"` removes every marker, which
-  differs from the parent too), and reproducing it would need the custom message builder that
-  ticket 19 exists to delete. The verification was **not** weakened and no field was excluded;
-  the mismatch is recorded and the task falls back.
+- `anthropic-messages`: **passes with one normalization** (user ruling 2026-09-08, amending
+  ticket 19 gate 1). The adapter places the ephemeral cache breakpoint on *the last user message
+  of the body it is building*: in the parent that is the message the child inherits, in the
+  child it is the appended task message, so the raw bodies always differ at
+  `$.messages.<parent's last user message>.content.<n>.cache_control`. No public option changes
+  that placement (`cacheRetention: "none"` removes every marker, which differs the other way),
+  and reproducing it would need the custom message builder ticket 19 exists to delete. The
+  marker is a caching hint, not content: the provider's cache lookup walks the identical bytes
+  before it. So the gate (`verifyForkRequest`) compares both bodies with `cache_control`
+  stripped from both sides and **nothing else**; the hashes stay those of the raw bodies and
+  the verification records `normalized: ["cache_control"]`. Any other difference still fails.
 
 Usage is summed from the child's newly generated assistant messages only — copied parent
 responses are restored into the child's state but were never re-sent, so native session

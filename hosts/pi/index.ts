@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
-import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
+import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, stripCacheControl, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
 import { runNative, NotForkable, type NativeTask, type Verification as NativeVerification } from "./native.ts";
 import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
@@ -91,11 +91,6 @@ function addUsage(total: unknown, usage: unknown): unknown {
   if (typeof usage !== "object") return usage;
   const left = (total && typeof total === "object" ? total : {}) as Record<string, unknown>;
   return Object.fromEntries(Object.keys(usage as object).map(key => [key, addUsage(left[key], (usage as Record<string, unknown>)[key])]));
-}
-function stripCacheControl<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(stripCacheControl) as T;
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as object).filter(([k]) => k !== "cache_control").map(([k, v]) => [k, stripCacheControl(v)])) as T;
-  return value;
 }
 function reviewMessage(result: string): string | undefined {
   try { const value = JSON.parse(result); return value.feedback?.role === "user" ? value.feedback.content : undefined; }

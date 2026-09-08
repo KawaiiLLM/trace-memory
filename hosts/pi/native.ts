@@ -8,10 +8,10 @@
 import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
-import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyNativeRequest, type Body } from "./branch.ts";
+import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./branch.ts";
 import type { ToolDefinition } from "../../core/api/index.ts";
 
-export type Verification = ReturnType<typeof verifyNativeRequest> & { key: string; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] };
+export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; rounds: ReturnType<typeof verifyNativeRequest>[] };
 
 /** A child cannot be prepared from this parent state; the caller falls back and records the reason. */
 export class NotForkable extends Error {
@@ -161,7 +161,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     noTools: "all", tools: definitions.map(d => d.name), customTools: definitions });
 
   // --- Run the child.
-  const verification: Verification = { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [],
+  const verification: Verification = { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [], normalized: ["cache_control"],
     differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
   const retries: { attempt: number; error: string }[] = [];
   let usage: unknown, request: unknown, rounds = 0, failure: string | undefined, terminal: { stopReason?: string; errorMessage?: string; content?: unknown } | undefined;
@@ -178,13 +178,11 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     if (!Array.isArray(messages)) throw new Error(`Native child body has no ${key} array`);
     if (!previous) {
       // The gate: the whole captured parent body against this body with the child's own appended
-      // messages removed. Nothing is excluded from the comparison.
-      const appended = messages.slice((task.captured[key] as unknown[] | undefined)?.length ?? -1);
-      Object.assign(verification, verifyNativeRequest(task.captured, body, api, appended));
+      // messages removed. Only `cache_control` markers are ignored (verifyForkRequest).
+      Object.assign(verification, verifyForkRequest(task.captured, body, api));
       if (!verification.passed) throw new NotForkable(`native prefix mismatch at ${verification.differingPath}`, { ...verification });
     } else {
-      const appended = messages.slice((previous[key] as unknown[]).length);
-      const checked = verifyNativeRequest(previous, body, api, appended);
+      const checked = verifyForkRequest(previous, body, api); // later rounds: same gate against the previous round
       verification.rounds.push(checked);
       if (!checked.passed) { verification.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
     }

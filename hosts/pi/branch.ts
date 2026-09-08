@@ -80,6 +80,25 @@ export function appendNativeRequest(payload: Body, api: string, appended: unknow
   return { ...snapshot(payload), [key]: [...snapshot(payload[key]), ...snapshot(appended)] };
 }
 
+/** Remove provider cache markers (`cache_control`) everywhere; the only field the fork gate ignores. */
+export function stripCacheControl<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(stripCacheControl) as T;
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as object).filter(([k]) => k !== "cache_control").map(([k, v]) => [k, stripCacheControl(v)])) as T;
+  return value;
+}
+
+/** The native fork gate (user ruling 2026-09-08, ticket 19 gate 1 amendment): the captured parent body
+ * and the child's outgoing body are compared with `cache_control` markers stripped from both sides and
+ * nothing else. pi-ai's Anthropic adapter moves the ephemeral breakpoint to the body's last user message,
+ * so a child that appends a message cannot keep the parent's marker; the marker is a caching hint, not
+ * content, and the provider's cache lookup walks the identical bytes before it. Hashes are of the raw bodies. */
+export function verifyForkRequest(payload: Body, request: Body, api: string) {
+  const key = messageKey(api), captured = stripCacheControl(payload), outgoing = stripCacheControl(request);
+  const messages = outgoing[key];
+  const appended = Array.isArray(messages) ? messages.slice((captured[key] as unknown[] | undefined)?.length ?? messages.length) : [];
+  return { ...verifyNativeRequest(captured, outgoing, api, appended), capturedHash: hash(payload), requestHash: hash(request), normalized: ["cache_control"] as const };
+}
+
 export function verifyNativeRequest(payload: Body, request: Body, api: string, expected: unknown[]) {
   const key = messageKey(api), messages = request[key];
   const appendedMessages = Array.isArray(messages) ? messages.slice(messages.length - expected.length) : [];
