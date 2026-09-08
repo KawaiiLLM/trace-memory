@@ -505,16 +505,40 @@ round with no fallback; the record retains the last request actually sent and
 the failed comparison. A prior committed batch remains committed. Provider/auth failures after a passed
 comparison remain branch failures; they do not trigger another billable call.
 
-The small core contract correction for this ticket exposes the already-frozen
-full noting input as `subagentInput`, accepts the actual returned `mode`, and
-preserves `verification`/`fallbackReason` in the response envelope. Without it,
-fallback would send range-only context and falsely record branch mode. No store
-schema or consolidation behavior changed.
+Fallback keeps the run honest: it accepts the actual returned `mode`, records
+`requestedMode` beside it, and preserves `verification`/`fallbackReason` in the response
+envelope. Since 19b the full fresh-context context is composed from the same frozen
+material rather than shipped as a second core string, so a fallback cannot send
+range-only context or falsely record branch mode. No store schema changed.
 
-## Native runner (19a, opt-in)
+## Message composition (19b)
 
-`nativeRunner: true` replaces the request-copy runner for branch-mode work with a real
-Pi child session. `native.ts` opens the parent's own JSONL through an **independent**
+`compose.ts` is the only place in this repository that decides what a model message contains.
+Core freezes one `material` object per run — entry views, head reply, source index, knowledge
+lines, fact lines, fact addresses, negated-evidence reminders, budget receipts — and composes
+nothing. `composeMaterial(input, mode)` lays those parts out; `composeTask(input, mode)` returns
+the messages:
+
+- **Inherited context (`branch`)**: one user message, `prompt` then `Range: …`, the head turn's
+  final reply and the `Sources:` index — nothing else, because the raw turns, the delivered
+  facts and the injected knowledge are already in that conversation (user ruling 2026-09-06
+  08:53). Consolidation sends the range, `Facts to integrate: F…` and the reminders. A fork has
+  no system slot of its own, so the instructions ride in the appended user message.
+- **Fresh context (`subagent`)**: `prompt` becomes the system prompt and the message carries the
+  whole rendered material under its headers, receipts last.
+
+Both runners call it, so an inherited fork and a fresh subagent send the same bytes for the same
+mode, and the byte-level layout rulings are pinned in `compose.test.ts`. Consolidation's review
+guidance is read back from the `memory` receipt with core's own `input.reviewFeedback(result)`;
+the adapter only chooses how to put that message in front of the model.
+
+## Native runner (19a/19b, opt-in)
+
+`nativeRunner: true` replaces the request-copy runner with real Pi child sessions for **both**
+modes. Branch work runs in a child forked from the parent session file; every subagent task —
+explicit subagent mode, a fork that could not be prepared, and borrowed closed-session catch-up —
+runs in a fresh private child. With the switch on the request-copy runner is reached only if the
+native child itself cannot be constructed (19c deletes it). `native.ts` opens the parent's own JSONL through an **independent**
 `SessionManager` whose session directory is the runs directory, calls
 `createBranchedSession` at the parent's persisted leaf, and hands that manager to
 `createAgentSession`. The foreground manager is never passed in and never mutated;
@@ -541,9 +565,29 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
   the parent's request/transport identity for cache affinity. The child's own SessionManager
   id and file stay its own, as does Trace Memory's target attribution.
-- **Task delivery.** The task material core supplies is the child's user prompt; the
+- **Task delivery.** The message `compose.ts` builds is the child's user prompt; the
   Consolidation review answer is delivered as a native user message queued with
   `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
+
+### The fresh child (19b subagent parity)
+
+The same `runNative` serves `mode: "subagent"` with four differences and no second runtime:
+
+- The manager is `SessionManager.create(cwd, runsDir)` — Pi's own new-session constructor, in the
+  runs directory, with no parent file and therefore no inherited history. Its `getSessionFile()`
+  is the run's `nativeLog`.
+- The system prompt is core's domain prompt (through the same inline `before_agent_start`
+  extension), and only the four memory tools core bound for the run are registered at all: there
+  is no parent body whose tool list has to be matched.
+- No gate runs and no `verification` is recorded, for the same reason. Everything else — the
+  execution whitelist, sequential execution, disabled discovery, usage from new assistant
+  messages only, outcome from the terminal response, cancellation, disposal — is identical.
+- The child keeps its own `agent.sessionId`; the parent's request identity is a fork-only
+  decision.
+
+A fork that cannot be prepared records `requestedMode: "branch"`, run `mode: "subagent"` and
+`fallbackReason: "native runner: <reason>"`, warns once per Pi session, and continues on the
+fresh child without a second billable attempt (nothing had been sent).
 
 `agent.onPayload` is wrapped (the extension runner's own handler is still called): the first
 body is checked against the captured parent request with `verifyNativeRequest`, appended
@@ -580,7 +624,7 @@ The outcome comes from the child's terminal assistant response, never from `prom
 resolving; a provider error after a memory tool committed leaves the commit in place and core
 records the problem.
 
-Limits carried into 19b/19c: the native path still requires the parent request capture,
+Limits carried into 19c: the fork path still requires the parent request capture,
 because that capture is what the gate compares against; the runs directory is never pruned;
 a gate rejection after the child file was created leaves that (unused) child log behind; and
 no live provider run was made — every check above uses stubbed HTTP with the real adapters.

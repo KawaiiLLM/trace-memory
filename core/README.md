@@ -2,13 +2,31 @@ core/ is host-agnostic: it must not import any host SDK.
 
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
-- noting/    freeze input, provide tools, record the last provider request and final text.
+- noting/    freeze the task material, provide tools, record the last provider request and final text.
 - api/tools.ts  four bound model-facing tools; atomic note validation and commit.
-- consolidation/  build Consolidation input and NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
-- render/  one renderer for noting input, compaction tail, branch summary, trace; XML injection blocks.
+- consolidation/  freeze the Consolidation material, produce NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
+- render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
-Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = prefix-identical call, or subagent mode = fresh call). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
+Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: branch mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
+
+**Core assembles no model context (ticket 19b).** `runAgent` receives structured task material, never a
+system or user message, a provider body or a mode-specific concatenated string: the domain prompt and
+its hash, the frozen range and knowledge commits, the mode, the tools, `reportRequest`, `entryAudit`,
+and one `material` object of rendered, budgeted parts — for Noting the ordered entry views, the head
+reply, the source index, the knowledge lines, the earlier facts and the budget receipts; for
+Consolidation the fact addresses, the fact lines, the knowledge lines, the already-consolidated facts,
+the negated-evidence reminders and the receipts. Which parts an execution mode needs, which header
+introduces them and which message carries them is the adapter's decision (Pi: `hosts/pi/compose.ts`).
+Consolidation additionally supplies `reviewFeedback(toolResult)`, core's own reader of a `memory`
+receipt: the adapter delivers the returned guidance as a user message but does not parse the protocol.
+
+**Audit availability.** A host that cannot expose a provider request returns
+`audit: {available: false, reason}` instead of `request`; core records the limitation in the run
+record and does not report a missing request. A host that returns neither a request nor that
+declaration still gets the "runAgent must return the exact provider request" problem. The run
+record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
+visible as requested-versus-actual.
 
 ## Runtime and verification
 
@@ -44,7 +62,7 @@ A committed batch keeps outcome `success` even if the provider subsequently
 fails or is cancelled; the trailing problem is recorded without undoing business
 writes (user ruling 2026-09-07).
 
-`runAgent` receives `NotingAgentInput` with the four `tools` definitions:
+`runAgent` receives `NotingAgentInput` (material and control, above) with the four `tools` definitions:
 `trace`, `search`, `note`, `memory`. Each has a name, description, JSON-schema
 parameters, and synchronous `execute(input): string`. Hosts execute calls and
 continue the provider conversation until it stops. `reportRequest(request)`
@@ -75,10 +93,19 @@ The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
 The noting config chooses branch/subagent mode; provider prefix verification
-remains the host's responsibility, as is the choice of runner behind a mode: the Pi
-host can serve branch mode either by copying the captured request or, behind its
-own `nativeRunner` switch, by running a native Pi child session (19a). Core sees the
-same contract either way.
+remains the host's responsibility, as is the choice of runner behind a mode: with its
+own `nativeRunner` switch on, the Pi host runs branch work in a native Pi child forked
+from the session file and every subagent task — explicit, fallback or borrowed — in a
+fresh native child (19a, 19b); with it off, both modes use the request-copy runner.
+Core sees the same contract either way.
+
+**Budget before selection (ticket 19 gate 4).** The host reports its available material budget
+(`capacity {inputTokens, prefixTokens}`, the model window minus output reserve and inherited prefix)
+in the same `noting(...)` call that starts the task. Core selects and freezes once inside it: it
+prices the material it froze part by part, drops the newest entries until the batch fits, and leaves
+every unselected entry pending. Extra context a host can supply is never evidence permission — the
+frozen range bounds what may be written whatever the model can see. If the oldest entry alone does
+not fit, core raises a capacity problem and advances nothing.
 
 ## Rendering decisions
 
@@ -113,11 +140,11 @@ in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
 
-In branch mode the noting `input` carries the range, head reply and frozen source index: the raw turns, the
-facts delivered after earlier notings, and the injected knowledge are already in the
+In branch mode the host sends the range, head reply and frozen source index from the material: the
+raw turns, the facts delivered after earlier notings, and the injected knowledge are already in the
 conversation the host appends to. The native prefix remains uncompressed; branch
 Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
-Noting and fallback carry the shared entry views below.
+Noting and fallback send the shared entry views below. Core freezes one material for both.
 
 Noting context uses the episodic budget for all rendered raw plus recent facts
 by descending timestamp, then id. Raw is never dropped; overage is receipted.

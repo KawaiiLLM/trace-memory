@@ -1,11 +1,11 @@
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { toolDefinitions } from "../../core/api/index.ts";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "./branch.ts";
-import { runNative, NotForkable, type NativeTask } from "./native.ts";
+import { runNative, NotForkable, type NativeForkTask } from "./native.ts";
 import { recorded } from "../../test/source-fixture.ts";
 
 // 19a exercises the real installed SDK: a real Pi SessionManager and AgentSession for the parent, a
@@ -56,20 +56,21 @@ async function fixture(config: Record<string, unknown> = {}, provider = "fake") 
   return { h, parent, model, agentDir, sessionsDir, sent, original,
     manager: () => manager!,
     script: (fn: (body: Body, index: number) => Response) => { respond = fn; },
-    /** One real parent turn, then the extension hooks the foreground would have fired. */
-    async turn(prompt = "用 pnpm，不要 npm") {
+    /** One real parent turn, then the extension hooks the foreground would have fired. `capture`
+     * off omits `before_provider_request`, the hook that supplies the fork's parent body. */
+    async turn(prompt = "用 pnpm，不要 npm", options: { capture?: boolean } = {}) {
       await this.h.emit("before_agent_start", { prompt });
       const at = sent.length;
       await parent.prompt(prompt);
       const captured = sent[at]!;
-      await this.h.emit("before_provider_request", { payload: captured });
+      if (options.capture !== false) await this.h.emit("before_provider_request", { payload: captured });
       await this.h.emit("agent_settled");
       await this.h.drain();
       return captured;
     },
     /** The same child the host builds, for the checks that need it without the host's scheduling. */
-    task(captured: Body, overrides: Partial<NativeTask> = {}): NativeTask {
-      return { parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
+    task(captured: Body, overrides: Partial<NativeForkTask> = {}): NativeForkTask {
+      return { mode: "branch", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
         checkpoint: manager!.getLeafId()!, runsDir: join(h.dir, "runs", manager!.getSessionId()), cwd: h.dir, agentDir,
         model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };
@@ -337,5 +338,93 @@ test("19a 2026-09-08: each child response's reported cache read is recorded as a
     expect(response.verification.cache_read).toBe(12);
     expect(response.usage.cacheRead).toBe(12);
     expect(run.outcome).toBe("success");
+  } finally { await f.dispose(); }
+});
+
+// ------------------------------------------ 19b: subagent parity on the same native runner
+test("19b 2026-09-08: an explicit subagent task runs in a fresh native child with only the memory tools and no legacy loop", async () => {
+  const f = await fixture({ "noting.branchModeDefault": false });
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(run.mode).toBe("subagent");
+    expect(run.outcome).toBe("success");
+    const response = JSON.parse(run.response!);
+    expect(response.requestedMode).toBe("subagent");
+    expect(response.verification).toBeUndefined(); // no parent body to reproduce, so no gate
+    // The fresh child: core's domain prompt as its system prompt and only the four memory tools.
+    const child = f.sent[1]!;
+    expect(child.messages[0].role).toBe("system");
+    expect(String(child.messages[0].content)).toContain("Noting (fact extraction)");
+    expect(child.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
+    expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
+    // Its own private session in the runs directory, not a fork of the parent file.
+    const log = response.nativeLog as string;
+    expect(log.startsWith(join(f.h.dir, "runs", f.manager().getSessionId()))).toBe(true);
+    expect(readFileSync(log, "utf8")).not.toContain('"customType":"trace-memory"');
+    expect(readFileSync(f.original.file, "utf8")).toContain('"customType":"trace-memory"');
+    expect(f.manager().getSessionId()).toBe(f.original.id);
+    // No legacy custom tool loop ran: the request-copy runner would have gone through the registry.
+    expect(f.h.conversations).toEqual([]);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+  } finally { await f.dispose(); }
+});
+
+test("19b 2026-09-08: an unforkable branch task falls back to the native subagent and records requested and actual mode", async () => {
+  const f = await fixture();
+  try {
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn("用 pnpm，不要 npm", { capture: false }); // no captured parent body: the fork cannot be prepared
+    const run = await settled(f);
+    expect(run.mode).toBe("subagent");
+    const response = JSON.parse(run.response!);
+    expect(response.requestedMode).toBe("branch");
+    expect(response.fallbackReason).toContain("native runner: No current-branch provider payload captured");
+    expect(response.nativeLog).toBeTruthy();
+    expect(f.h.conversations).toEqual([]); // the request-copy runner did not serve the fallback
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(f.h.notices.join("\n")).toContain("fell back to subagent mode");
+  } finally { await f.dispose(); }
+});
+
+test("19b 2026-09-08: the fresh child activates no inherited extension", async () => {
+  const f = await fixture({ "noting.branchModeDefault": false });
+  const marker = join(f.h.dir, "extension-loaded");
+  try {
+    // A global Pi extension the child would discover if resource discovery were on.
+    mkdirSync(join(f.agentDir, "extensions"), { recursive: true });
+    writeFileSync(join(f.agentDir, "extensions", "probe.js"),
+      `import { writeFileSync } from "node:fs";\nexport default function (pi) { writeFileSync(${JSON.stringify(marker)}, "loaded"); pi.registerTool({ name: "probe", label: "probe", description: "probe", parameters: {}, execute: async () => ({ content: [], details: {} }) }); }\n`);
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(run.outcome).toBe("success");
+    expect(existsSync(marker)).toBe(false); // the extension was never loaded, so it never ran
+    expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["trace", "search", "note", "memory"]);
+    expect(f.h.memory.store.listRuns(1)).toHaveLength(1); // and started no second worker
+  } finally { await f.dispose(); }
+});
+
+test("19b 2026-09-08: Consolidation's two submissions and its review round run in the fresh child", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerUnconsolidatedFacts": 1 });
+  try {
+    f.script(body => !worker(body, "Consolidation") ? say("好的。")
+      : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
+    await f.turn();
+    f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
+      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+    recorded(f.h.memory, 1, "main", 1);
+    await f.turn("tick");
+    const run = await settled(f, "consolidation");
+    expect(run.mode).toBe("subagent");
+    expect(run.outcome, run.response ?? "").toBe("success");
+    const response = JSON.parse(run.response!);
+    expect(response.toolCalls).toHaveLength(2); // candidate, then the answered resubmission
+    expect(response.output).toBe("Integrated.");
+    // Core's review guidance reached the fresh child as a user message before its second submission.
+    const review = f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1);
+    expect(JSON.stringify(review)).toContain("NEAR:");
+    expect(f.h.conversations).toEqual([]);
   } finally { await f.dispose(); }
 });

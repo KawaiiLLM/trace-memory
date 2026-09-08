@@ -6,14 +6,15 @@ import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-w
 import { complete } from "@earendil-works/pi-ai/compat";
 import { retryAssistantCall, type Tool, type ToolCall } from "@earendil-works/pi-ai";
 import { buildRequest, verifyRequest, appendNativeRequest, verifyNativeRequest, stripCacheControl, messageKey, hash, snapshot, type Body, type Appended } from "./branch.ts";
-import { runNative, NotForkable, type NativeTask, type Verification as NativeVerification } from "./native.ts";
+import { runNative, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
+import { composeTask } from "./compose.ts";
 import { DEFAULT_CONFIG, TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type Registry = ExtensionContext["modelRegistry"];
 type Conversation = Parameters<Registry["complete"]>[1];
 type Reply = Awaited<ReturnType<Registry["complete"]>>;
 type FlatConfig = Record<string, string | number | boolean>;
-type NativeModel = NativeTask["model"];
+type NativeModel = NativeForkTask["model"];
 const tag = "trace-memory";
 const contextMargin = 0.85; // reserve 15% for the shared estimator and provider framing
 const now = () => new Date().toISOString();
@@ -92,10 +93,6 @@ function addUsage(total: unknown, usage: unknown): unknown {
   const left = (total && typeof total === "object" ? total : {}) as Record<string, unknown>;
   return Object.fromEntries(Object.keys(usage as object).map(key => [key, addUsage(left[key], (usage as Record<string, unknown>)[key])]));
 }
-function reviewMessage(result: string): string | undefined {
-  try { const value = JSON.parse(result); return value.feedback?.role === "user" ? value.feedback.content : undefined; }
-  catch { return undefined; }
-}
 
 // Pi's own retry settings: settings.json `retry` from the agent dir (PI_CODING_AGENT_DIR or ~/.pi/agent),
 // overridden by the project's .pi/settings.json, with Pi's defaults. Read as files: a value import of Pi's
@@ -156,9 +153,14 @@ export default function (pi: ExtensionAPI) {
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
           throw new Error("Noting capacity: provider request exceeds model context with output reserved");
       };
-      // 19a: the opt-in native path. Pi's own child AgentSession, forked at the persisted leaf of
-      // this branch, runs the task; the request-copy runner below stays the default and the
-      // fallback. Subagent mode and borrowed (closed-session) work never take this path.
+      // The composed messages of this run: everything about layout lives in compose.ts, and both
+      // runners below use it, so an inherited fork and a fresh subagent send the same bytes for the
+      // same mode (19b). Core supplies material only.
+      const composed = (selected: "branch" | "subagent") => composeTask(input, selected);
+      // 19a/19b: the opt-in native path. A branch task runs in Pi's own child AgentSession forked at
+      // the persisted leaf; an unforkable branch task and every subagent task (explicit, fallback or
+      // borrowed closed-session work) run in a fresh private child session. With the switch on, the
+      // request-copy runner below is not used unless the native child cannot be prepared at all.
       if (input.mode === "branch" && flat.nativeRunner === true) {
         try {
           const captured = session.capture;
@@ -169,10 +171,10 @@ export default function (pi: ExtensionAPI) {
           const checkpoint = callContext.sessionManager.getLeafId();
           if (!checkpoint) throw new NotForkable("The parent session has no persisted leaf entry");
           const native = await runNative({
-            parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
+            mode: "branch", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
-            task: `${input.prompt}\n\n${input.input}`, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
-            signal: input.signal, feedback: input.kind === "consolidation" ? reviewMessage : undefined,
+            task: composed("branch").message, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
             onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
             onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
           });
@@ -183,10 +185,36 @@ export default function (pi: ExtensionAPI) {
             ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
         } catch (error) {
           if (!(error instanceof NotForkable)) throw error;
-          // Nothing was sent and nothing was committed: this task continues on the old runner.
+          // Nothing was sent and nothing was committed: this task continues as a native subagent.
           fallbackReason = `native runner: ${error.message}`;
           if (error.verification) verification = { rounds: [], native: error.verification }; // a rejected gate still records both hashes
           if (!session.notified) { contextNotice(input.kind, fallbackReason); session.notified = true; }
+        }
+      }
+      // Native subagent parity (19b): explicit subagent mode, a fork fallback and borrowed
+      // closed-session work all run in the same native runner, on a fresh private SessionManager in
+      // the runs directory. No second Pi model/tool runtime is kept for fallback.
+      if (flat.nativeRunner === true) {
+        const fresh = composed("subagent");
+        try {
+          const native = await runNative({
+            mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
+            model: model as unknown as NativeModel, systemPrompt: fresh.systemPrompt!, task: fresh.message,
+            tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
+            onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
+            onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
+          });
+          mode = "subagent";
+          usage = native.usage; request = native.request ?? request;
+          retries.splice(0, retries.length, ...native.retries);
+          return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason,
+            ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
+        } catch (error) {
+          if (!(error instanceof NotForkable)) throw error;
+          // The child could not be prepared and nothing was sent: the request-copy runner below
+          // still serves this task until 19c deletes it.
+          fallbackReason = fallbackReason ? `${fallbackReason}; native subagent: ${error.message}` : `native subagent: ${error.message}`;
         }
       }
       // One loop for both modes (pi-om's observer shape): handle a reply, execute its tool calls,
@@ -224,7 +252,7 @@ export default function (pi: ExtensionAPI) {
             catch (error) { content = `rejected: ${String(error)}`; }
             return { role: "toolResult" as const, toolCallId: call.id, toolName: call.name, content: [{ type: "text" as const, text: content }], isError: rejected(call.name, content), timestamp: Date.now() };
           });
-          const feedback = input.kind === "consolidation" ? results.flatMap(r => { const f = reviewMessage(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
+          const feedback = input.kind === "consolidation" ? results.flatMap(r => { const f = input.reviewFeedback(r.content[0]!.text); return f ? [{ role: "user" as const, content: f, timestamp: Date.now() }] : []; }) : [];
           suffix = [reply, ...results, ...feedback];
         }
         return { reply, usage, retries };
@@ -249,7 +277,7 @@ export default function (pi: ExtensionAPI) {
               return entry.role !== "assistant" || entry.calls.length > 0 || !input.range.to.endsWith(`/T${entry.turnId}`);
             })) throw new Error("Captured prefix does not contain selected source entries");
             prefix = captured.payload;
-            appended = [{ role: "user", text: `${input.prompt}\n\n${input.input}` }];
+            appended = [{ role: "user", text: composed("branch").message }];
           }
           candidate = buildRequest(prefix, model.api, appended);
           // The Anthropic adapter enforces this after onPayload; audit that exact body.
@@ -297,7 +325,8 @@ export default function (pi: ExtensionAPI) {
         }
       }
       // Subagent mode: a fresh call with the four façade definitions; the conversation grows by each round's suffix.
-      let conversation: Conversation = { systemPrompt: input.prompt, messages: [{ role: "user", content: fallbackReason ? input.subagentInput : input.input, timestamp: Date.now() }],
+      const fresh = composed("subagent");
+      let conversation: Conversation = { systemPrompt: fresh.systemPrompt, messages: [{ role: "user", content: fresh.message, timestamp: Date.now() }],
         tools: toolDefinitions as unknown as Tool[] };
       const { reply } = await converse(suffix => {
         conversation = { ...conversation, messages: [...conversation.messages, ...suffix] }; // once per round

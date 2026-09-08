@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../test/source-fixture.ts";
+import { TraceMemory, materialText, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../test/source-fixture.ts";
 import fixture from "../../test/fixtures/noting/turns.json";
 import memories from "../../test/fixtures/noting/facts.json";
 
@@ -59,7 +59,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   const pending = noting(first.id);
   const second = turn(first.id, 1);
   expect(calls[0]!.range.to).toBe(`S${sessionId}/T${first.id}`);
-  expect(calls[0]!.input).not.toContain(second.userPrompt!);
+  expect(materialText(calls[0]!)).not.toContain(second.userPrompt!);
   resolve(success([batch(first.id)]));
   const result = await pending;
   expect(result.outcome).toBe("success");
@@ -67,9 +67,9 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#user`], support: [["F1", "weak"]] })])]));
   await noting(second.id);
-  expect(calls[1]!.input).toContain(second.userPrompt!);
-  expect(calls[1]!.input).toContain("Recent facts (newest first):\n\n[F1]");
-  expect(calls[1]!.input).not.toContain(first.userPrompt!);
+  expect(materialText(calls[1]!)).toContain(second.userPrompt!);
+  expect(calls[1]!.material.facts[0]).toContain("[F1]");
+  expect(materialText(calls[1]!)).not.toContain(first.userPrompt!);
   expect(memory.store.sourcePath(sessionId, "main", second.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "main", second.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(2);
@@ -95,7 +95,7 @@ test("switching branch while pending preserves the old delivery and excludes the
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(sessionId, "old").map((d) => d.branch)).toEqual(["old"]);
   expect(memory.store.listPendingDeliveries(sessionId, "new")).toEqual([]);
-  expect(calls[1]!.input).not.toContain(`[S${sessionId}/T${old.id}]`);
+  expect(materialText(calls[1]!)).not.toContain(`[S${sessionId}/T${old.id}]`);
   expect(memory.store.getRun(1)?.branch).toBe("old");
 });
 
@@ -185,7 +185,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
   expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
-  expect(calls[1]!.input).toContain("[K1@1]");
+  expect(calls[1]!.material.knowledge.join("\n")).toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
     { op: "update", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], because: [1], createdAt: time },
   ] });
@@ -195,7 +195,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   expect(JSON.parse(run.request!)).toEqual(request);
   expect(run.model).toBe("fake-model"); expect(run.promptHash).toMatch(/^[0-9a-f]{64}$/);
-  expect(run.request).not.toBe(calls[1]!.input);
+  expect(run.request).not.toBe(materialText(calls[1]!));
 });
 
 const golden = (name: string) => readFileSync(new URL(`../../test/fixtures/noting/${name}.txt`, import.meta.url), "utf8").trimEnd();
@@ -208,7 +208,7 @@ test("fixture turn golden and noting input use identical rendering with receipts
   script.push(async (input) => {
     // 17a: automatic Raw uses completed entries; explicit trace retains its independent full read.
     const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
-    expect(input.input.split("Raw:\n\n")[1]).toBe(views);
+    expect(input.material.entries.map(e => e.view).join("\n\n")).toBe(views);
     expect(input.tools[0]!.execute({ address: "T1", tool: 2, full: true })).toBe(memory.trace("T1", { tool: 2, full: true }));
     return success([]);
   });
@@ -243,9 +243,9 @@ test("raw exceeding the episodic budget is retained, while older facts are dropp
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   memory.close(); open({ render: { episodicBlockTokens: 1 } });
   const second = turn(first.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.input).toContain(second.assistantText!);
-  expect(calls[1]!.input).toContain("raw overage:");
-  expect(calls[1]!.input).toContain("omitted 1 older facts; expand: F1");
+  expect(materialText(calls[1]!)).toContain(second.assistantText!);
+  expect(calls[1]!.material.receipts.join("\n")).toContain("raw overage:");
+  expect(calls[1]!.material.receipts.join("\n")).toContain("omitted 1 older facts; expand: F1");
 });
 
 test("stdout keeps head and tail; stderr keeps tail; reports keep head and tail", () => {
@@ -274,11 +274,11 @@ test("knowledge budgets keep protected categories and omit whole later categorie
   })) });
   memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
   const second = turn(first.id, 1); script.push(async () => success([])); await noting(second.id);
-  const input = calls[1]!.input;
+  const input = materialText(calls[1]!);
   for (const category of categories.slice(0, 3)) expect(input).toContain(`[${category}/project]`);
   for (const category of categories.slice(3)) {
     expect(input).not.toContain(`[${category}/project]`);
-    expect(input).toContain(`omitted 1 ${category} knowledge; expand: K`);
+    expect(calls[1]!.material.receipts.join("\n")).toContain(`omitted 1 ${category} knowledge; expand: K`);
   }
 });
 
@@ -287,7 +287,7 @@ test("recent facts are ordered by timestamp freshness rather than insertion id",
   const later = memory.store.appendTurn({ sessionId, parentTurnId: first.id, kind: "turn", assistantText: "later", startedAt: "2026-08-16 03:00" });
   script.push(async () => success([batch(later.id), batch(first.id)])); await noting(later.id);
   const second = turn(later.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.input.indexOf("[F1]")).toBeLessThan(calls[1]!.input.indexOf("[F2]"));
+  expect(materialText(calls[1]!).indexOf("[F1]")).toBeLessThan(materialText(calls[1]!).indexOf("[F2]"));
 });
 
 test("reopening the database preserves the run, facts, watermark and delivery", async () => {

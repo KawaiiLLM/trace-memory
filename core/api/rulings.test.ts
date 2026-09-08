@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, materialText, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
@@ -56,7 +56,7 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   expect(rendered).toContain("[omitted 1 lines, 400 characters]");
 });
 
-test("08:53 with 2026-09-07 premise repair: branch uses conversation context; subagent carries the raw", async () => {
+test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an inherited run needs are the head reply and the source index", async () => {
   const { s, t } = session();
   // 17c 2026-09-08 supersedes concurrent sibling admission. A failed input probe leaves the
   // same evidence pending for the subagent comparison; exact branch bytes remain the ruling.
@@ -68,12 +68,15 @@ test("08:53 with 2026-09-07 premise repair: branch uses conversation context; su
   await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("branch");
-  // The premise repair adds only the missing final reply and source index.
-  expect(branch!.input).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[Source entry id: T${t.id}#assistant]\n好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
-  expect(branch!.subagentInput).toBe(subagent!.input);
+  // The premise repair supplies the missing final reply and the source index as their own parts.
+  expect(branch!.material.head).toBe(`[Source entry id: T${t.id}#assistant]\n好的。`);
+  expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
+  // One frozen material serves both modes; no field of it is a composed message, and the mode-specific
+  // layout (which parts go out, under which header) is the adapter's, pinned in hosts/pi/compose.test.ts.
+  expect(branch!.material).toEqual(subagent!.material);
+  expect(Object.values(branch!.material).some(part => typeof part === "string" && part.includes("Range: "))).toBe(false);
   expect(branch!.prompt).toContain("already in this conversation");
-  expect(subagent!.input).toContain("Raw:");
-  expect(subagent!.input).toContain("用 pnpm，不要 npm");
+  expect(materialText(subagent!)).toContain("用 pnpm，不要 npm");
 });
 
 test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does not resolve", () => {
@@ -254,19 +257,12 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id });
   const input = calls[0]!;
   expect(input.mode).toBe("branch");
-  expect(input.input).toContain(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
-  expect(input.input).toContain(`Sources:\nT${first.id}#user`);
-  expect(input.input).toContain(`T${head.id}#t1 tool=Bash`);
-  expect(input.input).not.toContain("PRIVATE USER TAIL");
-  expect(input.input).not.toContain("PRIVATE TOOL RESULT");
-  expect(input.input).toBe(`Range: S1/T2..S1/T3
-
-[Source entry id: T3#assistant]
-Final-only finding: result result result result result result result result result result verified.
-
-Sources:
-T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply
-T3#user Check it | T3#assistant Final-only finding: result result result result result resul | T3#t1 tool=Bash {"command":"check"}`);
+  expect(input.material.head).toBe(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
+  expect(input.material.sources).toEqual([
+    `T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply`,
+    `T3#user Check it | T3#assistant Final-only finding: result result result result result resul | T3#t1 tool=Bash {"command":"check"}`]);
+  expect(input.material.head).not.toContain("PRIVATE USER TAIL");
+  expect(input.material.sources.join("\n")).not.toContain("PRIVATE TOOL RESULT");
 });
 
 test("2026-09-07: branch source previews keep one line and at most 60 Unicode characters without a final reply", async () => {
@@ -275,7 +271,8 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
-  expect(calls[0]!.input).toBe(`Range: S1/T2..S1/T2\n\nSources:\nT2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`);
+  expect(calls[0]!.material.head).toBe(null);
+  expect(calls[0]!.material.sources).toEqual([`T2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`]);
 });
 
 test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix #%s renders only its part", (part) => {
@@ -521,7 +518,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
     memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
       const input = raw as import("./index.ts").ConsolidationAgentInput;
       expect(input.readKnowledgeCommits.map(r => r.commit)).toEqual(expected);
-      for (const id of expected) expect(input.input).toContain(`[K1@${id}]`);
+      for (const id of expected) expect(input.material.knowledge.join("\n")).toContain(`[K1@${id}]`);
       const batch = { operations: [{ op: "create", ...content(path.fact, "Use blue tiles") }], skipped: [] };
       input.reportRequest({ round: 1 });
       const first = JSON.parse(input.tools[3]!.execute(batch));

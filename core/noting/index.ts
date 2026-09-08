@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { finish, renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
+import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -19,6 +19,23 @@ export interface NotingInput extends TaskOptions {
   model?: string;
   mode?: "branch" | "subagent";
 }
+/** The frozen task material of one Noting run (ticket 19b). Core renders and budgets these parts;
+ * the adapter decides which of them an execution mode needs and which model message carries them.
+ * No field is a composed system or user message. */
+export interface NotingMaterial {
+  /** The selected pending entries, oldest first, each with its compressed view. */
+  entries: { id: number; view: string }[];
+  /** The head turn's final assistant reply, rendered; null when the head turn has none. */
+  head: string | null;
+  /** One source-index line per turn of the frozen range, in range order. */
+  sources: string[];
+  /** Active knowledge lines within the knowledge budget, one string per category group. */
+  knowledge: string[];
+  /** Facts written earlier in this session, newest first, within the episodic budget. */
+  facts: string[];
+  /** Budget receipts for everything the views and the two budgets left out. */
+  receipts: string[];
+}
 export interface NotingAgentInput extends AgentControl {
   kind: "noting";
   entryIds: number[];
@@ -28,13 +45,20 @@ export interface NotingAgentInput extends AgentControl {
   readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
   mode: "branch" | "subagent";
+  /** The domain instructions; core owns the prompt file and its hash. */
   prompt: string;
   promptHash: string;
-  input: string;
-  /** Frozen full context for a host fallback after branch verification fails. */
-  subagentInput: string;
+  material: NotingMaterial;
+  /** The view versions, budgets and omissions core records for this batch. */
+  entryAudit: EntryAudit;
   tools: ToolDefinition[];
   reportRequest: (request: unknown) => void;
+}
+export interface EntryAudit {
+  entries: { id: number; nativeLineage: string; nativeId: string; turnId: number; omissions: string[] }[];
+  branch: string;
+  viewVersion: string;
+  viewBudgets: { toolCallTokens: number; entryTokens: number };
 }
 export type NotingResult =
   | { outcome: "dropped" | "empty" }
@@ -85,8 +109,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
       model: input.model ?? "session", mode };
     const prepared = notingMaterial(store, frozen, config);
     const capacity = input.capacity;
-    const subagentTokens = tokens(prompt + "\n\n" + prepared.subagentInput) + tokens(JSON.stringify(toolDefinitions));
-    const branchTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt + "\n\n" + prepared.input);
+    // Gate 4 (ruling 2026-09-08): the adapter reports its available material budget before selection;
+    // core prices the material it froze, part by part, and never a message it composed.
+    const material = prepared.material;
+    const cost = (parts: (string | null)[]) => parts.reduce<number>((total, part) => total + (part ? tokens(part) : 0), 0);
+    const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions))
+      + cost([...material.knowledge, ...material.facts, ...material.entries.map(e => e.view), ...material.receipts]);
+    const branchTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + cost([material.head, ...material.sources]);
     if (!capacity || Math.max(subagentTokens, mode === "branch" ? branchTokens : 0) <= capacity.inputTokens) return frozen;
     entries.pop();
   }
@@ -95,8 +124,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
 
 }
 
-function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[]; mode: "branch" | "subagent" }, config: TraceMemoryConfig) {
-  const { sessionId, entries, turns, knowledge, facts, mode } = frozen;
+function notingMaterial(store: Store, frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig) {
+  const { sessionId, entries, turns, knowledge, facts } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
@@ -105,16 +134,22 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
   const receipts = raw.flatMap((r) => r.receipts);
   const episodic = budgetFacts(rawText, facts, (f) => renderFact(f, store.listFactRelations(f.id)), config.render.episodicBlockTokens);
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
-  const recent = episodic.recent, knowledgeLines = active.groups.map((g) => g.text);
   receipts.push(...episodic.receipts, ...active.receipts);
-  // The captured request precedes the head's final reply; append that missing raw and its source index.
-  const subagentInput = finish({ content: [`Range: ${range.from}..${range.to}`, "Active knowledge:", knowledgeLines.filter(Boolean).join("\n"),
-    "Recent facts (newest first):", recent.join("\n"), "Raw:", rawText].join("\n\n"), receipts });
   const head = turns.at(-1)!.turn;
-  const input = mode === "branch" ? [`Range: ${range.from}..${range.to}`,
-    ...(head.assistantText ? [renderTurn(head, [], config.render, { part: "assistant" }).content] : []),
-    `Sources:\n${turns.map(({ turn, calls }) => renderSources(turn, calls)).join("\n")}`].join("\n\n") : subagentInput;
-  return { range, readKnowledgeCommits, raw, subagentInput, input };
+  // Every part of the run's material, rendered and budgeted once. An inherited-context run does not
+  // need the raw, the delivered facts or the knowledge again, but which parts a mode uses, and in
+  // which message, is the adapter's decision (ticket 19 "Adapters own conversations").
+  const material: NotingMaterial = {
+    entries: entries.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
+    // The captured request precedes the head's final reply; that missing raw and the source index
+    // are what an inherited-context run still needs.
+    head: head.assistantText ? renderTurn(head, [], config.render, { part: "assistant" }).content : null,
+    sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
+    knowledge: active.groups.map((g) => g.text).filter(Boolean),
+    facts: episodic.recent,
+    receipts,
+  };
+  return { range, readKnowledgeCommits, raw, material };
 }
 
 export async function runNoting(
@@ -123,15 +158,15 @@ export async function runNoting(
 ): Promise<NotingResult> {
   const { sessionId, branch, entries, turns, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
-  const { range, readKnowledgeCommits, raw, subagentInput, input } = notingMaterial(store, frozen, config);
-  const entryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
+  const { range, readKnowledgeCommits, raw, material } = notingMaterial(store, frozen, config);
+  const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
-    subagentInput, input, tools: binding.tools, reportRequest: binding.reportRequest };
+    material, entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) {
@@ -142,12 +177,16 @@ export async function runNoting(
   if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
   run.mode = result.mode ?? mode;
   if (result.request !== undefined) run.request = JSON.stringify(result.request);
+  // A host that cannot expose a provider request says so; core records the limitation instead of the
+  // missing-request problem. A host that is expected to capture one and returns none still gets it.
+  const unavailable = result.audit?.available === false;
   const problems = binding.committed
-    ? (result.outcome === "success" ? (result.request == null ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
+    ? (result.outcome === "success" ? (result.request == null && !unavailable ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-    : result.request === undefined || result.request === null ? ["runAgent must return the exact provider request"] : binding.problems;
+    : (result.request === undefined || result.request === null) && !unavailable ? ["runAgent must return the exact provider request"] : binding.problems;
   run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits,
-    toolCalls: binding.sequence, fetched: binding.fetched, problems,
+    toolCalls: binding.sequence, fetched: binding.fetched, problems, requestedMode: mode,
+    ...(result.audit !== undefined ? { audit: result.audit } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
@@ -161,7 +200,7 @@ export async function runNoting(
   }
   if (problems.length) {
     const outcome = result.outcome !== "success" ? result.outcome
-      : result.request === undefined || result.request === null ? "failure" : "bounced";
+      : (result.request === undefined || result.request === null) && !unavailable ? "failure" : "bounced";
     return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
   }
   const committed = store.commitNotingRun({ run, facts: [],

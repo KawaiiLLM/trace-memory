@@ -8,15 +8,15 @@ import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry } from "../render/index.ts";
-export { tokens, renderEntry, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { tokens, renderEntry, finish, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
-export type { NotingInput, NotingResult, NotingAgentInput } from "../noting/index.ts";
+export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget } from "../store/index.ts";
 
 import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
-export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
+export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationMaterial, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
 
 
 // ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
@@ -116,6 +116,10 @@ export interface RunAgentResult {
   usage?: unknown;
   request?: unknown;
   mode?: "branch" | "subagent";
+  /** A host that cannot expose the provider request declares the limitation here instead of
+   * returning `request`; core records it in the run record rather than reporting a missing request.
+   * A host expected to capture a payload and returning none still gets the audit problem (19b). */
+  audit?: { available: false; reason: string };
   verification?: unknown;
   fallbackReason?: string;
   /** Absolute path of the host's native worker log for this run, when the host writes one (19a). */

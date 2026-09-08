@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { existsSync, readdirSync } from "node:fs";
 import { TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../core/api/index.ts";
 import { host, reply } from "./test-host.ts";
+import { composeMaterial } from "./compose.ts";
 
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
 const rawOf = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nRecent facts")[0]!.split("\n\nReceipts:")[0]!;
@@ -104,8 +105,8 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
       const branchInput = raw as NotingAgentInput;
-      expect(branchInput.input).not.toContain("T1#user");
-      expect(branchInput.input).toContain("late assistant");
+      expect(composeMaterial(branchInput, "branch")).not.toContain("T1#user");
+      expect(composeMaterial(branchInput, "branch")).toContain("late assistant");
       return { outcome: "success", output: "", request: {} };
     });
     try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "branch" })).outcome).toBe("success"); }
@@ -126,7 +127,7 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
     expect(h.requests).toEqual([]); // summary preparation itself is a read; the tree-switch trigger belongs to 17b.
     let subagent!: string;
     const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      subagent = (raw as NotingAgentInput).input;
+      subagent = composeMaterial(raw as NotingAgentInput, "subagent");
       return { outcome: "failure", output: "leave entries pending", request: {} };
     });
     await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); noter.close();
@@ -159,7 +160,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     expect(block.split("Recent facts (newest first):\n\n")[1]).toBe("[F1] " + h.memory.store.getTurn(1)!.startedAt + " [observation/user] A useful fact\n  source: T1#user\n</episodic>");
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      sent = (raw as NotingAgentInput).input;
+      sent = composeMaterial(raw as NotingAgentInput, "subagent");
       return { outcome: "failure", output: "leave pending", request: {} };
     });
     try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
@@ -368,7 +369,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
     let sent = "";
-    runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as { input: string }).input; return { outcome: "failure", output: "inspection only", request: {} }; });
+    runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = composeMaterial(input as NotingAgentInput, "subagent"); return { outcome: "failure", output: "inspection only", request: {} }; });
     await runner.noting({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
     expect(sent.split("Active knowledge:")[1]!.split("Recent facts")[0]).not.toContain("SIBLING_POLICY_ALPHA");
   } finally { runner?.close(); await h.dispose(); }

@@ -20,32 +20,43 @@ export class NotForkable extends Error {
   constructor(message: string, verification?: Verification) { super(message); this.verification = verification; }
 }
 
-export interface NativeTask {
+interface NativeCommon {
+  runsDir: string;
+  cwd: string;
+  agentDir: string;
+  /** Already resolved by the host (notingModel/consolidationModel or the session model). */
+  model: { provider: string; id: string; api: string; [key: string]: unknown };
+  /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
+  task: string;
+  tools: ToolDefinition[];
+  /** 0 = unlimited, matching the request-copy runner's `maxToolRounds`. */
+  maxToolRounds: number;
+  signal?: AbortSignal;
+  /** Called for every outgoing body, in order; in fork mode the first one is the verified one. */
+  onRequest(request: unknown): void;
+  onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
+  /** Consolidation's review feedback, delivered to the child as a native user message. */
+  feedback?(result: string): string | undefined;
+}
+/** Inherited context: a child forked from the parent's persisted checkpoint (19a). */
+export interface NativeForkTask extends NativeCommon {
+  mode: "branch";
   /** The parent's own JSONL. Opened read-only through a second manager; never mutated. */
   parentFile: string;
   /** The parent's Pi session id, supplied to the provider as the request/transport identity. */
   parentSessionId: string;
   /** Frozen entry the child forks at: the last persisted entry of the selected path. */
   checkpoint: string;
-  runsDir: string;
-  cwd: string;
-  agentDir: string;
-  /** Already resolved by the host (notingModel/consolidationModel or the session model). */
-  model: { provider: string; id: string; api: string; [key: string]: unknown };
   /** The parent provider request this child's first body is checked against. */
   captured: Body;
-  /** The task material core supplies for this run, delivered as the child's user prompt. */
-  task: string;
-  tools: ToolDefinition[];
-  /** 0 = unlimited, matching the request-copy runner's `maxToolRounds`. */
-  maxToolRounds: number;
-  signal?: AbortSignal;
-  /** Called for every outgoing body, in order; the first one is the verified one. */
-  onRequest(request: unknown): void;
-  onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
-  /** Consolidation's review feedback, delivered to the child as a native user message. */
-  feedback?(result: string): string | undefined;
 }
+/** Fresh context: a private child session with no parent file and no inherited history (19b). Its
+ * system prompt is core's domain prompt and its tools are only the memory tools core bound. */
+export interface NativeSubagentTask extends NativeCommon {
+  mode: "subagent";
+  systemPrompt: string;
+}
+export type NativeTask = NativeForkTask | NativeSubagentTask;
 
 export interface NativeResult {
   outcome: "success" | "failure" | "cancelled";
@@ -106,29 +117,42 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   // --- Prepare the child. Failures before the first provider request are fallbacks, not run failures.
   mkdirSync(task.runsDir, { recursive: true });
   let system: string, tools: { name: string; description: string; parameters: Body }[];
-  try {
-    system = capturedSystemPrompt(api, task.captured);
-    tools = capturedTools(api, task.captured);
-  } catch (error) { throw new NotForkable(String(error)); }
-  if (!tools.length) throw new NotForkable("captured payload carries no tool definitions");
-  for (const definition of task.tools) if (!tools.some(t => t.name === definition.name)) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
+  let manager: SessionManager, nativeLog: string | undefined;
+  if (task.mode === "branch") {
+    try {
+      system = capturedSystemPrompt(api, task.captured);
+      tools = capturedTools(api, task.captured);
+    } catch (error) { throw new NotForkable(String(error)); }
+    if (!tools.length) throw new NotForkable("captured payload carries no tool definitions");
+    for (const definition of task.tools) if (!tools.some(t => t.name === definition.name)) throw new NotForkable(`captured payload omits the ${definition.name} tool`);
 
-  // An independent manager on the parent's file, writing into the runs directory. The foreground
-  // manager is never touched, and `createBranchedSession` copies only the selected ancestry.
-  const manager = SessionManager.open(task.parentFile, task.runsDir);
-  if (!manager.getEntry(task.checkpoint)) throw new NotForkable(`checkpoint ${task.checkpoint} is not persisted`);
-  forkable(manager.getBranch(task.checkpoint));
-  const parentId = manager.getSessionId();
-  const nativeLog = manager.createBranchedSession(task.checkpoint);
-  if (manager.getSessionId() === parentId) throw new NotForkable("child session kept the parent id");
+    // An independent manager on the parent's file, writing into the runs directory. The foreground
+    // manager is never touched, and `createBranchedSession` copies only the selected ancestry.
+    manager = SessionManager.open(task.parentFile, task.runsDir);
+    if (!manager.getEntry(task.checkpoint)) throw new NotForkable(`checkpoint ${task.checkpoint} is not persisted`);
+    forkable(manager.getBranch(task.checkpoint));
+    const parentId = manager.getSessionId();
+    nativeLog = manager.createBranchedSession(task.checkpoint);
+    if (manager.getSessionId() === parentId) throw new NotForkable("child session kept the parent id");
+  } else {
+    // Fresh context (19b "Subagent parity"): Pi's own new-session constructor, in the runs directory,
+    // with no parent file to inherit from. No gate applies because there is no parent body to match,
+    // so only the memory tools core bound for this run are registered at all.
+    system = task.systemPrompt;
+    tools = task.tools.map(definition => ({ name: definition.name, description: definition.description, parameters: definition.parameters as Body }));
+    if (!tools.length) throw new NotForkable("no memory tools were bound for this run");
+    manager = SessionManager.create(task.cwd, task.runsDir);
+    nativeLog = manager.getSessionFile();
+  }
 
   const calls: { name: string; executed: boolean }[] = [];
   let committed = false;
   const pending: Promise<unknown>[] = [];
   const result = (value: string) => ({ content: [{ type: "text" as const, text: value }], details: {} });
-  // Tool DEFINITIONS are the parent's, byte for byte, because the gate compares them. Tool
-  // EXECUTION is whitelisted to the memory tools core bound for this run; anything else the copied
-  // history invites the model to call returns an error result and never runs.
+  // In fork mode the tool DEFINITIONS are the parent's, byte for byte, because the gate compares
+  // them; a fresh child registers only core's four. Tool EXECUTION is whitelisted to the memory
+  // tools core bound for this run either way, so anything else the copied history invites the model
+  // to call returns an error result and never runs.
   const definitions = tools.map(tool => ({
     name: tool.name, label: tool.name, description: tool.description, parameters: tool.parameters as never,
     executionMode: "sequential" as const,
@@ -161,30 +185,35 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     noTools: "all", tools: definitions.map(d => d.name), customTools: definitions });
 
   // --- Run the child.
-  const verification: Verification = { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [], normalized: ["cache_control"],
-    differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
+  const verification: Verification | undefined = task.mode !== "branch" ? undefined
+    : { passed: false, capturedHash: hash(task.captured), requestHash: "", appendedMessages: [], normalized: ["cache_control"],
+        differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
   const retries: { attempt: number; error: string }[] = [];
   let usage: unknown, request: unknown, rounds = 0, failure: string | undefined, terminal: { stopReason?: string; errorMessage?: string; content?: unknown } | undefined;
   const seen = new Set<unknown>();
   const key = messageKey(api);
   let previous: Body | undefined;
   const inherited = session.agent.onPayload;
-  session.agent.sessionId = task.parentSessionId; // adapter decision: the parent's cache/affinity identity
+  // Adapter decision: a fork shares the parent's cache/affinity identity; a fresh child keeps its own.
+  if (task.mode === "branch") session.agent.sessionId = task.parentSessionId;
   session.agent.toolExecution = "sequential"; // Pi's tested default is parallel
   session.agent.onPayload = async (payload: unknown, model: unknown) => {
     task.signal?.throwIfAborted();
     const body = snapshot(payload) as Body;
     const messages = body[key];
     if (!Array.isArray(messages)) throw new Error(`Native child body has no ${key} array`);
-    if (!previous) {
-      // The gate: the whole captured parent body against this body with the child's own appended
-      // messages removed. Only `cache_control` markers are ignored (verifyForkRequest).
-      Object.assign(verification, verifyForkRequest(task.captured, body, api));
-      if (!verification.passed) throw new NotForkable(`native prefix mismatch at ${verification.differingPath}`, { ...verification });
-    } else {
-      const checked = verifyForkRequest(previous, body, api); // later rounds: same gate against the previous round
-      verification.rounds.push(checked);
-      if (!checked.passed) { verification.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
+    // The gate applies to a fork only: a fresh child has no parent body to reproduce.
+    if (verification && task.mode === "branch") {
+      if (!previous) {
+        // The whole captured parent body against this body with the child's own appended messages
+        // removed. Only `cache_control` markers are ignored (verifyForkRequest).
+        Object.assign(verification, verifyForkRequest(task.captured, body, api));
+        if (!verification.passed) throw new NotForkable(`native prefix mismatch at ${verification.differingPath}`, { ...verification });
+      } else {
+        const checked = verifyForkRequest(previous, body, api); // later rounds: same gate against the previous round
+        verification.rounds.push(checked);
+        if (!checked.passed) { verification.passed = false; throw new Error(`Prefix mismatch at ${checked.differingPath}`); }
+      }
     }
     if (task.maxToolRounds && rounds++ > task.maxToolRounds) throw new Error(`tool rounds exceeded (${task.maxToolRounds})`);
     previous = body;
@@ -222,9 +251,9 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   // Nothing left this process: the gate rejected the body inside `onPayload`, or the child could
   // not start. No provider request was made, so the caller may still fall back for this task.
   if (request === undefined && !task.signal?.aborted)
-    throw new NotForkable(verification.passed ? failure ?? "native child produced no provider request" : `native prefix mismatch at ${verification.differingPath}`,
-      verification.passed ? undefined : { ...verification });
-  if (verification.passed && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number")
+    throw new NotForkable(!verification || verification.passed ? failure ?? "native child produced no provider request" : `native prefix mismatch at ${verification.differingPath}`,
+      !verification || verification.passed ? undefined : { ...verification });
+  if (verification?.passed && typeof (usage as { cacheRead?: unknown } | undefined)?.cacheRead === "number")
     verification.cache_read = (usage as { cacheRead: number }).cacheRead; // recorded as an observation
 
   // `prompt()` resolving is not success: the outcome comes from the child's terminal response,

@@ -1,4 +1,4 @@
-import { TraceMemory as createMemory, type SourceEntry } from "../core/api/index.ts";
+import { TraceMemory as createMemory, type ConsolidationAgentInput, type NotingAgentInput, type SourceEntry } from "../core/api/index.ts";
 export type TraceMemory = ReturnType<typeof createMemory>;
 export * from "../core/api/index.ts";
 
@@ -39,4 +39,14 @@ export function recorded(memory: ReturnType<typeof createMemory>, sessionId: num
   const result = memory.store.commitNotingRun({ run: { kind: "noting", sessionId, branch,
     rangeFrom: `S${sessionId}/T${entries[0]?.turnId ?? head}`, rangeTo: `S${sessionId}/T${head}`, createdAt: "fixture" }, facts: [], entryIds: entries.map(e => e.id) });
   if (!result.ok) throw new Error(result.problems.join("; "));
+}
+
+/** Test-side flattening of core's structured task material (19b): the fresh-context parts, in the
+ * order a full run would show them. Assertions ask what a run's material carries; how a host lays it
+ * out is the adapter's business and is pinned in hosts/pi/compose.test.ts. */
+export function materialText(input: NotingAgentInput | ConsolidationAgentInput): string {
+  const parts = input.kind === "noting"
+    ? [...input.material.knowledge, ...input.material.facts, ...input.material.entries.map(e => e.view), ...input.material.receipts]
+    : [...input.material.knowledge, ...input.material.consolidated, ...input.material.rangeFacts, ...input.material.reminders, ...input.material.receipts];
+  return parts.join("\n\n");
 }

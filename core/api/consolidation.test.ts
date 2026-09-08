@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../test/source-fixture.ts";
+import { TraceMemory, materialText, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../test/source-fixture.ts";
 import memories from "../../test/fixtures/noting/facts.json";
 
-type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; request?: any; response?: RunAgentResult };
+type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
 let calls: ConsolidationAgentInput[], script: ((input: ConsolidationAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
@@ -15,21 +15,23 @@ const success = (output: unknown, input: ConsolidationAgentInput): RunAgentResul
   usage: { tokens: 12 }, request: input.request });
 function open(config: ConfigOverride = {}) {
   memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
+    // A stub host: it receives structured material and never a core-composed message, and builds its
+    // own provider record out of the material, the tool rounds and core's review feedback (19b).
     let input = { ...raw as CoreInput, round: "candidate" as const } as ConsolidationAgentInput;
-    const messages: any[] = [{ role: "user", content: input.input }];
+    const rounds: any[] = [{ material: structuredClone(input.material) }];
     for (;;) {
-      input.request = { system: input.prompt, messages: structuredClone(messages), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };
+      input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };
       input.reportRequest(input.request); calls.push(input);
       const next = script.shift(); if (!next) throw new Error("unexpected call");
       const response = await next(input); input.response = response;
       if (response.outcome !== "success" || response.request == null) return response;
       const batch = response.output;
       const receipt = input.tools.find(t => t.name === "memory")!.execute(batch);
-      messages.push({ role: "assistant", toolCall: { name: "memory", arguments: batch } }, { role: "toolResult", content: receipt });
-      const parsed = JSON.parse(receipt);
-      if (!parsed.feedback) return { ...response, output: "done", request: input.request };
-      messages.push(parsed.feedback);
-      input = { ...input, round: "final", input: parsed.feedback.content };
+      rounds.push({ toolCall: { name: "memory", arguments: batch } }, { toolResult: receipt });
+      const feedback = input.reviewFeedback(receipt);
+      if (!feedback) return { ...response, output: "done", request: input.request };
+      rounds.push({ role: "user", content: feedback });
+      input = { ...input, round: "final", feedback };
     }
   }, config);
 }
@@ -97,10 +99,10 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
   for (const call of calls) {
     expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("branch");
-    expect(call.input).not.toContain(`[F${late}]`); expect(call.input).not.toContain(`[F${foreign}]`);
-    expect(call.input).not.toContain(`inbound negate F${late}`); expect(call.input).not.toContain(`[K${e}@2]`);
+    expect(materialText(call)).not.toContain(`[F${late}]`); expect(materialText(call)).not.toContain(`[F${foreign}]`);
+    expect(materialText(call)).not.toContain(`inbound negate F${late}`); expect(materialText(call)).not.toContain(`[K${e}@2]`);
   }
-  expect(calls[1]!.input).toContain(`[K${e}@${e}]`);
+  expect(materialText(calls[1]!)).toContain(`[K${e}@${e}]`);
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(consolidated(current)).toBe(true);
@@ -125,13 +127,13 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 }, consolidation: { nearThreshold: 1 } });
   const traces = ids.map((id) => memory.trace(`K${id}`)); queue(empty, empty);
   expect((await consolidation()).outcome).toBe("success");
-  const reminder = calls[0]!.input.split("Negated-evidence reminder (review cues only; no status derived):\n\n")[1]!.split("\n\nReceipts:")[0]!;
+  const reminder = calls[0]!.material.reminders.join("\n\n");
   for (const id of ids) expect(reminder.match(new RegExp(`\\[K${id}@${id}\\]`, "g"))).toHaveLength(2);
   for (const id of excluded) expect(reminder).not.toContain(`[K${id}@`);
   expect(reminder.match(/Recorded negation strength: strong/g)).toHaveLength(ids.length);
   expect(reminder.match(/Recorded negation strength: weak/g)).toHaveLength(ids.length);
   for (const id of [cited, strong, weak]) expect(reminder).toContain(memory.trace(`F${id}`));
-  expect(calls[0]!.input).toContain("range overage:");
+  expect(calls[0]!.material.receipts.join("\n")).toContain("range overage:");
   expect(ids.map((id) => memory.trace(`K${id}`))).toEqual(traces);
 });
 
@@ -141,18 +143,19 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.output).toEqual(candidate);
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
-  expect(calls[0]!.input).not.toContain("NEAR:"); expect(calls[0]!.input).not.toContain("CLOSER:");
-  expect(calls[0]!.request.messages).toHaveLength(1);
+  expect(calls[0]!.feedback).toBeUndefined();
+  expect(materialText(calls[0]!)).not.toContain("NEAR:"); expect(materialText(calls[0]!)).not.toContain("CLOSER:");
+  expect(calls[0]!.request.rounds).toHaveLength(1);
   const second = calls[1]!;
-  expect(second.request.messages.slice(0, 1)).toEqual(calls[0]!.request.messages);
-  expect(second.request.messages.at(-1)).toEqual({ role: "user", content: second.input });
-  expect(second.input).toContain("NEAR:"); expect(second.input).toContain("CLOSER:");
-  expect(second.input).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
+  expect(second.request.rounds.slice(0, 1)).toEqual(calls[0]!.request.rounds);
+  expect(second.request.rounds.at(-1)).toEqual({ role: "user", content: second.feedback });
+  expect(second.feedback).toContain("NEAR:"); expect(second.feedback).toContain("CLOSER:");
+  expect(second.feedback).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
   const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
   const section = prompt.split("### Second-round user message\n")[1]!.split("\n### ")[0]!;
-  expect(second.input.endsWith(section)).toBe(true);
-  expect(second.input.split(section)).toHaveLength(2);
-  const closer = second.input.split("CLOSER:\n\n")[1]!.split(section)[0]!;
+  expect(second.feedback!.endsWith(section)).toBe(true);
+  expect(second.feedback!.split(section)).toHaveLength(2);
+  const closer = second.feedback!.split("CLOSER:\n\n")[1]!.split(section)[0]!;
   expect(closer).toContain(`[K${e}@${e}]`); expect(closer).toContain(`[K${goal}@${goal}]`); expect(closer).toContain(memory.trace(`F${f}`));
   expect(calls[0]!.mode).toBe("subagent"); expect(calls[0]!.model).toBe("session");
   audit(result.runId, 1);
@@ -180,14 +183,14 @@ test("NEAR covers create, update and merge text, excludes each target, and uses 
   const op = { text: memories.knowledge, scope: "project", category: "mechanism", supports: [`F${f}`], because: [] };
   const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", ...op, id: `K${a}` }, { op: "merge", ...op, id: `K${b}`, absorb: [`K${c}`] }] };
   queue(output, output); const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
-  const feedback = calls[1]!.input.split("CLOSER:")[0]!;
+  const feedback = calls[1]!.feedback!.split("CLOSER:")[0]!;
   expect(feedback).toContain(`$e1 -> K${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b} (Jaccard 1)`);
   expect(feedback).toContain(`K${a} -> K${b} (Jaccard 1)`); expect(feedback).toContain(`K${b} -> K${a} (Jaccard 1)`);
   expect(feedback).not.toContain(`K${a} -> K${a}`); expect(feedback).not.toContain(`K${b} -> K${b}`);
   expect(feedback).not.toContain(`-> K${c}`);
   memory.close(); open({ consolidation: { nearThreshold: 1, subagentModeDefault: false } });
   fact(); queue(createOutput(f, memories.base), empty); await consolidation();
-  expect(calls[3]!.input).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("branch");
+  expect(calls[3]!.feedback).toContain("NEAR:\n\nnone"); expect(calls[2]!.mode).toBe("branch");
 });
 
 for (const round of ["candidate", "final"] as const) for (const bad of ["json", "shape", "failure", "cancelled", "missing request", "throw", "abort"] as const) {
@@ -246,12 +249,12 @@ test("context uses timestamp freshness while range remains complete and categori
   for (const category of categories) knowledge([newest], { category });
   watermark(newest); watermark(oldest); const current = fact(memories.interpretation);
   queue(empty, empty); await consolidation();
-  const input = calls[0]!.input;
+  const input = materialText(calls[0]!);
   expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
   memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 } });
   const next = fact(memories.interpretation);
-  queue(empty, empty); await consolidation(); const small = calls[2]!.input;
+  queue(empty, empty); await consolidation(); const small = materialText(calls[2]!);
   expect(small).toContain(memory.trace(`F${next}`));
   expect(small).not.toContain(`[F${newest}]`); expect(small).not.toContain(`[F${oldest}]`);
   expect(small).toContain("omitted 3 older facts");
@@ -270,7 +273,7 @@ test("bigram Jaccard has a known nontrivial score and an inclusive configurable 
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 2 / 3 }]);
   memory.close(); open({ consolidation: { nearThreshold: 2 / 3 + 0.001 } });
   fact(); queue(createOutput(f, memories.base), empty); await consolidation();
-  expect(calls[3]!.input).not.toContain(`-> K${e} (`);
+  expect(calls[3]!.feedback).not.toContain(`-> K${e} (`);
 });
 
 const updateOutput = (id: number, support: number) => ({ ...empty, operations: [{ op: "update", id: `K${id}`, text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${support}`], because: [`F${support}`] }] });
@@ -370,12 +373,12 @@ test("each session settles only its own branch facts and shares already-settled 
   const other = await memory.consolidate({ sessionId: secondSession, branch: "fork" });
   if (other.outcome !== "success") throw new Error("expected success");
   expect(other.range.facts.map((f) => f.id)).toEqual([second]);
-  expect(calls[0]!.input).not.toContain(`[F${first}]`);
+  expect(materialText(calls[0]!)).not.toContain(`[F${first}]`);
   queue(createOutput(first), createOutput(first));
   const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
-  expect(calls[2]!.input).toContain(memory.trace(`F${second}`));
+  expect(materialText(calls[2]!)).toContain(memory.trace(`F${second}`));
   expect(consolidated(second, "fork", secondSession)).toBe(true);
   expect(consolidated(first)).toBe(true);
   expect(await consolidation()).toEqual({ outcome: "empty" });
@@ -484,15 +487,17 @@ test("same-project sessions commit independently while another session is pendin
   expect(consolidated(second, "main", otherSession)).toBe(true);
 });
 
-test("2026-09-07: a branch Consolidation appends the exact fact list and leaves fact lines and knowledge to the conversation", async () => {
+test("19b 2026-09-08: Consolidation material carries the exact fact list, the fact lines and the knowledge in either mode", async () => {
   const first = fact(); const second = fact(memories.observation);
-  await memory.consolidate({ sessionId, branch: "main", mode: "subagent" }); // the queue is empty; only the rendered input matters here
-  expect(calls[0]!.input).toContain("Active knowledge:");
-  expect(calls[0]!.input).toContain("Range facts:");
+  await memory.consolidate({ sessionId, branch: "main", mode: "subagent" }); // the queue is empty; only the frozen material matters here
   await memory.consolidate({ sessionId, branch: "main", mode: "branch" });
-  const appended = calls[1]!.input;
-  expect(appended).toContain(`Facts to integrate: F${first}, F${second}`); // the exact set, not the F..F span
-  expect(appended).not.toContain("Active knowledge:");
-  expect(appended).not.toContain("Range facts:");
-  expect(calls[1]!.subagentInput).toContain("Active knowledge:"); // the full context stays available for a host fallback
+  for (const call of calls) {
+    // The exact set, not the F..F span: what an inherited context integrates is a membership list.
+    expect(call.material.factAddresses).toEqual([`F${first}`, `F${second}`]);
+    expect(call.material.rangeFacts.join("\n")).toContain(memory.trace(`F${first}`));
+    expect(call.material.knowledge.join("\n")).toBe(calls[0]!.material.knowledge.join("\n"));
+  }
+  expect(calls[0]!.mode).toBe("subagent"); expect(calls[1]!.mode).toBe("branch");
+  // Core froze one material for both modes; which parts each mode sends is pinned in hosts/pi/compose.test.ts.
+  expect(calls[1]!.material).toEqual(calls[0]!.material);
 });
