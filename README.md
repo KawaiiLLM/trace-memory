@@ -8,6 +8,8 @@ Traceable cross-session memory for Pi. A background Noter extracts facts from co
 
 **Use a new database when coming from a development build.** There is no migration for older development schemas, including those before commit reasons and topics. Keep the old database and its logs; choose an unused path instead of deleting them.
 
+Upgrading from `0.1.0-beta.1` does not require a new database. Project marker files are no longer read; existing stored project assignments are retained.
+
 Before loading the extension, merge this example into `~/.pi/agent/settings.json`, preserving your other settings:
 
 ```json
@@ -24,10 +26,10 @@ From a local checkout, install the package directory:
 pi install /absolute/path/to/trace-memory
 ```
 
-Once the Beta is published, install that version from npm instead:
+Install the Beta from npm instead:
 
 ```sh
-pi install npm:trace-memory@0.1.0-beta.1
+pi install npm:trace-memory@0.1.0-beta.2
 ```
 
 Start a new Pi process, run `/trace status`, and use `/trace enable` if the session is disabled. Sessions created before the plugin's initialization baseline default to disabled; explicit choices persist.
@@ -40,7 +42,7 @@ Enabled sessions make background model requests using your Pi credentials and ma
 - **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Disable:** `/trace disable` pauses processing and future injection without deleting memory.
-- **Share a project:** put the same project name in a `.trace-memory` file at each relevant project root, or use `/trace project <name>`. Without a declaration, each session has its own project.
+- **Share a project:** after the first assistant reply, use `/trace project <name>`. The same name in the same database shares a project across sessions. Without a declaration, each session has its own project. Files, working directories and Git remotes do not declare project membership.
 
 The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit reads can search across the local database; automatic knowledge selection and write evidence follow scope and conversation ancestry. Topics organize knowledge without changing those permissions.
 

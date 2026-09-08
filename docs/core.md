@@ -450,12 +450,12 @@ and calling session/project, and preserve the remaining lines on later pages.
 
 `mark(knowledgeId, kind)` (`verified` | `flagged` | `clear`) replaces or clears
 only the current revision's mark; historical marks remain on their revisions.
-`declareProject(sessionId, name, source?: "marker" | "mark")` declares attribution;
-source defaults to `mark`. Hosts report marker files through this same path.
-A persisted session mark wins over subsequent markers. The additive
-`sessions.project_declaration` column defaults existing sessions to `marker`;
-new session-owned projects must use `createSession({ …, projectDeclaration:
-"undeclared" })`. Only undeclared projects merge via `mergeProject`; leaving a
+`declareProject(sessionId, name)` declares attribution through an explicit user
+command; its source defaults to `mark`. Pi no longer discovers project marker
+files. The storage contract retains `marker` provenance and existing assignments,
+without any schema migration or new file-based declarations. New session-owned
+projects must use `createSession({ …, projectDeclaration: "undeclared" })`.
+Only undeclared projects merge via `mergeProject`; leaving a
 named project moves the declaring session and its session knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
 count, latest attempts by run id, and pending delivery count. The derived Turn

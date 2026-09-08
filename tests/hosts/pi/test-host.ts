@@ -97,7 +97,7 @@ function uninstall(origin: string) {
   replaced = undefined;
 }
 
-export function host(config: Record<string, unknown> = {}, marker?: string, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension } = {}) {
+export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
   const origin = `https://fake-${wireCount++}.invalid`;
   // Pi settings the child reads through its own SettingsManager (19c gate 6): a fast, deterministic
@@ -110,7 +110,6 @@ export function host(config: Record<string, unknown> = {}, marker?: string, opti
       models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] }])) }));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const native = () => options.native?.();
-  if (marker) writeFileSync(join(dir, ".trace-memory"), marker);
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];

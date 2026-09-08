@@ -2,17 +2,19 @@
 // built by hosts/pi/native.ts, with the provider stubbed at the wire (test-host.ts). Nothing here
 // touches a network or a credential.
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { host, notingFact } from "./test-host.ts";
 
 // Package smoke supplies the installed entry. Node refuses native type stripping under node_modules;
 // use Pi's installed TS loader instead, as Pi does for packaged extensions. No bundled loader dependency.
 const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
 const extension = process.argv[2] ? (await createJiti(import.meta.url).import(resolve(process.argv[2]))).default : undefined;
-const h = host({ "noting.triggerTokens": 60 }, undefined, { extension });
+const h = host({ "noting.triggerTokens": 60 }, { extension });
 try {
+  // The default data directory must never be interpreted as a project marker file.
+  mkdirSync(join(h.dir, ".trace-memory"));
   assert.deepEqual([...h.tools.keys()], ["trace", "search", "note", "memory"]);
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");

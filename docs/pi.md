@@ -88,12 +88,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
 
-- The nearest upward `.trace-memory` file contains the trimmed project name. An
-  empty marker is an error. Without one, `pi:<Pi session UUID>` names a private
-  project. A project may exist before any assistant reply; a Trace Memory session
-  cannot. The first prompt is buffered until that reply permits its turn row to
-  be appended. Later prompts append immediately. Marker declarations go through
-  `declareProject(..., "marker")`; a persisted `/trace project` declaration wins on resume.
+- Only `/trace project <name>` declares shared project membership, after the first
+  assistant reply. The same name in the same database identifies the same project.
+  Otherwise, `pi:<Pi session UUID>` names a private project. No marker file,
+  working directory or Git remote supplies attribution. A project may exist before
+  any assistant reply; a Trace Memory session cannot. The first prompt is buffered
+  until that reply permits its turn row to be appended. Later prompts append
+  immediately. Stored project declarations persist across resume and tree navigation.
 - `before_agent_start` injects the knowledge block once per session (by project
   before allocation, by session afterward; after compaction the compaction block
   already carries the knowledge) and, on every prompt, the pending deliveries for
@@ -460,15 +461,15 @@ npm run typecheck
 The registration test imports the default extension with a stub ExtensionAPI, checks
 registration, runs `/trace`, and asserts that it created no session or model
 request. The host suite also checks trigger boundaries, request-body capture,
-consolidation continuation, incremental raw, compaction, marker precedence, deliveries
+consolidation continuation, incremental raw, compaction, explicit project attribution, deliveries
 on branch return, frozen in-flight ranges, duplicate noting/consolidation calls, provider
 failures, and absence of Pi imports in core.
 
 ## Manual verification in a real Pi session
 
-Use an isolated database and a directory with a `.trace-memory` marker so the
-observations are easy to inspect. Launch Pi under Node with the extension
-explicitly selected:
+Use an isolated database so the observations are easy to inspect. To share a
+project, run `/trace project <name>` after the first assistant reply; marker files
+are ignored. Launch Pi under Node with the extension explicitly selected:
 
 ```sh
 export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/trace.db"}'
@@ -902,15 +903,15 @@ calls Pi's summarizer itself. The hook's abort signal does not cancel a frozen
 noting. Existing `session_tree` restoration gives an earlier branch point a fresh
 identity and preserves the identity when returning to a saved branch tip.
 
-Marker discovery is a plain ancestor walk; the first file wins and an empty
-file is an error. Worktrees share a marker only when their directories share
-its ancestor; no Git lookup is performed. Marker-attributed sessions are
-created with declaration `marker`, so they cannot accidentally merge a shared
-named space as if it were private. An explicit `/trace project <name>` saves the project name
-and current project ID in the Pi custom state and returns the updated injection
-immediately in the command notification. The database declaration remains authoritative
-when restoring older tree state, so a session's command declaration wins on every branch.
-Peers remain in the marker project. Only an undeclared own space is merged.
+File-based project discovery has been removed. `.trace-memory` files and directories
+at cwd or any ancestor are ignored, including the default data directory. New
+sessions remain private even when their cwd, clone or worktree is shared. Existing
+stored project assignments are retained; their provenance does not trigger discovery.
+An explicit `/trace project <name>` saves the project name and current project ID
+in the Pi custom state and returns the updated injection immediately in the command
+notification. The database declaration remains authoritative when restoring older
+tree state, so a session's command declaration wins on every branch. Peers remain
+in their existing project. Only an undeclared own space is merged.
 Facts change project membership through their session join; session knowledge
 retain scope, ownership and revisions while their project ID follows the
 session. Duplicate project knowledge now share the next consolidation's NEAR pool;
@@ -921,8 +922,9 @@ or a tool call permits allocation; the tool-call case permits `note` or `memory`
 first assistant action. A prompt, compaction or tree event without such a reply
 creates neither a session row nor a turn row. Project records may precede replies.
 
-Ticket 07's stub-host tests cover ancestor/nearest/worktree markers, session-only
-mark precedence and persisted host state, retroactive merge and immediate
+The host tests cover ignored files/directories at cwd and ancestors, private
+sessions in a shared directory, explicit same-name project sharing, persisted
+project assignments, retroactive merge and immediate
 injection, session-knowledge isolation, shared duplicate visibility, deferred noting
 completion with later raw and branch-only delivery, fresh subagent notings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.

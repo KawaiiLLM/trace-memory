@@ -61,9 +61,10 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(h.memory.store.listSessionFacts(1)[0]!.text).toBe("用 pnpm，不要 npm");
 });
 
-test("first prompt injects project/global knowledge without allocating a session; marker is declared and mark wins", async () => {
-  const h = host({}, "project-name");
-  const p = h.memory.store.createProject({ name: "project-name", declaredBy: "marker" });
+test("first prompt injects only global knowledge; project knowledge requires an explicit command", async () => {
+  const h = host();
+  writeFileSync(join(h.dir, ".trace-memory"), "project-name"); // Former markers have no attribution authority.
+  const p = h.memory.store.createProject({ name: "project-name", declaredBy: "mark" });
   const s = h.memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const recorded = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, createdAt: "now" }, facts: [
@@ -76,13 +77,14 @@ test("first prompt injects project/global knowledge without allocating a session
   ] });
   expect(seeded.ok).toBe(true);
   const injection = await h.prompt();
-  expect(injection.message.content).toContain("项目规则"); expect(injection.message.content).toContain("全局规则");
+  expect(injection.message.content).not.toContain("项目规则"); expect(injection.message.content).toContain("全局规则");
   expect(h.memory.store.getSession(2)).toBeNull();
   await h.answer();
-  expect(h.memory.store.projectDeclaration(2)).toBe("marker");
-  await h.commands.get("trace").handler("project override", h.ctx);
+  expect(h.memory.store.projectDeclaration(2)).toBe("undeclared");
+  await h.commands.get("trace").handler("project project-name", h.ctx);
+  expect((await h.prompt())?.message?.content).toContain("项目规则");
   await h.emit("session_start");
-  expect(h.memory.status(2)).toContain("override (mark)");
+  expect(h.memory.status(2)).toContain("project-name (mark)");
   expect(h.requests).toHaveLength(0);
 });
 
@@ -131,13 +133,13 @@ test("pending delivery is injected once on its own branch", async () => {
 });
 
 test("2026-09-07: deliveries and the first injection are confirmed at agent_settled with only the run ids that prompt took", async () => {
-  const h = host({ "noting.triggerTokens": 60 }, "project-name");
-  const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "marker" });
+  const h = host({ "noting.triggerTokens": 60 });
+  const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
-  store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "项目规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "project" }] });
+  store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
   // Injection prepared at the prompt, persisted only at settle: a turn that never settles injects again.
   expect((await h.prompt())?.message?.content).toContain("<knowledge>");
   expect(h.entries.some(e => e.data?.injected === true)).toBe(false);
@@ -262,29 +264,36 @@ test("knowledge are injected once per session, only once something exists; later
 });
 
 
-test("marker walk uses the nearest hit and shares an ancestor marker across worktree directories", async () => {
-  const h = host({}, "shared");
-  const main = join(h.dir, "main", "src", "nested"), worktree = join(h.dir, "worktrees", "feature", "src");
-  mkdirSync(main, { recursive: true }); mkdirSync(worktree, { recursive: true });
-  h.ctx.cwd = main;
-  await h.turn();
-  const shared = h.memory.store.getSession(1)!.projectId;
-  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "worktree-session"; h.ctx.cwd = worktree;
+test.each(["file", "empty", "directory"])("project discovery ignores .trace-memory %s at cwd and ancestors", async kind => {
+  const h = host();
+  const path = join(h.dir, ".trace-memory");
+  if (kind === "directory") mkdirSync(path); else writeFileSync(path, kind === "file" ? "shared" : "");
+  await h.turn(); // Includes the storage-directory collision that used to fail at session_start.
+  const first = h.memory.store.getSession(1)!.projectId;
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "same-directory-session";
   await h.emit("session_start"); await h.turn();
-  expect(h.memory.store.getSession(2)!.projectId).toBe(shared);
-  writeFileSync(join(h.dir, "worktrees", ".trace-memory"), "nearest");
-  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "nested-session";
+  const second = h.memory.store.getSession(2)!.projectId;
+  const nested = join(h.dir, "worktrees", "feature"); mkdirSync(nested, { recursive: true });
+  writeFileSync(join(nested, ".trace-memory"), "shared");
+  h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "nested-session"; h.ctx.cwd = nested;
   await h.emit("session_start"); await h.turn();
-  expect(h.memory.status(3)).toContain("nearest (marker)");
-  expect(h.memory.status(1)).toContain("shared (marker)");
+  expect(new Set([first, second, h.memory.store.getSession(3)!.projectId]).size).toBe(3);
+  for (const id of [1, 2, 3]) expect(h.memory.store.projectDeclaration(id)).toBe("undeclared");
+  expect(h.memory.store.findProjectByName("shared")).toBeNull();
+  expect(h.requests).toEqual([]);
 });
 
-test("mark persists in host state across tree restoration without merging marker peers", async () => {
-  const h = host({}, "shared");
+test("explicit project names share across sessions and survive tree restoration without moving peers", async () => {
+  const h = host();
   await h.turn(); const first = [...h.entries];
+  await h.commands.get("trace").handler("project shared", h.ctx);
+  const original = h.memory.store.getSession(1)!.projectId;
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "peer";
   await h.emit("session_start"); await h.turn();
+  await h.commands.get("trace").handler("project shared", h.ctx);
   const shared = h.memory.store.getSession(2)!.projectId;
+  expect(shared).toBe(original);
+  writeFileSync(join(h.dir, ".trace-memory"), "unrelated");
   await h.commands.get("trace").handler("project override", h.ctx);
   expect(h.entries.at(-1).data.project).toBe("override");
   expect(h.entries.at(-1).data.projectId).toBe(h.memory.store.getSession(2)!.projectId);
@@ -293,7 +302,32 @@ test("mark persists in host state across tree restoration without merging marker
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
   h.entries.splice(0, h.entries.length, ...first); h.ctx.sessionManager.getSessionId = () => "pi-test";
   await h.emit("session_start");
-  expect(h.memory.status(1)).toContain("shared (marker)");
+  expect(h.memory.status(1)).toContain("shared (mark)");
+});
+
+test("provisional host state cannot restore a former file-derived shared project", async () => {
+  const h = host(); await h.emit("session_start");
+  const project = h.memory.store.createProject({ name: "former-marker-project", declaredBy: "marker" });
+  h.entries.at(-1).data.projectId = project.id; // A prior version saved this before any assistant reply.
+  await h.emit("session_start");
+  expect(h.entries.at(-1).data.projectId).not.toBe(project.id);
+  expect(h.memory.store.getSession(1)).toBeNull();
+  await h.turn();
+  expect(h.memory.store.getSession(1)!.projectId).not.toBe(project.id);
+  expect(h.memory.store.projectDeclaration(1)).toBe("undeclared");
+  expect(h.memory.store.getProject(project.id)!.mergedInto).toBeNull();
+});
+
+test("removing file discovery preserves stored project attribution on restore", async () => {
+  const h = host(); await h.turn();
+  h.memory.declareProject(1, "stored-project", "marker"); // A declaration already persisted by a prior version.
+  const project = h.memory.store.getSession(1)!.projectId;
+  writeFileSync(join(h.dir, ".trace-memory"), "different-project");
+  await h.emit("session_start");
+  expect(h.memory.store.getSession(1)!.projectId).toBe(project);
+  expect(h.memory.status(1)).toContain("stored-project (marker)");
+  expect(h.memory.store.findProjectByName("different-project")).toBeNull();
+  expect(h.requests).toEqual([]);
 });
 
 test("declaring an own project moves facts and project knowledge, preserves session scope, and injects immediately", async () => {
@@ -419,9 +453,11 @@ test("a tool-call-only first assistant reply allocates the session before mark e
 });
 
 
-test("removing a marker before first reply cannot turn its shared project into an undeclared merge source", async () => {
-  const h = host({}, "shared"); await h.turn();
+test("a former marker cannot make a new session merge an existing shared project", async () => {
+  const h = host(); await h.turn();
+  await h.commands.get("trace").handler("project shared", h.ctx);
   const shared = h.memory.store.getSession(1)!.projectId;
+  writeFileSync(join(h.dir, ".trace-memory"), "shared");
   h.entries.length = 0; h.ctx.sessionManager.getSessionId = () => "new-session";
   await h.emit("session_start"); await h.prompt();
   unlinkSync(join(h.dir, ".trace-memory")); await h.answer();

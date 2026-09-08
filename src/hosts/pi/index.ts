@@ -68,18 +68,6 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
   const core = parse(flat);
   return { flat, core, sources, layers };
 }
-function marker(cwd: string): string | undefined {
-  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
-    const path = join(dir, ".trace-memory");
-    if (existsSync(path)) {
-      const name = readFileSync(path, "utf8").trim();
-      if (!name) throw new Error(`Empty project marker: ${path}`);
-      return name;
-    }
-    if (dirname(dir) === dir) return;
-  }
-}
-
 function rejected(name: string, content: string): boolean {
   if (content.startsWith("rejected:")) return true;
   if (name !== "note" && name !== "memory") return false;
@@ -385,6 +373,9 @@ export default function (pi: ExtensionAPI) {
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     return kind === "consolidation" ? memory.consolidate(common) : memory.noting(common);
   };
+  // Keep the existing storage provenance value; session.project_declaration controls sharing.
+  const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)
+    ?? memory.store.createProject({ name: `pi:${piId}`, declaredBy: "marker" })).id;
   let savedSourceHead: number | undefined;
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
@@ -393,7 +384,6 @@ export default function (pi: ExtensionAPI) {
     if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
     ({ flat, core, sources, layers } = loaded);
     Object.assign(memory.config, validateConfig(core));
-    marker(ctx.cwd); // An invalid initialization must not establish the baseline.
     if (!baseline) {
       mkdirSync(dirname(baselinePath), { recursive: true });
       const temporary = `${baselinePath}.${randomUUID()}`;
@@ -413,11 +403,10 @@ export default function (pi: ExtensionAPI) {
       const tip = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
         .map(e => (e as { data: State & { dbPath: string } }).data)
         .filter(d => d.dbPath === dbPath && d.sessionId === saved.sessionId && d.branch === saved.branch).at(-1);
-      state = { ...saved, piId, branch: (fork && (tip?.head !== saved.head || tip?.sourceHead !== saved.sourceHead)) || saved.piId !== piId ? randomUUID() : saved.branch };
+      // A provisional state cannot have a user project declaration; do not restore a former file-derived project.
+      state = { ...saved, projectId: saved.sessionId ? saved.projectId : ownProject(piId), piId, branch: (fork && (tip?.head !== saved.head || tip?.sourceHead !== saved.sourceHead)) || saved.piId !== piId ? randomUUID() : saved.branch };
     } else {
-      const name = marker(ctx.cwd);
-      const project = name && memory.store.findProjectByName(name);
-      state = { projectId: project ? project.id : memory.store.createProject({ name: name ?? `pi:${piId}`, declaredBy: "marker" }).id, branch: "main", piId };
+      state = { projectId: ownProject(piId), branch: "main", piId };
     }
     // Branch history restores position only; the database and latest provisional choice own intent.
     const latest = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
@@ -444,8 +433,6 @@ export default function (pi: ExtensionAPI) {
     reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
-      const name = marker(ctx.cwd);
-      if (name) memory.declareProject(state.sessionId, name, "marker");
       state.projectId = memory.store.getSession(state.sessionId)!.projectId;
       if (memory.store.projectDeclaration(state.sessionId) === "mark") state.project = memory.store.getProject(state.projectId)!.name;
     }
@@ -454,12 +441,9 @@ export default function (pi: ExtensionAPI) {
   const ensure = (context: ExtensionContext) => { if (closed) throw new Error("Trace Memory executor is closed"); ctx = context; if (!state || state.piId !== context.sessionManager.getSessionId()) restore(context); };
   const allocate = (started: string) => {
     if (state.sessionId) return;
-    const name = marker(ctx.cwd);
-    if (!name) state.projectId = (memory.store.findProjectByName(`pi:${state.piId}`)
-      ?? memory.store.createProject({ name: `pi:${state.piId}`, declaredBy: "marker" })).id;
-    state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: name ? "marker" : "undeclared", nativeCreatedAt: ctx.sessionManager.getHeader()?.timestamp, baseline, enrollmentChoice: (provisional() ?? state.enrollment!).choice }).id;
+    state.projectId = ownProject(state.piId);
+    state.sessionId = memory.store.createSession({ host: `pi:${state.piId}`, startedAt: started, firstReplyAt: now(), projectId: state.projectId, projectDeclaration: "undeclared", nativeCreatedAt: ctx.sessionManager.getHeader()?.timestamp, baseline, enrollmentChoice: (provisional() ?? state.enrollment!).choice }).id;
     state.originPiId = state.piId;
-    if (name) memory.declareProject(state.sessionId, name, "marker");
     try { unlinkSync(provisionalPath()); } catch { /* no receipt, or already consumed */ } // the store owns enrollment from here
   };
   const historyProblems = new Set<string>();
