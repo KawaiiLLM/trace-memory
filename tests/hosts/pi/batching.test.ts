@@ -27,7 +27,7 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
 });
 
 test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): oldest whole-entry batches cross Turns or split one Turn (%s), with no completion chaining", async severalTurns => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   const cap = DEFAULT_CONFIG.noting.batchTokens; // 20b: 10,000, not 17b's 50,000
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
@@ -244,7 +244,7 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
 });
 
 test("17b 2026-09-08: native payload overhead is capacity-checked before sending or advancing entries", async () => {
-  const h = host({ "noting.triggerTokens": 60, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   try {
     // The overhead is real now (19c): core prices the material it froze, while the body the child
     // actually sends also carries the domain system prompt and the four tool schemas. This window
@@ -264,7 +264,7 @@ test("17b 2026-09-08: native payload overhead is capacity-checked before sending
 // that fits: an entry that does not fit beside the oldest one is not dropped, and no smaller later
 // entry is pulled forward to fill the space it left.
 test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-ceiling entry, and no smaller later entry jumps the queue", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 60 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   try {
     h.persist({ role: "user", content: "small oldest", timestamp: 1 });
     h.persist(reply("BIG " + "word ".repeat(15000))); // the primary renderer bounds this at the 10,000-token entry cap

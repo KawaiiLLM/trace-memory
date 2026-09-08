@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import extension from "../../../src/hosts/pi/index.ts";
+import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
 type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1];
@@ -172,7 +172,8 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
   const originalCwd = process.cwd();
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
-  const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); });
+  // The observer reads what the extension wrote, so it registers the same result-text extractor (23).
+  const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); }, {}, piResultText);
   const persist = (message: unknown, id = `e${allEntries.length}`) => {
     const entry = { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "message", message: structuredClone(message) };
     if (native()) return entry; // the real Pi session already persisted this message

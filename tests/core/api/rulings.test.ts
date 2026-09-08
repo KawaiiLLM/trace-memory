@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, TraceMemory, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, TraceMemory, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
 let directory: string;
@@ -826,6 +827,49 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
   expect(calls).toHaveLength(1);
   expect(calls[0]!.material.entries.every(e => !e.view.includes("compact-only"))).toBe(true);
   expect(calls[0]!.text.fresh).not.toContain("compact-only");
+});
+
+// ---- 23 2026-09-09: the entry view's rulings, each recorded by the name it supersedes ----
+
+// 17a, 2026-09-08: "arguments and result permanently reserve half each" of one call budget.
+// Superseded by ticket 23 (user, 2026-09-09): one uniform tool-stage method with one per-call budget,
+// split a quarter for the arguments and three quarters for the result, because arguments are rendered
+// before their result exists, views are immutable, and measured argument needs are small.
+test("23 2026-09-09: 17a's permanent half/half call split is superseded by a quarter for arguments and three quarters for the result", () => {
+  const { s, t } = session();
+  const long = JSON.stringify({ command: "echo " + "a".repeat(5_000) });
+  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: long, result: "b".repeat(5_000), status: "success" });
+  const entries = memory.store.listSourceEntries(s.id);
+  const size = (role: string) => tokens(renderEntry(entries.filter(e => e.role === role && e.calls.length).at(-1)!, memory.config.render).content);
+  expect(size("assistant")).toBe(Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 4));
+  expect(size("toolResult")).toBe(Math.floor(DEFAULT_CONFIG.render.toolCallTokens * 3 / 4));
+  expect(size("assistant")).not.toBe(size("toolResult")); // not halves, and never redistributed later
+});
+
+// 17a, 2026-09-08: `toolCallTokens` defaulted to 1,000. Superseded by ticket 23: the default is 300
+// and 1,000 becomes the hard ceiling, rejected above; `entryTokens` keeps its 17a value.
+test("23 2026-09-09: 17a's 1,000-token per-call default becomes 300 with 1,000 as a hard ceiling, and entryTokens is unchanged", () => {
+  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 150 });
+  const open = (render: Record<string, number>) => TraceMemory(join(directory, "ceiling.sqlite"), async () => ok([]), { render });
+  expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
+  const ceiling = open({ toolCallTokens: 1_000 });
+  try { expect(ceiling.config.render.toolCallTokens).toBe(1_000); } finally { ceiling.close(); }
+});
+
+// 20c, 2026-09-08: compaction's second tier was a separate compact-only renderer with its own version
+// and its own excerpt rules. Superseded by ticket 23: tier 2 is the one entry renderer under the
+// tier-2 profile. The three-tier escalation and the native tier are unchanged.
+test("23 2026-09-09: 20c's separate compact-only renderer is superseded; tier 2 is the one renderer under the tier-2 profile", () => {
+  const { s, t } = session();
+  for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
+    role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
+  const result = memory.compact(s.id, "main", t.id);
+  expect(result.tier).toBe("secondary");
+  const text = compacted(result);
+  const profile = { toolCallTokens: DEFAULT_CONFIG.render.secondaryToolCallTokens, entryTokens: DEFAULT_CONFIG.render.secondaryEntryTokens };
+  for (const entry of memory.pendingEntries(s.id, "main", t.id)) expect(text).toContain(renderEntry(entry, profile, memory.resultText).content);
+  expect(text).not.toContain("compact-only");
+  expect("SECONDARY_VIEW_VERSION" in api).toBe(false); // the version constant went with the renderer
 });
 
 // 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with

@@ -27,7 +27,7 @@
 // and it comes from the same frozen task as the full text.
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock } from "./index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, ENTRY_VIEW_VERSION, type EntryProfile } from "./index.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -85,10 +85,12 @@ export interface MaterialText {
 export const FACTS_TITLE = "Recent facts (newest first):";
 export const CONSOLIDATED_TITLE = "Already-consolidated facts (newest first):";
 export const RAW_TITLE = "Raw:";
-/** Ticket 20 "Try secondary views" (20c): the compact-only block title. It replaces `RAW_TITLE` —
- * never joins it — so the block says in its own text that these views are lossier than the primary
- * ones every other consumer receives, and one title is charged to the episodic budget either way. */
-export const RAW_SECONDARY_TITLE = "Raw (compact-only secondary views; tool arguments and results omitted, text excerpted):";
+/** Compaction tier 2 (20c) under ticket 23's one renderer: the block title replaces `RAW_TITLE` —
+ * never joins it — and names the view version and the profile that produced these views, because a
+ * reader must be able to tell which rule truncated the text in front of it. One title is charged to
+ * the episodic budget either way. */
+export const secondaryRawTitle = (profile: EntryProfile): string =>
+  `Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget ${profile.toolCallTokens} tokens, entry budget ${profile.entryTokens} tokens):`;
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
 export const INTEGRATE_TITLE = "Facts to integrate:";
@@ -177,8 +179,8 @@ export const injectionText = (material: SharedMaterial): string =>
   finish({ content: knowledgeBlock(material), receipts: material.receipts });
 
 /** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. The
- * Raw title is `RAW_SECONDARY_TITLE` when the views inside it are the compact-only secondary ones
- * (ticket 20 tier 2); the order, the separators and the receipts are the same either way. */
+ * Raw title is `secondaryRawTitle(profile)` when the views inside it were rendered under the tier-2
+ * profile (ticket 20 tier 2); the order, the separators and the receipts are the same either way. */
 export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE): string =>
   finish({ content: block([...leading(material), xmlBlock("episodic",
     block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });

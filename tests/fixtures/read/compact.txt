@@ -13,7 +13,6 @@ Recent facts (newest first):
 
 Raw:
 
-[S1/T2] [entry ["fixture","message-2"]]
 [Source entry id: T2#user]
 能不能从贴图推断
 </episodic>

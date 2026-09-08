@@ -2,7 +2,7 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { TraceMemory, tokens, renderEntry, renderEntrySecondary, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
+import { TraceMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
@@ -94,14 +94,15 @@ test("review 2026-09-08: a smaller model window trims the optional historical fa
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: a primary view that cannot hold its labels escalates compact to the secondary views instead of failing", () => {
+test("review 2026-09-08: a tier-1 view that cannot hold its labels escalates compact to the tier-2 profile instead of failing", () => {
   const f = seeded();
   try {
     f.m.config.render.toolCallTokens = 10;
     f.m.store.appendToolCall({ turnId: f.t.id, name: "bash", input: "pwd", result: "done", status: "success" });
     const pending = f.m.pendingEntries(f.s.id, "main", f.t.id);
     expect(() => pending.map(e => renderEntry(e, f.m.config.render))).toThrow(/capacity/);
-    expect(tokens(pending.map(renderEntrySecondary).join("\n\n"))).toBeLessThan(10000);
+    const tier2 = { toolCallTokens: f.m.config.render.secondaryToolCallTokens, entryTokens: f.m.config.render.secondaryEntryTokens };
+    expect(tokens(pending.map(e => renderEntry(e, tier2).content).join("\n\n"))).toBeLessThan(10000);
     const result = f.m.compact(f.s.id, "main", f.t.id);
     expect(result.tier).toBe("secondary");
   } finally { f.m.close(); }

@@ -8,7 +8,7 @@ import { call, fixture, noteBatch, say, toolResults, worker } from "./native-fix
 
 const long = (word: string) => `${word} ` + "word ".repeat(200);
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
-const eager = { "noting.triggerTokens": 60 };
+const eager = { "noting.triggerTokens": 30 };
 const lastRun = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).at(-1)!;
 const response = (h: ReturnType<typeof host>) => JSON.parse(lastRun(h).response!);
 /** A Noter that always fails leaves its entries pending, which is the state compact escalates over
@@ -22,8 +22,9 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
     await h.prompt("HEAD " + "word ".repeat(12_000) + " TAIL");
     await h.answer();
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    expect(block.compaction.summary).toContain("Raw (compact-only secondary views;");
-    expect(block.compaction.summary).toContain("[compact-only view 20c-v1");
+    // The custom entry names the view version and the profile its views were rendered under (23).
+    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v1-uniform-parts, tool call budget 100 tokens, entry budget 150 tokens):");
+    expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
     expect(h.notices.at(-1)).toContain("compaction used secondary views");
     await h.commands.get("trace").handler("status", h.ctx);

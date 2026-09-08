@@ -155,6 +155,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
   token budget, and the key appears nowhere in the read-only settings display.
+- `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
+  (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
+  effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
+  render.<key>: use render.toolCallTokens (one budget for the whole tool call)`.
 - Worker completion starts nothing. A fresh eligible entry completion provides
   the next opportunity; no polling or draining is added. Each runtime reserves one
   slot per phase before asynchronous admission. Quit/reload cancels its workers
@@ -326,17 +330,19 @@ but never incomplete. `memory.compact(...)` returns a tier rather than a string:
 | Tier | When | What the adapter returns |
 |---|---|---|
 | `primary` | every pending entry's normal shared view fits `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
-| `secondary` | the primary views miss a cap but the compact-only views of *all* the same entries fit | the text, as `compaction.summary` |
-| `native` | not even the secondary views fit | nothing at all, with a reason naming the cap and the overage |
+| `secondary` | the tier-1 views miss a cap but the tier-2 views of *all* the same entries fit | the text, as `compaction.summary` |
+| `native` | not even the tier-2 views fit, or an entry's minima exceed the tier-2 `E` | nothing at all, with a reason naming the cap and the overage |
 
-The secondary view (`SECONDARY_VIEW_VERSION`, `src/core/render/index.ts`) is deterministic
-local work: entry order, the entry header with its source address and native identity,
-user boundaries and the non-text placeholder are preserved; each tool fragment keeps its
-name, its `T<id>#t<n>` occurrence address, its call id and its status but neither its
-arguments nor its result; user and assistant text are cut to a per-role token budget with
-the same `[omitted N characters; middle not inspected]` marker the primary view uses. It
-is never a Noter's input and never a token counter's input — those keep using the primary
-views — and no view or summary becomes a source entry, a fact or a processing receipt.
+Tier 2 is the same entry renderer under the tier-2 profile (ticket 23, superseding 20c's
+separate compact-only renderer and its version constant): `render.secondaryToolCallTokens`
+(100) and `render.secondaryEntryTokens` (150). It is deterministic local work: entry order,
+the source addresses, user boundaries and the non-text placeholder are preserved; each tool
+part keeps its name, its `T<id>#t<n>` address and, for a result, its status, and shows what
+the tighter budget holds of its arguments or result; text is cut with the same
+`[omitted N characters; middle not inspected]` marker tier 1 uses. The block title names the
+view version and both numbers of the profile. It is never a Noter's input and never a token
+counter's input — those keep using tier 1 — and no view or summary becomes a source entry, a
+fact or a processing receipt.
 
 Tier 3 is the one place where compaction reaches a model, and the call is Pi's: the
 adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
@@ -491,7 +497,7 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    pending compressed Raw views, recent facts, and no compaction model request. The
    notice names the tier that was used. To see the other two tiers, set
    `render.episodicBlockTokens` low enough that the pending views no longer fit
-   (secondary views, labelled `Raw (compact-only secondary views; …)`) and then low
+   (tier-2 views, labelled `Raw (tier-2 entry views, <version>, tool call budget …)`) and then low
    enough that even those miss the cap (native delegation, where Pi runs its own
    summarization call and writes its own `compaction` entry).
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
@@ -1005,18 +1011,47 @@ kind. Tree switching contributes no extraction usage to Pi totals.
 - No live provider run backs any of it: the eligibility numbers in the tests are stubbed usage
   values fed through the real pi-ai adapters, so nothing here claims a real cache hit or miss.
 
-## Entry views and Noting progress (17a)
+## Entry views and Noting progress (17a, rule replaced in 23)
 
-`render.toolCallTokens` defaults to **1,000** and `render.entryTokens` to
-**10,000** (decimal); both accept positive safe integers through the existing
-flat configuration. Tool name, native call identity, source address, status,
-labels and omission markers count inside the budget. Each call permanently
-reserves half of its budget for arguments and half for its eventual result,
-with two tokens reserved for joining the fragments. The entry cap applies next
-across natural language and all tool fragments. Excerpts retain head and tail,
-including within one huge line or JSON value, with a count of omitted characters
-and an explicit `middle not inspected` label. An impossibly small configured
-budget reports a capacity error and leaves the entries pending.
+One renderer renders every source entry (ticket 23). An entry is a list of parts:
+at most one natural-text part and one part per tool call. A tool-call part is
+`[T<n>#t<k>] <tool>` and one `<key>: <value>` line per top-level argument, each
+value cut at its head under a fair share of the part's budget; a tool-result part
+is `[T<n>#t<k>] <tool> <status>` and the host's result text cut head and tail,
+with structured data the host dropped marked as `[details omitted: N characters]`
+and non-text content marked by its type. A result with no text at all shows the
+head of that structured data instead of a blank. No call id and no native-identity
+header enters the model-facing text: the addresses the labels carry are what the
+Noter cites, and native identity, lineage and the view budgets stay in storage and
+in the run's entry audit.
+
+`render.toolCallTokens` (`B`) defaults to **300** with a hard ceiling of **1,000**,
+rejected above it; `render.entryTokens` (`E`) keeps its 17a **10,000**. The
+compaction tier-2 pair is `render.secondaryToolCallTokens` (**100**) and
+`render.secondaryEntryTokens` (**150**). All four are positive safe integers
+through the existing flat configuration, are configuration rather than per-batch
+decisions, and count the rendered text of the part or the entry — label lines, key
+names, separators and every marker included. Inside `B`, arguments take a quarter
+and the result three quarters (superseding 17a's permanent halves): arguments are
+rendered before their result exists and views are immutable. Allocation is two
+staged: `B` caps each tool part first; if the entry is still over `E`, tool parts
+give way, shared fairly down to their label-plus-marker minimum; only when they
+are all at the minimum does the text part yield, head and tail. A rendered part
+never exceeds its allocation, the entry never exceeds `E`, and no part is emitted
+empty or shorter than its minimum. Excerpts retain head and tail, including within
+one huge line or JSON value, never cut inside a surrogate pair, and state the count
+of omitted characters with an explicit `middle not inspected` label. A budget too
+small for an entry's labels and markers reports a capacity error and leaves the
+entry pending (compaction escalates a tier over it).
+
+The host registers one result-text extractor with the façade at construction; core
+applies it wherever it renders an entry and never inspects envelope fields itself.
+The Pi extractor joins the text blocks of the stored `{content, details}` result,
+marks every other block by its type, and reports `details` as dropped structured
+data with its serialized size. Evidence is unchanged: the raw message and the raw
+result are stored exactly as before, and `trace` with `full: true` renders them
+uncut. Edit diffs live only in `details`, so they leave the Noter view with a
+marker in their place.
 
 The same entry bytes supply subagent Noting, subagent fallback, compaction
 Raw and branch-carry Raw. Existing episodic budgets count these compressed bytes
