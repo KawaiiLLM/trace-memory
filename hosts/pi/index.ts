@@ -132,13 +132,15 @@ export default function (pi: ExtensionAPI) {
     try {
       input.signal?.throwIfAborted();
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
+      // The last check before a request leaves, for both phases (review 2026-09-08): the frozen batch
+      // fit the reported capacity, and the real body with the instructions, the tools and the output
+      // reserve must still fit the model.
       const checkCapacity = (payload: unknown) => {
-        if (input.kind !== "noting") return;
         const body = payload as Record<string, unknown>;
         const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
           .map(key => typeof body[key] === "number" ? body[key] as number : 0));
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
-          throw new Error("Noting capacity: provider request exceeds model context with output reserved");
+          throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: provider request exceeds model context with output reserved`);
       };
       // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
       // backoff stay the adapter's, exactly as they were before the cutover.
@@ -366,20 +368,20 @@ export default function (pi: ExtensionAPI) {
       selected: { mode: "fork" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     const effective = effectiveMode(selected.mode, { kind, target }); // admission pauses by what will run, not by what was asked
-    if (kind === "consolidation") return memory.consolidate({ ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic,
-      executorSessionId: state.sessionId!, ...(options.boundary ? { boundary: options.boundary } : {}) });
     const [provider, ...id] = selected.model.split("/");
     const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
     if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) {
-      context.ui.notify("Noting capacity: unavailable model context/output limits; left pending", "error");
+      context.ui.notify(`${kind === "noting" ? "Noting" : "Consolidation"} capacity: unavailable model context/output limits; left pending`, "error");
       return Promise.resolve({ outcome: "dropped" } as const);
     }
-    return memory.noting({ ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!,
-      capacity: { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
-        // A session the cache-miss latch has downgraded will run this task with fresh context, so
-        // there is no inherited prefix to reserve room for.
-        prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 },
-      ...(options.boundary ? { boundary: options.boundary } : {}) });
+    // Both phases negotiate capacity before selection (gate 4; review 2026-09-08 for Consolidation):
+    // the model window minus the output reserve, and the inherited prefix when the task will fork.
+    // A session the cache-miss latch has downgraded runs with fresh context, so there is no prefix.
+    const capacity = { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
+      prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 };
+    const common = { ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
+      ...(options.boundary ? { boundary: options.boundary } : {}) };
+    return kind === "consolidation" ? memory.consolidate(common) : memory.noting(common);
   };
   let savedSourceHead: number | undefined;
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
@@ -561,8 +563,11 @@ export default function (pi: ExtensionAPI) {
     // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
     const parts: string[] = [];
     if (!state.injected) {
-      const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
-      if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
+      // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
+      try {
+        const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
+        if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
+      } catch (error) { context.ui.notify(String(error), "error"); }
     }
     if (state.sessionId) {
       const delivery = memory.deliver(state.sessionId, state.branch);
@@ -763,8 +768,11 @@ export default function (pi: ExtensionAPI) {
   // an unused custom summary confirms no delivery and no injection.
   pi.on("session_before_compact", (event, context) => {
     ensure(context); if (!enabled()) return; flush();
-    const result = state.sessionId ? memory.compact(state.sessionId, state.branch, state.head)
-      : { tier: "primary" as const, text: memory.inject({ projectId: state.projectId }) };
+    let result: ReturnType<typeof memory.compact>;
+    try {
+      result = state.sessionId ? memory.compact(state.sessionId, state.branch, state.head)
+        : { tier: "primary" as const, text: memory.inject({ projectId: state.projectId }) };
+    } catch (error) { result = { tier: "native", reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
     lastCompaction = result.tier === "native" ? `native delegation — ${result.reason}` : `${result.tier} views`;
     context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
     if (result.tier === "native") return; // no custom replacement: Pi's own compaction runs and reports

@@ -112,25 +112,24 @@ test("20a 2026-09-08 scenario 2: two Noter tasks with the same knowledge and dif
 });
 
 test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in both phases", async () => {
-  memory.close();
-  open({ render: { episodicBlockTokens: 1 } }); // every historical fact is dropped, so both phases receipt it
   const { s, t } = seeded();
   const raw = views(s.id, t.id);
+  // A knowledge cap that holds the bounded omission receipt but not the one item: both phases then
+  // carry that receipt. (Receipts no longer come from an episodic overage — since the review of
+  // 2026-09-08 a budget the mandatory material cannot fit reduces or holds the task instead.)
+  const receipt = "omitted 1 constraint knowledge; expand: K1";
+  memory.config.render.knowledgeBlockTokens = tokens(receipt) + 1;
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const noting = calls[0]! as NotingAgentInput;
-  const [overage, omitted] = noting.material.receipts;
-  // 20b: the overage counts the whole mandatory episodic block — the selected Raw plus the titles, the
-  // range line and the receipts themselves — not the Raw alone.
-  expect(overage).toMatch(/^raw overage: \d+ tokens; all unrecorded raw kept$/);
-  expect(Number(/\d+/.exec(overage!)![0])).toBeGreaterThan(tokens(raw) - 1);
-  expect(omitted).toBe("omitted 1 older facts; expand: F1");
-  expect(noting.text.fresh.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${noting.material.receipts.join("\n")}`)).toBe(true);
+  expect(noting.material.knowledge).toEqual([]);
+  expect(noting.material.receipts).toEqual([receipt]);
+  expect(noting.text.fresh.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${receipt}`)).toBe(true);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
-  expect(consolidation.material.receipts.length).toBeGreaterThan(0);
-  expect(consolidation.text.fresh.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${consolidation.material.receipts.join("\n")}`)).toBe(true);
+  expect(consolidation.material.receipts).toEqual([receipt]);
+  expect(consolidation.text.fresh.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${receipt}`)).toBe(true);
 });
 
 // ---------------------------------------------------------------- 20b: the shared material budgets

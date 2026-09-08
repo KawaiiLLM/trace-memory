@@ -416,6 +416,9 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   // Omitting one more item can lengthen a receipt: recheck the prefix the loop stopped on. The floor
   // is the receipt itself, which is never dropped to fit — nothing else would say the item exists.
   while (kept > 0 && cost(kept) > cap) kept--;
+  // A hard cap is hard for its receipt too (review 2026-09-08): when even the bounded receipt of the
+  // omitted items does not fit, that is a capacity problem to report, not oversized material to emit.
+  if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds render.knowledgeBlockTokens (${cap})`);
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
     text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
     receipts: receipts(kept) };

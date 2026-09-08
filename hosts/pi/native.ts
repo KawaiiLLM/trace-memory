@@ -341,7 +341,9 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // Tool rounds are model turns that call tools, never provider attempts: Pi's own retry policy may
     // re-send a request as often as it likes without spending the cap (review 2026-09-08). The round
     // over the cap fails the run before its tools execute; a committed batch stays committed.
-    if (task.maxToolRounds && Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === "toolCall")
+    // A failed or cancelled response may carry a partial tool call that never executes; only a completed
+    // response's tool round spends the cap (review 2026-09-08).
+    if (task.maxToolRounds && !failedOrCancelled && Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === "toolCall")
         && ++rounds > task.maxToolRounds) {
       exceeded = true; failure = `tool rounds exceeded (${task.maxToolRounds})`;
       void session.abort();

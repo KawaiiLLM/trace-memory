@@ -130,8 +130,10 @@ entry, including natural language, all source labels and omission markers. Value
 are decimal positive safe integers in the existing configuration system. Oversized
 lines and JSON values retain character-level head and tail with omission counts
 and `middle not inspected` markers. Impossible metadata capacity reports an error;
-unprocessed entries remain pending. Existing outer budgets measure the compressed
-views, retain whole pending views with overage receipts, and omit whole older facts.
+unprocessed entries remain pending. The outer budgets measure the compressed views and
+omit whole older facts; since the review of 2026-09-08 a selected batch whose mandatory
+material cannot fit is reduced oldest-first and re-frozen, or left pending with a capacity
+error, never receipted and run over the budget (compact alone escalates to its lossier tiers).
 The shared token estimator is unchanged. Original native messages and complete tool
 arguments/results are retained; explicit full trace reads retrieve them under the
 existing pagination protocol. Default explicit trace previews retain their contract.

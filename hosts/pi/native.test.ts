@@ -574,3 +574,27 @@ test("review 2026-09-08: a child cancelled before any usage arrived reports unkn
     expect(placeholderUsage({ input: 5, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 5 })).toBe(false); // really reported partial usage still counts
   } finally { release(); await f.dispose(); }
 }, 20000);
+
+test("review 2026-09-08: a failed response's partial tool call never spends a tool round; the retried complete call is the first round", async () => {
+  const f = await fixture({ "noting.forkModeDefault": false, "noting.maxToolRounds": 1, retry: { maxRetries: 2, baseDelayMs: 1 } });
+  try {
+    let attempt = 0;
+    f.script(body => {
+      if (!worker(body)) return say("好的。");
+      if (attempt++ === 0) {
+        // A partial `note` call streams out, then the connection dies before the tool could run.
+        const data = { id: "c", object: "chat.completion.chunk", created: 1, model: "test", choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0, id: "partial", type: "function", function: { name: "note", arguments: "{" } }] }, finish_reason: null }] };
+        return new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
+          setTimeout(() => controller.error(new Error("Connection error.")), 15);
+        } }), { headers: { "content-type": "text/event-stream" } });
+      }
+      return toolResults(body) ? say("Done.") : call("good", "note", noteBatch);
+    });
+    await f.turn();
+    const run = await settled(f);
+    expect(run.outcome).toBe("success");
+    expect(JSON.parse(run.response!).retries).toHaveLength(1);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+  } finally { await f.dispose(); }
+}, 20000);

@@ -151,8 +151,11 @@ Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
 Noting and fallback send the shared entry views below. Core freezes one material for both.
 
 Noting context uses the episodic budget for the selected raw plus recent facts
-by descending timestamp, then id. Raw is never dropped; overage is receipted.
-Older facts are dropped first. Active knowledge items use the knowledge budget in glossary
+by descending timestamp, then id. Raw is never dropped or clipped: a selected batch whose
+mandatory material (its views, the framing, the negation cues) cannot fit the episodic budget
+or the host's reported capacity is reduced oldest-first and re-frozen, and an oldest unit that
+cannot fit alone stays pending with a capacity error (review 2026-09-08; no overage receipt
+lets a task run over a hard budget). Older facts are dropped first. Active knowledge items use the knowledge budget in glossary
 category order. Every visible
 knowledge revision read at start is recorded, including budget-omitted knowledge.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.

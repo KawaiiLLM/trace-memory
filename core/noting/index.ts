@@ -107,10 +107,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // membership together, so the reduced task and its progress range can never disagree.
     const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(prepared.text.fresh);
     const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + tokens(prepared.text.inherited);
-    if (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens) return frozen;
+    // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
+    // signal too, never a receipt that lets the task run over it.
+    const fits = !prepared.over.episodic && (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens);
+    if (fits) return frozen;
     entries.pop();
   }
-  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit model context with instructions, knowledge, tools and output reserved; left pending");
+  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved; left pending");
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode };
 
 }
@@ -145,7 +148,7 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
   // 20a: core owns the block order, the titles and the separators of both representations, from this
   // one frozen material. Which one a run sends is the host's choice of native context capability.
   const text: MaterialText = { fresh: notingText(material, range), inherited: notingIncrement(material, range) };
-  return { range, readKnowledgeCommits, raw, material, text };
+  return { range, readKnowledgeCommits, raw, material, text, over: budgeted.over };
 }
 
 export async function runNoting(

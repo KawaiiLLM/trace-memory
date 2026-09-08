@@ -81,12 +81,11 @@ test("category order, chronological ties, whole trailing category omissions; lin
   expect(all).not.toContain("&lt;");
   const tags = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"];
   expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
-  // 20b: the knowledge cap is hard — a zero budget keeps nothing, including the three categories
-  // 17b's exemption protected — and every omitted item is named in a bounded receipt.
+  // 20b: the knowledge cap is hard — including the three categories 17b's exemption protected — and
+  // hard for its receipt too (review 2026-09-08): a budget that cannot hold even the bounded receipt
+  // of the omitted items is a capacity error, never an oversized block.
   memory.config.render.knowledgeBlockTokens = 0;
-  const limited = memory.inject(s.id);
-  for (const tag of tags) { expect(limited).not.toContain(`<${tag}>`); expect(limited).toContain(`${tag} knowledge; expand:`); }
-  expect(limited).not.toContain("<knowledge>");
+  expect(() => memory.inject(s.id)).toThrow(/Knowledge capacity/);
   // A budget that holds part of the list keeps a whole prefix of the priority order, receipts included.
   memory.config.render.knowledgeBlockTokens = 200;
   const partial = memory.inject(s.id);

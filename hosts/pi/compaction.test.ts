@@ -33,10 +33,14 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
 });
 
 test("20c 2026-09-08 scenario 11: the host returns no custom replacement when compact delegates, and an attempt that never persists establishes no boundary", async () => {
-  const h = host({ ...eager, "render.episodicBlockTokens": 60 });
+  // Many tiny entries: their primary views together exceed the Raw ceiling, and their secondary views
+  // — each carrying its identity header — exceed it too, so even tier 2 cannot represent them all.
+  // Each entry alone still fits a batch, so a Noter can run afterwards (review 2026-09-08: a budget the
+  // mandatory material cannot fit reduces or holds the task rather than running over it).
+  const h = host({ ...eager, "noting.batchTokens": 300 });
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
-    await h.prompt(long("HEAD")); await h.answer(); await h.emit("agent_settled"); await h.drain();
+    for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);

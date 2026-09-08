@@ -124,7 +124,9 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   watermark(unrelatedFact);
   const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
   const weak = fact(memories.interpretation, { negate: [{ target: `F${cited}`, strength: "weak" }] });
-  memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 }, consolidation: { nearThreshold: 1 } });
+  // Reminders are mandatory material: the budgets never trim them (a budget they cannot fit leaves the
+  // batch pending instead, review 2026-09-08), and lexical distance never filters them.
+  memory.close(); open({ consolidation: { nearThreshold: 1 } });
   const traces = ids.map((id) => memory.trace(`K${id}`)); queue(empty, empty);
   expect((await consolidation()).outcome).toBe("success");
   const reminder = calls[0]!.material.reminders.join("\n\n");
@@ -133,7 +135,7 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   expect(reminder.match(/Recorded negation strength: strong/g)).toHaveLength(ids.length);
   expect(reminder.match(/Recorded negation strength: weak/g)).toHaveLength(ids.length);
   for (const id of [cited, strong, weak]) expect(reminder).toContain(memory.trace(`F${id}`));
-  expect(calls[0]!.material.receipts.join("\n")).toContain("range overage:");
+  expect(calls[0]!.material.receipts.join("\n")).not.toContain("overage");
   expect(ids.map((id) => memory.trace(`K${id}`))).toEqual(traces);
 });
 
@@ -252,16 +254,14 @@ test("context uses timestamp freshness while range remains complete and categori
   const input = calls[0]!.text.fresh;
   expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
+  // 20b: the knowledge cap is hard — not even the three categories 17b's exemption protected survive a
+  // one-token budget — and, since the review of 2026-09-08, hard for its receipt too: a budget that
+  // holds neither an item nor the receipt naming it leaves the batch pending rather than running.
   memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 } });
-  const next = fact(memories.interpretation);
-  queue(empty, empty); await consolidation(); const small = calls[2]!.text.fresh;
-  expect(small).toContain(memory.trace(`F${next}`));
-  expect(small).not.toContain(`[F${newest}]`); expect(small).not.toContain(`[F${oldest}]`);
-  expect(small).toContain("omitted 3 older facts");
-  // 20b: the knowledge cap is hard, so a one-token budget keeps no category at all — not even the
-  // three that 17b's exemption protected — and every omission is receipted and still traceable.
-  for (const category of categories) { expect(small).not.toContain(`[${category}/project]`); expect(small).toContain(`omitted 1 ${category} knowledge`); }
-  expect(calls[2]!.readKnowledgeCommits).toHaveLength(7);
+  fact(memories.interpretation);
+  const runs = memory.store.listRuns(sessionId).length;
+  await expect(consolidation()).rejects.toThrow(/capacity/);
+  expect(memory.store.listRuns(sessionId)).toHaveLength(runs);
 });
 
 test("bigram Jaccard has a known nontrivial score and an inclusive configurable threshold", async () => {

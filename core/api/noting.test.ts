@@ -241,13 +241,14 @@ test("full expands selected calls; cap is the listing budget and address flags a
   expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");
 });
 
-test("raw exceeding the episodic budget is retained, while older facts are dropped", async () => {
+test("an oldest entry the episodic budget cannot hold leaves Noting pending (the 'raw overage' receipt was superseded 2026-09-08)", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   memory.close(); open({ render: { episodicBlockTokens: 1 } });
-  const second = turn(first.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.text.fresh).toContain(second.assistantText!);
-  expect(calls[1]!.material.receipts.join("\n")).toContain("raw overage:");
-  expect(calls[1]!.material.receipts.join("\n")).toContain("omitted 1 older facts; expand: F1");
+  const second = turn(first.id, 1);
+  const before = memory.pendingEntries(sessionId, "main", second.id);
+  await expect(noting(second.id)).rejects.toThrow(/Noting capacity/);
+  expect(calls).toHaveLength(1); // no model call ran over the budget
+  expect(memory.pendingEntries(sessionId, "main", second.id)).toEqual(before);
 });
 
 test("stdout keeps head and tail; stderr keeps tail; reports keep head and tail", () => {
@@ -279,19 +280,18 @@ test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constra
     op: "create" as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
   const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
-  // A cap of one token holds nothing at all: not even the first-priority constraint (17b kept three).
+  // A cap of one token holds nothing at all — not even the first-priority constraint (17b kept three)
+  // and not even the receipt naming the omissions, so the task stays pending (review 2026-09-08).
   memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
-  const second = turn(first.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.material.knowledge).toEqual([]);
-  expect(calls[1]!.text.fresh).not.toContain("<knowledge>");
-  for (const category of categories) expect(calls[1]!.material.receipts.join("\n")).toContain(`omitted 1 ${category} knowledge; expand: K`);
+  const second = turn(first.id, 1);
+  await expect(noting(second.id)).rejects.toThrow(/Knowledge capacity/);
   for (const [i] of categories.entries()) expect(memory.trace(`K${i + 1}`)).toContain(`[K${i + 1}@`); // omitted, not deleted
   // A binding cap keeps a whole prefix of the priority order, and the block, its category tags and its
   // own omission receipts all stay inside it — the receipts are charged, not free.
   const cap = 200;
   memory.close(); open({ render: { knowledgeBlockTokens: cap } });
   const third = turn(second.id, 1); script.push(async () => success([])); await noting(third.id);
-  const material = calls[2]!.material;
+  const material = calls[1]!.material;
   const kept = material.knowledge.map(g => g.category);
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds

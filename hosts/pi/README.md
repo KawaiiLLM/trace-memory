@@ -1012,9 +1012,10 @@ budget reports a capacity error and leaves the entries pending.
 
 The same entry bytes supply subagent Noting, subagent fallback, compaction
 Raw and branch-carry Raw. Existing episodic budgets count these compressed bytes
-when deciding which whole facts fit. Pending Raw views remain present with an
-overage receipt when their combined views exceed that outer budget. The shared
-estimator is unchanged. **Fork-mode Noting keeps reading the uncompressed
+when deciding which whole facts fit. A Noting batch whose views, framing and cues cannot
+fit the episodic budget or the model's reported capacity is reduced oldest-first and
+re-frozen, or left pending with a capacity error (review 2026-09-08); compact is the one
+consumer that escalates to lossier views instead. The shared estimator is unchanged. **Fork-mode Noting keeps reading the uncompressed
 native provider prefix and gains nothing from the compressed view.** This is the
 accepted 2026-09-08 fork-mode choice: its value is prefix reuse. The captured
 prefix is never rewritten or compressed. Its one appended user message still
@@ -1022,8 +1023,9 @@ contains the Noting instruction, range, head reply and source index; the index
 contains only the frozen sources. Existing exact-prefix verification and fallback
 remain authoritative. A capture that predates a selected user or tool source falls
 back to the same compressed subagent input; source previews are not evidence of
-full prefix coverage. Native request capacity is checked before each Noting
-provider call, including continuations, without rewriting the prefix.
+full prefix coverage. Native request capacity is checked before each Noting and
+Consolidation provider call, including continuations, without rewriting the prefix; both
+phases receive the model's capacity before selection (review 2026-09-08).
 
 Noting freezes entry identities on the selected path, not whole Turns. A
 successful zero-fact run processes only its selected entries; later entries in

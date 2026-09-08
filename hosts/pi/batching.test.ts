@@ -202,7 +202,7 @@ test.each(["batch", "native prefix"])("17b 2026-09-08: an oldest entry blocked b
     expect(h.requests).toEqual([]);
     expect(h.memory.store.listRuns(1)).toEqual([]);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(h.memory.store.listSourceEntries(1).map(e => e.nativeId));
-    expect(h.notices.join("\n")).toContain(limit === "batch" ? "oldest entry exceeds noting.batchTokens" : "oldest entry cannot fit model context");
+    expect(h.notices.join("\n")).toContain(limit === "batch" ? "oldest entry exceeds noting.batchTokens" : "oldest entry cannot fit the episodic budget or the model context");
   } finally { await h.dispose(); }
 });
 
@@ -278,5 +278,19 @@ test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id).slice(0, 2)).toEqual([all[1]!.id, all[2]!.id]);
     h.persist(reply("completion 2")); await h.emit("agent_end"); await h.drain();
     expect(noted(1)).toEqual([all[1]!.id]); // the big entry is taken next, not skipped for the small later one
+  } finally { await h.dispose(); }
+});
+
+test("review 2026-09-08: Consolidation negotiates the model's real capacity like Noting and never sends a request the window cannot hold", async () => {
+  const h = host({ "noting.triggerTokens": 1e9 });
+  try {
+    await h.turn();
+    const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
+    expect(note.execute({ facts: [{ category: "observation", actor: "user", text: "Large evidence " + "word ".repeat(6000), source: ["T1#user"] }] })).toContain("ok: F1");
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 2000, maxTokens: 64 };
+    h.persist(reply("new completion")); await h.emit("agent_end"); await h.drain();
+    expect(h.requests).toHaveLength(0); // the oldest fact cannot fit a 2,000-token window: pending, not sent
+    expect(h.notices.some(n => n.includes("Consolidation capacity"))).toBe(true);
+    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1);
   } finally { await h.dispose(); }
 });
