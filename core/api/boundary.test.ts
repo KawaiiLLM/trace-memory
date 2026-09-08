@@ -1,11 +1,14 @@
-// Ticket 19b: the core task boundary. Core owns memory (frozen material, evidence eligibility,
-// validation, atomic commits, progress) and composes no model context; the host receives structured
-// material and reports what it can and cannot audit. Every test here names the ruling it pins.
+// Tickets 19b and 20a: the core task boundary. Core owns memory (frozen material, evidence
+// eligibility, validation, atomic commits, progress) and, since the user's ruling of 2026-09-08, the
+// host-neutral domain text as well: it builds no provider message or body, and the host receives
+// structured material plus prepared text and reports what it can and cannot audit. Every test here
+// names the ruling it pins.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, materialText, renderEntry, toolDefinitions, tokens,
+import { CONSOLIDATED_TITLE, FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../render/material.ts";
+import { TraceMemory, renderEntry, toolDefinitions, tokens,
   type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof TraceMemory>;
@@ -37,16 +40,24 @@ const turn = (sessionId: number, parentTurnId: number | null, user: string, assi
   memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: user, assistantText: assistant, startedAt: time });
 const fact = (source: string) => ({ category: "observation", actor: "user", text: `Observed at ${source}`, source: [source] });
 
-// ---------------------------------------------------------------- structured material, no messages
+// --------------------------------------------------- structured material and text, no provider body
 
-/** No core-composed message may reach the host: only rendered parts it may lay out itself. */
-function assertNoComposedMessage(input: NotingAgentInput | ConsolidationAgentInput) {
-  for (const key of ["input", "subagentInput", "messages", "system", "conversation", "body"])
-    expect(key in (input as unknown as Record<string, unknown>)).toBe(false);
+/** 20a 2026-09-08 supersedes the 19b wording "no core module builds a message sequence or a provider
+ * body, and no host receives composed domain text": core now owns the domain text and still builds no
+ * provider message or body. `text` is allowed; a message sequence, a system slot or a body is not. */
+function assertNoProviderMessage(input: NotingAgentInput | ConsolidationAgentInput) {
+  const record = input as unknown as Record<string, unknown>;
+  for (const key of ["subagentInput", "messages", "system", "conversation", "body"])
+    expect(key in record).toBe(false);
+  expect(Array.isArray(record.input)).toBe(false); // no provider message array under any name
+  expect(typeof input.text.fresh).toBe("string");
+  expect(typeof input.text.inherited).toBe("string");
+  // The parts stay parts: core's assembled blocks live in `text`, never smuggled into a material field.
   const parts = Object.values(input.material).flat().filter((part): part is string => typeof part === "string");
   for (const part of parts) {
     expect(part.startsWith("Range: ")).toBe(false);
-    expect(part).not.toContain("\n\nActive knowledge:");
+    expect(part).not.toContain("<knowledge>");
+    expect(part).not.toContain(`\n\n${FACTS_TITLE}`);
     expect(part).not.toContain("\n\nRaw:");
   }
 }
@@ -56,7 +67,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
-    assertNoComposedMessage(input);
+    assertNoProviderMessage(input);
     // Everything this stub needs is a part it can place itself.
     expect(input.material.entries.map(e => e.view)).toEqual(memory.pendingEntries(sessionId, "main", t.id).map(e => renderEntry(e, memory.config.render).content));
     expect(input.entryAudit.viewVersion).toBe("17a-v1-fixed-halves");
@@ -107,7 +118,7 @@ test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two s
   const batch = { operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] };
   runAgent = async raw => {
     const input = raw as ConsolidationAgentInput;
-    assertNoComposedMessage(input);
+    assertNoProviderMessage(input);
     expect(input.material.factAddresses).toEqual(["F1"]);
     const tool = input.tools.find(t => t.name === "memory")!;
     const first = tool.execute(batch);
@@ -177,13 +188,81 @@ test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budg
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
 });
 
-test("19b 2026-09-08: the frozen material carries the whole batch, and materialText mirrors what a fresh-context run would send", async () => {
+test("19b 2026-09-08: the frozen material carries the whole batch, and core's fresh text is what a fresh-context run sends", async () => {
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
-    expect(materialText(input)).toContain("用 pnpm");
+    expect(input.text.fresh).toContain("用 pnpm");
     return { outcome: "success", output: "", request: { fake: true } };
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+});
+
+// --------------------------------------------------------------- 20a scenario 1: one shared assembly
+
+/** Ticket 20 acceptance scenario 1. This stub knows no Pi or CC message type: it reads core's
+ * prepared text, runs the tool protocol of both phases, and lays nothing out itself. */
+test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs note and the two-submission memory protocol from core's prepared text", async () => {
+  const sessionId = session();
+  const t = turn(sessionId, null, "用 pnpm", "好的。");
+  let noted = "";
+  runAgent = async raw => {
+    const input = raw as NotingAgentInput;
+    assertNoProviderMessage(input);
+    noted = input.text.fresh; // the whole task, as text: instructions stay a separate field
+    expect(input.prompt).toContain("Noting (fact extraction)");
+    expect(noted).toContain(input.material.entries[0]!.view);
+    expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
+    return { outcome: "success", output: "done", audit: { available: false, reason: "text-only host" } };
+  };
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+
+  const batch = { operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] };
+  let integrated = "";
+  runAgent = async raw => {
+    const input = raw as ConsolidationAgentInput;
+    assertNoProviderMessage(input);
+    integrated = input.text.fresh;
+    expect(integrated).toContain(input.material.rangeFacts[0]!);
+    const tool = input.tools.find(t => t.name === "memory")!;
+    // Two submissions: core's review guidance is text this stub relays, not a provider message.
+    expect(input.reviewFeedback(tool.execute(batch))).toContain("NEAR:");
+    input.reportRequest({ round: 2 });
+    expect(tool.execute(batch)).toContain('"committed"');
+    return { outcome: "success", output: "integrated", audit: { available: false, reason: "text-only host" } };
+  };
+  expect((await memory.consolidate({ sessionId, branch: "main", mode: "subagent" })).outcome).toBe("success");
+
+  // The same knowledge block reaches the main agent: initial injection and compact share the rendering.
+  const injected = memory.inject(sessionId);
+  expect(injected).toContain("The project uses pnpm");
+  const knowledgeBlock = injected.split("\n\nReceipts:")[0]!;
+  expect(memory.compact(sessionId, "main", t.id).startsWith(`${knowledgeBlock}\n\n<episodic>`)).toBe(true);
+  // Injection is knowledge-only: sharing the material type adds no facts and no Raw to it.
+  expect(injected).not.toContain(FACTS_TITLE);
+  expect(injected).not.toContain("\nRaw:");
+  // A later Noting task starts with that identical block, before anything task-specific.
+  runAgent = async raw => { noted = (raw as NotingAgentInput).text.fresh; return { outcome: "success", output: "", request: { fake: true } }; };
+  const next = turn(sessionId, t.id, "再来一次", "好。");
+  await memory.noting({ sessionId, branch: "main", headTurnId: next.id, mode: "subagent" });
+  expect(noted.startsWith(`${knowledgeBlock}\n\n${FACTS_TITLE}`)).toBe(true);
+  expect(integrated.startsWith(`${knowledgeBlock}\n\n${CONSOLIDATED_TITLE}`)).toBe(false); // that run read no knowledge yet
+});
+
+test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review blocks", () => {
+  const titles = [FACTS_TITLE, CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, INTEGRATE_TITLE, REMINDER_TITLE,
+    "<knowledge>", "Range: ${"];
+  const directory = new URL("../../hosts/", import.meta.url);
+  const files: URL[] = [];
+  for (const host of readdirSync(directory, { withFileTypes: true })) {
+    if (!host.isDirectory()) continue;
+    for (const file of readdirSync(new URL(`${host.name}/`, directory)))
+      if (file.endsWith(".ts") && !file.endsWith(".test.ts")) files.push(new URL(`${host.name}/${file}`, directory));
+  }
+  expect(files.length).toBeGreaterThan(5);
+  for (const file of files) {
+    const source = readFileSync(file, "utf8");
+    for (const title of titles) expect([file.pathname, source.includes(title)]).toEqual([file.pathname, false]);
+  }
 });

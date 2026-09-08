@@ -9,6 +9,10 @@ import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "..
 import { finish, renderFact, renderRun, renderTurn, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry } from "../render/index.ts";
 export { tokens, renderEntry, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+// 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
+// out knowledge, facts or Raw itself.
+export { notingText, notingIncrement, consolidationText, consolidationIncrement, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
+export type { SharedMaterial, KnowledgeGroup, MaterialText, TaskRange } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";

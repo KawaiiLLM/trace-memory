@@ -50,6 +50,8 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **CLOSER** — new facts lexically near each open or goal knowledge, shown as candidate closing evidence.
 - **Fork** — inherited-context execution: the run happens in a child of the conversation itself, continuing from its persisted state. The execution mode, never the evidence path called branch. Runs recorded before this name existed carry the old spelling and are read as legacy request-copy execution.
 - **Subagent** — fresh-context execution: the run happens in a private child prepared from the frozen material alone. The alternative to fork.
+- **Material** — the frozen parts one memory run works from: the active knowledge, the historical facts, the compressed Raw views of its selected entries, its own range and cues, and the budget receipts. A task freezes it once; both execution modes read that one.
+- **Increment** — what an inherited-context run adds to a conversation that already carries the raw, the delivered facts and the injected knowledge: its instruction, the range, and the head reply and source index, or the exact fact list and review cues. Never a second copy of the material.
 - **Run record** — one record per noting or consolidation run holding the exact input sent to the model, the prompt version, the model, the execution mode, and the output. Knowledge revisions point at the run that produced them.
 - **Completion level** — the prefix on an event fact: completed (result evidence visible), reported (claimed only), dispatched, attempted.
 - **Local handle** — `$n`, the n-th fact of the current noting batch, used for in-batch relations before ids exist; the writer resolves it.

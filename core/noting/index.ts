@@ -6,6 +6,7 @@ import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderTurn, renderSources, renderEntry, ENTRY_VIEW_VERSION, budgetKnowledge, budgetFacts, tokens } from "../render/index.ts";
+import { notingText, notingIncrement, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -19,23 +20,10 @@ export interface NotingInput extends TaskOptions {
   model?: string;
   mode?: "fork" | "subagent";
 }
-/** The frozen task material of one Noting run (ticket 19b). Core renders and budgets these parts;
- * the adapter decides which of them an execution mode needs and which model message carries them.
- * No field is a composed system or user message. */
-export interface NotingMaterial {
-  /** The selected pending entries, oldest first, each with its compressed view. */
-  entries: { id: number; view: string }[];
-  /** The head turn's final assistant reply, rendered; null when the head turn has none. */
-  head: string | null;
-  /** One source-index line per turn of the frozen range, in range order. */
-  sources: string[];
-  /** Active knowledge lines within the knowledge budget, one string per category group. */
-  knowledge: string[];
-  /** Facts written earlier in this session, newest first, within the episodic budget. */
-  facts: string[];
-  /** Budget receipts for everything the views and the two budgets left out. */
-  receipts: string[];
-}
+/** The frozen task material of one Noting run: the shared parts (knowledge, historical facts,
+ * compressed Raw entries, receipts) plus this task's head reply and source index. Core renders and
+ * budgets the parts and prepares their text (20a); no field is a provider message or body. */
+export type { NotingMaterial } from "../render/material.ts";
 export interface NotingAgentInput extends AgentControl {
   kind: "noting";
   entryIds: number[];
@@ -49,6 +37,9 @@ export interface NotingAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: NotingMaterial;
+  /** Core's prepared domain text, both representations from this one frozen task (20a). The host
+   * chooses one by the native context capability it has, and places it in its own messages. */
+  text: MaterialText;
   /** The view versions, budgets and omissions core records for this batch. */
   entryAudit: EntryAudit;
   tools: ToolDefinition[];
@@ -114,7 +105,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const material = prepared.material;
     const cost = (parts: (string | null)[]) => parts.reduce<number>((total, part) => total + (part ? tokens(part) : 0), 0);
     const subagentTokens = tokens(prompt) + tokens(JSON.stringify(toolDefinitions))
-      + cost([...material.knowledge, ...material.facts, ...material.entries.map(e => e.view), ...material.receipts]);
+      + cost([...material.knowledge.map(g => g.text), ...material.facts, ...material.entries.map(e => e.view), ...material.receipts]);
     const forkTokens = (capacity?.prefixTokens ?? 0) + tokens(prompt) + cost([material.head, ...material.sources]);
     if (!capacity || Math.max(subagentTokens, mode === "fork" ? forkTokens : 0) <= capacity.inputTokens) return frozen;
     entries.pop();
@@ -137,19 +128,22 @@ function notingMaterial(store: Store, frozen: { sessionId: number; entries: Retu
   receipts.push(...episodic.receipts, ...active.receipts);
   const head = turns.at(-1)!.turn;
   // Every part of the run's material, rendered and budgeted once. An inherited-context run does not
-  // need the raw, the delivered facts or the knowledge again, but which parts a mode uses, and in
-  // which message, is the adapter's decision (ticket 19 "Adapters own conversations").
+  // need the raw, the delivered facts or the knowledge again (ruling 08:53); core lays both
+  // representations out below, and the host only decides which native message carries the text.
   const material: NotingMaterial = {
     entries: entries.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
     // The captured request precedes the head's final reply; that missing raw and the source index
     // are what an inherited-context run still needs.
     head: head.assistantText ? renderTurn(head, [], config.render, { part: "assistant" }).content : null,
     sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
-    knowledge: active.groups.map((g) => g.text).filter(Boolean),
+    knowledge: active.groups.filter((g) => g.text),
     facts: episodic.recent,
     receipts,
   };
-  return { range, readKnowledgeCommits, raw, material };
+  // 20a: core owns the block order, the titles and the separators of both representations, from this
+  // one frozen material. Which one a run sends is the host's choice of native context capability.
+  const text: MaterialText = { fresh: notingText(material, range), inherited: notingIncrement(material, range) };
+  return { range, readKnowledgeCommits, raw, material, text };
 }
 
 export async function runNoting(
@@ -158,7 +152,7 @@ export async function runNoting(
 ): Promise<NotingResult> {
   const { sessionId, branch, entries, turns, model, mode } = frozen;
   if (!turns.length) return { outcome: "empty" };
-  const { range, readKnowledgeCommits, raw, material } = notingMaterial(store, frozen, config);
+  const { range, readKnowledgeCommits, raw, material, text } = notingMaterial(store, frozen, config);
   const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
@@ -166,7 +160,7 @@ export async function runNoting(
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
-    material, entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
+    material, text, entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) {

@@ -6,14 +6,14 @@
 </knowledge>
 
 <episodic>
+Recent facts (newest first):
+
+[F1] 2026-09-06T00:00:00Z [decision/user] 地形层和高度层需要一起读。
+  source: T1#user
+
 Raw:
 
 [S1/T2] [entry ["fixture","message-2"]]
 [Source entry id: T2#user]
 能不能从贴图推断
-
-Recent facts (newest first):
-
-[F1] 2026-09-06T00:00:00Z [decision/user] 地形层和高度层需要一起读。
-  source: T1#user
 </episodic>

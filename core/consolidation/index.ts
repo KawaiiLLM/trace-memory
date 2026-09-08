@@ -6,6 +6,7 @@ import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderKnowledge, renderFact, budgetKnowledge, budgetFacts } from "../render/index.ts";
+import { consolidationText, consolidationIncrement, type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -17,23 +18,10 @@ export type { ConsolidationDiagnostic } from "./commit.ts";
 export interface ConsolidateInput extends TaskOptions { sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "fork" | "subagent" }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
-/** The frozen task material of one Consolidation run (ticket 19b). Core renders and budgets these
- * parts; the adapter decides which of them an execution mode needs and which model message carries
- * them. No field is a composed system or user message. */
-export interface ConsolidationMaterial {
-  /** The facts to integrate, as addresses: an inherited context already carries their lines. */
-  factAddresses: string[];
-  /** The same facts, rendered with their relations, in range order. */
-  rangeFacts: string[];
-  /** Active knowledge lines within the knowledge budget, one string per category group. */
-  knowledge: string[];
-  /** Already-consolidated project facts, newest first, within the episodic budget. */
-  consolidated: string[];
-  /** Visible knowledge whose supports a range fact negates, with both facts: review cues only. */
-  reminders: string[];
-  /** Budget receipts for everything the two budgets left out. */
-  receipts: string[];
-}
+/** The frozen task material of one Consolidation run: the shared parts (knowledge, already-
+ * consolidated historical facts, receipts) plus this task's pending facts and review cues. Core
+ * renders and budgets the parts and prepares their text (20a); no field is a provider message. */
+export type { ConsolidationMaterial } from "../render/material.ts";
 export interface ConsolidationAgentInput extends AgentControl {
   kind: "consolidation";
   sessionId: number;
@@ -46,6 +34,9 @@ export interface ConsolidationAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: ConsolidationMaterial;
+  /** Core's prepared domain text, both representations from this one frozen task (20a). The host
+   * chooses one by the native context capability it has, and places it in its own messages. */
+  text: MaterialText;
   /** Core's own reader of a `memory` receipt: the review guidance the adapter must put in front of
    * the model as a user message before the second submission, or undefined. The two-submission
    * protocol stays in core; the adapter only chooses the message or steering mechanism. */
@@ -114,16 +105,19 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   const active = budgetKnowledge(knowledge, config.render.knowledgeBlockTokens);
   // Every part of the run's material, rendered and budgeted once. In an inherited context the fact
   // lines and the active knowledge are already in the conversation, delivered after the runs that
-  // wrote them, and the exact membership excludes other paths and already-consolidated facts; which
-  // parts a mode uses, and in which message, is the adapter's decision (ticket 19b).
+  // wrote them, and the exact membership excludes other paths and already-consolidated facts
+  // (ruling 08:53); the host only decides which native message carries core's text.
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: rangeFacts.map((f) => lines.get(f.id)!),
-    knowledge: active.groups.map((g) => g.text).filter(Boolean),
-    consolidated: episodic.recent,
+    knowledge: active.groups.filter((g) => g.text),
+    facts: episodic.recent,
     reminders,
     receipts: [...episodic.receipts, ...active.receipts],
   };
+  // 20a: core owns the block order, the titles and the separators of both representations, from this
+  // one frozen material. Which one a run sends is the host's choice of native context capability.
+  const text: MaterialText = { fresh: consolidationText(material, range), inherited: consolidationIncrement(material, range) };
   // A first valid `memory` batch commits nothing and returns the review guidance inside its receipt,
   // as a user-role message. Core owns that protocol and reads its own receipt; the adapter only
   // decides how to put the message in front of the model (native message, steering, appended turn).
@@ -149,7 +143,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
     return { text: feedback, near };
   } });
   let result: RunAgentResult;
-  try { result = await runAgent({ ...structuredClone(base), material, reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
+  try { result = await runAgent({ ...structuredClone(base), material, text, reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
   catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: error instanceof Error ? error.message : String(error) }; }
   binding.close();
   // A direct facade close may dispose before the provider settles; never access that store.

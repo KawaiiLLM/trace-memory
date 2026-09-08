@@ -494,30 +494,32 @@ trigger another billable call.
 
 Fallback keeps the run honest: it accepts the actual returned `mode`, records `requestedMode`
 beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b
-the fresh-context material is composed from the same frozen parts rather than shipped as a
-second core string, so a fallback cannot send range-only context or falsely record fork mode.
+the fresh-context material comes from the same frozen task as the inherited increment rather
+than from a second core string, so a fallback cannot send range-only context or falsely record
+fork mode.
 No store schema changed.
 
-## Message composition (19b)
+## Message binding (20a)
 
-`compose.ts` is the only place in this repository that decides what a model message contains.
-Core freezes one `material` object per run — entry views, head reply, source index, knowledge
-lines, fact lines, fact addresses, negated-evidence reminders, budget receipts — and composes
-nothing. `composeMaterial(input, mode)` lays those parts out; `composeTask(input, mode)` returns
-the messages:
+This adapter composes no domain text. Core prepares both representations of one frozen task and
+this host only binds them to native messages (user ruling 2026-09-08; `compose.ts` and its test
+were deleted with the layout that lived in them):
 
-- **Inherited context (`fork`)**: one user message, `prompt` then `Range: …`, the head turn's
-  final reply and the `Sources:` index — nothing else, because the raw turns, the delivered
-  facts and the injected knowledge are already in that conversation (user ruling 2026-09-06
-  08:53). Consolidation sends the range, `Facts to integrate: F…` and the reminders. A fork has
-  no system slot of its own, so the instructions ride in the appended user message.
-- **Fresh context (`subagent`)**: `prompt` becomes the system prompt and the message carries the
-  whole rendered material under its headers, receipts last.
+- **Inherited context (`fork`)**: `${input.prompt}\n\n${input.text.inherited}` as the appended
+  user message. A fork has no system slot of its own, so the instructions ride in that message;
+  core's increment is the range, the head turn's final reply and the source index (Noting) or the
+  range, the exact fact list and the review cues (Consolidation), because the raw turns, the
+  delivered facts and the injected knowledge are already in that conversation (user ruling
+  2026-09-06 08:53).
+- **Fresh context (`subagent`)**: `input.prompt` becomes the child's system prompt and
+  `input.text.fresh` its first user message.
 
-Both runners call it, so an inherited fork and a fresh subagent send the same bytes for the same
-mode, and the byte-level layout rulings are pinned in `compose.test.ts`. Consolidation's review
-guidance is read back from the `memory` receipt with core's own `input.reviewFeedback(result)`;
-the adapter only chooses how to put that message in front of the model.
+Choosing the representation is this host's decision, made from the native context capability it
+actually has; the titles, block order and separators inside the text are core's, pinned in
+`core/render/material.test.ts`. Consolidation's review guidance is still read back from the
+`memory` receipt with core's own `input.reviewFeedback(result)`; the adapter only chooses how to
+put that message in front of the model (here: a native user message queued with `deliverAs:
+"steer"`).
 
 ## The runner (19a/19b, sole runner since 19c)
 
@@ -552,7 +554,7 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Identity.** `agent.sessionId` is set to the parent's Pi session id so the provider sees
   the parent's request/transport identity for cache affinity. The child's own SessionManager
   id and file stay its own, as does Trace Memory's target attribution.
-- **Task delivery.** The message `compose.ts` builds is the child's user prompt; the
+- **Task delivery.** The text core prepared is the child's user prompt; the
   Consolidation review answer is delivered as a native user message queued with
   `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
 

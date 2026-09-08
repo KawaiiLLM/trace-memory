@@ -6,20 +6,21 @@ core/ is host-agnostic: it must not import any host SDK.
 - api/tools.ts  four bound model-facing tools; atomic note validation and commit.
 - consolidation/  freeze the Consolidation material, produce NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
+- render/material.ts  the shared material contract and the block layout of every consumer (20a).
 - prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
 
-**Core assembles no model context (ticket 19b).** `runAgent` receives structured task material, never a
-system or user message, a provider body or a mode-specific concatenated string: the domain prompt and
-its hash, the frozen range and knowledge commits, the mode, the tools, `reportRequest`, `entryAudit`,
-and one `material` object of rendered, budgeted parts — for Noting the ordered entry views, the head
-reply, the source index, the knowledge lines, the earlier facts and the budget receipts; for
-Consolidation the fact addresses, the fact lines, the knowledge lines, the already-consolidated facts,
-the negated-evidence reminders and the receipts. Which parts an execution mode needs, which header
-introduces them and which message carries them is the adapter's decision (Pi: `hosts/pi/compose.ts`).
-Consolidation additionally supplies `reviewFeedback(toolResult)`, core's own reader of a `memory`
-receipt: the adapter delivers the returned guidance as a user message but does not parse the protocol.
+**Core builds no provider message or body; core owns the domain text (ticket 19b, revised by the
+user's ruling of 2026-09-08 in ticket 20).** `runAgent` receives structured task material and core's
+prepared text, never a system or user message, a provider body, a message sequence or an SDK type:
+the domain prompt and its hash, the frozen range and knowledge commits, the mode, the tools,
+`reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, and `text` with the
+two representations of that same frozen task (`fresh` for a fresh child, `inherited` for a run whose
+context is inherited). The host chooses which representation its native context capability needs and
+which message carries it; it lays out no block of its own. Consolidation additionally supplies
+`reviewFeedback(toolResult)`, core's own reader of a `memory` receipt: the host delivers the returned
+guidance as a user message but does not parse the protocol.
 
 **Audit availability.** A host that cannot expose a provider request returns
 `audit: {available: false, reason}` instead of `request`; core records the limitation in the run
@@ -140,9 +141,9 @@ in `note`, `memory`, `mark`, `remember`, or `forget`, optionally after an MCP
 `__` prefix. Other results use report head/tail cuts. The host records tool
 status; the renderer does not infer completion from text.
 
-In fork mode the host sends the range, head reply and frozen source index from the material: the
-raw turns, the facts delivered after earlier notings, and the injected knowledge are already in the
-conversation the host appends to. The native prefix remains uncompressed; fork
+In fork mode the run sends core's inherited increment — the range, the head reply and the frozen
+source index: the raw turns, the facts delivered after earlier notings, and the injected knowledge
+are already in the conversation the host appends to. The native prefix remains uncompressed; fork
 Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
 Noting and fallback send the shared entry views below. Core freezes one material for both.
 
@@ -156,6 +157,45 @@ Knowledge expansion addresses are emitted for future trace support; this ticket
 implements only `T<n>` and `F<n>` trace targets. The other façade methods retain
 their ticket-01 placeholders.
 
+
+## Shared material and block layout (20a)
+
+`core/render/material.ts` holds one material contract and the block layout of every memory consumer.
+The shared parts are the rendered knowledge (in category groups), the historical facts, the
+compressed Raw entry views with their source identity, and the budget receipts. A task adds its own
+parts: Noting the head reply and the source index, Consolidation the pending facts (as addresses and
+as lines) and the negated-evidence review cues. The frozen range travels beside the material as the
+run's own label. A consumer whose order has no facts or Raw block simply omits those parts: sharing
+the type never adds a block to an order, and initial injection stays knowledge-only.
+
+One function per consumer renders that contract, in the ruled order (ticket 20):
+
+| Consumer | Block order |
+| --- | --- |
+| Noter (`notingText`) | knowledge → historical facts → range → selected Raw → receipts |
+| Consolidator (`consolidationText`) | knowledge → already-consolidated facts → range → selected pending facts → negation reminders → receipts |
+| Main-agent injection (`injectionText`) | knowledge → receipts |
+| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw → receipts |
+
+Both workers also get the inherited-context increment from that same frozen task (`notingIncrement`,
+`consolidationIncrement`; user ruling 2026-09-06 08:53): the instruction, the range, and then the
+head reply and source index, or the exact fact list and the review cues. It is what the inherited
+conversation does not already carry, never a second copy of the knowledge, facts and Raw. Both
+representations are prepared for every run as `input.text.fresh` and `input.text.inherited`, so the
+execution mode cannot change the writable evidence range.
+
+The leading knowledge block is `renderKnowledgeBlock`, the same `<knowledge>` block all four
+consumers use; nothing task-specific may enter it — no range, no entry id of the new batch, no
+timestamp, run id or omission count — so two tasks with the same selected knowledge render the same
+leading bytes even when the range and the Raw differ. That is a byte-layout rule, not a cache
+promise: knowledge is revised, archived and dropped under budget, repeated material is not
+automatically an append-only prefix, and the Noter and the Consolidator have different instructions
+and are not one cache chain. The existing historical-fact freshness order was not changed for it.
+
+Titles and separators are constants in that module (`FACTS_TITLE`, `RAW_TITLE`, …), and `finish`
+still appends the receipts. Nothing here knows a host message type, and no host file lays out these
+blocks (pinned by a source check in `core/api/boundary.test.ts`). Budgets are unchanged in this
+slice; they attach to these same functions in 20b.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
@@ -289,9 +329,9 @@ Legacy pending runs without this metadata raise an error and remain pending;
 the core cannot safely reconstruct their ownership from turn ranges alone.
 
 `compact(sessionId, branch = "main", headTurnId?)` returns knowledge followed by
-`<episodic>`: shared pending entry views first, then session facts by descending
-timestamp and id. All pending views survive the outer budget with an overage
-receipt. No provider is called and deliveries are not consumed. Pass `headTurnId`
+`<episodic>`: session facts by descending timestamp and id first, then the shared
+pending entry views (20a's ruled order: stable history before volatile task data).
+All pending views survive the outer budget with an overage receipt. No provider is called and deliveries are not consumed. Pass `headTurnId`
 for precise ancestry; without it, the latest Turn selects one path. Sibling queues
 are never combined into an automatic Raw view.
 

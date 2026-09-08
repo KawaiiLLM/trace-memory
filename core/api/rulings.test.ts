@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, materialText, runMode, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
+import { TraceMemory, runMode, type NotingAgentInput, type RunAgentResult } from "../../test/source-fixture.ts";
 import { tokens } from "../../test/source-fixture.ts";
 
 let directory: string;
@@ -71,12 +71,83 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   // The premise repair supplies the missing final reply and the source index as their own parts.
   expect(branch!.material.head).toBe(`[Source entry id: T${t.id}#assistant]\n好的。`);
   expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
-  // One frozen material serves both modes; no field of it is a composed message, and the mode-specific
-  // layout (which parts go out, under which header) is the adapter's, pinned in hosts/pi/compose.test.ts.
+  // One frozen material serves both modes; no field of it is a provider message, and the block layout
+  // of each mode is core's own since 20a, pinned in core/render/material.test.ts.
   expect(branch!.material).toEqual(subagent!.material);
   expect(Object.values(branch!.material).some(part => typeof part === "string" && part.includes("Range: "))).toBe(false);
   expect(branch!.prompt).toContain("already in this conversation");
-  expect(materialText(subagent!)).toContain("用 pnpm，不要 npm");
+  expect(subagent!.text.fresh).toContain("用 pnpm，不要 npm");
+});
+
+/** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
+function seededKnowledge(sessionId: number, turnId: number) {
+  const tools = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId });
+  tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${turnId}#user`] }] });
+  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"], because: ["F1"] }], skipped: [] });
+}
+
+// User ruling 2026-09-08 (ticket 20 "Solution"): this explicitly revises 19b's ban on core-composed
+// domain text, without restoring core-owned provider conversations or a custom model loop. The 19b
+// pin "no core module builds a message sequence or a provider body, and no host receives composed
+// domain text" is superseded by: core builds no provider message or body; core owns the domain text.
+test("20a 2026-09-08: core owns the host-neutral domain text and still builds no provider message or body", async () => {
+  const { s, t } = session();
+  seededKnowledge(s.id, t.id);
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const input = calls[0]!;
+  // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
+  expect(input.text.fresh).toContain(input.material.entries[0]!.view);
+  expect(input.text.fresh.startsWith("<knowledge>")).toBe(true);
+  expect(input.prompt).toContain("Noting (fact extraction)");
+  expect(input.text.fresh).not.toContain(input.prompt);
+  // What core still does not build: a message sequence, a system slot, a provider body.
+  const record = input as unknown as Record<string, unknown>;
+  for (const key of ["messages", "system", "conversation", "body", "subagentInput"]) expect(key in record).toBe(false);
+  expect(Array.isArray(record.input)).toBe(false);
+  // The recorded provider request is the host's own object; core never produced it.
+  expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.request!)).toEqual({ fake: true });
+});
+
+// Ticket 20 "Inherited context": core exposes the full task material and the domain increment
+// required when context is inherited, both from the same frozen task; the host picks one.
+test("20a 2026-09-08: the full text and the inherited increment come from one frozen task, and the writable range is identical in both modes", async () => {
+  const { s, t } = session();
+  // A failed probe run leaves the same evidence pending, so the second mode freezes the same task.
+  const probe = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
+  });
+  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
+  finally { probe.close(); }
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const [fork, fresh] = calls;
+  expect(fork!.mode).toBe("fork"); expect(fresh!.mode).toBe("subagent");
+  expect(fork!.material).toEqual(fresh!.material);
+  expect(fork!.entryIds).toEqual(fresh!.entryIds); // one writable range, whatever the execution mode
+  expect(fork!.range).toEqual(fresh!.range);
+  expect(fork!.readKnowledgeCommits).toEqual(fresh!.readKnowledgeCommits);
+  // Both representations are prepared for both modes, from that one frozen task.
+  expect(fork!.text).toEqual(fresh!.text);
+  // The increment is what an inherited conversation lacks, not a second copy of the full text.
+  expect(fork!.text.inherited).not.toContain(fork!.material.entries[0]!.view);
+  expect(fork!.text.fresh).not.toContain(fork!.text.inherited);
+});
+
+// Ticket 20 "Stable prefix": keep task ranges, entry ids belonging only to the new batch, timestamps,
+// run ids and omission counts out of the leading knowledge block. A byte-layout rule, not a cache claim.
+test("20a 2026-09-08: nothing task-specific enters the leading knowledge block, and all four consumers render it identically", async () => {
+  const { s, t } = session();
+  seededKnowledge(s.id, t.id);
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const block = calls[0]!.text.fresh.split("\n\nRecent facts")[0]!;
+  expect(block).toBe(memory.inject(s.id)); // the initial injection and the Noter share one block
+  expect(memory.compact(s.id, "main", t.id).startsWith(`${block}\n\n<episodic>`)).toBe(true);
+  expect(block).not.toContain("Range: ");
+  expect(block).not.toContain(calls[0]!.range.from);
+  expect(block).not.toContain("[entry ");
+  expect(block).not.toContain("omitted");
+  for (const id of calls[0]!.material.entries.map(e => e.id)) expect(block).not.toContain(`entry ${id}`);
+  expect(block).not.toMatch(/\bR\d+\b/); // no run id
+  expect(block).not.toContain(memory.store.getTurn(t.id)!.startedAt); // no timestamp of this task
 });
 
 test("09:43: trace accepts both T<n> and S<n>/T<n>; a mismatched session does not resolve", () => {
@@ -518,7 +589,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
     memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
       const input = raw as import("./index.ts").ConsolidationAgentInput;
       expect(input.readKnowledgeCommits.map(r => r.commit)).toEqual(expected);
-      for (const id of expected) expect(input.material.knowledge.join("\n")).toContain(`[K1@${id}]`);
+      for (const id of expected) expect(input.material.knowledge.map(g => g.text).join("\n")).toContain(`[K1@${id}]`);
       const batch = { operations: [{ op: "create", ...content(path.fact, "Use blue tiles") }], skipped: [] };
       input.reportRequest({ round: 1 });
       const first = JSON.parse(input.tools[3]!.execute(batch));

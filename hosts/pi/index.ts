@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
-import { composeTask } from "./compose.ts";
 import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, renderEntry, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment } from "../../core/api/index.ts";
 
 type FlatConfig = Record<string, string | number | boolean>;
@@ -141,10 +140,6 @@ export default function (pi: ExtensionAPI) {
         if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
           throw new Error("Noting capacity: provider request exceeds model context with output reserved");
       };
-      // The composed messages of this run: everything about layout lives in compose.ts, so an
-      // inherited fork and a fresh subagent send the same bytes for the same mode (19b). Core
-      // supplies material only.
-      const composed = (selected: "fork" | "subagent") => composeTask(input, selected);
       // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
       // backoff stay the adapter's, exactly as they were before the cutover.
       const retryNotice = (event: { attempt: number; maxAttempts: number; delayMs: number; error: string }) => {
@@ -152,6 +147,10 @@ export default function (pi: ExtensionAPI) {
         callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
       };
       const retryFinished = () => { activity.retrying = false; showSpend(callContext); };
+      // 20a: core prepares the domain text of both representations from one frozen task; this adapter
+      // only binds it to native messages. A fork has no system slot of its own, so its appended user
+      // message carries the instructions and then the increment; a fresh child takes the instructions
+      // as its system prompt and the whole material as its first user message.
       // 19a/19b/19c: the only runner. A fork task runs in Pi's own child `AgentSession` branched at
       // the parent's persisted leaf; an unforkable fork task and every subagent task (explicit, a fork
       // fallback, or borrowed closed-session work) run in a fresh private child session. Pi owns the
@@ -185,7 +184,7 @@ export default function (pi: ExtensionAPI) {
             },
             mode: "fork", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
-            task: composed("fork").message, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            task: `${input.prompt}\n\n${input.text.inherited}`, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
             signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
             onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
             onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
@@ -209,10 +208,9 @@ export default function (pi: ExtensionAPI) {
       // the runs directory. A child that cannot be constructed at all is a run failure with a reason
       // (the outer catch below): there is no second runtime to fall back to, and the queue stays
       // pending for the next permitted trigger.
-      const fresh = composed("subagent");
       const native = await runNative({
         mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
-        model: model as unknown as NativeModel, systemPrompt: fresh.systemPrompt!, task: fresh.message,
+        model: model as unknown as NativeModel, systemPrompt: input.prompt, task: input.text.fresh,
         tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
         signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
         onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },

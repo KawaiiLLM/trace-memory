@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, materialText, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../test/source-fixture.ts";
+import { TraceMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../test/source-fixture.ts";
 import memories from "../../test/fixtures/noting/facts.json";
 
 type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
@@ -99,10 +99,10 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
   for (const call of calls) {
     expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("fork");
-    expect(materialText(call)).not.toContain(`[F${late}]`); expect(materialText(call)).not.toContain(`[F${foreign}]`);
-    expect(materialText(call)).not.toContain(`inbound negate F${late}`); expect(materialText(call)).not.toContain(`[K${e}@2]`);
+    expect(call.text.fresh).not.toContain(`[F${late}]`); expect(call.text.fresh).not.toContain(`[F${foreign}]`);
+    expect(call.text.fresh).not.toContain(`inbound negate F${late}`); expect(call.text.fresh).not.toContain(`[K${e}@2]`);
   }
-  expect(materialText(calls[1]!)).toContain(`[K${e}@${e}]`);
+  expect(calls[1]!.text.fresh).toContain(`[K${e}@${e}]`);
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(consolidated(current)).toBe(true);
@@ -144,7 +144,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   expect(result.output).toEqual(candidate);
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
   expect(calls[0]!.feedback).toBeUndefined();
-  expect(materialText(calls[0]!)).not.toContain("NEAR:"); expect(materialText(calls[0]!)).not.toContain("CLOSER:");
+  expect(calls[0]!.text.fresh).not.toContain("NEAR:"); expect(calls[0]!.text.fresh).not.toContain("CLOSER:");
   expect(calls[0]!.request.rounds).toHaveLength(1);
   const second = calls[1]!;
   expect(second.request.rounds.slice(0, 1)).toEqual(calls[0]!.request.rounds);
@@ -249,12 +249,12 @@ test("context uses timestamp freshness while range remains complete and categori
   for (const category of categories) knowledge([newest], { category });
   watermark(newest); watermark(oldest); const current = fact(memories.interpretation);
   queue(empty, empty); await consolidation();
-  const input = materialText(calls[0]!);
+  const input = calls[0]!.text.fresh;
   expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
   memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 } });
   const next = fact(memories.interpretation);
-  queue(empty, empty); await consolidation(); const small = materialText(calls[2]!);
+  queue(empty, empty); await consolidation(); const small = calls[2]!.text.fresh;
   expect(small).toContain(memory.trace(`F${next}`));
   expect(small).not.toContain(`[F${newest}]`); expect(small).not.toContain(`[F${oldest}]`);
   expect(small).toContain("omitted 3 older facts");
@@ -373,12 +373,12 @@ test("each session settles only its own branch facts and shares already-settled 
   const other = await memory.consolidate({ sessionId: secondSession, branch: "fork" });
   if (other.outcome !== "success") throw new Error("expected success");
   expect(other.range.facts.map((f) => f.id)).toEqual([second]);
-  expect(materialText(calls[0]!)).not.toContain(`[F${first}]`);
+  expect(calls[0]!.text.fresh).not.toContain(`[F${first}]`);
   queue(createOutput(first), createOutput(first));
   const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
-  expect(materialText(calls[2]!)).toContain(memory.trace(`F${second}`));
+  expect(calls[2]!.text.fresh).toContain(memory.trace(`F${second}`));
   expect(consolidated(second, "fork", secondSession)).toBe(true);
   expect(consolidated(first)).toBe(true);
   expect(await consolidation()).toEqual({ outcome: "empty" });
@@ -495,7 +495,7 @@ test("19b 2026-09-08: Consolidation material carries the exact fact list, the fa
     // The exact set, not the F..F span: what an inherited context integrates is a membership list.
     expect(call.material.factAddresses).toEqual([`F${first}`, `F${second}`]);
     expect(call.material.rangeFacts.join("\n")).toContain(memory.trace(`F${first}`));
-    expect(call.material.knowledge.join("\n")).toBe(calls[0]!.material.knowledge.join("\n"));
+    expect(call.material.knowledge.map(g => g.text).join("\n")).toBe(calls[0]!.material.knowledge.map(g => g.text).join("\n"));
   }
   expect(calls[0]!.mode).toBe("subagent"); expect(calls[1]!.mode).toBe("fork");
   // Core froze one material for both modes; which parts each mode sends is pinned in hosts/pi/compose.test.ts.

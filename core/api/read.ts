@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { tokens, budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledgeBlock, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
+import { tokens, budgetKnowledge, budgetFacts, finish, listingLine, renderKnowledge, renderFact, renderTurn, renderEntry, xmlBlock } from "../render/index.ts";
+import { injectionText, compactText, type SharedMaterial } from "../render/material.ts";
 
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
@@ -31,9 +32,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   };
   const factLine = (id: number) => renderFact(store.getFact(id)!, store.listFactRelations(id));
   const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value, store.listKnowledgeMarks(value.knowledge.id).filter((m) => m.commitId === value.revision.id));
-  const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) => {
+  // The knowledge part of the shared material contract (20a): the same parts, budgeted the same way,
+  // that a Noting or Consolidation task freezes. Its block layout lives in core/render/material.ts.
+  const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string): SharedMaterial => {
     const active = budgetKnowledge(store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch), config.render.knowledgeBlockTokens, knowledgeLine);
-    return { content: renderKnowledgeBlock(active.groups), receipts: active.receipts };
+    return { knowledge: active.groups, receipts: active.receipts };
   };
   const knowledge = (id: number, headTurnId?: number | null, branch?: string) => knowledgeFor(session(id).projectId, id, headTurnId, branch);
   const trace = (address: string, options: ListingOptions = {}): string => {
@@ -72,13 +75,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     inject: (target: number | { projectId: number } | KnowledgePath): string => {
       const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
       if (id !== undefined && !store.enabled(id)) return "";
-      if (typeof target === "object" && "sessionId" in target) return finish(knowledge(target.sessionId, target.headTurnId, target.branch));
+      if (typeof target === "object" && "sessionId" in target) return injectionText(knowledge(target.sessionId, target.headTurnId, target.branch));
       if (typeof target === "object") {
         // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
         if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
-        return finish(knowledgeFor(target.projectId));
+        return injectionText(knowledgeFor(target.projectId));
       }
-      return finish(knowledge(target));
+      return injectionText(knowledge(target));
     },
     deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
@@ -94,11 +97,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       if (!store.enabled(sessionId)) return "";
       const block = knowledge(sessionId, store.knowledgePath(sessionId, branch, headTurnId).headTurnId, branch);
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
-      const raw = head === undefined ? [] : store.pendingEntries(sessionId, branch, head).map(e => renderEntry(e, config.render));
+      const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
+      const raw = pending.map(e => renderEntry(e, config.render));
       const rawText = raw.map((r) => r.content).join("\n\n");
       const facts = store.listSessionFacts(sessionId);
       const episodic = budgetFacts(rawText, facts, (f) => factLine(f.id), config.render.episodicBlockTokens);
-      return finish({ content: `${block.content}\n\n${xmlBlock("episodic", ["Raw:", rawText, "Recent facts (newest first):", episodic.recent.join("\n")].join("\n\n"))}`,
+      // The same four shared parts a task freezes; compact's own ruled order is in core/render/material.ts.
+      return compactText({ ...block, facts: episodic.recent, entries: pending.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
         receipts: [...block.receipts, ...raw.flatMap((r) => r.receipts), ...episodic.receipts] });
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
