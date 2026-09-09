@@ -57,6 +57,11 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
+- `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
+  own levels `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; anything else is rejected at
+  load by name with that list. They set the level this phase's **subagent** runs think at; `inherit`
+  and omission both mean the foreground level frozen at admission (26b). A fork run keeps inheriting
+  either way, so on a forking Noter the value reaches only the fallback child.
 - Core settings use dotted names: every `render.*`, `noting.*`, and `consolidation.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
 - `noting.forkModeDefault` defaults to `true`. Set it to `false` for subagent
@@ -381,7 +386,8 @@ immediately, so stop can be invoked while it runs.
 effective key with its source; it edits these preferences.
 
 **24b's fourth entry, the Consolidator mode, is superseded by ticket 25 amendment 2** and withdrawn:
-that phase has one execution mode, so three preferences and the borrowing scope remain. The
+that phase has one execution mode, so three preferences and the borrowing scope remained, and
+ticket 26d added each phase's thinking level beside its model. The
 Consolidator *model* preference stays, and — because the phase never inherits a foreground context —
 its line never discloses an inherited model.
 
@@ -389,8 +395,18 @@ its line never discloses an inherited model.
 |---|---|---|---|
 | Noter mode | fork / subagent | `noting.forkModeDefault` | fork |
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
+| Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
 | Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
+| Consolidator thinking | inherit / one of Pi's levels | `consolidationThinking` | `inherit` |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
+
+**The two thinking entries (26d)** choose the level this phase's *subagent* runs think at;
+`inherit` is 26b's rule, the foreground level frozen at admission. A fork keeps inheriting the
+foreground level whatever is configured, so the Noter's line and its selection dialog disclose that
+while Noting is in fork mode the value reaches only a fallback child; Consolidation is always a
+subagent, so its level always applies. A saved level reaches tasks admitted afterwards; a running
+task keeps the level it was frozen with, and Pi's own clamp still normalizes a level the worker
+model cannot do (visible as `thinking: { requested, effective }` in the run record).
 
 Each line shows the effective value, its `Default`/`Global`/`Project`/`Environment`
 source and every masked layer, exactly as the old read-only view did for these keys;
@@ -765,19 +781,24 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Task delivery.** The text core prepared is the child's user prompt; the
   Consolidation review answer is delivered as a native user message queued with
   `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
-- **Thinking level (26b).** The child is created with Pi's own `thinkingLevel` option, set to the
-  foreground level the host read once at admission (`pi.getThinkingLevel()`) and froze with the task,
-  beside its model and its material. That frozen level therefore wins over the level a forked
-  ancestry carries, over the per-model preference and over the global default, and Pi's own clamp
-  normalizes a level the worker model does not support. The rule covers Noter and Consolidator,
-  ordinary automatic work, `/trace catchup` and borrowed closed-session work — which inherits the
-  active executor's level, never a historical target session's — and a fork-to-subagent fallback
-  keeps the launch-time value, so a level changed while a worker runs reaches neither that worker's
-  later rounds nor its fallback. There is no setting for it. The gate is untouched: a level that
-  makes the inherited request differ from the captured parent request is refused by the existing
-  prefix verification and falls back like any other mismatch. The run record's response carries
-  `thinking: { requested, effective }` — the frozen level and the level the child really ran at,
-  side by side, so a clamp is visible instead of silent.
+- **Thinking level (26b, extended by 26d).** The child is created with Pi's own `thinkingLevel`
+  option. Admission freezes **two** levels with the task, beside its model and its material: the
+  foreground level the host reads once there (`pi.getThinkingLevel()`), and the phase's subagent
+  level — `notingThinking` / `consolidationThinking` when that preference is not `inherit`, the same
+  foreground level otherwise. A **fork run keeps inheriting the foreground level**, because its
+  request prefix must still match the captured parent request; **every fresh child takes the
+  subagent level** — explicit subagent mode, a fork fallback, borrowed closed-session work and
+  `/trace catchup` alike. Consolidation always runs as a subagent, so its preference always applies.
+  The frozen level wins over the level a forked ancestry carries, over the per-model preference and
+  over the global default, and Pi's own clamp normalizes a level the worker model does not support.
+  Borrowed work uses the active executor's levels, never a historical target session's. Both values
+  are frozen as values, so a foreground switch or a preference saved while a worker runs reaches
+  neither that worker's later rounds nor its fallback. The gate is untouched: a level that makes the
+  inherited request differ from the captured parent request is refused by the existing prefix
+  verification and falls back like any other mismatch — and that fallback child, being fresh, runs at
+  the configured level. The run record's response carries `thinking: { requested, effective }` — the
+  level this run asked for (configured or inherited) and the level the child really ran at, side by
+  side, so a clamp is visible instead of silent.
 
 ### The fresh child (19b subagent parity)
 

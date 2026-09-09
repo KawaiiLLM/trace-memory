@@ -1,6 +1,6 @@
-// Ticket 24b "Global settings", as ticket 25 amendment 2 left it: three preferences and the
-// borrowing scope, on the existing canonical keys — the Consolidator-mode entry was withdrawn with
-// the mode it chose (25b) — written into the
+// Ticket 24b "Global settings", as ticket 25 amendment 2 and ticket 26d left it: each phase's mode,
+// model and thinking level plus the borrowing scope, on the existing canonical keys — the
+// Consolidator-mode entry was withdrawn with the mode it chose (25b) — written into the
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consolidationReply, emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
+import { thinkingChoices } from "../../../src/hosts/pi/settings.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
@@ -36,7 +37,8 @@ test("25 amendment 2 2026-09-09: the menu offers no Consolidator mode, and the o
   await h.emit("session_start");
   h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, ""); // opened and cancelled: the list itself is the assertion
-  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual(["Consolidator model: follow foreground (Default)"]);
+  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([
+    "Consolidator model: follow foreground (Default)", "Consolidator thinking: inherit (Default)"]); // 26d: a level, never a mode
   h.ctx.hasUI = false;
   // The two phases do not share a mode: the Noter forks by default, the Consolidator cannot.
   await h.turn();
@@ -71,10 +73,47 @@ test("24b: each control writes only its canonical key, and every other setting i
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Noter mode: subagent (Global)",
     "Noter model: fake/test-mini (Global)",
+    "Noter thinking: inherit (Default)",
     "Consolidator model: fake/test (Global)",
+    "Consolidator thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
+});
+
+test("26d: each phase's thinking level is saved under its own key, listed with its source layer, and an unknown level is refused by name", async () => {
+  const h = setup();
+  seed(h, { "render.entryTokens": 222 });
+  await h.emit("session_start");
+  // Noting is in fork mode by default, so its line says a fork keeps inheriting the foreground level.
+  await edit(h, "Noter thinking: inherit (Default); fork mode inherits the foreground thinking level", "high");
+  expect(h.dialogs.at(-1)!.options).toEqual(thinkingChoices);
+  expect(h.dialogs.at(-1)!.title).toContain("Noting is configured for fork mode, whose child keeps inheriting the foreground level");
+  expect(h.notices.at(-1)).toContain(`saved notingThinking = "high" (high) in ${globalPath(h)}`);
+  expect(h.notices.at(-1)).toContain("running tasks keep the thinking level they were frozen with");
+  // Consolidation has no mode to disclose: it is always a subagent, so its level always applies.
+  await edit(h, "Consolidator thinking: inherit (Default)", "minimal");
+  expect(h.dialogs.at(-1)!.title).not.toContain("fork");
+  const file = globalFile(h);
+  expect(file["other-extension"]).toEqual({ keep: "me" });
+  expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", consolidationThinking: "minimal" });
+  h.answers.push("Settings", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options).toEqual([
+    "Noter mode: fork (Default)",
+    "Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test",
+    "Noter thinking: high (Global); fork mode inherits the foreground thinking level",
+    "Consolidator model: follow foreground (Default)",
+    "Consolidator thinking: minimal (Global)",
+    "Closed-session scope: project (Default)",
+  ]);
+  // A level nothing accepts never reaches the file, and the refusal names the key and the list.
+  const before = readFileSync(globalPath(h), "utf8");
+  await edit(h, "Consolidator thinking: minimal (Global)", "extreme");
+  expect(h.notices.at(-1)).toContain("Invalid consolidationThinking: expected one of inherit, off, minimal, low, medium, high, xhigh, max");
+  expect(readFileSync(globalPath(h), "utf8")).toBe(before);
+  // The same value in a settings file is refused by the load path itself, by name.
+  expect(() => host({ notingThinking: "extreme" })).toThrow("Invalid notingThinking: expected one of inherit, off, minimal, low, medium, high, xhigh, max");
+  expect(h.requests).toEqual([]); // editing a level calls no model
 });
 
 test("closed-session scope is saved globally and changes subsequent queue admission without reload", async () => {

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
-import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type WorkerModel } from "./worker.ts";
 import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
@@ -382,7 +382,17 @@ export default function (pi: ExtensionAPI) {
     // no per-model preference and no global default decides a worker's level. Borrowed closed-session
     // work and manual catchup reach this line too, and inherit this executor's level, never a
     // historical target session's.
-    const common = { ...target, ...selected, effectiveMode: effective, thinkingLevel: pi.getThinkingLevel(), borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
+    // 26d: two levels are frozen, not one. `thinkingLevel` is the inherited foreground level a fork
+    // run uses (26b, unchanged: its request prefix must still match the captured parent's).
+    // `subagentThinkingLevel` is what every fresh child of this task thinks at — explicit subagent
+    // mode, a fork fallback, borrowed work, manual catchup — which is this phase's configured
+    // preference, or the same inherited level when it is `inherit` or unset. Read here, at admission,
+    // so a preference saved afterwards reaches neither this run's later rounds nor its fallback.
+    const inheritedThinking = pi.getThinkingLevel();
+    const configuredThinking = flat[`${kind}Thinking`];
+    const common = { ...target, ...selected, effectiveMode: effective, thinkingLevel: inheritedThinking,
+      subagentThinkingLevel: configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking,
+      borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     if (kind === "consolidation") return memory.consolidate(common);
     // 26a: this is where the host learns a Noting outcome, on every admission path it has.
@@ -988,6 +998,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(p, value)}) in ${settingsFile}.` +
       (replaced ? ` The legacy spelling ${replaced} of the same preference was replaced by ${p.key}.` : "") + override +
       (p.kind === "scope" ? " It applies to memory tasks admitted from now on; running tasks keep their admission scope. Use Stop to end running work."
+        : p.kind === "thinking" ? " It applies to memory tasks admitted from now on; running tasks keep the thinking level they were frozen with."
         : " It applies to memory tasks admitted from now on; running tasks keep the mode and model they started with."), "info");
   };
   const editPreference = async (p: Preference) => {
@@ -1002,6 +1013,17 @@ export default function (pi: ExtensionAPI) {
         ["fork", "subagent"]);
       if (choice === undefined) return; // cancelled: nothing written, nothing requested
       saveGlobal(p, choice === "fork");
+      return;
+    }
+    // 26d: the level this phase's subagent runs think at. `inherit` is 26b's rule — the foreground
+    // level frozen at admission. A fork keeps inheriting either way, so a configured level reaches a
+    // fork task only through its fallback child. Pi clamps a level the worker model cannot do.
+    if (p.kind === "thinking") {
+      const choice = await ctx.ui.select(`${p.name} — inherit: the foreground level frozen at admission; otherwise this phase's subagent runs think at the chosen level` +
+        (configuredMode(flat, p.phase) === "fork" ? `, and ${p.phase === "noting" ? "Noting" : "Consolidation"} is configured for fork mode, whose child keeps inheriting the foreground level` : "") +
+        ". Applies to tasks admitted from now on; running tasks keep their level.", thinkingChoices);
+      if (choice === undefined) return;
+      saveGlobal(p, choice);
       return;
     }
     const follow = "Follow foreground";

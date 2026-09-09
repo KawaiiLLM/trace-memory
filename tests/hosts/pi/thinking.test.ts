@@ -1,10 +1,15 @@
-// Ticket 26b — a worker inherits the foreground thinking level, frozen at admission.
+// Ticket 26b — a worker inherits the foreground thinking level, frozen at admission — and ticket
+// 26d, which adds the two `notingThinking`/`consolidationThinking` preferences on top of it: a
+// second level, frozen with the same task, that every *subagent* run of it uses. A fork keeps
+// inheriting (26b), so the 26b cases below are the `inherit` behaviour and stay unchanged.
 //
 // Everything here runs on a real Pi child session with the provider stubbed at the wire, so the
 // level asserted on is the one Pi's own session resolution produced and the one the request really
 // carried. `test-thinking` is the fixture's only reasoning-capable model: Pi clamps every level to
-// `off` on the others, which is what the clamp case below uses.
+// `off` on the others, which is what the clamp cases below use.
 import { expect, test, vi } from "vitest";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { host, reply, notingFact, consolidationReply } from "./test-host.ts";
 import { call, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
@@ -144,5 +149,126 @@ test("26b: borrowed work inherits the executor's level, not the level any histor
       expect(found).toBeTruthy(); return found!;
     }, { timeout: 5000 });
     expect(thinkingOf(run)).toEqual({ requested: "high", effective: "high" });
+  } finally { await h.dispose(); }
+});
+
+test("26d ruling 2026-09-10: the configured level is for subagent execution only — a fork keeps inheriting the foreground level, and the gate stays green", async () => {
+  // `notingThinking: high` while the foreground — and the captured parent request — are at `medium`.
+  const f = await fixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "medium" });
+  try {
+    f.h.setThinkingLevel("medium");
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    expect(run.mode).toBe("fork");
+    const response = JSON.parse(run.response!);
+    // The inherited level, not the configured one: a fork's request prefix must stay the parent's.
+    expect(response.thinking).toEqual({ requested: "medium", effective: "medium" });
+    expect((f.sent[0] as Body).reasoning_effort).toBe("medium");
+    expect((f.sent[1] as Body).reasoning_effort).toBe("medium");
+    expect(response.verification.passed).toBe(true);
+    expect(response.fallbackReason).toBeUndefined();
+  } finally { await f.dispose(); }
+});
+
+test("26d: the same fork task, refused by the gate, runs its fresh child at the configured level", async () => {
+  // 26b's gate case with a preference on top: the foreground is `low` against a parent captured at
+  // `high`, so the inherited body differs and the existing gate refuses it — and the fallback child
+  // is a fresh child, which is what `notingThinking` configures.
+  const f = await fixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "high" });
+  try {
+    f.h.setThinkingLevel("low");
+    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(run.mode).toBe("subagent");
+    expect(response.requestedMode).toBe("fork");
+    expect(response.fallbackReason).toContain("native prefix mismatch");
+    expect(response.verification.native.differingPath).toBe("$.reasoning_effort");
+    expect(response.verification.native.normalized).toEqual(["cache_control"]); // the gate is the unchanged one
+    expect(response.thinking).toEqual({ requested: "high", effective: "high" });
+    const workerBodies = f.sent.filter(body => worker(body));
+    expect(workerBodies.length).toBeGreaterThan(0);
+    expect(workerBodies.every(body => body.reasoning_effort === "high")).toBe(true);
+  } finally { await f.dispose(); }
+});
+
+test("26d: every subagent path takes its phase's configured level — explicit subagent mode, borrowed closed-session work, manual catchup and Consolidation", async () => {
+  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false,
+    notingThinking: "high", consolidationThinking: "low" });
+  try {
+    h.setThinkingLevel("off"); // the foreground level, which `inherit` would have used
+    await h.turn();
+    const tail = closedTail(h.memory);
+    h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
+      { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
+    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : notingFact(c));
+    h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
+    const beforeCatchup = h.memory.store.listRuns(1).length;
+    h.persist(reply("more evidence " + "word ".repeat(30)));
+    await command(h, "catchup");
+    await settle(h);
+    expect(h.memory.store.listRuns(1).length, "manual catchup ran at least one run of its own").toBeGreaterThan(beforeCatchup);
+    const runs = [...h.memory.store.listRuns(1), ...h.memory.store.listRuns(tail.sessionId)].filter(r => r.kind !== "manual" && r.response);
+    expect(runs.map(r => r.kind).includes("consolidation")).toBe(true);
+    expect(h.memory.store.listRuns(tail.sessionId).length).toBeGreaterThan(0); // borrowed closed-session work ran
+    // Each run asked for its own phase's level, never the foreground `off`; the default model
+    // declares no reasoning support, so Pi clamps every one of them.
+    for (const run of runs) expect(thinkingOf(run), `${run.kind} R${run.id}`)
+      .toEqual({ requested: run.kind === "consolidation" ? "low" : "high", effective: "off" });
+  } finally { await h.dispose(); }
+});
+
+test("26d: a fork task that falls back runs at the configured level, clamped by Pi to what the worker model supports", async () => {
+  // Fork is the Noter's default here and this fake foreground has no session file to fork from, so
+  // the documented fallback runs — on the session model, which declares no reasoning support.
+  const h = host({ "noting.triggerTokens": 20, notingThinking: "high" });
+  try {
+    h.setThinkingLevel("minimal");
+    h.provider(async conversation => notingFact(conversation));
+    await h.turn();
+    const run = h.memory.store.listRuns(1).find(r => r.kind === "noting")!;
+    expect(run.outcome).toBe("success");
+    expect(JSON.parse(run.response!).requestedMode).toBe("fork");
+    expect(run.mode).toBe("subagent");
+    // `requested` is the configured level, not the foreground one and not the clamped one.
+    expect(thinkingOf(run)).toEqual({ requested: "high", effective: "off" });
+    expect(h.requests.every((body: any) => body.reasoning_effort === undefined)).toBe(true);
+  } finally { await h.dispose(); }
+});
+
+test("26d: the configured level is frozen at admission — a preference saved while a task runs reaches neither its later rounds nor its fallback", async () => {
+  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
+  try {
+    // The level under edit has to be the Global layer the menu writes, not this fixture's environment
+    // override, so seed the resolved settings file and load it the way a session start does.
+    const file = join(h.dir, "agent", "settings.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), "trace-memory": { notingThinking: "high" } }));
+    await h.emit("session_start");
+    h.setThinkingLevel("off");
+    let edited = false;
+    h.provider(async conversation => {
+      if (!edited) { // the user opens Settings and saves a different level while the worker is at the wire
+        edited = true;
+        h.ctx.hasUI = true;
+        h.answers.push("Settings", "Noter thinking: high (Global)", "off");
+        await command(h, "");
+        h.ctx.hasUI = false;
+      }
+      return notingFact(conversation);
+    }, { autoStop: true });
+    await h.turn();
+    const run = h.memory.store.listRuns(1).find(r => r.kind === "noting")!;
+    expect(run.outcome).toBe("success");
+    expect(thinkingOf(run)).toEqual({ requested: "high", effective: "high" });
+    expect(h.requests.length).toBeGreaterThan(1);
+    expect(h.requests.map((body: any) => body.reasoning_effort)).toEqual(h.requests.map(() => "high"));
+    // The edit really happened, and it is the next admitted task that gets it.
+    expect(h.notices.some(n => n.includes("saved notingThinking"))).toBe(true);
+    const before = h.requests.length;
+    await h.turn();
+    expect(h.requests.slice(before).every((body: any) => body.reasoning_effort === undefined)).toBe(true);
+    expect(thinkingOf(h.memory.store.listRuns(1).filter(r => r.kind === "noting").at(-1)!)).toEqual({ requested: "off", effective: "off" });
   } finally { await h.dispose(); }
 });
