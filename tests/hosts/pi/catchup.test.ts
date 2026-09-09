@@ -222,7 +222,7 @@ test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrow
 });
 
 test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and never restarts a committed batch", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, retry: { baseDelayMs: 60_000 } });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20, retry: { baseDelayMs: 60_000 } });
   try {
     h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "503 overloaded" } : notingFact(c), { autoStop: false });
     await h.turn();
@@ -241,7 +241,7 @@ test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and
 });
 
 test("17c 2026-09-08: late rejection after deadline is consumed, normal restore clears closure, and late results never touch the closed store", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   let reject!: (error: Error) => void;
   try {
     h.provider(async () => new Promise<Reply>((_, r) => { reject = r; }));
@@ -310,7 +310,7 @@ test("17c 2026-09-08: resume takes crashed claims immediately without inventing 
 });
 
 test("17c 2026-09-08: database contention cannot multiply shutdown deadline; cleanup errors are reported", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   let holder: ReturnType<typeof spawn> | undefined;
   let exited: Promise<unknown> | undefined;
   try {

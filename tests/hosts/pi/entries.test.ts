@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { join } from "node:path";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { compacted } from "../../source-fixture.ts";
 import { host, reply } from "./test-host.ts";
@@ -44,7 +44,7 @@ test("17a 2026-09-08: attach imports earlier native history, preserves repeated 
     const entries = h.memory.pendingEntries(1, "main", 2);
     expect(entries.map(e => [e.turnId, e.role, e.text])).toEqual([[1, "user", "same"], [1, "assistant", "same answer"], [1, "assistant", "same answer"], [2, "user", "same"], [2, "assistant", "same answer"]]);
     expect(new Set(entries.map(e => e.nativeId)).size).toBe(5);
-    expect(h.memory.trace("T1#assistant", { full: true })).toContain("same answer\nsame answer");
+    expect(h.memory.trace("T1#assistant", { full: true })).toBe("[T1#assistant]: same answer\n[T1#assistant]: same answer");
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 2)).toEqual(entries);
     expect(h.memory.store.getSession(2)).toBeNull();
@@ -101,7 +101,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
     const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
-    expect(audit).toMatchObject({ branch: "main", viewVersion: "23-v1-uniform-parts", viewBudgets: { toolCallTokens: 300, entryTokens: 10000 } });
+    expect(audit).toMatchObject({ branch: "main", viewVersion: "23-v2-pi-lines", viewBudgets: { toolCallTokens: 300, entryTokens: 10000 } });
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
@@ -205,9 +205,10 @@ test("17a 2026-09-08: forks reuse shared identities and ordinals but native shor
     const reopened = TraceMemory(join(h.dir, "trace.db"), async () => { throw new Error("read only"); });
     try {
       expect(reopened.pendingEntries(1, branch, 1)).toEqual([fork]);
-      expect(reopened.trace("T1#t1", { full: true })).toContain('{"command":"first"}');
-      expect(reopened.trace("T1#t2", { full: true })).toContain('{"command":"original tail"}');
-      expect(reopened.trace("T1#t3", { full: true })).toContain('{"command":"fork tail"}');
+      // 23c: `full` renders the stored arguments under the entry view's labels, values uncut.
+      expect(reopened.trace("T1#t1", { full: true })).toContain('bash(command="first")');
+      expect(reopened.trace("T1#t2", { full: true })).toContain('bash(command="original tail")');
+      expect(reopened.trace("T1#t3", { full: true })).toContain('bash(command="fork tail")');
     } finally { reopened.close(); }
   } finally { noter.close(); await h.dispose(); }
 });
@@ -227,9 +228,9 @@ test("17a 2026-09-08: shared-call fork results retain both originals through unr
     expect(branch).not.toBe("main");
     await h.emit("tool_result", { toolCallId: "shared", toolName: "bash", input: {}, content: [{ type: "text", text: "RESULT B" }], isError: true });
     const full = h.memory.trace("T1#t1", { full: true });
-    expect(full).toContain('input:\n{"command":"check","timeout":20}');
+    expect(full).toContain(`[T1#t1] bash(command="check", timeout=20)`); // 23c: `full` under the entry view's own labels
     expect(full.match(/RESULT [AB]/g)).toEqual(["RESULT A", "RESULT B"]);
-    expect(full).toMatch(/status=success[\s\S]*RESULT A[\s\S]*status=failure[\s\S]*RESULT B/);
+    expect(full).toMatch(/bash success:[\s\S]*RESULT A[\s\S]*bash failure:[\s\S]*RESULT B/);
     expect(h.memory.pendingEntries(1, branch, 1).flatMap(e => e.calls.map(c => c.result).filter(Boolean)).join("\n")).not.toContain("RESULT A");
   } finally { await h.dispose(); }
 });
@@ -260,7 +261,10 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     const details = { exitCode: 0, retained: true };
     await h.emit("tool_result", { toolCallId: "huge", toolName: "bash", input: args, content, details, isError: false });
     expect(before.raw).toBe(JSON.stringify(message));
-    expect(h.memory.trace("T1#t1", { full: true })).toBe(`[T1#t1] tool=bash status=success omitted=false\ninput:\n${JSON.stringify(args)}\nresult:\n${JSON.stringify({ content, details })}`);
+    // 23c: `full` renders the same labels as every other view, the stored value bytes uncut — the
+    // argument strings are JSON-encoded exactly as they were stored, and the result is the raw string.
+    expect(h.memory.trace("T1#t1", { full: true })).toBe(`[T1#t1] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
+      + `\n[T1#t1] bash success: ${JSON.stringify({ content, details })}`);
     const result = h.memory.pendingEntries(1, "main", 1).find(e => e.role === "toolResult")!;
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });
     expect(renderEntry(h.memory.store.getSourceEntry(before.id)!, h.memory.config.render).content).toBe(argumentView);
@@ -358,7 +362,7 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
     expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(9);
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
-    expect(carry).toMatch(/omitted \d+ earlier pending entries beyond the carry budget/);
+    expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries beyond the carry budget truncated/);
     expect(compacted(h.memory.compact(1, "main", 1))).toContain("LAST_PENDING_SENTINEL");
   } finally { await h.dispose(); }
 });
@@ -442,7 +446,7 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape �
     expect(piResultText(stored.calls[0]!.result!)).toEqual({ text: "first block\n[image omitted]\nthird block", details: JSON.stringify(details) });
     // Core applies the registered extractor and never inspects the envelope itself.
     expect(renderEntry(stored, h.memory.config.render, h.memory.resultText).content)
-      .toBe("[T1#t1] read success\nfirst block\n[image omitted]\nthird block\n[details omitted: 37 characters]");
+      .toBe("[T1#t1] read success: first block\n[image omitted]\nthird block\n[... 37 characters of details truncated]");
     // An empty `details` object is not dropped structured data, so nothing is marked for it.
     expect(piResultText(JSON.stringify({ content: [{ type: "text", text: "plain" }], details: {} }))).toEqual({ text: "plain" });
     // A result string that is not this host's envelope is the string itself.
@@ -464,17 +468,59 @@ test("23 2026-09-09: the Noter's captured request carries the address labels and
     await h.commands.get("trace").handler("catchup", h.ctx); // the whole turn, tool result included
     for (let i = 0; i < 40 && !h.conversations.length; i++) await h.drain();
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[Source entry id: T1#user]");
-    expect(sent).toContain("[Source entry id: T1#assistant]");
-    expect(sent).toContain("[T1#t1] bash\ncommand: pnpm install");
-    expect(sent).toContain("[T1#t1] bash success\ndone");
+    expect(sent).toContain("[T1#user]: ");
+    expect(sent).toContain("[T1#assistant]: ");
+    expect(sent).toContain(`[T1#t1] bash(command="pnpm install")`);
+    expect(sent).toContain("[T1#t1] bash success: done");
     expect(sent).not.toContain("native-call-id-9"); // no call id
     expect(sent).not.toContain("[entry ["); // no native-identity header
     expect(sent).not.toContain("tool="); // the 17a label shape is gone with it
     // The identities are still bound, in storage and in the run audit.
     const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
     expect(audit.entries.every((e: { nativeId: string }) => Boolean(e.nativeId))).toBe(true);
-    expect(audit).toMatchObject({ viewVersion: "23-v1-uniform-parts", viewBudgets: { toolCallTokens: 300, entryTokens: 10_000 } });
+    expect(audit).toMatchObject({ viewVersion: "23-v2-pi-lines", viewBudgets: { toolCallTokens: 300, entryTokens: 10_000 } });
+  } finally { await h.dispose(); }
+});
+
+test("23c 2026-09-09: the Noter prompt names the labels, the half split and the honesty clause once", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  for (const named of ["`[T<n>#user]: <text>`", "`[T<n>#assistant]: <text>`",
+    "`[T<n>#t<k>] <tool>(<key>=<value>, …)`", "`[T<n>#t<k>] <tool> <status>: <result text>`",
+    "one half for its arguments and one half for its result",
+    "`[... N characters truncated]`", "`[... N characters of details truncated]`"]) {
+    expect([named, prompt.includes(named)]).toEqual([named, true]);
+  }
+  // The honesty clause is stated once, in the prompt, instead of being repeated in every marker.
+  expect(prompt.match(/not inspected/g)).toHaveLength(1);
+  expect(prompt).not.toContain("a quarter of it for arguments");
+  expect(prompt).not.toContain("[Source entry id:");
+});
+
+test("23c 2026-09-09: the run audit records the new marker family for a cut entry and nothing for an uncut one", async () => {
+  const h = host({ ...quiet, "noting.forkModeDefault": false });
+  try {
+    h.provider(async () => reply("Done."));
+    await h.prompt("short prompt"); // nothing to omit
+    await h.emit("message_end", { message: { ...reply("Running it."), content: [{ type: "text", text: "Running it." },
+      { type: "toolCall", id: "native-call-id-1", name: "bash", arguments: { command: "echo " + "x".repeat(4_000) } }] } });
+    await h.emit("message_start", { message: reply("") });
+    await h.emit("tool_result", { toolCallId: "native-call-id-1", toolName: "bash", input: {},
+      content: [{ type: "text", text: "HEAD " + "y".repeat(20_000) + " TAIL" }], details: { exitCode: 0 }, isError: false });
+    await h.answer("Installed."); await h.emit("agent_settled"); await h.drain();
+    await h.commands.get("trace").handler("catchup", h.ctx);
+    for (let i = 0; i < 40 && !h.conversations.length; i++) await h.drain();
+    const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
+    const omissions = (role: string) => audit.entries.filter((e: { id: number }) =>
+      h.memory.store.getSourceEntry(e.id)!.role === role).flatMap((e: { omissions: string[] }) => e.omissions);
+    expect(omissions("user")).toEqual([]); // the short prompt was cut nowhere
+    expect(omissions("assistant")).toEqual([expect.stringMatching(/^\[\.\.\. \d+ characters truncated\]$/)]);
+    expect(omissions("toolResult")).toEqual([
+      expect.stringMatching(/^\[\.\.\. \d+ characters truncated\]$/),
+      expect.stringMatching(/^\[\.\.\. \d+ characters of details truncated\]$/)]);
+    // Every marker of every entry, in the family the entry views emit and nothing else.
+    for (const marker of audit.entries.flatMap((e: { omissions: string[] }) => e.omissions)) {
+      expect(marker.startsWith("[... ")).toBe(true);
+    }
   } finally { await h.dispose(); }
 });
 

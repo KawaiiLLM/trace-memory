@@ -6,9 +6,9 @@ export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
-import { finish, renderFact, renderRun, renderTurn, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { finish, renderFact, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
-export { tokens, renderEntry, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
+export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
@@ -384,17 +384,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // rendered by the entry renderer under the tier-1 profile — 22c's Turn-scoped read is what it
     // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's
     // occurrences out of it.
-    if (!options.full) return finish(renderTrace(turn, store.listSourceEntries(turn.sessionId, turn.id, display.branch), cfg.render, options, resultText));
-    // 22c: this Turn's native result occurrences, obtained once and reused across its tool ordinals
-    // instead of loading the whole session per call. Every call is still described from them — the
-    // unselected ones by their own character counts — so metadata and omission receipts are unchanged.
-    const occurrences = store.listSourceEntries(turn.sessionId, turn.id).filter(e => e.role === "toolResult");
-    const originals = calls.map(call => {
-      const results = occurrences.flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
-      return results.length < 2 ? call : { ...call, status: "multiple results", result: results.map(({ entry: e, call: c }) =>
-        `[entry ${JSON.stringify([e.nativeLineage, e.nativeId])}] status=${c.status}\n${c.result ?? ""}`).join("\n") };
-    });
-    return finish(renderTurn(turn, originals, options));
+    // 23c ruling 4: `full` is the same assembly through the renderer's unbounded path and the raw
+    // extractor (the stored string as is), and its read scope is unchanged — unrestricted, every
+    // native occurrence of the Turn's calls whatever branch selected them (17a), which is also why
+    // each occurrence shows as its own entry instead of a merged `multiple results` call.
+    return finish(renderTrace(turn, store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch),
+      cfg.render, options, options.full ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, trace, resultText);

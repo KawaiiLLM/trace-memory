@@ -345,7 +345,7 @@ separate compact-only renderer and its version constant): `render.secondaryToolC
 the source addresses, user boundaries and the non-text placeholder are preserved; each tool
 part keeps its name, its `T<id>#t<n>` address and, for a result, its status, and shows what
 the tighter budget holds of its arguments or result; text is cut with the same
-`[omitted N characters; middle not inspected]` marker tier 1 uses. The block title names the
+`[... N characters truncated]` marker tier 1 uses. The block title names the
 view version and both numbers of the profile. It is never a Noter's input and never a token
 counter's input — those keep using tier 1 — and no view or summary becomes a source entry, a
 fact or a processing receipt.
@@ -1019,17 +1019,21 @@ kind. Tree switching contributes no extraction usage to Pi totals.
 
 ## Entry views and Noting progress (17a, rule replaced in 23)
 
-One renderer renders every source entry (ticket 23). An entry is a list of parts:
-at most one natural-text part and one part per tool call. A tool-call part is
-`[T<n>#t<k>] <tool>` and one `<key>: <value>` line per top-level argument, each
-value cut at its head under a fair share of the part's budget; a tool-result part
-is `[T<n>#t<k>] <tool> <status>` and the host's result text cut head and tail,
-with structured data the host dropped marked as `[details omitted: N characters]`
-and non-text content marked by its type. A result with no text at all shows the
-head of that structured data instead of a blank. No call id and no native-identity
-header enters the model-facing text: the addresses the labels carry are what the
-Noter cites, and native identity, lineage and the view budgets stay in storage and
-in the run's entry audit.
+One renderer renders every source entry (ticket 23), in Pi's own compaction line
+shape with our addresses as the labels (23c, copied from `core/compaction/utils.js`).
+An entry is a list of parts: at most one natural-text part, `[T<n>#user]: <text>` or
+`[T<n>#assistant]: <text>`, and one part per tool call. A tool-call part is one line,
+`[T<n>#t<k>] <tool>(<key>=<JSON>, <key>=<JSON>)`, the arguments in stored key order,
+each value whole if it fits its fair share of the part's budget and otherwise cut head
+and tail with the marker between the two halves; a payload that is not a JSON object
+renders as `<tool>(<raw>)`. A tool-result part is `[T<n>#t<k>] <tool> <status>: <text>`,
+the host's result text following the colon and continuing on the following lines, cut
+head and tail, with structured data the host dropped marked as
+`[... N characters of details truncated]` and non-text content marked by its type. A
+result with no text at all shows the head of that structured data instead of a blank.
+No call id and no native-identity header enters the model-facing text: the addresses the
+labels carry are what the Noter cites, and native identity, lineage and the view budgets
+stay in storage and in the run's entry audit.
 
 `render.toolCallTokens` (`B`) defaults to **300** with a hard ceiling of **1,000**,
 rejected above it; `render.entryTokens` (`E`) keeps its 17a **10,000**. The
@@ -1037,16 +1041,24 @@ compaction tier-2 pair is `render.secondaryToolCallTokens` (**100**) and
 `render.secondaryEntryTokens` (**1,000**). All four are positive safe integers
 through the existing flat configuration, are configuration rather than per-batch
 decisions, and count the rendered text of the part or the entry — label lines, key
-names, separators and every marker included. Inside `B`, arguments take a quarter
-and the result three quarters (superseding 17a's permanent halves): arguments are
-rendered before their result exists and views are immutable. Allocation is two
+names, separators and every marker included. Inside `B`, arguments and the result take
+one half each (23c, superseding 23a's quarter and three quarters on the measurement that
+the quarter cut 218 of 337 bash commands while three quarters still cut 573 of 835
+results): arguments are rendered before their result exists and views are immutable, so
+the split is fixed. Allocation is two
 staged: `B` caps each tool part first; if the entry is still over `E`, tool parts
 give way, shared fairly down to their label-plus-marker minimum; only when they
 are all at the minimum does the text part yield, head and tail. A rendered part
 never exceeds its allocation, the entry never exceeds `E`, and no part is emitted
 empty or shorter than its minimum. Excerpts retain head and tail, including within
-one huge line or JSON value, never cut inside a surrogate pair, and state the count
-of omitted characters with an explicit `middle not inspected` label. A budget too
+one huge line or JSON value, and never cut inside a surrogate pair or a JSON escape
+sequence. One marker family states the count of omitted characters —
+`[... N characters truncated]`, and `[... N characters of details truncated]` for
+dropped structured data — and the honesty clause "the omitted middle was not inspected"
+is stated once in the Noter prompt instead of in every marker. `trace` with `full: true`
+is the same renderer with no budget: the same labels, the stored arguments and result
+text uncut, each native occurrence of a call as its own entry, and its read scope
+unrestricted whatever branch the reader is bound to (17a). A budget too
 small for an entry's labels and markers reports a capacity error and leaves the
 entry pending (compaction escalates a tier over it).
 

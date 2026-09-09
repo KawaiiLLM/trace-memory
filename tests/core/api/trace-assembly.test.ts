@@ -2,12 +2,14 @@
 // order, each rendered by the entry renderer under the tier-1 profile. The per-tool branches of the
 // old Turn preview — a read or search as its path, a bash command with its stdout and stderr, a report
 // head and tail — and the tool-name regex that chose between them are gone, and so are the three
-// budgets that shaped them. `full` is unchanged: the stored arguments and result envelope, uncut.
+// budgets that shaped them. 23c makes `full` the same assembly through the renderer's unbounded path
+// and the raw extractor: the same labels, nothing cut, every native occurrence its own entry, and
+// `renderTurn` with its `tool=`/`omitted=` vocabulary deleted.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, renderEntry, type ConfigOverride } from "../../source-fixture.ts";
+import { TraceMemory, renderEntry, renderEntryWhole, type ConfigOverride } from "../../source-fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number;
@@ -32,9 +34,9 @@ test("23b golden: a Turn with several assistant messages shows each one, in path
   const t = turn("what changed?", "first reply");
   occurrence(t.id, "second-reply", { text: "second reply" });
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id),
-    `[Source entry id: T${t.id}#user]`, "what changed?",
-    `[Source entry id: T${t.id}#assistant]`, "first reply",
-    `[Source entry id: T${t.id}#assistant]`, "second reply"].join("\n"));
+    `[T${t.id}#user]: what changed?`,
+    `[T${t.id}#assistant]: first reply`,
+    `[T${t.id}#assistant]: second reply`].join("\n"));
 });
 
 test("23b golden: a call with several native result occurrences shows each occurrence", () => {
@@ -42,12 +44,17 @@ test("23b golden: a call with several native result occurrences shows each occur
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo hi" }), result: "first result", status: "success" });
   occurrence(t.id, "retry", { role: "toolResult", calls: [{ ordinal: 1, name: "bash", callId: "call-1", result: "second result", status: "failure" }] });
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id),
-    `[Source entry id: T${t.id}#user]`, "run it",
-    `[T${t.id}#t1] bash`, "command: echo hi",
-    `[T${t.id}#t1] bash success`, "first result",
-    `[T${t.id}#t1] bash failure`, "second result"].join("\n"));
-  // Both occurrences are the same address; `full` still shows them as the stored evidence (22c).
-  expect(memory.trace(`T${t.id}`, { full: true })).toContain("multiple results");
+    `[T${t.id}#user]: run it`,
+    `[T${t.id}#t1] bash(command="echo hi")`,
+    `[T${t.id}#t1] bash success: first result`,
+    `[T${t.id}#t1] bash failure: second result`].join("\n"));
+  // Both occurrences are the same address, and 23c shows each as its own entry under `full` too —
+  // the `multiple results` merge that used to join them is gone with `renderTurn`.
+  expect(memory.trace(`T${t.id}`, { full: true })).toBe([header(t.id),
+    `[T${t.id}#user]: run it`,
+    `[T${t.id}#t1] bash(command="echo hi")`,
+    `[T${t.id}#t1] bash success: first result`,
+    `[T${t.id}#t1] bash failure: second result`].join("\n"));
 });
 
 test("23b golden: a sibling branch's entries never appear in this branch's trace", () => {
@@ -58,8 +65,8 @@ test("23b golden: a sibling branch's entries never appear in this branch's trace
   memory.selectEntries(sessionId, "fork", [...shared, sibling.id]);
   const bound = { sessionId, headTurnId: t.id, branch: "main" };
   expect(memory.trace(`T${t.id}`, bound)).toBe([header(t.id),
-    `[Source entry id: T${t.id}#user]`, "shared question",
-    `[Source entry id: T${t.id}#assistant]`, "shared reply"].join("\n"));
+    `[T${t.id}#user]: shared question`,
+    `[T${t.id}#assistant]: shared reply`].join("\n"));
   expect(memory.trace(`T${t.id}`, { ...bound, branch: "fork" })).toContain("abandoned reply");
   // An unbound read names no branch and stays unrestricted, as 17a ruled for shared-call fork results.
   expect(memory.trace(`T${t.id}`)).toContain("abandoned reply");
@@ -70,28 +77,66 @@ test("23b golden: tool selection renders one call and keeps every other call's l
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo one" }), result: "output one", status: "success" });
   memory.store.appendToolCall({ turnId: t.id, name: "read", input: JSON.stringify({ file_path: "/tmp/x.md" }), result: "y".repeat(40), status: "success" });
   expect(memory.trace(`T${t.id}`, { tool: 1 })).toBe([header(t.id),
-    `[Source entry id: T${t.id}#user]`, "two calls",
-    `[T${t.id}#t1] bash`, "command: echo one",
-    `[T${t.id}#t1] bash success`, "output one",
-    `[T${t.id}#t2] read`, "[omitted 9 characters]",
-    `[T${t.id}#t2] read success`, "[omitted 40 characters; middle not inspected]",
+    `[T${t.id}#user]: two calls`,
+    `[T${t.id}#t1] bash(command="echo one")`,
+    `[T${t.id}#t1] bash success: output one`,
+    `[T${t.id}#t2] read(...)`, "[... 9 characters truncated]",
+    `[T${t.id}#t2] read success:`, "[... 40 characters truncated]",
     "", "Receipts:",
     `T${t.id}: 1 omitted calls (including partial calls)`,
     `expand: trace({"address":"T${t.id}","tool":2,"full":true})`].join("\n"));
   // The unselected call is sealed at its floor even though its payload would have fitted the budget.
   expect(memory.trace(`T${t.id}`, { tool: 1 })).not.toContain("/tmp/x.md");
-  expect(memory.trace(`T${t.id}`)).toContain("file_path: /tmp/x.md"); // no selection: every call renders
+  expect(memory.trace(`T${t.id}`)).toContain(`file_path="/tmp/x.md"`); // no selection: every call renders
   expect(memory.trace(`T${t.id}`)).not.toContain("Receipts:"); // and nothing was omitted to receipt
 });
 
-test("23b golden: full renders the stored arguments and result envelope, uncut", () => {
+test("23c golden: full is the same renderer with no budget — the same labels, the stored bytes uncut", () => {
   const t = turn("keep the evidence");
-  const input = JSON.stringify({ command: "echo " + "x".repeat(4_000), timeout: 30 });
+  const command = "echo " + "x".repeat(4_000);
+  const input = JSON.stringify({ command, timeout: 30 });
   const result = JSON.stringify({ stdout: "z".repeat(4_000), exitCode: 0 });
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input, result, status: "success" });
+  // The arguments under the entry view's own labels, whole; the result text is the raw extractor's,
+  // the stored string as it is, so a Pi envelope's `details` (an edit diff) appears here too.
   expect(memory.trace(`T${t.id}#t1`, { full: true }))
-    .toBe(`[T${t.id}#t1] tool=bash status=success omitted=false\ninput:\n${input}\nresult:\n${result}`);
-  expect(memory.trace(`T${t.id}#t1`)).not.toContain(input); // without full, the same evidence under B
+    .toBe(`[T${t.id}#t1] bash(command=${JSON.stringify(command)}, timeout=30)\n[T${t.id}#t1] bash success: ${result}`);
+  expect(memory.trace(`T${t.id}#t1`)).not.toContain(command); // without full, the same evidence under B
+  // Each of the Turn's native entries, in entry order, is the unbounded path's rendering of it.
+  const entries = memory.store.listSourceEntries(sessionId, t.id);
+  expect(memory.trace(`T${t.id}`, { full: true }))
+    .toBe([header(t.id), ...entries.map(e => renderEntryWhole(e).content)].join("\n"));
+});
+
+test("23c: a full read through the registered trace tool keeps its unrestricted scope, the assembled read does not", () => {
+  const t = turn("shared question", "shared reply");
+  memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo main" }), result: "main result", status: "success" });
+  const shared = memory.store.listSourceEntries(sessionId, t.id).map(e => e.id);
+  const sibling = occurrence(t.id, "fork-result", { role: "toolResult",
+    calls: [{ ordinal: 1, name: "bash", callId: "call-1", result: "fork result", status: "failure" }] });
+  memory.selectEntries(sessionId, "main", shared);
+  memory.selectEntries(sessionId, "fork", [...shared, sibling.id]);
+  // The registered tool always passes the session's branch, so this is the bound reader's own read.
+  const tool = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id }).find(t => t.name === "trace")!;
+  expect(tool.execute({ address: `T${t.id}`, full: true })).toContain("fork result"); // 17a: full stays unrestricted
+  expect(tool.execute({ address: `T${t.id}` })).not.toContain("fork result"); // 23b: the branch narrows this one
+  expect(tool.execute({ address: `T${t.id}` })).toContain("main result");
+});
+
+test("23c (GPT review 2026-09-09): a displayed non-text user address is readable on its own", () => {
+  const t = turn("", "reply");
+  memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId: "image", turnId: t.id, role: "user", text: "",
+    raw: JSON.stringify({ role: "user", content: [{ type: "image", mimeType: "image/png", data: "synthetic" }] }), calls: [] });
+  // The assembled read shows the address with the placeholder, so the explicit read of that one part
+  // must agree — the existence check follows the displayed parts, not what a fact may cite.
+  expect(memory.trace(`T${t.id}`)).toContain(`[T${t.id}#user]: [non-text content omitted]`);
+  expect(memory.trace(`T${t.id}#user`)).toBe(`[T${t.id}#user]: [non-text content omitted]`);
+  // An assistant entry with no text of its own — only tool calls — displays no text part, and its
+  // `#assistant` address stays unreadable: the placeholder is the user message's, not thinking's.
+  const quiet = turn("q");
+  memory.store.appendToolCall({ turnId: quiet.id, name: "bash", input: JSON.stringify({ command: "echo" }), result: "out", status: "success" });
+  expect(memory.trace(`T${quiet.id}`)).not.toContain(`[T${quiet.id}#assistant]`);
+  expect(() => memory.trace(`T${quiet.id}#assistant`)).toThrow(`source T${quiet.id}#assistant does not exist`);
 });
 
 test("23b: a read of a tool result without full is the entry renderer's tier-1 rendering of that entry", () => {
@@ -112,6 +157,66 @@ test("23b: the per-tool branches of the Turn preview, the tool-name regex and th
     "read_file", "memoryWrite", "stdout", "stderr", "report", "commandTokens", "reportHeadTokens", "reportTailTokens"]) {
     expect([gone, code.includes(gone)]).toEqual([gone, false]);
   }
+});
+
+/** The one guard that demonstrably fires (ticket 23c, `full` cost): the token estimator is the only
+ * caller of `String.prototype.split` in the renderer — a prototype method, unlike `tokens` itself,
+ * which is module-internal and invisible to a spy on the export. Counting split calls around a read
+ * therefore counts token measurement, and the count must be shown to grow on the budgeted read before
+ * its flatness on the unbounded one means anything. */
+const splitCalls = (run: () => void): number => {
+  const original = String.prototype.split;
+  let count = 0;
+  String.prototype.split = function (this: string, ...args: unknown[]) { count++; return original.apply(this, args as never); } as never;
+  try { run(); } finally { String.prototype.split = original; }
+  return count;
+};
+
+test("23c full cost: a full read measures no tokens, so its cost follows neither the payload nor the parts", () => {
+  const read = (characters: number, calls: number, options: Parameters<typeof memory.trace>[1]) => {
+    const t = turn(`read ${characters}x${calls}`);
+    for (let n = 0; n < calls; n++) {
+      memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo" }),
+        result: "y".repeat(characters), status: "success" });
+    }
+    return splitCalls(() => memory.trace(`T${t.id}`, options));
+  };
+  // A hundred times the payload and twenty times the parts, the same handful of splits — and they are
+  // the address parsing the read does before it renders anything, never the estimator.
+  const small = read(5_000, 1, { full: true });
+  // And what it produces for a 2 MB stored result is that result's label plus the stored bytes.
+  const huge = turn("two megabytes");
+  const stored = "z".repeat(2_000_000);
+  memory.store.appendToolCall({ turnId: huge.id, name: "bash", input: "{}", result: stored, status: "success" });
+  expect(memory.trace(`T${huge.id}#t1`, { full: true })).toBe(`[T${huge.id}#t1] bash()\n[T${huge.id}#t1] bash success: ${stored}`);
+  expect([read(500_000, 1, { full: true }), read(5_000, 20, { full: true })]).toEqual([small, small]);
+  // The budgeted read of the same evidence measures, many times over, which is what makes the
+  // flatness above evidence of anything at all.
+  expect(read(5_000, 20, {})).toBeGreaterThan(small + 20);
+});
+
+/** Every `.ts` under `src/`, comment lines removed — the device `boundary.test.ts` uses for host
+ * imports, widened from one file because 23c deletes vocabulary from three. */
+const sourceCode = (): string => {
+  const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
+    .flatMap(e => e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []);
+  return walk("src").map(file => readFileSync(file, "utf8").split("\n")
+    .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line)).join("\n")).join("\n");
+};
+
+test("23c: renderTurn, the tool= / omitted= labels, the input:/result: blocks and the multiple-results merge are gone from src", () => {
+  const code = sourceCode();
+  for (const gone of ["renderTurn", "omitted=", "multiple results", '["input", call.input', "characters of input/result"]) {
+    expect([gone, code.includes(gone)]).toEqual([gone, false]);
+  }
+});
+
+test("23c: one marker family — no `[omitted ` and no `details omitted` is left in src", () => {
+  const code = sourceCode();
+  for (const gone of ["[omitted ", "details omitted", "middle not inspected"]) {
+    expect([gone, code.includes(gone)]).toEqual([gone, false]);
+  }
+  expect(code).toContain("characters truncated]"); // and Pi's family is what replaced them
 });
 
 test("23b 2026-09-09: the three explicit-preview budgets are rejected at load, by name, with the replacement named", () => {

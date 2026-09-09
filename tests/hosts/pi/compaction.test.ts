@@ -8,7 +8,7 @@ import { call, fixture, noteBatch, say, toolResults, worker } from "./native-fix
 
 const long = (word: string) => `${word} ` + "word ".repeat(200);
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
-const eager = { "noting.triggerTokens": 30 };
+const eager = { "noting.triggerTokens": 20 };
 const lastRun = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).at(-1)!;
 const response = (h: ReturnType<typeof host>) => JSON.parse(lastRun(h).response!);
 /** A Noter that always fails leaves its entries pending, which is the state compact escalates over
@@ -23,7 +23,7 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
     await h.answer();
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     // The custom entry names the view version and the profile its views were rendered under (23).
-    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v1-uniform-parts, tool call budget 100 tokens, entry budget 1000 tokens):");
+    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v2-pi-lines, tool call budget 100 tokens, entry budget 1000 tokens):");
     expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
     expect(h.notices.at(-1)).toContain("compaction used secondary views");
@@ -123,7 +123,7 @@ test("20c 2026-09-08 scenario 13: a persisted compaction on the selected ancestr
     expect(String(response(h).fallbackReason)).toContain("pre-compaction evidence");
     expect(h.memory.store.forkSuppression(1)).toBeNull(); // not the cache-miss latch, and no enrollment change
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[Source entry id: T1#user]"); // full primary material for the whole batch
+    expect(sent).toContain("[T1#user]: "); // full primary material for the whole batch
     expect(sent).toContain("HEAD"); expect(sent).toContain("after");
     // Reopening re-reads the ancestry: the boundary is not cached, and the answer does not change.
     await h.emit("session_start");

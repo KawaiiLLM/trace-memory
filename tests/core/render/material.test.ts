@@ -56,7 +56,7 @@ test("20a 2026-09-08 for ruling 08:53: the Noter's inherited increment is the ra
   const { s, t } = seeded();
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text.inherited).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[Source entry id: T${t.id}#assistant]\n好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
+  expect(input.text.inherited).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[T${t.id}#assistant]: 好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
   // The raw turns, the delivered facts and the injected knowledge are already in that conversation.
   expect(input.text.inherited).not.toContain("Raw:");
   expect(input.text.inherited).not.toContain("<knowledge>");

@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderTurn, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
+import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
 import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
@@ -183,7 +183,7 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
     entries: entries.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
     // The captured request precedes the head's final reply; that missing raw and the source index
     // are what an inherited-context run still needs.
-    head: head.assistantText ? renderTurn(head, [], { part: "assistant" }).content : null,
+    head: head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
     sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
     knowledge: budgeted.knowledge.filter((g) => g.text),
     facts: budgeted.facts,
@@ -195,6 +195,11 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   return { range, readKnowledgeCommits, raw, material, text, over: budgeted.over };
 }
 
+/** The run audit records every omission marker of every entry it sent (17a). 23c ruling 3 replaced the
+ * `[omitted … characters …]` wordings with Pi's one family, so this detects that family: a cut text,
+ * argument value or result, and the details marker inside it. */
+const OMISSION = /\[\.\.\. [^\]]+ truncated\]/g;
+
 export async function runNoting(
   store: Store, frozen: ReturnType<typeof freezeNoting>, runAgent: RunAgent,
   config: TraceMemoryConfig, tools: (context: ToolContext, run: RunInput) => ReturnType<typeof bindTools>,
@@ -204,7 +209,7 @@ export async function runNoting(
   // The material the freeze priced is the material that runs (review 2026-09-08): re-rendering here
   // would restore the historical facts the capacity negotiation trimmed.
   const { range, readKnowledgeCommits, raw, material, text } = frozen.prepared;
-  const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(/\[omitted [^\]]+\]/g) ?? [] })),
+  const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(OMISSION) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };

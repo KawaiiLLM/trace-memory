@@ -52,10 +52,10 @@ test("Q12 + render budgets: cuts are measured with the same estimate, so Chinese
   const call = (command: string) => memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: JSON.stringify({ command }), result: JSON.stringify({ stdout: "" }), status: "success" });
   call(han); call(ascii);
   const rendered = memory.trace(`S${s.id}/T${t.id}`);
-  // 23b renders the arguments under a quarter of `B`; the cap is the same estimate either way.
-  expect(rendered).not.toContain(han);   // 348 tokens over a 75-token arguments share: cut.
+  // 23c renders the arguments under one half of `B`; the cap is the same estimate either way.
+  expect(rendered).not.toContain(han);   // 348 tokens over a 150-token arguments share: cut.
   expect(rendered).toContain(ascii);     // 58 tokens of the same 400 characters: kept whole.
-  expect(rendered).toMatch(/command: 一+\[omitted \d+ characters\]/);
+  expect(rendered).toMatch(/command="一+"\[\.\.\. \d+ characters truncated\]"一+"/);
 });
 
 test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an inherited run needs are the head reply and the source index", async () => {
@@ -71,7 +71,7 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("fork");
   // The premise repair supplies the missing final reply and the source index as their own parts.
-  expect(branch!.material.head).toBe(`[Source entry id: T${t.id}#assistant]\n好的。`);
+  expect(branch!.material.head).toBe(`[T${t.id}#assistant]: 好的。`);
   expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
   // One frozen material serves both modes; no field of it is a provider message, and the block layout
   // of each mode is core's own since 20a, pinned in core/render/material.test.ts.
@@ -333,7 +333,7 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id });
   const input = calls[0]!;
   expect(input.mode).toBe("fork");
-  expect(input.material.head).toBe(`[Source entry id: T${head.id}#assistant]\n${head.assistantText}`);
+  expect(input.material.head).toBe(`[T${head.id}#assistant]: ${head.assistantText}`);
   expect(input.material.sources).toEqual([
     `T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply`,
     `T3#user Check it | T3#assistant Final-only finding: result result result result result resul | T3#t1 tool=Bash {"command":"check"}`]);
@@ -356,9 +356,9 @@ test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix
   const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
   // 23b: a source part reads as the entry view of that part — the addresses its labels carry, and for
   // a call both of its parts: the arguments the assistant sent and the result that came back.
-  const expected = part === "user" ? `[Source entry id: T${t.id}#user]\n用 pnpm，不要 npm`
-    : part === "assistant" ? `[Source entry id: T${t.id}#assistant]\n好的。`
-    : `[T${t.id}#t1] Bash\ncommand: pnpm install\n[T${t.id}#t1] Bash success\n{"stdout":"done","stderr":""}`;
+  const expected = part === "user" ? `[T${t.id}#user]: 用 pnpm，不要 npm`
+    : part === "assistant" ? `[T${t.id}#assistant]: 好的。`
+    : `[T${t.id}#t1] Bash(command="pnpm install")\n[T${t.id}#t1] Bash success: {"stdout":"done","stderr":""}`;
   for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
     expect(memory.trace(`${base}#${part}`)).toBe(expected);
     expect(tool.execute({ address: `${base}#${part}` })).toBe(expected);
@@ -371,12 +371,13 @@ test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () 
   const output = "hidden evidence ".repeat(300);
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: '{"command":"second"}', result: output, status: "success" });
   const cut = memory.trace(`T${t.id}#t2`);
-  expect(cut).toContain("middle not inspected"); // 23b: the entry view's own honest marker
+  expect(cut).toMatch(/\[\.\.\. \d+ characters truncated\]/); // 23c: the entry view's one marker family
   expect(cut).not.toContain(output);
   expect(cut).not.toContain("#t1");
   // 17a preserves the full argument object, including fields beyond command.
   const full = memory.trace(`T${t.id}#t2`, { full: true });
-  expect(full).toBe(`[T${t.id}#t2] tool=Bash status=success omitted=false\ninput:\n{"command":"second"}\nresult:\n${output}`);
+  // 23c: `full` is the same renderer with no budget — the same labels, the stored bytes uncut.
+  expect(full).toBe(`[T${t.id}#t2] Bash(command="second")\n[T${t.id}#t2] Bash success: ${output}`);
   expect(memory.trace(`T${t.id}#t2`, { tool: 2, full: true })).toBe(full);
   expect(() => memory.trace(`T${t.id}#t2`, { tool: 1 })).toThrow("conflicts");
 });
@@ -834,19 +835,23 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
 
 // ---- 23 2026-09-09: the entry view's rulings, each recorded by the name it supersedes ----
 
-// 17a, 2026-09-08: "arguments and result permanently reserve half each" of one call budget.
-// Superseded by ticket 23 (user, 2026-09-09): one uniform tool-stage method with one per-call budget,
-// split a quarter for the arguments and three quarters for the result, because arguments are rendered
-// before their result exists, views are immutable, and measured argument needs are small.
-test("23 2026-09-09: 17a's permanent half/half call split is superseded by a quarter for arguments and three quarters for the result", () => {
+// 17a, 2026-09-08: "arguments and result permanently reserve half each" of one call budget. Ticket 23a
+// superseded it with a quarter for the arguments and three quarters for the result; ticket 23c (user,
+// 2026-09-09) supersedes that in turn and restores the halves, on the measurement that the quarter cut
+// 218 of 337 bash commands on the real log while three quarters still cut 573 of 835 results, and that
+// at `B = 300` the halves total 286K tokens against 312K. The split is still fixed and never
+// redistributed: arguments are rendered before their result exists and views are immutable.
+test("23c 2026-09-09: 23a's quarter/three-quarter call split is superseded; arguments and result each take one half of B", () => {
   const { s, t } = session();
   const long = JSON.stringify({ command: "echo " + "a".repeat(5_000) });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: long, result: "b".repeat(5_000), status: "success" });
   const entries = memory.store.listSourceEntries(s.id);
   const size = (role: string) => tokens(renderEntry(entries.filter(e => e.role === role && e.calls.length).at(-1)!, memory.config.render).content);
-  expect(size("assistant")).toBe(Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 4));
-  expect(size("toolResult")).toBe(Math.floor(DEFAULT_CONFIG.render.toolCallTokens * 3 / 4));
-  expect(size("assistant")).not.toBe(size("toolResult")); // not halves, and never redistributed later
+  const half = Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 2);
+  // Each fills its own half, within one cut unit of it; neither is a quarter or three quarters of `B`.
+  for (const role of ["assistant", "toolResult"]) expect([role, size(role) <= half && size(role) > half - 5]).toEqual([role, true]);
+  expect(size("assistant")).toBeGreaterThan(Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 4));
+  expect(size("toolResult")).toBeLessThan(Math.floor(DEFAULT_CONFIG.render.toolCallTokens * 3 / 4));
 });
 
 // 17a, 2026-09-08: `toolCallTokens` defaulted to 1,000. Superseded by ticket 23: the default is 300

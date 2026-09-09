@@ -29,7 +29,9 @@ function countFormattedHits(): { hits: () => number; restore: () => void } {
 }
 
 /** A session of `turns` Turns; the middle one carries `calls` tool calls and a second native result
- * occurrence of its first call — the shape a full trace must render as "multiple results". */
+ * occurrence of its first call — the shape a full trace must render as two entries (23c: the
+ * `multiple results` merge is gone; each native occurrence is its own entry, as the assembled read
+ * already showed it). */
 function conversation(turns: number, calls: number) {
   const store = memory.store;
   const projectId = store.createProject({ name: `p${turns}x${calls}`, declaredBy: "marker" }).id;
@@ -69,7 +71,7 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     const entries = memory.store.listSourceEntries(long.sessionId).filter(e => e.turnId === long.heavy).length;
     expect(a.reads).toBeLessThanOrEqual(entries);
     // Ordinal 1 has two native result occurrences; the selected call renders both, in entry order.
-    expect(b.text).toContain("multiple results");
+    expect(b.text).toContain(`[T${long.heavy}#t1] read success: result 12.0`);
     expect(b.text.indexOf("result 12.0")).toBeGreaterThan(-1);
     expect(b.text.indexOf("the second occurrence")).toBeGreaterThan(b.text.indexOf("result 12.0"));
     // The other 11 calls are still named as metadata, and they are not full results.

@@ -13,6 +13,5 @@ Recent facts (newest first):
 
 Raw:
 
-[Source entry id: T2#user]
-能不能从贴图推断
+[T2#user]: 能不能从贴图推断
 </episodic>

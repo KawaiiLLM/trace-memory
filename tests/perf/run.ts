@@ -139,10 +139,11 @@ function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: ReturnType<
   const tier1 = total(memory.config.render);
   const tier2 = total({ toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens });
   const before = VIEW_TOKENS_BEFORE_23[size];
-  // The ticket's target is half the pre-23 total. This fixture does not reach it and says so: about
-  // half of the tier-1 total here is natural text, which the rule keeps at its own size on purpose,
-  // where tool payloads were 80% of the private backlog the −57% came from. What is enforced is that
-  // the view never costs more than the one it replaced.
+  // The ticket's target is half the pre-23 total. 23a fell short of it on this fixture at 42.2%,
+  // because about half of the tier-1 total here is natural text, which the rule keeps at its own size
+  // on purpose; 23c's line format and half split reach it (52.6% on the baseline). The note still
+  // reports the shortfall whenever it returns, and what is enforced is only that the view never costs
+  // more than the one it replaced.
   const saving = before ? `${(100 * (1 - tier1.sum / before)).toFixed(1)}% under the pre-23 view (${before}); target 50%${tier1.sum * 2 <= before ? "" : ", not reached on this fixture"}`
     : "no recorded pre-23 total for this size";
   if (before && tier1.sum >= before) throw new Error(`entry view regression: tier 1 is ${tier1.sum} tokens over ${entries.length} pending entries, not below the pre-23 ${before}`);

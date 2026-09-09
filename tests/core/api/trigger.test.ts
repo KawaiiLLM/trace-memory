@@ -31,7 +31,9 @@ const backlog = (turns: number) => {
     const sessionId = store.createSession({ enrollmentChoice: true, host: "pi:trigger", startedAt: "t", firstReplyAt: "t", projectId }).id;
     let parent: number | null = null, last = 0;
     for (let t = 1; t <= turns; t++) {
-      const prompt = `question ${t} ${"word ".repeat(40)}`, answer = `answer ${t} ${"word ".repeat(40)}`;
+      // 23c: the entry view lost its header line, so each entry is smaller; the fixture keeps a
+      // backlog comfortably over the 10,000-token default threshold.
+      const prompt = `question ${t} ${"word ".repeat(50)}`, answer = `answer ${t} ${"word ".repeat(50)}`;
       const turn = store.appendTurn({ sessionId, parentTurnId: parent, kind: "turn", startedAt: "t", userPrompt: prompt, assistantText: answer });
       for (const [role, text] of [["user", prompt], ["assistant", answer]] as const) {
         store.appendSourceEntry({ sessionId, nativeLineage: "trigger", nativeId: `${role}-${t}`, turnId: turn.id, role, text,

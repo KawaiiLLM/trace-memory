@@ -107,7 +107,7 @@ test("compaction retains oversized raw with standard tool cuts, in its primary v
   expect(compaction.tier).toBe("primary");
   const result = compacted(compaction);
   // 17a supersedes unbounded user Raw: both excerpts retain head, omission count and tail.
-  expect(result).not.toContain(raw); expect(result).toContain("middle not inspected");
+  expect(result).not.toContain(raw); expect(result).toMatch(/\[\.\.\. \d+ characters truncated\]/);
   expect(result).toContain(raw.slice(0, 40)); expect(result).toContain(raw.slice(-40));
   expect(calls).toBe(0);
 });
@@ -151,7 +151,7 @@ test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts
   expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual(pending.map(e => e.id));
   // Historical facts fill only what the selected material and the framing left, and the honest
   // omission receipt for the rest sits outside the block, as every other receipt does.
-  memory.config.render.episodicBlockTokens = 120; // room for the selected Raw, the framing and one fact line
+  memory.config.render.episodicBlockTokens = 105; // room for the selected Raw, the framing and one fact line (23c: the smaller view fitted both at 120)
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
   expect(limited).toContain("omitted 1 older facts; expand: F1");
@@ -181,14 +181,14 @@ test("20c/23 2026-09-08 scenario 10: primary views over the shared ceiling becom
     expect(tokens(view)).toBeLessThanOrEqual(1000);
   }
   expect(text).not.toContain(`[entry ${JSON.stringify([pending[0]!.nativeLineage, pending[0]!.nativeId])}]`);
-  expect(text.indexOf(`[Source entry id: T${next.id}#user]`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
+  expect(text.indexOf(`[T${next.id}#user]:`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
   // Tool identity and status remain, and so does what the tighter budget can hold of the payload.
-  expect(text).toContain(`[T${next.id}#t1] Bash\ncommand: SECRET_ARGUMENT`);
-  expect(text).toContain(`[T${next.id}#t1] Bash success`);
+  expect(text).toContain(`[T${next.id}#t1] Bash(command="SECRET_ARGUMENT")`);
+  expect(text).toContain(`[T${next.id}#t1] Bash success: `);
   expect(text).toContain("SECRET_RESULT"); expect(text).not.toContain("x".repeat(4_000));
   // User text is excerpted, and the omission is marked in the wording the tier-1 view already uses.
   expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);
-  expect(text).toContain("middle not inspected");
+  expect(text).toMatch(/\[\.\.\. \d+ characters truncated\]/);
   // Deterministic local work: the same snapshot renders the same bytes, and no model was called.
   expect(compacted(memory.compact(s.id, "main", next.id))).toBe(text);
   expect(calls).toBe(0);

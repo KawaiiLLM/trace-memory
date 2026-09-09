@@ -120,14 +120,20 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "23-v1-uniform-parts";
+export const ENTRY_VIEW_VERSION = "23-v2-pi-lines";
 /** Arguments are rendered before their result exists and views are immutable, so the split inside `B`
- * is fixed. A quarter for arguments and three quarters for the result supersedes 17a's permanent
- * halves (user, 2026-09-09): measured argument needs are small, results are the volume. */
-const ARGUMENTS_SHARE = 0.25;
-// Every marker keeps the `[omitted … characters …]` wording the run audit already detects.
-const omission = (characters: number) => `[omitted ${characters} characters]`;
-const middleOmission = (characters: number) => `[omitted ${characters} characters; middle not inspected]`;
+ * is fixed. Ticket 23c (user, 2026-09-09) puts it back at one half each, superseding 23a's quarter and
+ * three quarters: measured on the real log the quarter cut 218 of 337 bash commands while three
+ * quarters still cut 573 of 835 results, and at `B = 300` the half split totals 286K tokens against
+ * 312K, −8%. */
+const ARGUMENTS_SHARE = 0.5;
+// One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
+// omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
+// of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in
+// the Noter prompt instead of being repeated in every marker (23c ruling 3). The run audit's omission
+// detection reads this family; `[<type> omitted]` for a non-text block is the host's and is unchanged.
+const truncated = (characters: number) => `[... ${characters} characters truncated]`;
+const detailsTruncated = (characters: number) => `[... ${characters} characters of details truncated]`;
 
 /** The largest `kept` whose rendering fits `cap`. Every probe is measured, so the answer is a
  * rendering that was seen to fit; doubling before bisecting keeps the probes near the kept size
@@ -163,42 +169,128 @@ function fairShares(total: number, costs: number[]): number[] {
   return costs.map((cost, index) => cost <= equal[index]! ? cost : equal[index]! + cut(returned, costs.length - short, rank++));
 }
 
-/** The head and the tail of `kept` code points, in equal halves, around one honest marker. */
-function halves(characters: string[], kept: number): string[] {
-  const head = Math.ceil(kept / 2), tail = kept - head;
-  return [characters.slice(0, head).join(""), middleOmission(characters.length - kept),
-    tail ? characters.slice(-tail).join("") : ""].filter(line => line !== "");
+// A `\uXXXX` escape of a surrogate is only half a code point; the pair counts as one unit.
+const HIGH_ESCAPE = /^\\u[Dd][89ABab]/, LOW_ESCAPE = /^\\u[Dd][C-Fc-f]/;
+/** The units a head or a tail is measured in: whole code points, never half a surrogate pair, and —
+ * inside JSON text (`json`) — whole escape sequences, so a cut never splits `\"`, `\\`, `\n` or
+ * `\uXXXX` either (23c ruling 2, GPT review 2026-09-09). */
+function units(text: string, json: boolean): string[] {
+  const list: string[] = [];
+  for (let index = 0; index < text.length; ) {
+    let length = 1;
+    if (json && text[index] === "\\" && index + 1 < text.length) {
+      length = text[index + 1] === "u" ? Math.min(6, text.length - index) : 2;
+      if (length === 6 && HIGH_ESCAPE.test(text.slice(index, index + 6)) && LOW_ESCAPE.test(text.slice(index + 6, index + 12))) length = 12;
+    } else if (text.codePointAt(index)! > 0xFFFF) length = 2;
+    list.push(text.slice(index, index + length));
+    index += length;
+  }
+  return list;
 }
+
+/** Code points without building an array: the floors below are the only thing the unbounded path
+ * renders itself, and it may not split a stored string into characters to do it (23c ruling 4). */
+function codePoints(text: string): number {
+  let count = 0;
+  for (let index = 0; index < text.length; index++, count++) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xD800 && code < 0xDC00 && index + 1 < text.length && (text.charCodeAt(index + 1) & 0xFC00) === 0xDC00) index++;
+  }
+  return count;
+}
+
+/** One value split into its cut units, with the character count of any run of them available in
+ * constant time. `fit` probes a cut many times, so counting what a probe leaves out must not walk it:
+ * every unit is one code point unless the value is JSON text, where one escape sequence is one unit of
+ * several characters, and only then is a prefix sum built. */
+interface Cut { list: string[]; characters: number; between(head: number, tail: number): number }
+function cutUnits(text: string, json: boolean): Cut {
+  const list = units(text, json);
+  if (!json) return { list, characters: list.length, between: (head, tail) => list.length - head - tail };
+  const prefix = new Array<number>(list.length + 1);
+  prefix[0] = 0;
+  for (let index = 0; index < list.length; index++) prefix[index + 1] = prefix[index]! + codePoints(list[index]!);
+  return { list, characters: prefix[list.length]!, between: (head, tail) => prefix[list.length - tail]! - prefix[head]! };
+}
+
+/** The head and the tail of `kept` units in equal halves, and how many characters stand between them. */
+function halves(cut: Cut, kept: number): { head: string; tail: string; omitted: number } {
+  const head = Math.ceil(kept / 2), tail = kept - head;
+  return { head: cut.list.slice(0, head).join(""), tail: tail ? cut.list.slice(cut.list.length - tail).join("") : "",
+    omitted: cut.between(head, tail) };
+}
+
+/** Pi's line shape with our address as the label: the label, a colon, and the body on the same line,
+ * continuing on the following lines as stored (`core/compaction/utils.js`'s `[User]: …`). */
+const bodyLine = (label: string, body: string) => body ? `${label}: ${body}` : `${label}:`;
+/** The natural-text part of an entry, and Noting's head reply, from one shape: `renderTurn` is gone
+ * with 23c ruling 4, and the head reply is the same line every entry view emits. */
+export const renderText = (turnId: number, role: "user" | "assistant", text: string): string =>
+  bodyLine(`[T${turnId}#${role}]`, text);
 
 /** Natural text: the text as stored, cut head and tail in equal halves when it must yield. Text is
  * not exempt by rule, only by size (23). */
+const textFloor = (label: string, body: string) => body ? `${label}:\n${truncated(codePoints(body))}` : bodyLine(label, body);
 function textPart(label: string, body: string): Part {
-  const characters = [...body];
-  const excerpt = (kept: number) => [label, ...halves(characters, kept)].join("\n");
-  const whole = `${label}\n${body}`;
-  return { floor: excerpt(0), whole, minimum: tokens(excerpt(0)),
-    render: (cap) => tokens(whole) <= cap ? whole : excerpt(fit(excerpt, characters.length, cap)) };
+  const cut = cutUnits(body, false);
+  const whole = bodyLine(label, body), floor = textFloor(label, body);
+  const excerpt = (kept: number) => {
+    if (kept >= cut.list.length) return whole;
+    if (kept === 0) return floor;
+    const { head, tail, omitted } = halves(cut, kept);
+    return [bodyLine(label, head), truncated(omitted), tail].filter((line) => line !== "").join("\n");
+  };
+  return { floor, whole, minimum: tokens(floor),
+    render: (cap) => tokens(whole) <= cap ? whole : excerpt(fit(excerpt, cut.list.length, cap)) };
 }
 
-/** A tool call: the label line and one `key: value` line per top-level argument, each value cut at
- * its head under a fair share of the part's budget, so a target path after a long content string
- * still appears. Non-string values are compact JSON; a payload that is not an object is one line. */
+/** One argument of a tool call as it renders (23c ruling 1): `key=<JSON>`, in stored key order, so a
+ * value's boundary is never ambiguous. A key that is not a plain identifier is JSON-quoted, so
+ * `{"a=\"x\", b": 1}` can never read as two arguments. `quoted` marks a string value: it is cut on its
+ * raw code points and each half is JSON-encoded separately, so no escape sequence is ever split.
+ * `json` marks a value rendered as its compact JSON text: cutting that text leaves something that is
+ * no longer valid JSON, but it is marked as such, and the cut still falls outside every escape
+ * sequence and surrogate pair of the strings nested in it. A payload that is not a JSON object is one
+ * nameless item, the stored text as it is. */
+interface Item { name: string; text: string; json: boolean; quoted: boolean }
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+const encode = (item: Item, text: string) => item.name + (item.quoted ? JSON.stringify(text) : text);
+function items(input: string): Item[] {
+  const values = object(input);
+  if (values) return Object.keys(values).map((key) => {
+    const name = `${IDENTIFIER.test(key) ? key : JSON.stringify(key)}=`, value = values[key];
+    return typeof value === "string" ? { name, text: value, json: false, quoted: true }
+      : { name, text: JSON.stringify(value) ?? "null", json: true, quoted: false };
+  });
+  return input ? [{ name: "", text: input, json: false, quoted: false }] : [];
+}
+const argumentsWhole = (label: string, list: Item[]): string =>
+  `${label}(${list.map((item) => encode(item, item.text)).join(", ")})`;
+/** The whole-part floor of a sealed or starved call: what was called, and one marker for everything
+ * its arguments left out (23c ruling 3). */
+const argumentsFloor = (label: string, list: Item[]): string => list.length
+  ? `${label}(...)\n${truncated(list.reduce((total, item) => total + codePoints(item.text), 0))}`
+  : argumentsWhole(label, list);
+
+/** A tool call: one line, `[T<n>#t<k>] <name>(<key>=<JSON>, <key>=<JSON>)`. A value that fits its fair
+ * share of the part's budget is rendered whole; one that does not is cut head and tail in equal halves
+ * with the marker between, so a target path after a long content string still appears. */
 function argumentsPart(label: string, input: string): Part {
-  const values = object(input), keys = Object.keys(values);
-  const items = keys.length ? keys.map((key) => ({ key: `${key}: `, characters: [...string(values[key])] }))
-    : input ? [{ key: "", characters: [...input] }] : [];
-  const size = items.reduce((total, item) => total + item.characters.length, 0);
-  const line = (item: typeof items[number], kept: number) => item.key + item.characters.slice(0, kept).join("")
-    + (kept < item.characters.length ? omission(item.characters.length - kept) : "");
-  const whole = [label, ...items.map((item) => line(item, item.characters.length))].join("\n");
-  const floor = items.length ? `${label}\n${omission(size)}` : label;
+  const list = items(input);
+  const parts = list.map((item) => ({ item, units: cutUnits(item.text, item.json) }));
+  const cut = (part: typeof parts[number], kept: number) => {
+    if (kept >= part.units.list.length) return encode(part.item, part.item.text);
+    const { head, tail, omitted } = halves(part.units, kept);
+    return encode(part.item, head) + truncated(omitted) + (tail ? (part.item.quoted ? JSON.stringify(tail) : tail) : "");
+  };
+  const whole = argumentsWhole(label, list), floor = argumentsFloor(label, list);
   return { floor, whole, minimum: tokens(floor), render(cap) {
     if (tokens(whole) <= cap) return whole;
-    const costs = items.map((item) => tokens(line(item, item.characters.length)));
-    // One separator per emitted line is charged with the part, as the label line is.
-    const shares = fairShares(cap - tokens(label) - items.length, costs);
-    const view = [label, ...items.map((item, index) => shares[index]! >= costs[index]! ? line(item, item.characters.length)
-      : line(item, fit((kept) => line(item, kept), item.characters.length, shares[index]!)))].join("\n");
+    const costs = parts.map((part) => tokens(cut(part, part.units.list.length)));
+    // The frame — the label, its brackets and one separator per argument — is charged with the part.
+    const shares = fairShares(cap - tokens(`${label}()`) - parts.length, costs);
+    const view = `${label}(${parts.map((part, index) => cut(part, shares[index]! >= costs[index]! ? part.units.list.length
+      : fit((kept) => cut(part, kept), part.units.list.length, shares[index]!))).join(", ")})`;
     return tokens(view) <= cap ? view : floor;
   } };
 }
@@ -207,19 +299,52 @@ function argumentsPart(label: string, input: string): Part {
  * tail. Structured data the host dropped is marked with its size; when the text is empty, the head of
  * that data's compact JSON stands in for the marker, so a tool that answers only structurally is not
  * shown as blank (23). */
+const structuralResult = (result: ResultText) => !result.text && (result.details ?? "") !== "";
+/** The whole rendering of one result part, the unbounded path's own line and the budgeted path's
+ * uncut answer: one shape, so `full` and a view under a budget never disagree about the bytes. */
+function resultWhole(label: string, result: ResultText): string {
+  const details = result.details ?? "", structural = structuralResult(result);
+  return [bodyLine(label, structural ? details : result.text),
+    ...(details && !structural ? [detailsTruncated(codePoints(details))] : [])].join("\n");
+}
+function resultFloor(label: string, result: ResultText): string {
+  const details = result.details ?? "", structural = structuralResult(result);
+  const text = structural ? details : result.text;
+  if (!text) return resultWhole(label, result);
+  return [structural ? bodyLine(label, truncated(codePoints(text))) : `${label}:\n${truncated(codePoints(text))}`,
+    ...(details && !structural ? [detailsTruncated(codePoints(details))] : [])].join("\n");
+}
 function resultPart(label: string, result: ResultText): Part {
-  const details = result.details ?? "";
-  const marker = details ? `[details omitted: ${[...details].length} characters]` : "";
-  const structural = !result.text && details !== "";
-  const characters = [...(structural ? details : result.text)];
-  const body = (kept: number) => structural ? [characters.slice(0, kept).join("") + omission(characters.length - kept)] : halves(characters, kept);
-  const view = (kept: number) => [label, ...(characters.length ? body(kept) : []), ...(structural ? [] : [marker])].filter(Boolean).join("\n");
-  const whole = [label, structural ? details : result.text, structural ? "" : marker].filter(Boolean).join("\n");
-  return { floor: view(0), whole, minimum: tokens(view(0)),
-    render: (cap) => tokens(whole) <= cap ? whole : view(fit(view, characters.length, cap)) };
+  const details = result.details ?? "", structural = structuralResult(result);
+  const marker = details && !structural ? [detailsTruncated(codePoints(details))] : [];
+  const cut = cutUnits(structural ? details : result.text, structural);
+  const whole = resultWhole(label, result), floor = resultFloor(label, result);
+  const view = (kept: number) => {
+    if (kept >= cut.list.length) return whole;
+    if (kept === 0) return floor;
+    // Structural data stands in for the text: the head of its compact JSON, and no tail to speak of.
+    if (structural) return bodyLine(label, cut.list.slice(0, kept).join("") + truncated(cut.between(kept, 0)));
+    const { head, tail, omitted } = halves(cut, kept);
+    return [bodyLine(label, head), truncated(omitted), tail, ...marker].filter((line) => line !== "").join("\n");
+  };
+  return { floor, whole, minimum: tokens(floor),
+    render: (cap) => tokens(whole) <= cap ? whole : view(fit(view, cut.list.length, cap)) };
 }
 
 export { sourceAddresses };
+
+/** A user message without text (an image, say) still shows as a source with a marker; an assistant
+ * entry with no text of its own (thinking only) shows no natural-text part at all. */
+const speaks = (entry: SourceEntry) => Boolean(entry.text) || entry.role === "user";
+/** The source parts an entry displays, as addresses (GPT review 2026-09-09, finding 3). An explicit
+ * read of one part checks this, not `sourceAddresses`: the two answer different questions, and the one
+ * that says what a fact may cite as evidence must not widen because a placeholder is displayable. So
+ * an image-only user message shows `[T<n>#user]` in the assembled read and `trace T<n>#user` reads
+ * that same placeholder, while it stays uncitable, and a thinking-only assistant entry stays neither. */
+export const displayedAddresses = (entry: SourceEntry): string[] => [
+  ...(speaks(entry) ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
+  ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`),
+];
 
 /** How one part of an entry is treated by the caller that asked for the entry (23b `trace` assembly).
  * `render` is the ordinary budgeted rendering; `floor` seals a part at its label line and its omission
@@ -229,8 +354,48 @@ export type PartChoice = "render" | "floor" | "drop";
 /** A rendered entry, plus the ordinals of the tool calls whose part was not rendered whole. The
  * ordinals are what an explicit `trace` turns into its per-call omission receipts; every other
  * consumer of the view ignores them, and `receipts` stays empty because the entry view states its own
- * omissions in line, in the `[omitted … characters …]` wording the run audit detects. */
+ * omissions in line, in the `[... N characters truncated]` family the run audit detects. */
 export interface EntryView extends Rendered { omitted: number[] }
+
+/** The parts of one entry in order: at most one natural-text part and one part per tool call the
+ * caller keeps. Both paths below build them here, so the budgeted view and `full` speak the same
+ * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
+ * which is what makes `full` free of every budget device (23c ruling 4). */
+function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice):
+  { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
+  const sources: ReturnType<typeof sourceParts> = [];
+  const isResult = entry.role === "toolResult";
+  const role = entry.role === "user" ? "user" : "assistant";
+  if (speaks(entry) && choose(`T${entry.turnId}#${role}`) === "render") {
+    const label = `[T${entry.turnId}#${role}]`, body = entry.text || "[non-text content omitted]";
+    sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body),
+      floor: () => textFloor(label, body), part: () => textPart(label, body) });
+  }
+  for (const call of entry.calls) {
+    const choice = choose(`T${entry.turnId}#t${call.ordinal}`);
+    if (choice === "drop") continue;
+    const label = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
+    sources.push(isResult
+      ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, resultText(call.result ?? "")),
+          floor: () => resultFloor(`${label} ${call.status}`, resultText(call.result ?? "")),
+          part: () => resultPart(`${label} ${call.status}`, resultText(call.result ?? "")) }
+      : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
+          floor: () => argumentsFloor(label, items(call.input ?? "")),
+          part: () => argumentsPart(label, call.input ?? "") });
+  }
+  return sources;
+}
+
+/** The unbounded path (23c ruling 4): the same parts, the same line format, no budget at all. It takes
+ * no profile and calls no budget function — no cut, no allocation, no character-array split and no
+ * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
+ * path did. A sealed part still shows its floor, which is what `tool` selection asks of it. */
+export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
+  choose: (address: string) => PartChoice = () => "render"): EntryView {
+  const sources = sourceParts(entry, resultText, choose);
+  return { receipts: [], content: sources.map((source) => source.choice === "floor" ? source.floor() : source.whole()).join("\n"),
+    omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
+}
 
 /** One immutable view of one source entry (ticket 23), used by Noting material, both compaction tiers,
  * branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one natural-text
@@ -243,29 +408,19 @@ export interface EntryView extends Rendered { omitted: number[] }
  * cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
   choose: (address: string) => PartChoice = () => "render"): EntryView {
-  const parts: Part[] = [], caps: number[] = [], ordinals: (number | null)[] = [];
-  const isResult = entry.role === "toolResult";
-  // A user message without text (an image, say) still shows as a source with a marker.
-  const spoken = Boolean(entry.text) || entry.role === "user";
-  const role = entry.role === "user" ? "user" : "assistant";
-  if (spoken && choose(`T${entry.turnId}#${role}`) === "render") {
-    parts.push(textPart(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]"));
-    caps.push(profile.entryTokens); ordinals.push(null);
-  }
+  const sources = sourceParts(entry, resultText, choose);
+  if (!sources.length) return { content: "", receipts: [], omitted: [] };
+  const ordinals = sources.map((source) => source.ordinal);
   const text = ordinals[0] === null; // the text part, when it is rendered, is the entry's first part
-  const share = Math.floor(profile.toolCallTokens * (isResult ? 1 - ARGUMENTS_SHARE : ARGUMENTS_SHARE));
-  for (const call of entry.calls) {
-    const choice = choose(`T${entry.turnId}#t${call.ordinal}`);
-    if (choice === "drop") continue;
-    const address = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
-    const part = isResult ? resultPart(`${address} ${call.status}`, resultText(call.result ?? "")) : argumentsPart(address, call.input ?? "");
-    // A sealed part is rendered at its floor whatever the allocation would allow: an unselected call
-    // keeps its label line and its omission marker even when its payload would have fitted.
-    parts.push(choice === "floor" ? { ...part, render: () => part.floor } : part);
-    caps.push(choice === "floor" ? part.minimum : share);
-    ordinals.push(call.ordinal);
-  }
-  if (!parts.length) return { content: "", receipts: [], omitted: [] };
+  const share = Math.floor(profile.toolCallTokens * (entry.role === "toolResult" ? 1 - ARGUMENTS_SHARE : ARGUMENTS_SHARE));
+  // A sealed part is rendered at its floor whatever the allocation would allow: an unselected call
+  // keeps its label line and its omission marker even when its payload would have fitted.
+  const parts = sources.map((source) => {
+    const part = source.part();
+    return source.choice === "floor" ? { ...part, render: () => part.floor } : part;
+  });
+  const caps = sources.map((source, index) => source.ordinal === null ? profile.entryTokens
+    : source.choice === "floor" ? parts[index]!.minimum : share);
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
   // Verified before returning, with the entry against `E` below: no tool part exceeds its share of `B`.
   for (let index = text ? 1 : 0; index < parts.length; index++) if (parts[index]!.minimum > caps[index]!) throw capacity();
@@ -290,12 +445,15 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
  * entries this assembles (`Store.listSourceEntries`). `tool` selects which call's parts are rendered
  * within their budgets; every other call keeps its label line, its omission marker and the receipt that
  * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
- * reads that one source part and drops the rest. `full` is not assembled here: it is the stored
- * evidence, uncut, rendered by `renderTurn`. */
+ * reads that one source part and drops the rest. `full` is the same assembly through the unbounded
+ * path and the raw extractor (23c ruling 4): the same labels, the stored arguments, result text and
+ * `details` uncut, and each native occurrence of a call as its own entry — which is how an
+ * unrestricted `full` trace still retains both fork results of a shared call (17a). */
 export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryProfile, options: TurnOptions = {},
   resultText: ResultExtractor = rawResultText): Rendered {
   const part = options.part;
-  if (part && !entries.some((entry) => sourceAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
+  // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
+  if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
   const choose = (address: string): PartChoice => {
     const suffix = address.slice(address.indexOf("#") + 1);
     if (part) return suffix === part ? "render" : "drop";
@@ -304,7 +462,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   const lines = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const omitted = new Set<number>();
   for (const entry of entries) {
-    const view = renderEntry(entry, profile, resultText, choose);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose) : renderEntry(entry, profile, resultText, choose);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) omitted.add(ordinal);
   }
@@ -323,45 +481,17 @@ function cut(text: string, head: number, tail: number): string {
   while (last > first && used + tokens(lines[last - 1]!) <= tail) used += tokens(lines[--last]!);
   const omitted = lines.slice(first, last).join("");
   return [lines.slice(0, first).join(""),
-    `[omitted ${last - first} lines, ${[...omitted].length} characters]`,
+    `[... ${last - first} lines, ${[...omitted].length} characters truncated]`, // 23c ruling 3: one marker family
     lines.slice(last).join("")].filter(Boolean).join("\n");
 }
 
-function object(text: string | null): Record<string, unknown> {
-  try { const value = JSON.parse(text ?? "null"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
-  catch { return {}; }
+/** The stored payload as a JSON object, or null when it is not one — `{}` is an object with nothing
+ * in it, and renders as `<name>()`, while a payload that is not JSON at all renders as `<name>(<raw>)`. */
+function object(text: string | null): Record<string, unknown> | null {
+  try { const value = JSON.parse(text ?? "null"); return value && typeof value === "object" && !Array.isArray(value) ? value : null; }
+  catch { return null; }
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
-
-/** The stored evidence of one Turn, uncut: `trace` with `full` (ticket 23 leaves it unchanged), and
- * Noting's head reply, which is one natural-text part. Every rule that named a tool is gone with 23b —
- * the read/search path preview, the bash command with its stdout and stderr, the report head and tail,
- * and the tool-name regex that chose between them; the budgeted preview of a Turn is the entry
- * assembly (`renderTrace`), and this renders what was stored, so it needs no budget at all. */
-export function renderTurn(turn: Turn, calls: ToolCall[], options: TurnOptions = {}): Rendered {
-  const part = options.part;
-  if (part && (part === "user" ? turn.userPrompt === null : part === "assistant" ? turn.assistantText === null
-    : !calls.some((call) => `t${call.ordinal}` === part))) throw new Error(`source T${turn.id}#${part} does not exist`);
-  const lines: string[] = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
-  const receipts: string[] = [];
-  if ((!part || part === "user") && turn.userPrompt !== null) lines.push(`[Source entry id: T${turn.id}#user]\n${turn.userPrompt}`);
-  let omittedCalls = 0;
-  for (const call of calls) {
-    if (part && part !== `t${call.ordinal}`) continue;
-    const selected = options.tool === undefined || options.tool === call.ordinal;
-    const body = selected ? [["input", call.input ?? ""], ["result", call.result ?? ""]]
-      .filter(([, text]) => text).map(([label, text]) => `${label}:\n${text}`)
-      : [`[omitted ${(call.input ?? "").length + (call.result ?? "").length} characters of input/result]`];
-    lines.push(`[T${turn.id}#t${call.ordinal}] tool=${call.name} status=${call.status} omitted=${!selected}`, ...body);
-    if (!selected) {
-      omittedCalls++;
-      receipts.push(`expand: trace({"address":"T${turn.id}","tool":${call.ordinal},"full":true})`);
-    }
-  }
-  if ((!part || part === "assistant") && turn.assistantText !== null) lines.push(`[Source entry id: T${turn.id}#assistant]\n${turn.assistantText}`);
-  if (omittedCalls) receipts.unshift(`T${turn.id}: ${omittedCalls} omitted calls (including partial calls)`);
-  return { content: lines.join("\n"), receipts };
-}
 
 export function renderSources(turn: Turn, calls: ToolCall[]): string {
   const preview = (text: string | null) => [...(text ?? "").replace(/\s+/gu, " ")].slice(0, 60).join("");

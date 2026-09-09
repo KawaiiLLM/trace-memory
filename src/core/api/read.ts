@@ -199,7 +199,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }
       const raw = pending.slice(pending.length - kept);
       const omitted = pending.length - kept;
-      if (omitted) raw.push({ content: "", receipts: [`[omitted ${omitted} earlier pending entries beyond the carry budget; read them with trace]`], omitted: [] });
+      if (omitted) raw.push({ content: "", receipts: [`[... ${omitted} earlier pending entries beyond the carry budget truncated; read them with trace]`], omitted: [] });
       const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));

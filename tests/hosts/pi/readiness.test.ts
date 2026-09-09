@@ -13,7 +13,7 @@ const notingRuns = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).fi
 test("19c 2026-09-08: a message completion before persistence launches nothing; the next safe boundary launches once with a real entry id", async () => {
   // Runner-independent: Pi's message-completion callback precedes persistence, and 17a reconciles
   // persisted entries only, so no runner ever sees an entry that is not in the session file yet.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   try {
     await h.prompt("Persist first"); // short: the user entry alone is below the trigger
     const completed = reply("done. " + long);
