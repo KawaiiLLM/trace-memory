@@ -5,9 +5,9 @@ import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
+import { renderKnowledge, renderFact, renderFactGroups, tokens, type FactTurns } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
-import { budgetMaterial, consolidationText, consolidationIncrement, CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE,
+import { budgetMaterial, consolidationText, consolidationIncrement, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
@@ -29,9 +29,9 @@ export interface ConsolidateInput extends TaskOptions {
 }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
 export interface NearPair { candidate: string; knowledge: string; score: number }
-/** The frozen task material of one Consolidation run: the shared parts (knowledge, already-
- * consolidated historical facts, receipts) plus this task's pending facts and review cues. Core
- * renders and budgets the parts and prepares their text (20a); no field is a provider message. */
+/** The frozen task material of one Consolidation run: the shared parts (knowledge, receipts) plus
+ * this task's pending facts and review cues. Core renders and budgets the parts and prepares their
+ * text (20a); no field is a provider message. */
 export type { ConsolidationMaterial } from "../render/material.ts";
 export interface ConsolidationAgentInput extends AgentControl {
   kind: "consolidation";
@@ -84,7 +84,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   const mandatory = Math.max(instructions + tools,
     (input.effectiveMode ?? mode) === "fork" ? (capacity?.prefixTokens ?? 0) + instructions : 0);
   if (capacity && applicable.length && mandatory > capacity.inputTokens)
-    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit the episodic budget or the model context: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -125,53 +125,50 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     }
     return reminders;
   };
-  const context = store.listConsolidatedProjectFacts(session.projectId);
   // Ticket 20 "Complete task evidence" and "Capacity negotiation" (review 2026-09-08): the selected
-  // facts, their mandatory cues and the framing must fit the episodic budget, and the rendered text
-  // plus instructions and tools must fit the host's reported capacity. Neither is receipted away:
+  // facts, their mandatory cues and the framing must fit the pending-fact allowance, and the rendered
+  // text plus instructions and tools must fit the host's reported capacity. Neither is receipted away:
   // the batch shrinks oldest-first, whole facts only, and the reminders, the material and the write
   // eligibility re-freeze together on every step. An oldest fact that cannot fit alone stays pending.
-  let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
+  // 25a removed this phase's already-consolidated history block, so there is no optional material to
+  // trim first: the batch itself is the only reducible unit left.
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
-      context: context.filter((f) => !rangeFacts.some((r) => r.id === f.id)), knowledge, lines, reminders: remindersFor(rangeFacts),
+      knowledge, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
-    const prepared = consolidationMaterial(frozen, config, history);
+    const prepared = consolidationMaterial(frozen, config);
     const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
     const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited);
     // Priced by the mode that will actually run (review 2026-09-08), not by the requested one.
     const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
-    // Optional history goes first (review 2026-09-08): trim the already-consolidated facts by the excess
-    // before a selected fact is given up; only when none are left does the batch shrink.
-    if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
-    rangeFacts.pop(); history = Infinity;
+    rangeFacts.pop();
   }
-  if (applicable.length) throw new Error("Consolidation capacity: oldest fact with its mandatory cues cannot fit the episodic budget or the model context; left pending");
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context, knowledge, lines, factTurns, reminders: [] as string[],
+  if (applicable.length) throw new Error("Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context; left pending");
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, lines, factTurns, reminders: [] as string[],
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
 }
 
-/** Every part of one run's material, rendered and budgeted once from the frozen task (ticket 20).
- * The selected pending facts take the current-material allowance — Consolidation has no automatic Raw
- * block — the titles, the range and the mandatory negation cues are charged to the episodic budget,
- * and the already-consolidated facts fill what is left of it. Core lays out both representations
- * (ruling 08:53); the host only decides which native message carries the text. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; context: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig, history = Infinity) {
-  const { rangeFacts, context, knowledge, lines, factTurns, reminders } = frozen;
+/** Every part of one run's material, rendered and budgeted once from the frozen task (ticket 20, as
+ * 25a corrected it). Consolidation's automatic material is two independent allowances: the active
+ * knowledge within `render.knowledgeBlockTokens`, and the pending facts to integrate within
+ * `consolidation.batchTokens` — which also carries their review cues, the titles and the range,
+ * because required framing belongs to the allowance of the material it frames. There is no automatic
+ * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read.
+ * Core lays out both representations (ruling 08:53); the host only decides which message carries them. */
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig) {
+  const { rangeFacts, knowledge, lines, factTurns, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   const grouped = renderFactGroups(rangeFacts, f => lines.get(f.id)!, factTurns);
   const budgeted = budgetMaterial({ knowledge, current: grouped.join("\n"),
-    framing: [CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    facts: context, factLine: (f) => lines.get(f.id)!, factTurns, history,
-    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.consolidation.batchTokens } });
+    framing: [RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
+    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: grouped,
     knowledge: budgeted.knowledge.filter((g) => g.text),
-    facts: budgeted.facts,
     reminders,
     receipts: budgeted.receipts,
   };

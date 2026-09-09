@@ -187,7 +187,9 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(created.ok).toBe(true);
   const second = turn(first.id, 1), resolve = deferred(), pending = noting(second.id);
   expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
-  expect(calls[1]!.material.knowledge.map(g => g.text).join("\n")).toContain("[K1@1]");
+  // 25a: the run freezes the commit its explicit reads are judged against, and supplies no block.
+  expect(calls[1]!.material.knowledge).toBeUndefined();
+  expect(calls[1]!.text.fresh).not.toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
     { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] });
@@ -252,25 +254,30 @@ test("an oldest entry the episodic budget cannot hold leaves Noting pending (the
   expect(memory.pendingEntries(sessionId, "main", second.id)).toEqual(before);
 });
 
-test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constraints keep first priority, and omitted items stay traceable", async () => {
+// 25a moved this scenario from the Noter to the Consolidator: the Noter has no knowledge block to
+// cap any more, so the cap is pinned where the automatic block still is. The rule is unchanged.
+test("20b 2026-09-08 scenario 4, on the Consolidator since 25a: no knowledge category bypasses the cap, constraints keep first priority, and omitted items stay traceable", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
     op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
   })) });
   const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
+  const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
   // A cap of one token holds nothing at all — not even the first-priority constraint (17b kept three)
   // and not even the receipt naming the omissions, so the task stays pending (review 2026-09-08).
   memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
-  const second = turn(first.id, 1);
-  await expect(noting(second.id)).rejects.toThrow(/Knowledge capacity/);
+  await expect(consolidate()).rejects.toThrow(/Knowledge capacity/);
   for (const [i] of categories.entries()) expect(memory.trace(`K${i + 1}`)).toContain(`[K${i + 1}@`); // omitted, not deleted
+  expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([1]); // still pending
   // A binding cap keeps a whole prefix of the priority order, and the block, its category tags and its
   // own omission receipts all stay inside it — the receipts are charged, not free.
   const cap = 200;
   memory.close(); open({ render: { knowledgeBlockTokens: cap } });
-  const third = turn(second.id, 1); script.push(async () => success([])); await noting(third.id);
-  const material = calls[1]!.material;
+  script.push(async () => ({ outcome: "success", output: "Done.", request }));
+  expect((await consolidate()).outcome).toBe("success");
+  const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };
+  const block = knowledgeBlock(material as unknown as Parameters<typeof knowledgeBlock>[0]);
   const kept = material.knowledge.map(g => g.category);
   expect(kept.length).toBeGreaterThan(0);
   expect(kept.length).toBeLessThan(categories.length); // the cap really binds
@@ -278,7 +285,7 @@ test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constra
   expect(material.knowledge.map(g => g.text)).toEqual(kept.map((_, i) => item(i + 1))); // whole items, never rewritten
   const receipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(receipts).toHaveLength(categories.length - kept.length);
-  expect(tokens(knowledgeBlock(material)) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);
+  expect(tokens(block) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);
 });
 
 test("selected historical facts display by Turn time rather than insertion id", async () => {
