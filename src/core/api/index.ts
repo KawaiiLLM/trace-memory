@@ -18,7 +18,7 @@ export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
-export { NOTING_INCOMPLETE } from "../noting/index.ts";
+export { NOTING_CAPACITY, NOTING_INCOMPLETE } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
@@ -248,6 +248,12 @@ export interface TaskOptions {
    * Opaque to core, which only hands it back with the frozen task; the host's runtime resolves and
    * clamps it. Absent when the host has no such notion. */
   thinkingLevel?: string;
+  /** 27b: why the host re-admitted this task without its inherited context — the fork's own capacity
+   * refused the batch, or the host has no measure to fork from. Present only on that second
+   * admission, which still requests `mode: "fork"` so the audit keeps what was configured while
+   * `effectiveMode` prices and runs the fresh child. Opaque to core, like `thinkingLevel`: core hands
+   * it back with the frozen task and it becomes the run's `fallbackReason`. */
+  fallbackReason?: string;
 }
 export interface AgentControl {
   signal?: AbortSignal;
@@ -255,6 +261,9 @@ export interface AgentControl {
   /** 26b: the level frozen at admission (`TaskOptions.thinkingLevel`), returned to the host with the
    * frozen task so a level changed while the run is in flight cannot reach it. */
   thinkingLevel?: string;
+  /** 27b: the reason frozen at admission (`TaskOptions.fallbackReason`), returned to the host with
+   * the frozen task so this run launches no fork whatever the host's live state says now. */
+  fallbackReason?: string;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -521,7 +530,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel,
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, fallbackReason: input.fallbackReason,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | undefined;

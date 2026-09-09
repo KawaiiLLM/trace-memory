@@ -199,24 +199,19 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
   } finally { await h.dispose(); }
 });
 
-test.each(["batch", "native prefix"])("17b 2026-09-08: an oldest entry blocked by the %s budget stays pending", async limit => {
-  const h = host(limit === "batch" ? { "noting.batchTokens": 9000 } : {});
+// 27b moved the second half of this case — a fork whose inherited prefix does not fit — to
+// `fallback.test.ts`: that batch is no longer left pending but re-admitted once as a subagent.
+// A batch over `noting.batchTokens` still waits, because no model capacity decided it.
+test("17b 2026-09-08: an oldest entry blocked by the batch budget stays pending", async () => {
+  const h = host({ "noting.batchTokens": 9000 });
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("tail"));
     await h.emit("session_start");
-    if (limit === "native prefix") {
-      // 27a: a fork's inherited prefix is Pi's own context measure, not an estimate of the captured
-      // body, so this case states the measure. 25,000 inherited tokens plus the 3,122-token Noter
-      // instructions exceed the 30,000 - 10,000 = 20,000 the allowance leaves for input.
-      h.ctx.model = { ...h.ctx.model!, contextWindow: 30000 };
-      h.setContextUsage({ tokens: 25_000, contextWindow: 30_000, percent: 83 });
-      await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "word ".repeat(30) }] } });
-    }
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toEqual([]);
     expect(h.memory.store.listRuns(1)).toEqual([]);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(h.memory.store.listSourceEntries(1).map(e => e.nativeId));
-    expect(h.notices.join("\n")).toContain(limit === "batch" ? "oldest entry exceeds noting.batchTokens" : "oldest entry cannot fit the episodic budget or the model context");
+    expect(h.notices.join("\n")).toContain("oldest entry exceeds noting.batchTokens");
   } finally { await h.dispose(); }
 });
 

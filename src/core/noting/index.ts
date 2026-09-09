@@ -71,6 +71,14 @@ export type NotingResult =
        * host counts consecutive incomplete runs for. */
       incompleteHeadEntryId?: number };
 
+/** 27b: the opening of both capacity refusals a Noting freeze can raise — the preflight floor
+ * (instructions, tools and, for a fork, the inherited context) and the loop exit that pops the batch
+ * down to its oldest entry. The Pi host matches this one string to tell "this batch does not fit the
+ * model" from every other admission failure, and reroutes a fork that raised it to the subagent path
+ * with its own capacity (parent 27 amendment 5). A batch over `noting.batchTokens` is not one of
+ * these: no model capacity decided it and no fresh child would change it. */
+export const NOTING_CAPACITY = "Noting capacity: oldest entry cannot fit the episodic budget or the model context: ";
+
 /** 26a: the diagnostic of a Noting run that ended without a submission. A batch is completed only by
  * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
  * submission. The run is recorded with its usage under the existing `failure` outcome and advances no
@@ -108,7 +116,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const inheriting = (input.effectiveMode ?? mode) === "fork";
   const mandatory = Math.max(instructions + tools, inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context: instructions ${instructions}, tools ${tools}`
+    throw new Error(`${NOTING_CAPACITY}instructions ${instructions}, tools ${tools}`
       + `${inheriting ? ` and the inherited context ${input.capacity.prefixTokens}` : ""} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const entries: typeof pending = [];
   const views: string[] = [];
@@ -181,7 +189,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   }
   // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
   // smallest one, the oldest entry alone.
-  if (pending.length) throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context: `
+  if (pending.length) throw new Error(NOTING_CAPACITY
     + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };

@@ -124,8 +124,12 @@ frozen task — labels, titles, the range line and receipts included — drops t
 every unselected entry pending. The material, the write eligibility and the audit membership are
 re-frozen together, so a reduced task can never keep the larger progress range. Extra context a host
 can supply is never evidence permission — the frozen range bounds what may be written whatever the
-model can see. If the oldest entry alone does not fit, core raises a capacity problem and advances
-nothing.
+model can see. If the oldest entry alone does not fit, core raises a capacity problem (opening with
+`NOTING_CAPACITY`) and advances nothing. The host may answer that problem by admitting the same task
+once more without an inherited prefix — the Pi host does, on its subagent model (27b) — which is an
+ordinary second `noting(...)` call, freezing its own material: core neither loops nor retries, and
+the only thing it carries for that host is the opaque `fallbackReason` it hands back with the frozen
+task, beside `thinkingLevel`.
 
 ## Rendering decisions
 

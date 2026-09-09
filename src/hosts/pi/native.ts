@@ -91,6 +91,10 @@ export interface NativeResult {
   thinking: { requested?: ThinkingLevel; effective: ThinkingLevel };
   /** A whitelisted memory tool returned a non-rejection receipt in this run. */
   committed: boolean;
+  /** 27b (parent 27 amendment 4): the child's terminal assistant message, handed back as Pi built
+   * it so the caller can classify a provider rejection with pi-ai's own `isContextOverflow`. Never
+   * an error string reconstructed here; absent when the child produced no assistant message. */
+  terminal?: unknown;
   /** Observed tool-call order, including rejected non-whitelisted calls. */
   calls: { name: string; executed: boolean }[];
 }
@@ -105,7 +109,10 @@ export function placeholderUsage(usage: unknown): boolean {
   return Object.values(usage as Record<string, unknown>).every(value => !value || (typeof value === "object" && placeholderUsage(value)));
 }
 
-function addUsage(total: unknown, usage: unknown): unknown {
+/** Adds one response's reported usage into a running total, counter by counter. Exported for 27b:
+ * a run whose fork attempt fell back keeps what that attempt really spent beside the fresh child's
+ * own usage, in the one run record both attempts share. */
+export function addUsage(total: unknown, usage: unknown): unknown {
   if (usage === undefined || usage === null) return total;
   if (typeof usage === "number") return (typeof total === "number" ? total : 0) + usage;
   if (typeof usage !== "object") return usage;
@@ -272,6 +279,18 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [{ name: "trace-memory-worker", hidden: true, factory: (pi: ExtensionAPI) => { pi.on("before_agent_start", () => ({ systemPrompt: system })); } }] });
   await resourceLoader.reload();
+  // 27b (parent 27 amendment 1): the memory child runs with Pi's automatic compaction off. The
+  // manager above reads the user's own settings, where compaction is enabled by default, and Pi then
+  // answers a provider overflow inside `_checkCompaction` by deleting the failed reply, summarizing
+  // the child with a second paid call and retrying — a native compaction of a worker session, and an
+  // overflow the fallback in hosts/pi/worker.ts would never see. `applyOverrides` merges into THIS
+  // manager's in-memory settings only: it is not a setter, it writes no file, and the foreground
+  // agent has its own manager, so neither the user's settings nor foreground compaction moves.
+  //
+  // It must come after the loader's reload: `DefaultResourceLoader.reload()` calls
+  // `settingsManager.reload()`, which rebuilds the merged settings from the files and drops every
+  // override applied before it.
+  settingsManager.applyOverrides({ compaction: { enabled: false } });
   // 26b: the frozen level is Pi's own `thinkingLevel` option, which takes precedence over the entry a
   // forked ancestry carries, the per-model preference and the global default, and is clamped by Pi to
   // the levels this model supports. The effective level is read back from the session Pi built.
@@ -409,5 +428,5 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const output = outcome === "success" ? text(terminal!)
     : failure ?? `${terminal?.stopReason ?? "no terminal assistant response"}${terminal?.errorMessage ? `: ${terminal.errorMessage}` : ""}${terminal && text(terminal) ? ` (partial output: ${text(terminal).slice(0, 200)})` : ""}`;
   return { outcome, output, usage, request, verification, retries, committed, calls, thinking,
-    ...(nativeLog ? { nativeLog } : {}) };
+    ...(terminal ? { terminal } : {}), ...(nativeLog ? { nativeLog } : {}) };
 }

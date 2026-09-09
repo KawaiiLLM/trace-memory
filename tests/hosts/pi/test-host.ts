@@ -140,7 +140,10 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // `defaultThinkingLevel` and `modelThinkingLevels` are Pi's own settings, not this extension's
   // configuration: 26b's cases put a global default and a per-model preference here to prove that
   // neither of them decides a worker's level.
+  // 27b: `compaction` is Pi's own setting too. A case that wants the user's file to ask for automatic
+  // compaction — the state the memory child overrides in memory — states it here.
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) },
+    ...(config.compaction ? { compaction: config.compaction } : {}),
     ...(config.defaultThinkingLevel ? { defaultThinkingLevel: config.defaultThinkingLevel } : {}),
     ...(config.modelThinkingLevels ? { modelThinkingLevels: config.modelThinkingLevels } : {}) }));
   // Models the native child resolves through Pi's own ModelRuntime; the stubbed fetch answers them.
@@ -230,7 +233,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
   } as unknown as ExtensionAPI;
   const previous = process.env.TRACE_MEMORY_CONFIG;
-  const { retry: _retry, defaultThinkingLevel: _level, modelThinkingLevels: _levels, contextWindow: _window, ...extensionConfig } = config as Record<string, unknown>;
+  const { retry: _retry, compaction: _compaction, defaultThinkingLevel: _level, modelThinkingLevels: _levels, contextWindow: _window, ...extensionConfig } = config as Record<string, unknown>;
   process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
   const originalCwd = process.cwd();
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }

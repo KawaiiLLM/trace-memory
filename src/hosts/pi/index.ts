@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -141,7 +141,11 @@ export default function (pi: ExtensionAPI) {
       model: model as unknown as WorkerModel | undefined, checkCapacity, tools,
       runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
       maxToolRounds: memory.config[input.kind].maxToolRounds,
-      fork: input.mode === "fork" && model && !input.signal?.aborted ? forkLaunch(callContext, input, model, callPiId) : undefined,
+      // 27b: a task admission already refused a fork for (its capacity, or a missing fork base) was
+      // re-admitted with that reason frozen on it, so it never asks the live state again — it is the
+      // one refusal this launch does not re-derive, and it becomes the run's recorded fallback reason.
+      fork: input.mode === "fork" && model && !input.signal?.aborted
+        ? (input.fallbackReason ? { refused: input.fallbackReason } : forkLaunch(callContext, input, model, callPiId)) : undefined,
       onCache: observation => {
         // User rulings 2026-09-09: every eligible miss is noticed once, with its count; a hit
         // resets the count; the second consecutive miss downgrades the session — one transition,
@@ -163,10 +167,18 @@ export default function (pi: ExtensionAPI) {
         callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
       },
       onRetryEnd: () => { activity.retrying = false; showSpend(callContext); },
-      onFallback: reason => { if (!session.notified) { contextNotice(input.kind, reason); session.notified = true; } },
+      onFallback: reason => notifyFallback(input.kind, reason),
     });
   }, core, piResultText);
-  const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
+  /** One fork-to-subagent notice per Pi session, whatever refused the fork: the host's own refusal,
+   * the native runner's, a rejected gate, and (27b) a capacity reroute before sending or a provider
+   * overflow after a real attempt. A warning, never an error — the work continues on the fresh child,
+   * and a later task may request fork again. */
+  const notifyFallback = (kind: string, reason: string) => {
+    if (session.notified) return;
+    ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
+    session.notified = true;
+  };
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
   let state: State;
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
@@ -338,10 +350,16 @@ export default function (pi: ExtensionAPI) {
   };
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target,
   // mode/model and admission flags differ. `boundary` is absent for ordinary automatic work.
+  // The return type is written out because 27b's capacity reroute re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
-      selected: { mode: "fork" | "subagent"; model: string }, options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } }) => {
+      selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
+      options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] } },
+      ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
-    const effective = effectiveMode(selected.mode, { kind, target }); // admission pauses by what will run, not by what was asked
+    // 27b: a task re-admitted after a capacity refusal (`reroute` below) runs fresh whatever the
+    // live state says, so its reason decides the effective mode outright and nothing re-resolves it.
+    const effective = selected.fallbackReason ? "subagent" as const
+      : effectiveMode(selected.mode, { kind, target }); // admission pauses by what will run, not by what was asked
     const [provider, ...id] = selected.model.split("/");
     const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
     const phase = kind === "noting" ? "Noting" : "Consolidation";
@@ -366,14 +384,32 @@ export default function (pi: ExtensionAPI) {
     const base = effective === "fork" && session.capture?.branch === target.branch
       && session.capture.model === model.id && session.capture.provider === model.provider;
     const measure = base ? context.getContextUsage() : undefined;
+    // 27b (parent 27 amendment 5): the pre-send fallback is a second admission, not a retry. A fork
+    // this host cannot price, and a fork the freeze refuses for capacity, are admitted once more here
+    // as a subagent — the configured Noter model (`modelName`, the `session` preference included),
+    // that model's own capacity, and the batch re-frozen with fresh material under the ordinary exact
+    // selection. The evidence path and any manual-catchup boundary travel unchanged in `target` and
+    // `options`. One warning names the reason, on the same one-per-session notice every other
+    // fallback uses; it is a warning and not an error, so the cache-miss latch, the default mode and
+    // the settings file all stay as they were and a later task may request fork again.
+    //
+    // The requested mode stays `fork` on the second admission, so the run audit keeps what was
+    // configured; `selected.fallbackReason` is what makes it run fresh — it forces the effective mode
+    // above, so core prices the subagent material alone, and it reaches the launch below as this
+    // task's fork refusal, which is where the reason becomes the run's `fallbackReason`.
+    //
+    // At most one transition per task, structurally: a re-admission carries that reason, and a task
+    // carrying it never reaches this line again. Nothing is drained immediately either — this is the
+    // same task, admitted once more.
+    const reroute = (reason: string) => {
+      notifyFallback(kind, reason);
+      return attemptPhase(context, kind, target, { ...selected, model: modelName(kind), fallbackReason: reason }, options);
+    };
     // An unknown measure — right after a compaction, before a valid reply — is not a fork base either,
-    // and unlike the two above nothing downstream would refuse it, so this task waits here. 27b reroutes
-    // it to the subagent path; until then it stays pending and no whole-body estimate stands in for it.
-    if (base && typeof measure?.tokens !== "number") {
-      const diagnostic = `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base; left pending`;
-      context.ui.notify(diagnostic, "warning");
-      return Promise.resolve({ outcome: "dropped" } as const);
-    }
+    // and unlike the two above nothing downstream would refuse it, so it is rerouted here rather than
+    // waiting: no whole-body estimate ever stands in for the measure.
+    if (base && typeof measure?.tokens !== "number")
+      return reroute(`${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base`);
     const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
     // material. The foreground level is read once here, as a value — every later round of this run
@@ -386,7 +422,15 @@ export default function (pi: ExtensionAPI) {
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     if (kind === "consolidation") return memory.consolidate(common);
     // 26a: this is where the host learns a Noting outcome, on every admission path it has.
-    return memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
+    const admitted = memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
+    if (effective !== "fork") return admitted;
+    // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
+    // refused it. The same evidence under a fresh child's own price often fits, so that one refusal
+    // is rerouted instead of leaving feasible work pending. Only this refusal: any other admission
+    // failure (a `noting.batchTokens` overflow, a store error) is reported as itself, and if the
+    // subagent admission refuses the batch too, that refusal is what the caller reports.
+    return admitted.catch(error => error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY)
+      ? reroute(error.message.replace(/; left pending$/, "")) : Promise.reject(error));
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
   const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)

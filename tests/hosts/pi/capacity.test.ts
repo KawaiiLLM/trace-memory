@@ -171,24 +171,35 @@ test("27a 2026-09-10: the fork measure is read once at admission, and a later fo
   } finally { await f.dispose(); }
 }, 30000);
 
-test("27a 2026-09-10: an unknown context measure is not a fork base — the task waits with a diagnostic and nothing is sent", async () => {
+test("27b 2026-09-10: an unknown context measure is not a fork base — the task is re-admitted once as a subagent, with that model's capacity", async () => {
   const h = host({ "noting.triggerTokens": 20 }); // fork is the default mode
   try {
     await h.emit("session_start");
     // What Pi reports right after a compaction, before a valid reply has answered on the new prefix.
+    // 27a left this task pending; 27b reroutes it to the fresh path instead of waiting for a measure.
     h.setContextUsage({ tokens: null, contextWindow: 200_000, percent: null });
     await h.prompt("word ".repeat(200));
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "hi" }] } });
     await h.answer("word ".repeat(200));
     await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toEqual([]);
-    expect(h.memory.store.listRuns(1)).toEqual([]);
-    expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
+    const run = h.memory.store.listRuns(1)[0]!;
+    expect(run.mode).toBe("subagent");
+    expect(run.outcome).toBe("success");
+    // The requested mode and the reason are the audit's, and the model charged is the configured
+    // subagent model — resolved through the `session` preference, so the same provider/id here.
+    const response = JSON.parse(run.response!);
+    expect(response.requestedMode).toBe("fork");
+    expect(run.model).toBe("fake/test");
+    expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
     expect(h.notices.join("\n")).toContain("no fork base");
-    // The measure returns and the same pending work runs, so nothing was permanently refused.
-    h.setContextUsage({ tokens: 1_000, contextWindow: 200_000, percent: 1 });
-    h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
+    // The fresh material was frozen for that model, sent, and its evidence committed exactly once.
     expect(h.requests.length).toBeGreaterThan(0);
+    expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)");
+    // Only the reply that arrived after this batch was frozen is still pending.
+    expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
+    // No latch, no persisted mode change: the next task requests fork again.
+    expect(h.memory.store.forkSuppression(1)).toBeNull();
+    expect(h.memory.config.noting.forkModeDefault).toBe(true);
   } finally { await h.dispose(); }
 });
 
