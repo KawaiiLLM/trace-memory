@@ -630,3 +630,22 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(memory.description).toContain("topics (subject labels; the complete replacement set, empty when unclassified)");
   } finally { await f.dispose(); }
 });
+
+// ---------------------------------------------------------------- review 2026-09-10 (ebdfe35..ba94941) P2
+test("review 2026-09-10 P2: the child's thinking pair is reported through progress as soon as the child exists, before any request", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9 });
+  try {
+    const tools = [{ name: "trace" as const, description: "Read", parameters: { type: "object", properties: {} }, execute: () => "ok" }];
+    const events: string[] = [];
+    let first: { thinking?: { requested?: string; effective: string } } | undefined;
+    await runNative({ mode: "subagent", model: f.model as never, cwd: f.h.dir, agentDir: f.agentDir, runsDir: f.runsDir,
+      systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, thinkingLevel: "low",
+      onRequest: () => { events.push("request"); },
+      onProgress: state => { if (!first) { first = state; events.push("progress"); } } });
+    // A run the host force-cancels at its cleanup deadline is built from the last progress report, so
+    // the level the child was really sent at must be known there and not only with the final result.
+    expect(events.slice(0, 2)).toEqual(["progress", "request"]);
+    expect(first?.thinking?.requested).toBe("low");
+    expect(typeof first?.thinking?.effective).toBe("string");
+  } finally { await f.dispose(); }
+}, 20000);

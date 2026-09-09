@@ -47,7 +47,9 @@ interface NativeCommon {
    * last capacity check decides by, or undefined when Pi reports it unknown; the body is passed for
    * the run record, never for accounting. */
   onRequest(request: unknown, contextTokens: number | undefined): void;
-  onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
+  /** Review 2026-09-10 (P2): `thinking` rides along as soon as the child exists, so a run the host
+   * force-cancels at its cleanup deadline still audits the level it was really sent at. */
+  onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
   /** Consolidation's review feedback, delivered to the child as a native user message. */
   feedback?(result: string): string | undefined;
   /** 19c: one completed fork response was eligible for the cache-miss policy (gate 3), hit or miss.
@@ -306,6 +308,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
         differingPath: `$.${messageKey(api)}`, key: JSON.stringify([task.model.id, task.model.provider, hash(task.captured.tools ?? null)]), rounds: [] };
   const retries: { attempt: number; error: string }[] = [];
   let usage: unknown, request: unknown, rounds = 0, failure: string | undefined, terminal: { stopReason?: string; errorMessage?: string; content?: unknown } | undefined;
+  task.onProgress({ usage, retries, thinking }); // known now, not only with the final result (review 2026-09-10 P2)
   const seen = new Set<unknown>();
   // Only the fork gate reads the provider's message array; a fresh child's audit assumes nothing
   // about the body's shape, so any API the SDK can call may run it (review 2026-09-08).

@@ -70,12 +70,13 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
   let fallbackReason: string | undefined;
   let mode: "fork" | "subagent" = "subagent";
   let usage: unknown;
+  let thinking: RunAgentResult["thinking"]; // reported by the runner as soon as the child exists (review 2026-09-10 P2)
   // 27b: what a fork attempt that fell back after really running had already spent, carried into the
   // one run record both attempts share. A rejected request reports the SDK's placeholder zeros, which
   // `runNative` never counts, so this stays unknown rather than becoming a free request.
   let carried: { usage: unknown; retries: { attempt: number; error: string }[] } | undefined;
   const retries: { attempt: number; error: string }[] = [];
-  const progress = () => task.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason });
+  const progress = () => task.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason, thinking });
   try {
     task.signal?.throwIfAborted();
     if (!model) throw new Error(`Unavailable model: ${task.model}`);
@@ -98,7 +99,8 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
-      onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[] }) => {
+      onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {
+        if (state.thinking) thinking = state.thinking;
         usage = carried ? addUsage(carried.usage, state.usage) : state.usage;
         retries.splice(0, retries.length, ...(carried?.retries ?? []), ...state.retries); progress(); },
       onRetry: binding.onRetry, onRetryEnd: binding.onRetryEnd,

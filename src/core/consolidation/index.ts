@@ -157,7 +157,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
   // smallest one, the oldest fact with its cues alone.
   if (applicable.length) throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: `
-    + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
+    + `${last!.episodic ? `it is ${last!.episodic} tokens over consolidation.batchTokens (${config.consolidation.batchTokens})` : `it costs ${last!.priced} tokens`}`
     + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
   const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, lines, factTurns, reminders: [] as string[],
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
