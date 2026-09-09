@@ -4,6 +4,7 @@ import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
+import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
@@ -228,38 +229,21 @@ export async function runNoting(
     material, text, entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
-  catch (error) {
-    result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure",
-      output: error instanceof Error ? error.message : String(error) };
-  } finally { binding.close(); }
+  catch (error) { result = agentException(error); }
+  finally { binding.close(); }
   // A direct facade close may dispose before the provider settles; never access that store.
   if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
-  run.mode = result.mode ?? mode;
-  if (result.request !== undefined) run.request = JSON.stringify(result.request);
-  // A host that cannot expose a provider request says so; core records the limitation instead of the
-  // missing-request problem. A host that is expected to capture one and returns none still gets it.
-  const unavailable = result.audit?.available === false;
   const problems = binding.committed
-    ? (result.outcome === "success" ? (result.request == null && !unavailable ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
+    ? (result.outcome === "success" ? (requestMissing(result) ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-    : (result.request === undefined || result.request === null) && !unavailable ? ["runAgent must return the exact provider request"] : binding.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits,
-    toolCalls: binding.sequence, fetched: binding.fetched, problems, requestedMode: mode,
-    ...(result.audit !== undefined ? { audit: result.audit } : {}),
-    ...(result.verification !== undefined ? { verification: result.verification } : {}),
-    ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
-    ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
-    ...(result.retries?.length ? { retries: result.retries } : {}) });
+    : requestMissing(result) ? ["runAgent must return the exact provider request"] : binding.problems;
+  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched, problems });
   if (binding.committed) {
-    // The batch is committed; a failure while completing the audit record is reported, not a business failure.
-    const after = [...problems];
-    try { store.updateRun(binding.committed.runId, { ...run, outcome: "success" }); }
-    catch (error) { after.push(`audit update failed after commit: ${String(error)}`); }
+    const after = updateCommitted(store, binding.committed.runId, run, problems);
     return { outcome: "success", ...binding.committed, ...(after.length ? { problems: after } : {}) };
   }
   if (problems.length) {
-    const outcome = result.outcome !== "success" ? result.outcome
-      : (result.request === undefined || result.request === null) && !unavailable ? "failure" : "bounced";
+    const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) ? "failure" : "bounced";
     return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
   }
   const committed = store.commitNotingRun({ run, facts: [],

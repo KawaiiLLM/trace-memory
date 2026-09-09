@@ -7,6 +7,7 @@ import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderKnowledge, renderFact, renderFactGroups, tokens, type FactTurns } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
+import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { budgetMaterial, consolidationText, consolidationIncrement, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
 
@@ -232,30 +233,20 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   } });
   let result: RunAgentResult;
   try { result = await runAgent({ ...structuredClone(base), material, text, reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
-  catch (error) { result = { outcome: error instanceof Error && error.name === "AbortError" ? "cancelled" : "failure", output: error instanceof Error ? error.message : String(error) }; }
+  catch (error) { result = agentException(error); }
   binding.close();
   // A direct facade close may dispose before the provider settles; never access that store.
   if (store.closed) return binding.memory.committed ? { outcome: "success", ...binding.memory.committed, range, readKnowledgeCommits } : { outcome: "dropped" };
-  run.mode = result.mode ?? mode;
-  if (result.request != null) run.request = JSON.stringify(result.request);
   const committed = binding.memory.committed;
-  // A host that cannot expose a provider request says so; core records the limitation instead of the
-  // missing-request problem. A host expected to capture one and returning none still gets it.
-  const unavailable = result.audit?.available === false;
-  const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : result.request == null && !unavailable ? ["runAgent must return the exact provider request"] : binding.memory.problems;
-  run.response = JSON.stringify({ output: result.output, usage: result.usage ?? null, ...(result.outcome === "cancelled" ? { usageStatus: result.usage == null ? "unknown" : "partial" } : {}), readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
-    candidate: binding.memory.candidate, problems, requestedMode: mode, ...(result.audit !== undefined ? { audit: result.audit } : {}),
-    ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}),
-    ...(result.verification !== undefined ? { verification: result.verification } : {}), ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
-    ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
-    ...(result.retries?.length ? { retries: result.retries } : {}) });
+  const problems = result.outcome !== "success" ? [String(result.output ?? result.outcome)] : requestMissing(result) ? ["runAgent must return the exact provider request"] : binding.memory.problems;
+  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+    candidate: binding.memory.candidate, problems,
+    ...(committed ? { committed: committed.committed, diagnostics: committed.diagnostics } : {}) });
   if (committed) {
-    const after = [...problems];
-    try { store.updateRun(committed.runId, { ...run, outcome: "success" }); }
-    catch (error) { after.push(`audit update failed after commit: ${String(error)}`); }
+    const after = updateCommitted(store, committed.runId, run, problems);
     return { outcome: "success", ...committed, range, readKnowledgeCommits, ...(after.length ? { problems: after } : {}) };
   }
-  const outcome = result.outcome !== "success" ? result.outcome : (result.request == null && !unavailable) || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
+  const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) || binding.memory.failure ? "failure" : problems.length ? "bounced" : "success";
   if (outcome !== "success") {
     const runId = binding.memory.failure?.runId ?? store.recordRun({ ...run, outcome }).id;
     if (binding.memory.failure) store.updateRun(runId, { ...run, outcome });
