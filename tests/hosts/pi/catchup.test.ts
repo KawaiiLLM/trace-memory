@@ -125,7 +125,8 @@ test("17c 2026-09-08: two active executors share target claims and the loser sel
 });
 
 test("17c 2026-09-08: borrowed requests freeze target project and branch; costs, commits and deliveries stay with target", async () => {
-  const h = host({ "consolidation.subagentModeDefault": false });
+  // Borrowed work is fresh-context for both phases; since 25b Consolidation has no other mode to ask for.
+  const h = host();
   try {
     await h.turn();
     h.memory.declareProject(1, "Borrowed project");

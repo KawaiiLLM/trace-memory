@@ -132,8 +132,10 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
-test.each([[true, true], [true, false], [false, true], [false, false]])("18a 2026-09-08: enabled delivery ignores worker modes (%s, %s) and disable preserves unseen deliveries", async (noting, consolidation) => {
-  const h = setup({ "noting.forkModeDefault": noting, "consolidation.subagentModeDefault": consolidation });
+// 25b: Consolidation has no mode to vary any more, so the delivery rule is exercised over the one
+// worker mode that is still configurable.
+test.each([true, false])("18a 2026-09-08: enabled delivery ignores the Noter mode (%s) and disable preserves unseen deliveries", async (noting) => {
+  const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
     operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Retained shared knowledge", category: "constraint", scope: "global", supports: ["F1"] }], skipped: [] } }] } : h.memory.store.listSessionFacts(1).length ? reply("No new facts") : notingFact(c));
@@ -155,13 +157,14 @@ test.each([[true, true], [true, false], [false, true], [false, false]])("18a 202
   expect((await h.prompt("resume delivery")).message.content).toContain("<consolidated>");
 });
 
-test("18a/24b: Settings shows the four preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
-  // 24b supersedes 18a's read-only view of every key: the menu edits exactly four preferences, while
-  // advanced values keep living in the settings files (and keep being validated — the case below).
+test("18a/24b, as 25b left it: Settings shows the three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
+  // 24b supersedes 18a's read-only view of every key: the menu edits exactly three preferences and
+  // the borrowing scope, while advanced values keep living in the settings files (and keep being
+  // validated — the case below). 25 amendment 2 withdrew the fourth, the Consolidator mode.
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "consolidation.subagentModeDefault": false, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
@@ -170,8 +173,8 @@ test("18a/24b: Settings shows the four preferences with their effective source a
   expect(shown).toEqual([
     "Noter mode: fork (Project); Global=subagent masked",
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
-    "Consolidator mode: fork (Global)",
-    "Consolidator model: fake/test (Global); fork mode inherits the foreground model fake/test",
+    // The Consolidator runs as a subagent, so its model is never annotated with an inheriting mode.
+    "Consolidator model: fake/test (Global)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
@@ -180,6 +183,14 @@ test("18a/24b: Settings shows the four preferences with their effective source a
   // The advanced keys the menu no longer displays are still loaded and still validated by name.
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": "not a number" } }));
   await expect(h.emit("session_start")).rejects.toThrow("Invalid render.entryTokens");
+  // 25 amendment 2: a settings file that still carries the retired Consolidator-mode key fails the
+  // load by name — either value — instead of being read as a mode this build can run.
+  for (const saved of [true, false]) {
+    writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "consolidation.subagentModeDefault": saved } }));
+    await expect(h.emit("session_start")).rejects
+      .toThrow("Removed setting consolidation.subagentModeDefault: Consolidation always runs as a subagent; delete the key");
+    expect(JSON.parse(readFileSync(projectPath, "utf8"))["trace-memory"]).toEqual({ "consolidation.subagentModeDefault": saved }); // refused, never rewritten
+  }
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": DEFAULT_CONFIG.render.entryTokens } }));
   await h.emit("session_start");
 });

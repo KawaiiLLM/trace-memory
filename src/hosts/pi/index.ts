@@ -367,10 +367,11 @@ export default function (pi: ExtensionAPI) {
   };
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01: noting and consolidation each configure their mode (noting defaults to fork, consolidation to
-  // subagent); fork mode always runs on the session model, subagent mode on the configured one.
+  // Ruling 17:01, as ticket 25 amendment 2 left it: only Noting configures a mode, and it defaults to
+  // fork; Consolidation always runs as a subagent, on the ordinary path as on the borrowed and the
+  // manual-catchup ones. Fork mode always runs on the session model, subagent mode on the configured one.
   const launch = (kind: "noting" | "consolidation") => {
-    const fork = kind === "noting" ? memory.config.noting.forkModeDefault : !memory.config.consolidation.subagentModeDefault;
+    const fork = kind === "noting" && memory.config.noting.forkModeDefault;
     return { mode: fork ? "fork" as const : "subagent" as const, model: fork ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
@@ -987,31 +988,31 @@ export default function (pi: ExtensionAPI) {
   const applyMark = (address: string, kind: "verified" | "flagged" | "clear") =>
     ctx.ui.notify(memory.mark(address, kind, state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info");
 
-  // Global preferences: existing mode/model keys plus the closed-session borrowing scope.
-  // No advanced editor or second scheduling mechanism.
-  type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" } | { phase?: never; kind: "scope" });
+  // Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
+  // No advanced editor or second scheduling mechanism. Ticket 25 amendment 2 withdrew 24b's
+  // Consolidator-mode entry: that phase has no mode to choose, so three preferences remain here.
+  type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" } | { phase: "noting" | "consolidation"; kind: "model" } | { phase?: never; kind: "scope" });
   const preferences: Preference[] = [
     { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
     { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
-    { name: "Consolidator mode", key: "consolidation.subagentModeDefault", phase: "consolidation", kind: "mode" },
     { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
     { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
   ];
-  // Noting stores "runs in fork mode", Consolidation stores "runs in subagent mode": one preference
-  // reads either boolean without inventing a third spelling of the same choice.
-  const modeName = (phase: "noting" | "consolidation", value: boolean) => phase === "noting" ? (value ? "fork" : "subagent") : (value ? "subagent" : "fork");
-  const modeFlag = (phase: "noting" | "consolidation", mode: string) => phase === "noting" ? mode === "fork" : mode === "subagent";
-  const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope : p.kind === "model" ? "session"
-    : p.phase === "noting" ? DEFAULT_CONFIG.noting.forkModeDefault : DEFAULT_CONFIG.consolidation.subagentModeDefault;
+  // Noting stores "runs in fork mode": one preference reads that boolean without inventing a second
+  // spelling of the same choice.
+  const modeName = (value: boolean) => value ? "fork" : "subagent";
+  const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
+    : p.kind === "model" ? "session" : DEFAULT_CONFIG.noting.forkModeDefault;
   const preferenceValue = (p: Preference) => flat[p.key] ?? preferenceDefault(p);
-  const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(p.phase, raw as boolean)
+  const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
     : raw === "session" ? "follow foreground" : String(raw);
   const foregroundModel = () => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
-  /** The mode this phase is configured to request. Cache suppression, capacity/readiness fallback and
-   * post-compaction mode still decide what actually runs (`effectiveMode`); a fallback does not grant
-   * a different model-selection policy, so the display follows the configured mode. */
-  const configuredMode = (phase: "noting" | "consolidation") =>
-    modeName(phase, preferenceValue(preferences.find(p => p.phase === phase && p.kind === "mode")!) as boolean);
+  /** The mode this phase is configured to request. Consolidation has one (25b). For Noting, cache
+   * suppression, capacity/readiness fallback and post-compaction mode still decide what actually runs
+   * (`effectiveMode`); a fallback does not grant a different model-selection policy, so the display
+   * follows the configured mode. */
+  const configuredMode = (phase: "noting" | "consolidation") => phase === "consolidation" ? "subagent"
+    : modeName(preferenceValue(preferences.find(p => p.kind === "mode")!) as boolean);
   const preferenceLine = (p: Preference) => {
     const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[p.key] && Object.hasOwn(values, p.key))
       .map(([layer, values]) => `${layer}=${shownValue(p, values[p.key])} masked`);
@@ -1073,8 +1074,7 @@ export default function (pi: ExtensionAPI) {
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
-    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault },
-      consolidation: { subagentModeDefault: effective.consolidation.subagentModeDefault } });
+    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault } });
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
     let replaced: string | undefined;
@@ -1102,7 +1102,7 @@ export default function (pi: ExtensionAPI) {
       const choice = await ctx.ui.select(`${p.name} — applies to tasks admitted from now on; running tasks keep their mode`,
         ["fork", "subagent"]);
       if (choice === undefined) return; // cancelled: nothing written, nothing requested
-      saveGlobal(p, modeFlag(p.phase, choice));
+      saveGlobal(p, choice === "fork");
       return;
     }
     const follow = "Follow foreground";

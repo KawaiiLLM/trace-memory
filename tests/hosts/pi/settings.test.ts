@@ -1,11 +1,13 @@
-// Ticket 24b "Global settings": four preferences on the existing canonical keys, written into the
+// Ticket 24b "Global settings", as ticket 25 amendment 2 left it: three preferences and the
+// borrowing scope, on the existing canonical keys — the Consolidator-mode entry was withdrawn with
+// the mode it chose (25b) — written into the
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
 import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { host, notingFact, reply } from "./test-host.ts";
+import { consolidationReply, host, notingFact, reply } from "./test-host.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
@@ -28,6 +30,23 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   await command(h, "");
 };
 
+test("25 amendment 2 2026-09-09: the menu offers no Consolidator mode, and the ordinary slot launches that phase as a subagent while the Noter forks", async () => {
+  const h = setup({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationReply() : notingFact(c));
+  await h.emit("session_start");
+  h.ctx.hasUI = true;
+  h.answers.push("Settings", undefined); await command(h, ""); // opened and cancelled: the list itself is the assertion
+  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual(["Consolidator model: follow foreground (Default)"]);
+  h.ctx.hasUI = false;
+  // The two phases do not share a mode: the Noter forks by default, the Consolidator cannot.
+  await h.turn();
+  await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
+  const modes = (kind: string) => h.memory.store.listRuns(1).filter(r => r.kind === kind)
+    .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
+  expect(modes("noting")).toEqual([["fork", "subagent"]]);       // requested fork; this fake parent has no file to fork, the documented fallback
+  expect(modes("consolidation")).toEqual([["subagent", "subagent"]]); // never asked for anything else, and ran as itself
+});
+
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
@@ -36,8 +55,7 @@ test("24b: each control writes only its canonical key, and every other setting i
   expect(h.notices.at(-1)).toContain(`saved noting.forkModeDefault = false (subagent) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("applies to memory tasks admitted from now on; running tasks keep the mode and model they started with");
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
-  await edit(h, "Consolidator mode: subagent (Default)", "fork");
-  await edit(h, "Consolidator model: follow foreground (Default); fork mode inherits the foreground model fake/test", "fake/test");
+  await edit(h, "Consolidator model: follow foreground (Default)", "fake/test");
   const file = globalFile(h);
   expect(file["other-extension"]).toEqual({ keep: "me" });          // another extension's section
   expect(file.retry).toMatchObject({ enabled: true });               // Pi's own settings
@@ -45,16 +63,15 @@ test("24b: each control writes only its canonical key, and every other setting i
     "render.entryTokens": 222,
     "noting.forkModeDefault": false,
     notingModel: "fake/test-mini",
-    "consolidation.subagentModeDefault": false,
     consolidationModel: "fake/test",
   });
-  // The values read back exactly as the menu shows them, from the Global layer.
+  // The values read back exactly as the menu shows them, from the Global layer. 25 amendment 2: three
+  // preferences and the borrowing scope; the Consolidator's mode is not one of them any more.
   h.answers.push("Settings", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Noter mode: subagent (Global)",
     "Noter model: fake/test-mini (Global)",
-    "Consolidator mode: fork (Global)",
-    "Consolidator model: fake/test (Global); fork mode inherits the foreground model fake/test",
+    "Consolidator model: fake/test (Global)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model

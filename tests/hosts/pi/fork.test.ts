@@ -10,7 +10,7 @@ import { host as createHost, reply, notingFact, consolidationReply } from "./tes
 const consolidationOutput = consolidationReply();
 
 test("17:01 2026-09-08: a model switch during the consolidation candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "consolidation.subagentModeDefault": false, "noting.forkModeDefault": false });
+  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
   try {
     await h.emit("session_start");
     let release!: () => void;
@@ -33,18 +33,20 @@ test("17:01 2026-09-08: a model switch during the consolidation candidate round 
   } finally { await h.dispose(); }
 });
 
-test("consolidation without a usable capture falls back to fresh context for both rounds and notifies once", async () => {
-  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "consolidation.subagentModeDefault": false, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
+// 25b withdrew this phase's fork preference, so there is no capture to be missing and no fallback to
+// announce: both rounds run in a fresh child on the configured Consolidator model, with no notice.
+test("25b: consolidation runs both rounds in a fresh child on its own model, with nothing to fall back from", async () => {
+  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
   try {
     h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationOutput : notingFact(c));
     await h.turn();
     await h.prompt(); // the noting's facts reach the conversation first
     await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
     const runs = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation");
-    expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/test", "success"]]);
-    expect(JSON.parse(runs[0]!.response!).fallbackReason).toContain("No current-branch");
+    expect(runs.map(r => [r.mode, r.model, r.outcome])).toEqual([["subagent", "fake/Consolidator", "success"]]);
+    expect(JSON.parse(runs[0]!.response!).fallbackReason).toBeUndefined(); // nothing was requested and refused
     expect(JSON.parse(runs[0]!.response!).toolCalls).toHaveLength(2); // both submissions ran in the fresh child
-    expect(h.notices.filter(n => n.includes("consolidation fell back"))).toHaveLength(1);
+    expect(h.notices.filter(n => n.includes("consolidation fell back"))).toEqual([]);
   } finally { await h.dispose(); }
 });
 

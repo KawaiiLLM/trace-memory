@@ -23,8 +23,13 @@ const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens
 export type { ConsolidationDiagnostic } from "./commit.ts";
 
 export interface ConsolidateInput extends TaskOptions {
+  /** 25 amendment 2: the mode is not a choice any more. `subagent` is the only value this phase runs
+   * in, and asking for the retired `fork` is refused by name (the façade's `execute` guard), not
+   * normalized. The union is the shape every task request shares with Noting, which still has two. */
   sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "fork" | "subagent";
-  /** Host model capacity after reserving output; prefix includes native tools and context (review 2026-09-08: Consolidation negotiates capacity exactly as Noting does). */
+  /** Host model capacity after reserving output (review 2026-09-08: Consolidation negotiates capacity
+   * exactly as Noting does). One shape for both phases; `prefixTokens` is an inherited context's cost,
+   * so this phase, which never inherits one (25b), prices with `inputTokens` alone. */
   capacity?: { inputTokens: number; prefixTokens: number };
 }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
@@ -40,6 +45,8 @@ export interface ConsolidationAgentInput extends AgentControl {
   range: ConsolidationRange;
   readKnowledgeCommits: { knowledgeId: number; commit: number }[];
   model: string;
+  /** 25b: always `subagent` — the one mode this phase has. Typed as the union a host adapter branches
+   * on for both phases; core never puts anything else here. */
   mode: "fork" | "subagent";
   /** The domain instructions; core owns the prompt file and its hash. */
   prompt: string;
@@ -74,17 +81,17 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   const capacity = input.capacity;
   if (capacity && (!Number.isSafeInteger(capacity.inputTokens) || capacity.inputTokens < 0 ||
     !Number.isSafeInteger(capacity.prefixTokens) || capacity.prefixTokens < 0)) throw new Error("Invalid Consolidation capacity: expected nonnegative safe integers");
-  const mode = input.mode ?? (config.consolidation.subagentModeDefault ? "subagent" : "fork");
-  // 22d, hotspot family 6, the twin of the Noting preflight: the instructions, the tool definitions
-  // and — for a fork — the inherited prefix are unavoidable, so no batch is priced below them. An
-  // allowance under that floor is rejected before a single fact line is rendered, instead of after
-  // the batch has been re-frozen once per fact down to nothing. A floor, not the guard: the hard
-  // budget check inside the loop below is unchanged and still decides every freeze that passes here.
+  // 25 amendment 2: one mode, so nothing is selected here and `effectiveMode` has nothing to resolve.
+  const mode = "subagent" as const;
+  // 22d, hotspot family 6, the twin of the Noting preflight: the instructions and the tool
+  // definitions are unavoidable, so no batch is priced below them. An allowance under that floor is
+  // rejected before a single fact line is rendered, instead of after the batch has been re-frozen
+  // once per fact down to nothing. A floor, not the guard: the hard budget check inside the loop
+  // below is unchanged and still decides every freeze that passes here.
   const { instructions, tools } = fixedCost();
-  const mandatory = Math.max(instructions + tools,
-    (input.effectiveMode ?? mode) === "fork" ? (capacity?.prefixTokens ?? 0) + instructions : 0);
+  const mandatory = instructions + tools;
   if (capacity && applicable.length && mandatory > capacity.inputTokens)
-    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions and tools alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -137,10 +144,8 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
       knowledge, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
     const prepared = consolidationMaterial(frozen, config);
-    const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited);
-    // Priced by the mode that will actually run (review 2026-09-08), not by the requested one.
-    const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
+    // Priced by the mode that runs, which since 25b is the only mode this phase has.
+    const priced = instructions + tools + tokens(prepared.text.fresh);
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
     rangeFacts.pop();

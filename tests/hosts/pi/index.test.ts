@@ -888,28 +888,19 @@ test("the footer shows the warning indicator while a retry waits", async () => {
 const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
   arguments: { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] } }] });
 
-test("2026-09-07 backfill by consumer — superseded 2026-09-08: enabled subagents and branch Consolidators get facts and knowledge changes", async () => {
-  const settings = { "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 };
-  const subagentOnly = host({ ...settings, "consolidation.subagentModeDefault": true });
-  subagentOnly.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
-  await subagentOnly.turn(); await subagentOnly.answer("tick"); await subagentOnly.emit("agent_settled"); await subagentOnly.drain();
-  expect(subagentOnly.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
-  expect(subagentOnly.memory.deliver(1, "main").text).toContain("<noted>");
-  expect(subagentOnly.memory.deliver(1, "main").text).toContain("<consolidated>");
-
-  // Consolidation in fork mode: the Noting's facts and the Consolidation's own commits are both delivered.
-  const h = host({ ...settings, "consolidation.subagentModeDefault": false });
+test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the Consolidator subagent gets facts and knowledge changes and waits for no receipt it does not inherit", async () => {
+  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
   await h.turn(); // Noting commits F1 and leaves it for delivery.
   expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : reply("No new facts."));
-  await h.answer("tick"); await h.emit("agent_settled"); await h.drain(); // the batch is due, but F1 is not in the conversation yet
-  expect(h.memory.store.listRuns(1).some(r => r.kind === "consolidation")).toBe(false); // the branch Consolidation waits for that delivery
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
-  expect(String((await h.prompt("second"))?.message?.content ?? "")).toContain("<noted>");
-  await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
-  const carried = String((await h.prompt("third"))?.message?.content ?? "");
-  expect(carried).toContain("<consolidated>"); // the knowledge change reaches the conversation the branch Consolidator reads
+  await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
+  // The batch is due while F1 is still undelivered. Before 25b a fork-mode Consolidator would have
+  // waited for that receipt; a fresh context reads the pending facts from storage, so it does not.
+  expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["subagent"]);
+  expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
+  const carried = String((await h.prompt("second"))?.message?.content ?? "");
+  expect(carried).toContain("<noted>");
+  expect(carried).toContain("<consolidated>"); // both changes reach the conversation
   expect(carried).toContain("[K1@1]");
 });

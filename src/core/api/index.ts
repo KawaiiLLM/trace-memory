@@ -48,7 +48,6 @@ export interface TraceMemoryConfig {
     maxToolRounds: number;
   };
   consolidation: {
-    subagentModeDefault: boolean;
     /** Ticket 20: rendered tokens of applicable unconsolidated facts that make a run due. */
     triggerTokens: number;
     /** Ticket 20: the most rendered fact tokens one batch may select. */
@@ -75,7 +74,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     maxToolRounds: 0,
   },
   consolidation: {
-    subagentModeDefault: true,
     triggerTokens: 5_000,
     batchTokens: 10_000,
     nearThreshold: 0.28,
@@ -98,26 +96,36 @@ export type ConfigOverride = {
  * nested `ConfigOverride` (the façade) resolve the alias through the same two functions below. */
 export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branchModeDefault": "noting.forkModeDefault" };
 
-/** Settings a ruling removed, and what replaces each (ticket 20 "Configuration"). A removed key is
+/** Ticket 25 amendment 2: Consolidation has exactly one execution mode, so the preference that used
+ * to choose one is removed rather than reinterpreted. This one sentence is the whole remedy, and the
+ * explicit request guard in `execute` states it too: a caller who asks for the retired mode — in a
+ * settings file or in a task — deletes the key instead of being silently normalized. */
+export const CONSOLIDATION_SUBAGENT_ONLY = "Consolidation always runs as a subagent; delete the key";
+
+/** Settings a ruling removed, and the remedy for each (ticket 20 "Configuration"). A removed key is
  * not an alias: an old fact count is never reinterpreted as tokens, so any layer supplying one fails
- * the load naming the key and its replacement. The same two functions below enforce it for the flat
- * `section.key` settings space and for the nested `ConfigOverride`, and the read-only menu shows it
- * nowhere, because it builds itself from `DEFAULT_CONFIG`. */
+ * the load naming the key and what to do about it. The same two functions below enforce it for the
+ * flat `section.key` settings space and for the nested `ConfigOverride`, and the read-only menu shows
+ * it nowhere, because it builds itself from `DEFAULT_CONFIG`. Most remedies are a replacement key
+ * ("use …"); a setting whose choice no longer exists says so instead. */
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
-  "consolidation.triggerUnconsolidatedFacts": "consolidation.triggerTokens (tokens, not a count)",
+  "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
+  // Ticket 25b: the fork preference of a phase that only ever runs as a subagent now. Historical
+  // fork-mode runs keep their recorded mode; no file is rewritten and no request is normalized.
+  "consolidation.subagentModeDefault": CONSOLIDATION_SUBAGENT_ONLY,
   // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
   // were never effective on any Pi run; the uniform entry rule and `render.toolCallTokens` replace them.
-  "render.stdoutHeadTokens": "render.toolCallTokens (one budget for the whole tool call)",
-  "render.stdoutTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
-  "render.stderrTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.stdoutHeadTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  "render.stdoutTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  "render.stderrTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
   // Ticket 23b: the per-tool branches of the explicit Turn preview they budgeted are gone — an
   // explicit `trace` without `full` is the entry view under the tier-1 profile, and `full` renders
   // the stored evidence uncut, so neither has a budget of its own any more.
-  "render.commandTokens": "render.toolCallTokens (one budget for the whole tool call)",
-  "render.reportHeadTokens": "render.toolCallTokens (one budget for the whole tool call)",
-  "render.reportTailTokens": "render.toolCallTokens (one budget for the whole tool call)",
+  "render.commandTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  "render.reportHeadTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  "render.reportTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
 };
-const removedSetting = (key: string) => new Error(`Removed setting ${key}: use ${REMOVED_SETTINGS[key]}`);
+const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
 const aliasConflict = (legacy: string, canonical: string, legacyValue: unknown, canonicalValue: unknown) =>
   new Error(`Conflicting settings ${legacy} and ${canonical}: ${JSON.stringify(legacyValue)} vs ${JSON.stringify(canonicalValue)}; ` +
@@ -255,7 +263,8 @@ export interface TraceMemory {
   readonly config: TraceMemoryConfig;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
-   * this configuration. Only the two mode booleans and closedSessionScope may be replaced here,
+   * this configuration. Only `noting.forkModeDefault` and `closedSessionScope` may be replaced here
+   * (25b retired Consolidation's mode preference, so a `consolidation` section is refused),
    * validated like the load path. Other keys are refused: this is not a second configuration source
    * and reloads nothing. Admitted tasks retain their frozen mode and borrowing scope. */
   configure(settings: ConfigOverride): void;
@@ -437,11 +446,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
       : consolidationDue(target);
+    // Only Noting has an inherited-context mode to pause (25b), and it waits for the fact receipts a
+    // Noter fork would otherwise re-extract; deliveries of another phase are not its business.
     const paused = mode === "fork" && store.listPendingDeliveries(target.sessionId, target.branch)
-      .some(p => phase === "consolidation" || store.getRun(p.runId)?.kind === "noting");
+      .some(p => store.getRun(p.runId)?.kind === "noting");
     return { due, paused };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
+    // 25 amendment 2: an explicit request for the retired Consolidation mode is refused by name, with
+    // the sentence the removed setting carries. Nothing is normalized to subagent behind the caller.
+    if (phase === "consolidation" && (input.mode === "fork" || input.effectiveMode === "fork"))
+      throw new Error(`Invalid consolidation mode fork: ${CONSOLIDATION_SUBAGENT_ONLY}`);
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
@@ -465,7 +480,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
         if (!input.automatic || input.borrowed) return true;
-        const mode = input.mode ?? (phase === "noting" ? (cfg.noting.forkModeDefault ? "fork" : "subagent") : (cfg.consolidation.subagentModeDefault ? "subagent" : "fork"));
+        // 25b: Consolidation has one mode, so only Noting reads a configured default here.
+        const mode = phase === "consolidation" ? "subagent" as const
+          : input.mode ?? (cfg.noting.forkModeDefault ? "fork" : "subagent");
         const { due, paused } = taskEligibility(phase, target, input.effectiveMode ?? mode);
         return due && !paused;
       });
@@ -515,10 +532,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
     configure: (settings) => {
-      // Reuse load validation, then restrict edits to modes and the borrowing scope.
+      // Reuse load validation, then restrict edits to the Noter mode and the borrowing scope.
       const requested = canonicalConfig(settings ?? {});
       if (!requested || typeof requested !== "object" || Array.isArray(requested)) throw new Error("Invalid configuration: expected an object");
-      const reconfigurable: Record<string, string> = { noting: "forkModeDefault", consolidation: "subagentModeDefault" };
+      const reconfigurable: Record<string, string> = { noting: "forkModeDefault" };
       for (const [section, values] of Object.entries(requested)) {
         if (section === "closedSessionScope") continue;
         if (!Object.hasOwn(reconfigurable, section)) throw new Error(`Unknown setting ${section}`);
@@ -527,14 +544,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
-        render: cfg.render, noting: { ...cfg.noting, ...requested.noting },
-        consolidation: { ...cfg.consolidation, ...requested.consolidation },
+        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: cfg.consolidation,
       });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.
       cfg.closedSessionScope = next.closedSessionScope;
       cfg.noting.forkModeDefault = next.noting.forkModeDefault;
-      cfg.consolidation.subagentModeDefault = next.consolidation.subagentModeDefault;
     },
     close: () => {
       if (store.closed) return;

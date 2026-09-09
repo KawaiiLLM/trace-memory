@@ -2,8 +2,8 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
-its exposed store. Notings use verified fork mode by default; consolidation uses
-subagent mode. Each reconciled eligible entry completion checks both extraction queues.
+its exposed store. Notings use verified fork mode by default; consolidation has one mode
+and always runs as a subagent. Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
@@ -40,7 +40,6 @@ For example, either settings file can contain:
 {
   "trace-memory": {
     "noting.forkModeDefault": true,
-    "consolidation.subagentModeDefault": true,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
@@ -92,11 +91,10 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   never moved, copied, symlinked, deleted or rewritten — and their run records keep naming them.
   Logs outside the scanned tree are not retroactively part of anyone's daily total. Retention is
   still a documented v1 limit: nothing prunes either directory.
-- `consolidation.subagentModeDefault` defaults to `true`. Set it to `false` for fork
-  consolidation: the candidate round appends the consolidation prompt and input to the
-  captured prefix, the final round appends the candidate reply (in the
-  provider's native assistant shape) and the feedback message to the candidate
-  request. Tree navigation launches no extraction.
+- **Consolidation always runs as a subagent** (ticket 25 amendment 2). Every launch path — the
+  ordinary slot, borrowed closed-session work and manual catchup — runs a fresh native child on the
+  Consolidator model, and both of its rounds happen there. `consolidation.subagentModeDefault` is
+  **removed**: see the removed settings below. Tree navigation launches no extraction.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.1. Tests use Vitest on Node; the standalone
@@ -118,16 +116,11 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   changes as `<consolidated>`. It performs no search. The facade controls category
   order, chronological ordering, constraints first, and atomic delivery consumption.
 
-  Enabled sessions receive both delivery kinds in every worker-mode combination
+  Enabled sessions receive both delivery kinds whichever mode the Noter runs in
   (2026-09-08 supersedes the 2026-09-07 consumer matrix). A fork run still waits
   while a delivery it would read is pending; mode controls execution, not delivery.
-
-  A fork Consolidation appends the range plus the exact list of facts to
-  integrate, never the fact lines or the knowledge block again. The list is
-  explicit because other paths and already-consolidated facts can fall between the
-  range ends. Anything the conversation does not
-  hold, a manual note or a fact dropped by a compaction budget, is fetched with
-  `trace`.
+  Only a fork waits: a Consolidation, which since 25b is always a fresh child, reads
+  its pending facts from storage and is never held back by an undelivered receipt.
 
   A fork Noting appends control material only (25a): the range, the head turn's
   final reply and the source-address index. It adds no knowledge block, no
@@ -183,6 +176,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
   token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
+- `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2, superseding 24b's
+  Consolidator-mode preference). The phase has one execution mode, so a saved value — `true` as much
+  as `false` — fails the load with `Removed setting consolidation.subagentModeDefault: Consolidation
+  always runs as a subagent; delete the key`. Nothing is normalized behind the setting and no
+  settings file is rewritten; an explicit API request for Consolidation `mode: "fork"` is refused
+  with the same sentence. Runs recorded in fork mode before the change keep that mode and read back
+  as themselves in Runs and `trace R<n>`.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
@@ -377,13 +377,17 @@ immediately, so stop can be invoked while it runs.
 #### Global preferences
 
 **Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
-effective key with its source; it edits these preferences:
+effective key with its source; it edits these preferences.
+
+**24b's fourth entry, the Consolidator mode, is superseded by ticket 25 amendment 2** and withdrawn:
+that phase has one execution mode, so three preferences and the borrowing scope remain. The
+Consolidator *model* preference stays, and — because the phase never inherits a foreground context —
+its line never discloses an inherited model.
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
 | Noter mode | fork / subagent | `noting.forkModeDefault` | fork |
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
-| Consolidator mode | fork / subagent | `consolidation.subagentModeDefault` | subagent |
 | Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
@@ -416,9 +420,9 @@ edit look effective; the notice names the layer that keeps winning.
 
 A saved preference applies to memory tasks admitted afterwards **in this instance**,
 without a reload: the settings layers are re-read exactly as a session start reads
-them, the host's model selection follows them, and core's mode booleans and
-`closedSessionScope` are replaced through the façade's `configure`; other core keys
-are refused there. A task already running keeps its admission scope, mode, model,
+them, the host's model selection follows them, and core's `noting.forkModeDefault` and
+`closedSessionScope` are replaced through the façade's `configure`; other core keys —
+including a `consolidation` section — are refused there. A task already running keeps its admission scope, mode, model,
 evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
