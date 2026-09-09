@@ -235,7 +235,7 @@ test("core contains no Pi imports and host imports core only through the facade"
 test("17b supersedes watermark growth: compressed source labels count along with CJK content", async () => {
   const h = host({ "noting.triggerTokens": 16 }); // the two labels and their two characters, and nothing else
   await h.prompt("一"); await h.answer("a"); await h.drain();
-  expect(h.requests).toHaveLength(1);
+  expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
   expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
 });
 

@@ -7,7 +7,7 @@
 import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consolidationReply, host, notingFact, reply } from "./test-host.ts";
+import { consolidationReply, emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
@@ -93,7 +93,7 @@ test("closed-session scope is saved globally and changes subsequent queue admiss
   await edit(h, "Closed-session scope: off (Global)", "global");
   expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("global");
   expect(h.requests).toEqual([]); // a settings change is not an extraction opportunity
-  await tick(); expect(h.requests).toHaveLength(1);
+  await tick(); expect(h.requests).toHaveLength(2); // 26a: the borrowed run submits, so it costs two requests
   expect(h.memory.store.listRuns(s.id).some(r => r.kind === "noting")).toBe(true);
 });
 
@@ -130,7 +130,7 @@ test("24b: a saved mode reaches the next admitted task without a reload, and a t
   expect(h.statuses.get("trace-memory")).toContain("<accent>"); // the third task is running, held at the wire
   await edit(h, "Noter mode: subagent (Global)", "fork");
   h.ctx.hasUI = false;
-  release?.(reply("Done."));
+  release?.(emptyNoteReply()); // 26a: the held run completes its batch with the explicit empty submission
   await h.drain();
   expect(requestedModes(h)).toEqual(["fork", "subagent", "subagent"]); // the running one kept its own
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");

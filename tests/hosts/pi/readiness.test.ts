@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
-import { call, fixture, noteBatch, say, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
 
 // 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a
 // due task launches only when its chosen native checkpoint is persisted, reopenable and free of an
@@ -64,7 +64,8 @@ test("19c 2026-09-08: a checkpoint with an unanswered tool call defers the launc
     let unanswered = "";
     // No facts in either batch: a noting delivery would pause the next inherited-context task on
     // 17b's own rule, which is not what this test is about.
-    f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
+    // 26a: an empty batch is submitted explicitly, and still creates no delivery.
+    f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", { facts: [] }));
     await f.turn();
     await vi.waitFor(() => expect(notingRuns(f.h)).toHaveLength(1), { timeout: 5000 });
     // New foreground activity that ends inside an assistant tool-call group: due, but not a safe

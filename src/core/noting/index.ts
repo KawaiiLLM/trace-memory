@@ -62,7 +62,17 @@ export interface EntryAudit {
 export type NotingResult =
   | { outcome: "dropped" | "empty" }
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
-  | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] };
+  | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
+      /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
+       * nothing and had nothing rejected. Present on that outcome alone; it identifies the batch a
+       * host counts consecutive incomplete runs for. */
+      incompleteHeadEntryId?: number };
+
+/** 26a: the diagnostic of a Noting run that ended without a submission. A batch is completed only by
+ * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
+ * submission. The run is recorded with its usage under the existing `failure` outcome and advances no
+ * entry progress, so the same entries stay pending for the next admission. */
+export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calling note, so nothing was submitted; call note({facts: []}) to complete an empty batch. The selected entries stay pending.";
 
 export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText) {
   const session = store.getSession(input.sessionId);
@@ -233,21 +243,21 @@ export async function runNoting(
   finally { binding.close(); }
   // A direct facade close may dispose before the provider settles; never access that store.
   if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
+  // 26a: the run ended normally, committed nothing and had nothing rejected. That is incomplete, not
+  // an implicit empty submission: the attempt and its usage are recorded under the existing `failure`
+  // outcome and no entry is marked processed. A provider failure or a cancellation keeps its own.
+  const incomplete = !binding.committed && result.outcome === "success" && !requestMissing(result) && !binding.problems.length;
   const problems = binding.committed
     ? (result.outcome === "success" ? (requestMissing(result) ? ["runAgent must return the exact provider request after commit"] : []) : [`provider ${result.outcome === "cancelled" ? "cancelled" : "failed"} after commit: ${String(result.output)}`])
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
-    : requestMissing(result) ? ["runAgent must return the exact provider request"] : binding.problems;
+    : requestMissing(result) ? ["runAgent must return the exact provider request"]
+    : incomplete ? [NOTING_INCOMPLETE] : binding.problems;
   recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched, problems });
   if (binding.committed) {
     const after = updateCommitted(store, binding.committed.runId, run, problems);
     return { outcome: "success", ...binding.committed, ...(after.length ? { problems: after } : {}) };
   }
-  if (problems.length) {
-    const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) ? "failure" : "bounced";
-    return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id };
-  }
-  const committed = store.commitNotingRun({ run, facts: [],
-    entryIds: entries.map(e => e.id) });
-  return committed.ok ? { outcome: "success", runId: committed.runId, facts: [] }
-    : { outcome: "failure", runId: committed.runId, problems: committed.problems };
+  const outcome = result.outcome !== "success" ? result.outcome : requestMissing(result) || incomplete ? "failure" : "bounced";
+  return { outcome, problems, runId: store.recordRun({ ...run, outcome }).id,
+    ...(incomplete ? { incompleteHeadEntryId: entries[0]!.id } : {}) };
 }

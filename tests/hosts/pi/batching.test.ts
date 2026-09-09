@@ -21,7 +21,8 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     await h.drain();
     const entries = h.memory.store.listSourceEntries(1);
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
-    expect(h.requests).toHaveLength(size === 10000 ? 1 : 0);
+    // 26a: a launched Noting run sends two requests — the one that submits the batch and its closing reply.
+    expect(h.requests).toHaveLength(size === 10000 ? 2 : 0);
     expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(size === 10000 ? 0 : 2);
   } finally { await h.dispose(); }
 });
@@ -46,14 +47,14 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
       const ids: number[] = JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id);
       const all = h.memory.store.listSourceEntries(1);
       expect(ids).toEqual(all.slice(previous, previous + ids.length).map(e => e.id));
-      const sent = batchText(h.conversations[batch]!.messages[0]!.content as string);
+      const sent = batchText(h.conversations[2 * batch]!.messages[0]!.content as string); // 26a: two requests per run
       expect(sent).toBe(ids.map(id => renderEntry(h.memory.store.getSourceEntry(id)!, h.memory.config.render).content).join("\n\n"));
       expect(tokens(sent)).toBeLessThanOrEqual(cap);
       if (batch < 2) expect(tokens(sent + "\n\n" + renderEntry(all[previous + ids.length]!, h.memory.config.render).content)).toBeGreaterThan(cap);
       previous += ids.length;
       expect(new Set(ids.map(id => h.memory.store.getSourceEntry(id)!.turnId)).size)[severalTurns ? "toBeGreaterThan" : "toBe"](1);
       await h.emit("agent_settled"); await h.drain();
-      expect(h.conversations).toHaveLength(batch + 1); // settling and completion of the worker start nothing
+      expect(h.conversations).toHaveLength(2 * (batch + 1)); // settling and completion of the worker start nothing
       if (batch < 2) { h.persist(reply(`completion ${batch}`)); await h.emit("agent_end"); await h.drain(); }
     }
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
@@ -68,13 +69,13 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     await h.emit("session_start");
     h.ctx.model = { ...h.ctx.model!, contextWindow: 24000, maxTokens: 1000 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     expect(tokens(JSON.stringify(h.requests[0])) + 1000).toBeLessThanOrEqual(Math.floor(24000 * 0.85));
     const pending = h.memory.pendingEntries(1, "main", 1);
     h.ctx.model = { ...h.ctx.model!, contextWindow: 1000, maxTokens: 500 };
     h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // the refused admission adds none
     expect(h.memory.pendingEntries(1, "main", 1).slice(0, pending.length)).toEqual(pending);
     expect(h.notices.join("\n")).toContain("Noting capacity: oldest entry cannot fit");
   } finally { await h.dispose(); }
@@ -174,7 +175,7 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
       h.persist(reply("word ".repeat(100))); await h.emit("agent_end");
     }
     await h.drain();
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     const sent = h.conversations[0]!.messages[0]!.content as string;
     expect(sent).toContain(role === "user" ? "NEW USER EVIDENCE" : "NEW TOOL EVIDENCE");
     const run = h.memory.store.listRuns(1)[0]!;
@@ -216,7 +217,7 @@ test("17b 2026-09-08: capture after compaction does not claim the persisted orig
     await h.emit("session_compact", { compactionEntry: entry });
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: compact }] } });
     h.persist(reply("word ".repeat(800))); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");

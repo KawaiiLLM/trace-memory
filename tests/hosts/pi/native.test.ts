@@ -4,7 +4,7 @@ import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
-import { recorded } from "../../source-fixture.ts";
+import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
 import { broken, call, fixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
 // ---------------------------------------------------------------- checkbox 1: the gate
@@ -73,7 +73,10 @@ test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with c
     expect(raw.differingPath).toMatch(/^\$\.messages\.\d+\.content\.\d+\.cache_control$/);
     expect(JSON.stringify(f.sent[1]![key].at(-1))).toContain("cache_control");
     expect(verifyForkRequest(f.sent[0]!, f.sent[1]!, "anthropic-messages").passed).toBe(true);
-    expect(run.outcome).toBe("success");
+    // 26a: this child answers in prose and submits nothing, so the run is incomplete. What this case
+    // pins is the gate above; the verified attempt is recorded either way, with its own diagnostic.
+    expect(run.outcome).toBe("failure");
+    expect(response.problems).toEqual([NOTING_INCOMPLETE]);
   } finally { await f.dispose(); }
 });
 

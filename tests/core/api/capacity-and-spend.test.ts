@@ -20,7 +20,10 @@ let sessionId: number, turnId: number;
  * render counter that needs no production hook. */
 function open(entries = 6) {
   calls = []; renders = 0;
-  memory = sourceSeededMemory(dbPath, async input => { calls.push(input as NotingAgentInput); return { outcome: "success", output: "", request: { probe: true } }; },
+  // 26a: with nothing to record a Noter still submits the explicit empty batch to complete it.
+  memory = sourceSeededMemory(dbPath, async raw => { const input = raw as NotingAgentInput; calls.push(input);
+      if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+      return { outcome: "success", output: "", request: { probe: true } }; },
     {}, result => { renders++; return { text: result }; });
   const project = memory.store.createProject({ name: "capacity", declaredBy: "mark" });
   sessionId = memory.store.createSession({ host: "test", startedAt: time, firstReplyAt: time, projectId: project.id, enrollmentChoice: true }).id;

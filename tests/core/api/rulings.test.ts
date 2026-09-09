@@ -2,7 +2,7 @@ import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
@@ -18,7 +18,11 @@ const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: J
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
   calls = [];
-  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NotingAgentInput); return ok([]); });
+  // 26a: a Noting batch is completed only by a submission, so the default run submits the explicit
+  // empty batch a Noter with nothing to record must send.
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => { const input = raw as NotingAgentInput; calls.push(input);
+    if (input.kind === "noting") input.tools.find(t => t.name === "note")!.execute({ facts: [] });
+    return ok([]); });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -223,7 +227,7 @@ test("2026-09-07: bounced is not empty", async () => {
   const { s, t } = session(); memory.close();
   let reject = true;
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
-    if (reject) (raw as NotingAgentInput).tools[2]!.execute({ facts: [{ category: "invalid" }] });
+    (raw as NotingAgentInput).tools[2]!.execute({ facts: reject ? [{ category: "invalid" }] : [] });
     return { outcome: "success", output: "No more text", request: {} };
   });
   const input = { sessionId: s.id, branch: "main", headTurnId: t.id };
@@ -1148,7 +1152,8 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
     rangeFrom: `S${s.id}/T${t.id}`, rangeTo: `S${s.id}/T${t.id}`, createdAt: time }, facts: [] });
   const legacy = before.store.listRuns(s.id).at(-1)!.id;
   before.close();
-  const after = sourceSeededMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
+  const after = sourceSeededMemory(path, async raw => { const input = raw as NotingAgentInput; calls.push(input);
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); return ok([]); });
   try {
     expect(after.store.getRun(legacy)!.mode).toBe("branch");   // reopening the database migrates nothing
     expect(after.trace(`R${legacy}`)).toContain("mode legacy request-copy execution (branch)");
@@ -1257,4 +1262,28 @@ test("21b 2026-09-08: topics are revision metadata only — no fact or note fiel
   expect(injected.match(/topics:/g)).toHaveLength(1); // the label rides its own knowledge line, nothing more
   expect(injected).not.toContain("<topics>");
   expect(calls).toEqual([]); // storing a label calls no model
+});
+
+test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling note; ending without a submission is incomplete, never zero-fact success", async () => {
+  const { s, t } = session(); memory.close();
+  let submit = false;
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    if (submit) input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "I answered a question and wrote nothing.", request: { fake: true }, usage: { tokens: 3 } };
+  });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  // R20's failure mode: a run that submits nothing must not advance its 96 selected entries.
+  expect(await memory.noting(target)).toMatchObject({ outcome: "failure", problems: [api.NOTING_INCOMPLETE] });
+  expect(memory.store.getRun(1)!.outcome).toBe("failure"); // the existing outcome value; no new one, no schema change
+  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
+  // The prompt says what the runner enforces.
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("note({facts: []})");
+  expect(prompt).not.toContain("Stopping without submitting is a normal zero-fact success");
+  // An explicit empty submission is the completion, and it delivers nothing.
+  submit = true;
+  expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
+  expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
+  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
 });

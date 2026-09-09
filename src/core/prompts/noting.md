@@ -17,7 +17,7 @@ You are the Noter for a coding assistant. Once the raw conversation is compacted
 
 ## Output
 
-Call `note({facts})` once with the complete batch. Each item is checked; any rejection writes nothing and returns per-item `ok` or `rejected: <reason>`. Correct and resubmit the whole batch. A successful call returns each fact's `F<id>` and commits immediately; later note calls in this run are rejected as "already committed". There is no staging or temporary object lifecycle. Final text is not parsed for facts. Stopping without submitting is a normal zero-fact success; an uncorrected rejection is bounced and retried later.
+Call `note({facts})` once with the complete batch. Each item is checked; any rejection writes nothing and returns per-item `ok` or `rejected: <reason>`. Correct and resubmit the whole batch. A successful call returns each fact's `F<id>` and commits immediately; later note calls in this run are rejected as "already committed". There is no staging or temporary object lifecycle. Final text is not parsed for facts. One `note` call is the only way to complete a batch: an empty batch is submitted explicitly as `note({facts: []})`, which commits a zero-fact run and closes the batch. Ending the run without a submission is incomplete — nothing is recorded and these same entries are noted again later; an uncorrected rejection is bounced and retried later.
 
 ```json
 {"facts":[{"category":"event","actor":"agent","status":"completed",
@@ -44,7 +44,7 @@ The plugin's injected messages — knowledge block, deliveries, compaction block
 - Every fact carries `source`: the minimal set of entry ids that directly support it. Never invent one.
 - Repeated similar tool calls are not facts; file reads and commits become the tool-call index by the system.
 - Do not record what is trivially re-derivable from code or git. "Re-derivable from the raw" is not a reason to skip: after compaction the raw is out of context and is fetched only on purpose, by address.
-- Zero output is a normal result.
+- Zero output is a normal result; submit it as `note({facts: []})`.
 
 ## Six categories, one test each
 

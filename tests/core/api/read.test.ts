@@ -6,7 +6,11 @@ const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.jso
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
 const time = "2026-09-06T00:00:00Z";
 let memory: ReturnType<typeof sourceSeededMemory>, calls: number;
-beforeEach(() => { calls = 0; memory = sourceSeededMemory(":memory:", async () => { calls++; return { outcome: "success", output: [], request: {} }; }); });
+// 26a: a Noting run completes its batch by submitting; with nothing to record it sends `{facts: []}`.
+beforeEach(() => { calls = 0; memory = sourceSeededMemory(":memory:", async raw => { calls++;
+  const input = raw as { kind: string; tools: { name: string; execute(input: unknown): string }[] };
+  if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+  return { outcome: "success", output: [], request: {} }; }); });
 afterEach(() => memory.close());
 function session(projectId?: number, declaration: "marker" | "undeclared" = "marker") {
   const project = projectId ?? memory.store.createProject({ name: "mapC", declaredBy: "marker" }).id;
@@ -46,12 +50,12 @@ test("injection and compaction match Chinese fixture goldens without a model cal
   expect(calls).toBe(0);
 });
 
-test("injection stays byte-identical across a no-op noting and has no XML attributes", async () => {
+test("injection stays byte-identical across a zero-fact noting and has no XML attributes", async () => {
   const { s, t } = populated();
   const before = memory.inject(s.id), next = turn(s.id, fixture.observation, t.id);
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
   expect(memory.inject(s.id)).toBe(before);
-  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the no-op noting wrote no facts
+  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the zero-fact noting wrote no facts
   memory.confirmDelivery(empty.runIds); expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
   expect(memory.inject(s.id)).toBe(before);
   for (const tag of before.match(/<[^>]+>/g)!) expect(tag).toMatch(/^<\/?[a-z_]+>$/);

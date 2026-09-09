@@ -9,7 +9,10 @@ import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
-  const m = sourceSeededMemory(":memory:", async raw => { calls.push(raw as ConsolidationAgentInput); return { outcome: "success", output: "", request: { probe: true } }; }, config);
+  // 26a: a Noting run completes its batch by submitting; an empty one is `{facts: []}`.
+  const m = sourceSeededMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput | NotingAgentInput; calls.push(input);
+    if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "", request: { probe: true } }; }, config);
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });

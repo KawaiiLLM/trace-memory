@@ -941,6 +941,32 @@ extraction. There is no `/trace retry` subcommand and no permanent top-level ite
 reopen nor a settings refresh clears the state. Two later consecutive eligible misses begin a new
 episode and may downgrade once again.
 
+## The incomplete-Noting guard (26a)
+
+Core reports a Noting run that ended normally, committed nothing and had nothing rejected as
+outcome `failure` with the `NOTING_INCOMPLETE` diagnostic and the batch's oldest frozen entry on
+`incompleteHeadEntryId` (docs/core.md). The host counts those runs per memory session, keyed by
+that head entry: a batch whose head has not advanced is the same batch, whatever arrived at its
+tail. Counting rule (ticket 26 amendment 5): only an incomplete run increments; a successful,
+empty or bounced submission for that head resets the count to zero; a provider failure, a
+cancellation, a dropped admission or a capacity wait leaves it unchanged, because none of them
+says anything about the model's behaviour. Two ordinary cancellations therefore pause nothing.
+
+On the **second consecutive** incomplete run for the same head, automatic Noting is paused for
+that session alone. Consolidation admission, reads, receipts, manual writes, `/trace catchup` and
+borrowed work for other sessions are unaffected. The pause emits one notice — `Trace Memory:
+automatic Noting paused for this session after two consecutive runs ended without calling note.
+…` — the footer line gains ` noting: paused`, and the status text adds:
+
+```
+Noting: automatic runs paused after 2 consecutive runs ended without calling note (batch head E<n>); Consolidation, reads and manual tools continue; /trace catchup or reopening the session resumes it
+```
+
+Like the cache-miss count, this count lives in the executor process only: it is not
+`forkSuppression`, has no database column, no setting and no scheduler. `/trace catchup` clears
+it (the explicit drain is the user's own instruction to continue) and so does a session reopen —
+the same `restore()` boundary that clears the cache-miss count; a tree switch is not one.
+
 ## Live prefix identity procedure
 
 This is a human-run check, not an automated claim of live cache hits.
@@ -1124,6 +1150,8 @@ not expected model-request counts:
 | `memory` | those applicable facts Consolidation has not taken on this path | applicable current knowledge, counted in current-tip units, so two divergent tips of one identity are two items |
 | `cost` | — | this session's cumulative memory-run spend at the model's configured API rates (Pi's own cost formula) |
 
+While this session's automatic Noting is paused by the incomplete-Noting guard (26a) the line
+ends with ` noting: paused`; nothing else about it is inferable from the counts, which do not move.
 A disabled session shows the compact line `🧠 ○ off`, with no counting at all;
 the stored counts and diagnostics stay available under Current session, which
 also prints them as a `Pending:` line. A value that cannot be read is `?` — an
@@ -1298,8 +1326,10 @@ Consolidation provider call, including continuations, without rewriting the pref
 phases receive the model's capacity before selection (review 2026-09-08).
 
 Noting freezes entry identities on the selected path, not whole Turns. A
-successful zero-fact run processes only its selected entries; later entries in
-that same Turn remain pending. Address aliases are interpreted against the frozen
+successful zero-fact run — an explicit `note({facts: []})`, the only way to complete an
+empty batch since 26a — processes only its selected entries; later entries in
+that same Turn remain pending. A run that ends without any submission is incomplete: it
+processes nothing at all. Address aliases are interpreted against the frozen
 entry set. A later matching source occurrence makes that address ineligible for
 the earlier writer, even if an unrestricted trace fetch can read it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
