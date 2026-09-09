@@ -1023,6 +1023,34 @@ test("19c 2026-09-08: both execution-mode spellings with different values fail t
   expect(load).toThrow(/Conflicting settings/);
 });
 
+test("24 amendment 2 2026-09-09: configure replaces the two execution-mode defaults, validated like the load path, and nothing else", async () => {
+  // A saved global preference must reach tasks admitted afterwards without a reload. Admission reads
+  // its mode from the configuration frozen at construction, so exactly those two booleans may move.
+  expect(memory.config.noting.forkModeDefault).toBe(true);
+  expect(memory.config.consolidation.subagentModeDefault).toBe(true);
+  memory.configure({ noting: { forkModeDefault: false }, consolidation: { subagentModeDefault: false } });
+  expect(memory.config.noting.forkModeDefault).toBe(false);
+  expect(memory.config.consolidation.subagentModeDefault).toBe(false);
+  expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
+  // A task admitted after the call runs in the new mode; the run record keeps what it was launched with.
+  const { s, t } = session();
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("subagent");
+  expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("subagent");
+  // The load path's own rules: the legacy spelling is accepted and mapped, a bad type, a removed key
+  // and any other section or key are refused by name — and a refusal changes nothing.
+  memory.configure({ noting: { branchModeDefault: true } });
+  expect(memory.config.noting.forkModeDefault).toBe(true);
+  expect(() => memory.configure({ noting: { forkModeDefault: 1 as unknown as boolean } })).toThrow("Invalid noting.forkModeDefault");
+  expect(() => memory.configure({ noting: { branchModeDefault: false, forkModeDefault: true } })).toThrow("Conflicting settings");
+  expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("noting.batchTokens is not reconfigurable at runtime");
+  expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
+  expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } as never })).toThrow("Removed setting");
+  expect(memory.config.noting.forkModeDefault).toBe(true);
+  expect(memory.config.consolidation.subagentModeDefault).toBe(false);
+  expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
+});
+
 test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {
   const { s, t } = session();
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success"); // configuration default

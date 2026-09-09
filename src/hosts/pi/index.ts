@@ -47,6 +47,29 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
 // rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
 const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
+/** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
+ * typed against its default, unknown keys and misspellings rejected by name, host strings required to
+ * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
+ * merged Global layer through this same function before it writes, so a menu edit can never leave a
+ * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
+function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
+  const core: ConfigOverride = {};
+  for (const section of ["render", "noting", "consolidation"] as const) {
+    const values: Record<string, number | boolean> = {};
+    for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
+      const override = flat[`${section}.${key}`];
+      if (override !== undefined && (typeof override !== typeof value ||
+        (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${named(`${section}.${key}`)}`);
+      values[key] = (override ?? value) as number | boolean;
+    }
+    Object.assign(core, { [section]: values });
+  }
+  for (const key of Object.keys(flat)) if (!hostStrings.includes(key) &&
+    !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
+  for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+  validateConfig(core);
+  return core;
+}
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
   const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
@@ -65,24 +88,7 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
   const sources: Record<string, string> = {};
   for (const [layer, values] of Object.entries(layers)) for (const key of Object.keys(values)) sources[key] = layer;
 
-  const parse = (flat: FlatConfig) => {
-    const core: ConfigOverride = {};
-    for (const section of ["render", "noting", "consolidation"] as const) {
-      const values: Record<string, number | boolean> = {};
-      for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
-        const override = flat[`${section}.${key}`];
-        if (override !== undefined && (typeof override !== typeof value ||
-          (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${named(`${section}.${key}`)}`);
-        values[key] = (override ?? value) as number | boolean;
-      }
-      Object.assign(core, { [section]: values });
-    }
-    for (const key of Object.keys(flat)) if (!hostStrings.includes(key) &&
-      !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${key}`);
-    for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
-    validateConfig(core);
-    return core;
-  };
+  const parse = (values: FlatConfig) => parseLayer(values, named);
   for (const values of Object.values(layers)) parse(values);
   const core = parse(flat);
   return { flat, core, sources, layers };
@@ -825,7 +831,7 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
   };
   const startCatchup = () => {
-    if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+    if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
     if (catchup && !catchup.outcome) { ctx.ui.notify(catchupLine()!, "info"); return; } // Repeating catchup reports the active operation, never a second one.
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
     reconcile(false); // Reconcile available native history (17a) before freezing the boundary.
@@ -908,7 +914,7 @@ export default function (pi: ExtensionAPI) {
         return result(definition.name === "trace" ? memory.trace(input.address as string, options)
           : memory.search(input.query as string, input.layer as import("../../core/api/index.ts").SearchScope, options));
       }
-      if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+      if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
       const content = bound.find(t => t.name === definition.name)!.execute(raw);
@@ -942,72 +948,254 @@ export default function (pi: ExtensionAPI) {
     showSpend(ctx);
     ctx.ui.notify(`${status()}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
-  const commands = "/trace enable | disable | catchup | stop | status | runs [n] | project <name> | mark K<n>@<commit> verified|flagged|clear";
+  // ---- 24b: the command surface ----
+  // Amendment 1 (user ruling 2026-09-09): seven documented forms, no hidden aliases. `enable`,
+  // `disable`, `status` and `runs` are retired — status and runs live in the menu's Current session —
+  // while `project`, `catchup`, `stop` and `mark` stay as command forms because `-p`/rpc sessions have
+  // no menu at all. The menu is the primary surface for those four; these are not aliases of it but
+  // the same operations, and both paths call the same functions below.
+  const commands = "/trace (menu; status when headless) | /trace on | /trace off | /trace catchup | /trace stop | " +
+    "/trace project <name> | /trace mark K<n>[@<commit>] verified|flagged|clear";
+  const retiredForms: Record<string, string> = {
+    enable: "/trace on", disable: "/trace off",
+    status: "the menu's Current session (headless: bare /trace)", runs: "the menu's Current session > Runs",
+  };
+  const markAddress = /^K[1-9]\d*(?:@[1-9]\d*)?$/;
+  const markKinds = ["verified", "flagged", "clear"];
   const runView = (limit = 10) => {
     const runs = state.sessionId ? memory.store.listRuns(state.sessionId).slice(-limit).reverse() : [];
     ctx.ui.notify(runs.length ? runs.map(r => memory.trace(`R${r.id}`).split("\n")[0]!).join("\n") : "Trace Memory: no runs yet.", "info");
   };
-  const menu = async () => {
-    const selected = await ctx.ui.select("Trace Memory", ["Current session", "Catch up", "Stop", "Settings (Global, read-only)", "Runs", "Status"]);
-    if (selected === "Current session") {
-      const action = enabled() ? "Disable" : "Enable";
-      const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
-      // 19c "Menu-only reset": Retry fork exists only while this session is automatically downgraded.
-      // No slash subcommand and no permanent menu item; it clears the suppression only.
-      const downgrade = suppressed();
-      const choice = await ctx.ui.select(`${status()}${shared}`, [action, ...(downgrade ? ["Retry fork"] : [])]);
-      if (choice === "Retry fork") {
-        memory.store.clearForkSuppression(state.sessionId!);
-        cacheMisses.delete(state.sessionId!);
-        showSpend(ctx);
-        ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
-        return;
+  /** Project assignment, shared by the command form and the menu. Unchanged rules: an allocated
+   * session and an explicit name; the menu selection replaces the old command only as the way the
+   * intent is expressed, never the project-sharing rules themselves. */
+  const assignProject = (name: string) => {
+    if (!state.sessionId) throw new Error("A session requires an assistant reply");
+    const marked = memory.declareProject(state.sessionId, name);
+    state.projectId = memory.store.getSession(state.sessionId)!.projectId;
+    state.project = memory.store.getProject(state.projectId)!.name;
+    state.injected = false; save(); // the new project's knowledge is injected at the next prompt through the usual path
+    ctx.ui.notify(marked, "info");
+  };
+  /** Knowledge marks, shared by the command form and the menu: core keeps exact-commit handling and
+   * rejects an ambiguous address on divergent tips, from either surface. */
+  const applyMark = (address: string, kind: "verified" | "flagged" | "clear") =>
+    ctx.ui.notify(memory.mark(address, kind, state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info");
+
+  // ---- 24b: the four global preferences ----
+  // Exactly four, on the canonical keys that already exist; no new key, no second mode/model system
+  // and no advanced editor. Modes are stored as the booleans core reads at admission; models as
+  // `session` or `provider/model-id`, which is what `modelName` already resolves.
+  type Preference = { name: string; key: string; phase: "noting" | "consolidation"; kind: "mode" | "model" };
+  const preferences: Preference[] = [
+    { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
+    { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
+    { name: "Consolidator mode", key: "consolidation.subagentModeDefault", phase: "consolidation", kind: "mode" },
+    { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
+  ];
+  // Noting stores "runs in fork mode", Consolidation stores "runs in subagent mode": one preference
+  // reads either boolean without inventing a third spelling of the same choice.
+  const modeName = (phase: "noting" | "consolidation", value: boolean) => phase === "noting" ? (value ? "fork" : "subagent") : (value ? "subagent" : "fork");
+  const modeFlag = (phase: "noting" | "consolidation", mode: string) => phase === "noting" ? mode === "fork" : mode === "subagent";
+  const preferenceDefault = (p: Preference) => p.kind === "model" ? "session"
+    : p.phase === "noting" ? DEFAULT_CONFIG.noting.forkModeDefault : DEFAULT_CONFIG.consolidation.subagentModeDefault;
+  const preferenceValue = (p: Preference) => flat[p.key] ?? preferenceDefault(p);
+  const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(p.phase, raw as boolean)
+    : raw === "session" ? "follow foreground" : String(raw);
+  const foregroundModel = () => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
+  /** The mode this phase is configured to request. Cache suppression, capacity/readiness fallback and
+   * post-compaction mode still decide what actually runs (`effectiveMode`); a fallback does not grant
+   * a different model-selection policy, so the display follows the configured mode. */
+  const configuredMode = (phase: "noting" | "consolidation") =>
+    modeName(phase, preferenceValue(preferences.find(p => p.phase === phase && p.kind === "mode")!) as boolean);
+  const preferenceLine = (p: Preference) => {
+    const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[p.key] && Object.hasOwn(values, p.key))
+      .map(([layer, values]) => `${layer}=${shownValue(p, values[p.key])} masked`);
+    // Fork mode has no model of its own: the child inherits the foreground model, so the saved
+    // subagent preference is shown but never presented as the model this phase would use now.
+    const inherited = p.kind === "model" && configuredMode(p.phase) === "fork" ? `; fork mode inherits the foreground model ${foregroundModel()}` : "";
+    return `${p.name}: ${shownValue(p, preferenceValue(p))} (${sources[p.key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${inherited}`;
+  };
+  /** Pi's own registry decides which models exist and which have resolved auth; nothing here asks for
+   * a credential or calls a model to validate a choice. The foreground model is always offered: it is
+   * demonstrably usable in this session even when a registry snapshot is empty. */
+  const availableModels = (): string[] => {
+    const registry = ctx.modelRegistry as unknown as { getAvailable?: () => { provider: string; id: string }[]; getAll?: () => { provider: string; id: string }[] };
+    let listed: { provider: string; id: string }[] = [];
+    try { listed = (typeof registry.getAvailable === "function" ? registry.getAvailable() : typeof registry.getAll === "function" ? registry.getAll() : []) ?? []; }
+    catch { listed = []; }
+    const names = new Set(listed.map(model => `${model.provider}/${model.id}`));
+    if (ctx.model) names.add(`${ctx.model.provider}/${ctx.model.id}`);
+    return [...names].sort();
+  };
+  const settingsFile = join(agentDir, "settings.json");
+  /** 24b "Global settings", the write itself: re-read the resolved global settings file, merge the
+   * one edited preference into its `trace-memory` section, validate the merged layer through the load
+   * path (`parseLayer` over `canonicalFlatConfig`), then replace the file atomically. Everything else
+   * in the file — Trace Memory's advanced values and every other extension's settings — is carried
+   * over as parsed. A malformed file, a non-object section or a value the next load would reject
+   * throws before anything is written, so a failed edit reports the failure and changes nothing.
+   * Returns the legacy spelling of this same preference if the write replaced one (19 "Legacy
+   * input": the two spellings must not be left beside each other for the next load to refuse). */
+  const writeGlobal = (key: string, value: string | boolean): string | undefined => {
+    let file: Record<string, unknown> = {};
+    try { file = JSON.parse(readFileSync(settingsFile, "utf8")); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Invalid settings.json ${settingsFile}: ${String(error)}`); }
+    if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error(`Invalid settings.json ${settingsFile}: expected an object`);
+    const existing = file[tag] ?? {};
+    if (!existing || typeof existing !== "object" || Array.isArray(existing)) throw new Error(`Invalid trace-memory Global: expected an object`);
+    const layer: FlatConfig = { ...existing as FlatConfig, [key]: value };
+    const legacy = Object.entries(CONFIG_ALIASES).find(([, canonical]) => canonical === key)?.[0];
+    const replaced = legacy && Object.hasOwn(layer, legacy) ? legacy : undefined;
+    if (replaced) delete layer[replaced];
+    parseLayer(canonicalFlatConfig(layer));
+    const temporary = `${settingsFile}.${randomUUID()}`;
+    mkdirSync(dirname(settingsFile), { recursive: true });
+    writeFileSync(temporary, `${JSON.stringify({ ...file, [tag]: layer }, null, 2)}\n`, { flag: "wx" });
+    try { renameSync(temporary, settingsFile); }
+    finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    return replaced;
+  };
+  /** Application, in this instance, without a reload: the settings layers are re-read exactly as
+   * `restore` reads them (so precedence, masking and validation are the load path's), the host's own
+   * model selection follows `flat`, and core's two mode booleans are replaced through the façade's
+   * `configure` (ticket 24 amendment 2). Tasks admitted from now on use the new values; a running
+   * task keeps the mode, model, evidence and budgets frozen with it. Nothing here dispatches a
+   * worker, touches the cache-miss latch or reopens the database. */
+  const applySettings = () => {
+    const loaded = configuration(ctx.cwd, environment, agentDir);
+    if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
+    ({ flat, core, sources, layers } = loaded);
+    // The merged, validated layers decide: a project or environment override still wins, and core is
+    // told the value that is actually effective — never the global one an override masks.
+    const effective = validateConfig(core);
+    memory.configure({ noting: { forkModeDefault: effective.noting.forkModeDefault },
+      consolidation: { subagentModeDefault: effective.consolidation.subagentModeDefault } });
+  };
+  const saveGlobal = (p: Preference, value: string | boolean) => {
+    let replaced: string | undefined;
+    try { replaced = writeGlobal(p.key, value); }
+    catch (error) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — ${String(error)}`, "error"); return; }
+    try { applySettings(); }
+    catch (error) { ctx.ui.notify(`Trace Memory: ${p.key} was saved in ${settingsFile}, but the settings could not be reloaded: ${String(error)}`, "error"); return; }
+    const source = sources[p.key] ?? "Global";
+    // Never claim a masked edit changed the effective behaviour: the override stays, and it is named.
+    const override = source === "Global" ? "" :
+      ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(p, preferenceValue(p))} (${source}); it was not removed.`;
+    ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(p, value)}) in ${settingsFile}.` +
+      (replaced ? ` The legacy spelling ${replaced} of the same preference was replaced by ${p.key}.` : "") + override +
+      " It applies to memory tasks admitted from now on; running tasks keep the mode and model they started with.", "info");
+  };
+  const editPreference = async (p: Preference) => {
+    if (p.kind === "mode") {
+      const choice = await ctx.ui.select(`${p.name} — applies to tasks admitted from now on; running tasks keep their mode`,
+        ["fork", "subagent"]);
+      if (choice === undefined) return; // cancelled: nothing written, nothing requested
+      saveGlobal(p, modeFlag(p.phase, choice));
+      return;
+    }
+    const follow = "Follow foreground";
+    const models = availableModels();
+    if (!models.length) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — Pi's model registry lists no available model.`, "warning"); return; }
+    const title = configuredMode(p.phase) === "fork"
+      ? `${p.name} — ${p.phase === "noting" ? "Noting" : "Consolidation"} is configured for fork mode, which inherits the foreground model ${foregroundModel()}; this choice is used by subagent runs`
+      : `${p.name} — used by this phase's subagent runs`;
+    const choice = await ctx.ui.select(title, [follow, ...models]);
+    if (choice === undefined) return;
+    if (choice !== follow) {
+      const slash = choice.indexOf("/");
+      // Validated against the registry, never by calling the model. An entry that vanished between
+      // listing and choosing is refused rather than saved as a model no run could resolve.
+      if (slash < 0 || !ctx.modelRegistry.find(choice.slice(0, slash), choice.slice(slash + 1))) {
+        ctx.ui.notify(`Trace Memory: ${p.name} unchanged — ${choice} is not an available provider/model in Pi's registry.`, "warning"); return;
       }
-      if (choice && await ctx.ui.confirm(`${action} Trace Memory?`, shared + (action === "Disable"
-        ? " Processing and future injection stop; stored memory and already-injected text remain."
-        : " Available history, including the paused interval, will be queued without a model call."))) toggle(action === "Enable");
-    } else if (selected === "Catch up") {
-      try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); }
-    } else if (selected === "Stop") {
-      stopCatchup();
-    } else if (selected === "Settings (Global, read-only)") {
-      const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
-        runsDir: "<Pi agent directory>/sessions/trace-memory",
-        ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
-      ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
-        const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);
-        // 24c: an explicit runsDir keeps its own layout, and is disclosed when that layout puts the
-        // logs outside the sessions tree file-based daily statistics scan.
-        const note = key === "runsDir" && runsOutsideScan() ? `; worker logs go to <runsDir>/<parent Pi session id>/, outside Pi's scanned sessions tree` : "";
-        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${note}`;
-      }).join("\n"), "info");
-    } else if (selected === "Runs") {
+    }
+    // Selecting a model never switches the mode: only `${p.key}` is written.
+    saveGlobal(p, choice === follow ? "session" : choice);
+  };
+  const settingsMenu = async () => {
+    // 24c's disclosure keeps its home here: where new worker logs go is a global fact about this
+    // installation, and the settings entry is where the superseded read-only view stated it.
+    const logs = `Worker logs: ${runsDirectory(state.piId)}${runsOutsideScan() ? " — outside Pi's scanned sessions tree, so file-based daily statistics do not see them" : ""}`;
+    const title = ["Settings — four global defaults, saved under \"trace-memory\" in " + settingsFile,
+      "Project and environment layers still take precedence; advanced values stay in the settings files.", logs].join("\n");
+    const lines = preferences.map(preferenceLine);
+    const choice = await ctx.ui.select(title, lines);
+    if (choice === undefined) return; // cancelling an entry or an input changes nothing
+    const index = lines.indexOf(choice);
+    if (index < 0) return;
+    await editPreference(preferences[index]!);
+  };
+  // ---- 24b: the menu ----
+  const sessionMenu = async () => {
+    const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
+    // 19c "Menu-only reset": Retry fork exists only while this session is automatically downgraded.
+    // No slash subcommand and no permanent menu item; it clears the suppression only.
+    const downgrade = suppressed();
+    const participation = enabled() ? "Off" : "On";
+    const choice = await ctx.ui.select(`${status()}${shared}`,
+      [participation, "Runs", "Project", "Mark", ...(downgrade ? ["Retry fork"] : [])]);
+    if (choice === undefined) return; // cancellation is inert: no write, no request
+    if (choice === "Retry fork") {
+      memory.store.clearForkSuppression(state.sessionId!);
+      cacheMisses.delete(state.sessionId!);
+      showSpend(ctx);
+      ctx.ui.notify("Trace Memory: fork retry enabled for this session. The next memory task may request fork again; no task was started and global settings are unchanged.", "info");
+      return;
+    }
+    if (choice === "Runs") {
       const count = await ctx.ui.input("Runs: number to show", "10");
       if (count !== undefined) runView(Math.max(1, Number(count) || 10));
-    } else if (selected === "Status") ctx.ui.notify(status(), "info");
+      return;
+    }
+    if (choice === "Project") {
+      if (!state.sessionId) { ctx.ui.notify("Trace Memory: a project assignment requires an assistant reply.", "warning"); return; }
+      const name = await ctx.ui.input("Project name (every session declaring this name in this database shares its knowledge)", state.project ?? "");
+      if (name === undefined) return;
+      if (!String(name).trim()) { ctx.ui.notify("Trace Memory: no project name given; nothing changed.", "warning"); return; }
+      try { assignProject(String(name).trim()); } catch (error) { ctx.ui.notify(String(error), "error"); }
+      return;
+    }
+    if (choice === "Mark") {
+      const address = await ctx.ui.input("Knowledge address: K<n>, or K<n>@<commit> for an exact revision", "K1");
+      if (address === undefined) return;
+      const target = String(address).trim();
+      if (!markAddress.test(target)) { ctx.ui.notify(`Trace Memory: ${target || "(empty)"} is not a knowledge address; use K<n> or K<n>@<commit>. Nothing changed.`, "warning"); return; }
+      const kind = await ctx.ui.select(`Mark ${target}`, markKinds);
+      if (kind === undefined) return;
+      try { applyMark(target, kind as "verified" | "flagged" | "clear"); } catch (error) { ctx.ui.notify(String(error), "error"); }
+      return;
+    }
+    if (choice === participation && await ctx.ui.confirm(`Turn Trace Memory ${participation.toLowerCase()} for this session?`, shared + (participation === "Off"
+      ? " Processing and future injection stop; stored memory and already-injected text remain."
+      : " Available history, including the paused interval, will be queued without a model call."))) toggle(participation === "On");
   };
-  pi.registerCommand("trace", { description: "Trace Memory enrollment, manual catchup/stop, read-only settings, runs and status.",
+  const menu = async () => {
+    const selected = await ctx.ui.select("Trace Memory", ["Current session", "Catch up", "Stop", "Settings"]);
+    if (selected === "Current session") await sessionMenu();
+    else if (selected === "Catch up") { try { startCatchup(); } catch (error) { ctx.ui.notify(String(error), "error"); } }
+    else if (selected === "Stop") stopCatchup();
+    else if (selected === "Settings") await settingsMenu();
+  };
+  pi.registerCommand("trace", { description: "Trace Memory: menu, session participation (on/off), catchup/stop, project assignment and knowledge marks.",
     async handler(args, context) {
       ensure(context);
-      if (!args.trim()) { if (context.hasUI) await menu(); else context.ui.notify(`${status()}\n${commands}`, "info"); return; }
-      const parts = args.trim().split(/\s+/);
-      if (parts[0] === "enable" || parts[0] === "disable") { toggle(parts[0] === "enable"); return; }
-      if (parts[0] === "catchup") { startCatchup(); return; }
-      if (parts[0] === "stop") { stopCatchup(); return; }
-      if (parts[0] === "project") {
-        if (!state.sessionId) throw new Error("A session requires an assistant reply");
-        const marked = memory.declareProject(state.sessionId, parts.slice(1).join(" "));
-        state.projectId = memory.store.getSession(state.sessionId)!.projectId;
-        state.project = memory.store.getProject(state.projectId)!.name;
-        state.injected = false; save(); // the new project's knowledge is injected at the next prompt through the usual path
-        context.ui.notify(marked, "info"); return;
+      const parts = args.trim() ? args.trim().split(/\s+/) : [];
+      // Bare `/trace` opens the menu; without dialog-capable UI (`-p`, rpc scripting) it prints the
+      // status the menu would have shown and the forms that replace the retired subcommands.
+      if (!parts.length) { if (context.hasUI) await menu(); else context.ui.notify(`${status()}\n${commands}`, "info"); return; }
+      const [verb, ...rest] = parts;
+      if ((verb === "on" || verb === "off") && !rest.length) { toggle(verb === "on"); return; }
+      if (verb === "catchup" && !rest.length) { startCatchup(); return; }
+      if (verb === "stop" && !rest.length) { stopCatchup(); return; }
+      if (verb === "project" && rest.length) { assignProject(rest.join(" ")); return; }
+      if (verb === "mark" && rest.length === 2 && markAddress.test(rest[0]!) && markKinds.includes(rest[1]!)) {
+        applyMark(rest[0]!, rest[1] as "verified" | "flagged" | "clear"); return;
       }
-      if (parts[0] === "runs") {
-        runView(Math.max(1, Number(parts[1] ?? 10) || 10)); return;
-      }
-      if (parts[0] === "mark") {
-        if (!/^K[1-9]\d*(?:@[1-9]\d*)?$/.test(parts[1] ?? "") || parts.length !== 3 || !["verified", "flagged", "clear"].includes(parts[2]!)) throw new Error("Use /trace mark K<n>@<commit> verified|flagged|clear");
-        context.ui.notify(memory.mark(parts[1]!, parts[2] as "verified" | "flagged" | "clear", state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info"); return;
-      }
-      context.ui.notify(status(), "info"); } });
+      // A retired subcommand and a malformed argument end in the same place: the usage, and no
+      // mutation. Retirement is documented rather than aliased — the old spelling does nothing.
+      const retired = retiredForms[verb!];
+      context.ui.notify(`Trace Memory: /trace ${parts.join(" ")} is not a command form.` +
+        (retired ? ` \`${verb}\` was retired; use ${retired}.` : "") + `\n${commands}\nNothing was changed.`, "warning");
+    } });
 }

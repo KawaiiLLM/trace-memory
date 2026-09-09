@@ -26,7 +26,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 
 ## Scope and attribution
 
-- **Enrollment** — the durable enabled or disabled participation of one memory-session identity. Explicit intent overrides its derived default; shared forks and clones share the switch. Disable pauses future work and injection while retaining memory and unrestricted reads.
+- **Enrollment** — the durable enabled or disabled participation of one memory-session identity, changed by `/trace on` and `/trace off` (in Pi) for that identity alone, immediately and without a reload. Explicit intent overrides its derived default; shared forks and clones share the switch. Disable pauses future work and injection while retaining memory and unrestricted reads. There is no global participation switch.
 - **Baseline** — the installation-scoped instant of the plugin's first successful initialization, retained across restarts and upgrades. Only native sessions created strictly after it default enabled; unknown or malformed creation times default disabled.
 - **Session** — one host conversation. Gets an id only once an assistant reply exists.
 - **Executor** — an enabled active host runtime that provides one Noting slot and one Consolidation slot. A free slot prefers its own eligible work before borrowing another session's closed tail.
@@ -46,7 +46,8 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Compaction boundary** — the last compaction the host successfully persisted on the selected ancestry. A request to compact, a failed or cancelled attempt and a compaction on a sibling path are not one. A Noter whose frozen entries include any entry before it runs with fresh context for the whole batch.
 - **Trace** — the tool that walks addresses: knowledge → its facts → the source turn; knowledge revisions (`K7@2`, `K7@2..4`); a fact's later strong negations (`F101..`). Also the project name.
 - **Search** — lexical lookup over facts and knowledge (and optionally a session's raw) returning addresses. No hit does not mean absent.
-- **Mark** — the user's verified / flagged / clear annotation on a knowledge revision, applied through `/trace mark K<n> <kind>` and the façade. Project declaration is a separate user command.
+- **Mark** — the user's verified / flagged / clear annotation on a knowledge revision, applied through `/trace mark K<n>[@<commit>] <kind>` (or the menu's Current session > Mark) and the façade. Project declaration is a separate user command.
+- **Global preference** — one of the four defaults the Pi menu's Settings entry saves under `trace-memory` in the resolved agent settings file: each phase's execution mode and its model. They are the existing canonical configuration keys, not a second system; a project or environment layer still overrides them, and a saved value reaches tasks admitted afterwards while running tasks keep the mode and model frozen with them.
 
 ## Process
 

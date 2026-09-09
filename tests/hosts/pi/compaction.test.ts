@@ -27,7 +27,7 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
     expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
     expect(h.notices.at(-1)).toContain("compaction used secondary views");
-    await h.commands.get("trace").handler("status", h.ctx);
+    await h.commands.get("trace").handler("", h.ctx);
     expect(h.notices.at(-1)).toContain("Compaction: secondary views");
     expect(h.requests).toEqual([]); // the plugin's own tiers call no model
   } finally { await h.dispose(); }

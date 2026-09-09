@@ -154,7 +154,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...toolDefinitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
-      if ((name === "note" || name === "memory") && !store.enabled(session.id)) return "rejected: Trace Memory is Disabled; use /trace enable to enable memory.";
+      if ((name === "note" || name === "memory") && !store.enabled(session.id)) return "rejected: Trace Memory is Disabled; use /trace on to enable memory.";
       let result: string;
       try {
         if (name === "note" && committed) result = "rejected: already committed";

@@ -155,7 +155,7 @@ function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: ReturnType<
 }
 
 /** Ticket 22b, hotspot families 1 and 2: the host's own reconciliation. A fresh fake host is given a
- * long native ancestry and nothing else; `/trace enable` is the one-time import, `/trace enable` again
+ * long native ancestry and nothing else; `/trace on` is the one-time import, `/trace on` again
  * is the repeat, and the callbacks after it are the ordinary boundaries of a warmed-up session. The
  * imported history is marked noted in batches first (no model, no facts), so the ordinary callbacks
  * below are the ordinary case and not a due trigger; the trigger itself is measured on the store
@@ -176,12 +176,12 @@ async function hostReconciliation(size: string, entries: number): Promise<Sample
 
     counter.reset();
     let started = performance.now();
-    await command("enable");
-    single("host /trace enable (import)", performance.now() - started, counter.reads(), `${ancestry.length} native entries, single shot`);
+    await command("on");
+    single("host /trace on (import)", performance.now() - started, counter.reads(), `${ancestry.length} native entries, single shot`);
     counter.reset();
     started = performance.now();
-    await command("enable");
-    single("host /trace enable (repeat)", performance.now() - started, counter.reads(), "already reconciled");
+    await command("on");
+    single("host /trace on (repeat)", performance.now() - started, counter.reads(), "already reconciled");
 
     const store = h.memory.store;
     const state = () => (h.entries.filter(e => e.customType === "trace-memory").at(-1) as { data: { head: number } }).data;

@@ -21,7 +21,7 @@ test.each(["before", "after", "equal", "missing", "malformed"])("18a 2026-09-08:
   rmSync(join(h.dir, "agent", "trace-memory-enrollment"), { recursive: true, force: true });
   h.setHeaderTimestamp(kind === "before" ? "2000-01-01T00:00:00Z" : kind === "after" ? "2099-01-01T00:00:00Z" : kind === "equal" ? baseline : kind === "missing" ? undefined : "bad timestamp");
   await h.emit("session_start");
-  await command(h, "status");
+  await command(h, "");
   expect(h.notices.at(-1)).toContain(`Enrollment: ${kind === "after" ? "Enabled" : "Disabled"} (default)`);
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.turn();
@@ -34,23 +34,25 @@ test.each(["before", "after", "equal", "missing", "malformed"])("18a 2026-09-08:
 test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless status create no artificial Turn", async () => {
   const h = setup(); h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   await h.emit("session_start");
-  await command(h, ""); expect(h.notices.at(-1)).toContain("/trace enable");
+  await command(h, ""); expect(h.notices.at(-1)).toContain("/trace on");
   h.ctx.hasUI = true;
-  h.answers.push("Current session", "Enable", false);
+  h.answers.push("Current session", "On", false);
   await command(h, ""); expect(state(h).enrollment.choice).toBeNull();
-  h.answers.push("Current session", "Enable", true);
+  h.answers.push("Current session", "On", true);
   await command(h, "");
   expect(h.memory.store.getSession(1)).toBeNull();
   await h.emit("session_start");
-  await command(h, "status"); expect(h.notices.at(-1)).toContain("Enabled (explicit choice)");
+  h.ctx.hasUI = false; // 24b: `status` is retired; headless bare /trace is where it is printed
+  await command(h, ""); expect(h.notices.at(-1)).toContain("Enabled (explicit choice)");
+  h.ctx.hasUI = true;
   await h.turn();
   expect(h.memory.store.listTurns(1)).toHaveLength(1);
   expect(h.memory.store.getSession(2)).toBeNull();
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
-  h.answers.push("Current session", "Disable", true); await command(h, "");
+  h.answers.push("Current session", "Off", true); await command(h, "");
   expect(h.memory.status(1)).toContain("Disabled (explicit choice)");
   expect(h.statuses.get("trace-memory")).toBe("🧠 <dim>○ off</dim>"); // 24a: the off footer is the compact form
-  await command(h, "enable"); expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
+  await command(h, "on"); expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
 });
 
 test("18a 2026-09-08: historical import and pause resume use native identities without a model call", async () => {
@@ -58,21 +60,21 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   for (let i = 0; i < 3; i++) { h.persist({ role: "user", content: "same", timestamp: i }); h.persist(reply("same answer")); }
   await h.emit("session_start"); expect(h.memory.store.getSession(1)).toBeNull();
-  await command(h, "enable");
+  await command(h, "on");
   const imported = h.memory.pendingEntries(1, "main", state(h).head);
   expect(imported).toHaveLength(6); expect(h.memory.store.listTurns(1)).toHaveLength(3);
   expect(h.requests).toEqual([]);
-  await command(h, "enable"); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual(imported);
-  await command(h, "disable");
+  await command(h, "on"); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual(imported);
+  await command(h, "off");
   expect(await h.prompt("paused source")).toBeUndefined(); await h.answer("paused answer"); await h.emit("agent_settled");
   expect(h.memory.store.listTurns(1)).toHaveLength(3); expect(h.requests).toEqual([]);
   expect(await h.emit("session_before_tree")).toBeUndefined();
   expect(await h.emit("session_before_compact", { preparation: { tokensBefore: 42 } })).toBeUndefined();
   expect(compacted(h.memory.compact(1))).toBe(""); expect(h.memory.branchSummary(1, "main", 3)).toBe("");
-  for (const name of ["note", "memory"]) await expect(h.tools.get(name).execute("id", {}, undefined, undefined, h.ctx)).rejects.toThrow("/trace enable");
+  for (const name of ["note", "memory"]) await expect(h.tools.get(name).execute("id", {}, undefined, undefined, h.ctx)).rejects.toThrow("/trace on");
   expect((await h.tools.get("trace").execute("id", { address: "T1" }, undefined, undefined, h.ctx)).content[0].text).toContain("same");
   expect((await h.tools.get("search").execute("id", { query: "same", layer: "raw" }, undefined, undefined, h.ctx)).content[0].text).toContain("T1");
-  await command(h, "enable"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
+  await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
   await h.answer("eligible completion"); await h.drain();
   expect(h.requests).toHaveLength(1); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
@@ -81,7 +83,7 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
 test("18a 2026-09-08: historical tree and newer clone never overwrite the current shared switch", async () => {
   const h = setup(); await h.turn();
   const old = [...h.entries];
-  await command(h, "disable");
+  await command(h, "off");
   h.entries.splice(0, h.entries.length, ...old);
   h.ctx.sessionManager.getSessionId = () => "newer-clone";
   h.setHeaderTimestamp("2099-12-31T00:00:00Z");
@@ -90,7 +92,7 @@ test("18a 2026-09-08: historical tree and newer clone never overwrite the curren
   expect(await h.prompt("clone remains paused")).toBeUndefined();
   h.ctx.hasUI = true; h.answers.push("Current session", undefined); await command(h, "");
   expect(h.dialogs.at(-1)?.title).toContain("Shared identity");
-  await command(h, "enable");
+  await command(h, "on");
   h.entries.splice(0, h.entries.length, ...old); await h.emit("session_tree");
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
   expect(h.memory.store.getSession(2)).toBeNull();
@@ -102,11 +104,11 @@ test("18a 2026-09-08: core gates admissions and late commits through another fac
   try {
     const binding = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 });
     other.store.setEnrollment(1, false);
-    expect(binding.find(t => t.name === "note")!.execute({ facts: [] })).toContain("/trace enable");
-    expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace enable");
+    expect(binding.find(t => t.name === "note")!.execute({ facts: [] })).toContain("/trace on");
+    expect(binding.find(t => t.name === "memory")!.execute({ operations: [], skipped: [] })).toContain("/trace on");
     expect(await h.memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
     expect(await h.memory.consolidate({ sessionId: 1, branch: "main", headTurnId: 1 })).toEqual({ outcome: "dropped" });
-    expect(() => h.memory.appendEntry({ ...h.memory.pendingEntries(1, "main", 1)[0]!, nativeId: "blocked" })).toThrow("/trace enable");
+    expect(() => h.memory.appendEntry({ ...h.memory.pendingEntries(1, "main", 1)[0]!, nativeId: "blocked" })).toThrow("/trace on");
     const run = { kind: "noting" as const, sessionId: 1, branch: "main", createdAt: "now" };
     const entries = h.memory.pendingEntries(1, "main", 1);
     expect(h.memory.store.commitNotingRun({ run, facts: [], entryIds: entries.map(e => e.id) }).ok).toBe(false);
@@ -122,7 +124,7 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
-  await command(h, "disable");
+  await command(h, "off");
   release(submit ? notingFact(h.conversations[0]!) : reply("No facts"));
   await h.drain();
   expect(h.memory.store.listSessionFacts(1)).toEqual([]);
@@ -144,50 +146,61 @@ test.each([[true, true], [true, false], [false, true], [false, false]])("18a 202
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
   const pending = h.memory.store.listPendingDeliveries(1, "main");
   expect(pending.length).toBeGreaterThan(0);
-  await command(h, "disable");
+  await command(h, "off");
   expect(await h.prompt("unseen")).toBeUndefined(); await h.answer(); await h.emit("agent_settled");
   h.memory.confirmDelivery(pending.map(p => p.runId));
   expect(h.memory.store.listPendingDeliveries(1, "main")).toEqual(pending);
   expect(h.memory.store.listVisibleKnowledge(0, 1).some(k => k.revision.text === "Retained shared knowledge")).toBe(true);
-  await command(h, "enable");
+  await command(h, "on");
   expect((await h.prompt("resume delivery")).message.content).toContain("<consolidated>");
 });
 
-test("18a 2026-09-08: read-only settings show precedence, effective defaults and masked values", async () => {
+test("18a/24b: Settings shows the four preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
+  // 24b supersedes 18a's read-only view of every key: the menu edits exactly four preferences, while
+  // advanced values keep living in the settings files (and keep being validated — the case below).
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 11, "render.entryTokens": 222, "consolidation.triggerTokens": 7 } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.triggerTokens": 22, "render.entryTokens": 333 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "consolidation.subagentModeDefault": false, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings (Global, read-only)"); await command(h, "");
-  const shown = h.notices.at(-1)!;
-  expect(shown).toContain("noting.triggerTokens: 33 (Environment); Global=11 masked; Project=22 masked");
-  expect(shown).toContain("render.entryTokens: 333 (Project)");
-  expect(shown).toContain("consolidation.triggerTokens: 7 (Global)");
-  expect(shown).toContain(`noting.batchTokens: ${DEFAULT_CONFIG.noting.batchTokens} (Default)`);
+  h.answers.push("Settings", undefined); await command(h, ""); // opened, then cancelled: inert
+  const shown = h.dialogs.at(-1)!.options!;
+  expect(shown).toEqual([
+    "Noter mode: fork (Project); Global=subagent masked",
+    `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
+    "Consolidator mode: fork (Global)",
+    "Consolidator model: fake/test (Global); fork mode inherits the foreground model fake/test",
+  ]);
+  expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
+  expect(h.requests).toEqual([]);
+  // The advanced keys the menu no longer displays are still loaded and still validated by name.
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": "not a number" } }));
+  await expect(h.emit("session_start")).rejects.toThrow("Invalid render.entryTokens");
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": DEFAULT_CONFIG.render.entryTokens } }));
+  await h.emit("session_start");
 });
 
 test("18a 2026-09-08: selecting pre-allocation history keeps the allocated identity and current choice", async () => {
   const h = setup(); await h.emit("session_start");
   const provisional = [...h.entries];
-  await h.turn(); await command(h, "disable");
+  await h.turn(); await command(h, "off");
   h.entries.splice(0, h.entries.length, ...provisional);
   await h.emit("session_tree");
   expect(state(h).sessionId).toBe(1);
   expect(await h.prompt("still disabled")).toBeUndefined(); await h.answer();
   expect(h.memory.status(1)).toContain("Disabled (explicit choice)");
   expect(h.memory.store.getSession(2)).toBeNull();
-  await command(h, "enable"); await h.answer("now enabled");
+  await command(h, "on"); await h.answer("now enabled");
   expect(h.memory.store.getSession(2)).toBeNull();
 });
 
 test("18a 2026-09-08: disabled reads retain tool validation before and after allocation", async () => {
-  const h = setup(); await h.emit("session_start"); await command(h, "disable");
+  const h = setup(); await h.emit("session_start"); await command(h, "off");
   for (const allocate of [false, true]) {
-    if (allocate) { await command(h, "enable"); await h.turn(); await command(h, "disable"); }
+    if (allocate) { await command(h, "on"); await h.turn(); await command(h, "off"); }
     await expect(h.tools.get("trace").execute("id", { address: "T1", full: "yes" }, undefined, undefined, h.ctx)).rejects.toThrow("full must be boolean");
     await expect(h.tools.get("search").execute("id", { query: "a", unexpected: 1 }, undefined, undefined, h.ctx)).rejects.toThrow("unexpected parameter");
   }
@@ -195,7 +208,7 @@ test("18a 2026-09-08: disabled reads retain tool validation before and after all
 
 test.each(["2099-02-30T00:00:00Z", "2099", "2099-01-01", 4070908800000])("18a 2026-09-08: malformed native creation metadata stays disabled (%s)", async value => {
   const h = setup(); h.setHeaderTimestamp(value); await h.emit("session_start");
-  await command(h, "status"); expect(h.notices.at(-1)).toContain("Disabled (default)");
+  await command(h, ""); expect(h.notices.at(-1)).toContain("Disabled (default)");
 });
 
 test("18a 2026-09-08: all count/token keys and masked layers validate by key", async () => {
@@ -260,9 +273,9 @@ test("18a 2026-09-08: another process disables before the transaction; prior suc
   expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual([1]);
   expect(h.memory.store.listRuns(1).slice(0, before.length)).toEqual(before);
   expect(h.memory.trace("F1")).toContain("Already committed");
-  expect(() => h.memory.store.updateTurn(1, { assistantText: "blocked" })).toThrow("/trace enable");
-  expect(() => h.memory.store.appendToolCall({ turnId: 1, name: "blocked", status: "attempted" })).toThrow("/trace enable");
-  expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace enable");
+  expect(() => h.memory.store.updateTurn(1, { assistantText: "blocked" })).toThrow("/trace on");
+  expect(() => h.memory.store.appendToolCall({ turnId: 1, name: "blocked", status: "attempted" })).toThrow("/trace on");
+  expect(() => h.memory.selectEntries(1, "main", [])).toThrow("/trace on");
 });
 
 test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects late %s submission and leaves facts pending", async submit => {
@@ -272,7 +285,7 @@ test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects l
   let release!: (value: ReturnType<typeof reply>) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.answer("consolidation opportunity"); await h.drain(); expect(h.requests).toHaveLength(1);
-  await command(h, "disable");
+  await command(h, "off");
   h.provider(async () => reply("Stopped"));
   release(submit ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: { operations: [], skipped: [] } }] } : reply("No knowledge"));
   await h.drain();
@@ -285,13 +298,13 @@ test.each([true, false])("18a 2026-09-08: disable during Consolidation rejects l
 
 
 test("18a 2026-09-08: pre-reply choice survives loss of Pi unflushed custom entries", async () => {
-  const h = setup(); await h.emit("session_start"); await command(h, "disable");
+  const h = setup(); await h.emit("session_start"); await command(h, "off");
   h.entries.length = 0; h.allEntries.length = 0;
   h.setHeaderTimestamp("2099-12-31T00:00:00Z");
-  await h.emit("session_start"); await command(h, "status");
+  await h.emit("session_start"); await command(h, "");
   expect(h.notices.at(-1)).toContain("Disabled (explicit choice)");
   expect(h.memory.store.getSession(1)).toBeNull();
-  await command(h, "enable");
+  await command(h, "on");
   h.entries.length = 0; h.allEntries.length = 0;
   await h.emit("session_start"); await h.turn();
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
@@ -306,9 +319,9 @@ test("19c 2026-09-08: the legacy execution-mode key still selects the mode, and 
   await h.turn();
   expect(h.memory.store.listRuns(1).map(r => r.mode)).toEqual(["subagent"]); // the alias selected fresh context
   h.ctx.hasUI = true;
-  h.answers.push("Settings (Global, read-only)"); await command(h, "");
-  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: false (Environment)"); // canonical key, honest source
-  expect(h.notices.at(-1)).not.toContain("branchModeDefault");                       // and only the canonical key
+  h.answers.push("Settings", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: subagent (Environment)"); // canonical key, honest source
+  expect(h.dialogs.at(-1)!.options!.join("\n")).not.toContain("branchModeDefault"); // and only the canonical key
 });
 
 test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key in a later layer, as any other setting is", async () => {
@@ -318,9 +331,9 @@ test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key i
   writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false } }));
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true } }));
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings (Global, read-only)"); await command(h, "");
+  h.answers.push("Settings", undefined); await command(h, "");
   // 18a precedence decides; supplying the two spellings in two layers is migration, not a conflict.
-  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: true (Project); Global=false masked");
+  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: fork (Project); Global=subagent masked");
   writeFileSync(globalPath, "{}"); writeFileSync(projectPath, "{}");
 });
 
@@ -333,7 +346,7 @@ test("19c 2026-09-08: one layer supplying both execution-mode spellings with dif
   // Agreeing values are not a conflict: the canonical key wins and the load succeeds.
   writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": false } }));
   await h.emit("session_start"); h.ctx.hasUI = true;
-  h.answers.push("Settings (Global, read-only)"); await command(h, "");
-  expect(h.notices.at(-1)).toContain("noting.forkModeDefault: false (Global)");
+  h.answers.push("Settings", undefined); await command(h, "");
+  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: subagent (Global)");
   writeFileSync(globalPath, "{}");
 });

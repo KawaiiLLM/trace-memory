@@ -201,7 +201,7 @@ test("24a: off is the compact line, imports nothing and calls no model; enabled 
   expect(Number(enabled.entries)).toBeGreaterThan(0);
   expect(Number(enabled.unconsolidated)).toBeGreaterThan(0);
 
-  await h.commands.get("trace")!.handler("disable", h.ctx);
+  await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 <dim>○ off</dim>");
   const turns = h.memory.store.listTurns(1).length, entries = h.memory.store.listSourceEntries(1).length;
   h.persist({ role: "user", content: "spoken while off", timestamp: 2 });
@@ -223,7 +223,7 @@ test("24a: off is the compact line, imports nothing and calls no model; enabled 
   expect(h.requests).toEqual([]);
 
   // Enabling again imports the paused interval through the ordinary path, and the counts say so.
-  await h.commands.get("trace")!.handler("enable", h.ctx);
+  await h.commands.get("trace")!.handler("on", h.ctx);
   expect(Number(footer(h).entries)).toBeGreaterThan(Number(enabled.entries));
 });
 
@@ -248,7 +248,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
   expect(raw(h)).toBe("🧠 <dim>○</dim> notes: ?->? memory: ?->? cost: $?");
-  await h.commands.get("trace")!.handler("status", h.ctx);
+  await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("no memory identity allocated");
   expect(h.notices.at(-1)).not.toContain("Pending:");
 
@@ -256,7 +256,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   // condition, and still not a claim that no native history exists.
   await h.turn();
   expect(h.memory.store.getSession(1)).not.toBeNull();
-  await h.commands.get("trace")!.handler("status", h.ctx);
+  await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Pending: 2 imported entries to note, 0 of 0 applicable facts to consolidate; 0 current knowledge");
   expect(h.notices.at(-1)).not.toContain("no memory identity allocated");
   expect(h.requests).toEqual([]);
@@ -276,14 +276,14 @@ test("24a: the indicator is theme roles in the ruled precedence, Noting wins ove
   expect(footer(h)).toMatchObject({ glyph: "●", role: "accent" });
 
   // Off wins over everything, including work still in flight.
-  await h.commands.get("trace")!.handler("disable", h.ctx);
+  await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 <dim>○ off</dim>");
-  await h.commands.get("trace")!.handler("enable", h.ctx);
+  await h.commands.get("trace")!.handler("on", h.ctx);
 
   // Pi's native fallback: no theme support, the same line without colour.
   delete (h.ctx.ui as { theme?: unknown }).theme;
   await refresh(h);
   expect(raw(h)).toMatch(/^🧠 [●○] notes: \d+->\d+ memory: \d+->\d+ cost: \$\d+\.\d{2}$/);
-  await h.commands.get("trace")!.handler("disable", h.ctx);
+  await h.commands.get("trace")!.handler("off", h.ctx);
   expect(raw(h)).toBe("🧠 ○ off");
 });

@@ -231,16 +231,22 @@ shared. Every layer is validated, including masked values; unknown/removed keys 
 by name. Counts and token budgets are positive safe integers; the existing
 `maxToolRounds: 0` unlimited sentinel and `nearThreshold` similarity in [0,1] retain
 their meanings. Modes are booleans. Impossible source-view capacity still reports
-an error and retains pending work. The plugin never writes settings.
+an error and retains pending work. Since 24b the plugin writes exactly four global
+preferences (each phase's execution mode and model) into the `trace-memory` section of
+the resolved global `settings.json`, by re-read-and-merge over the load path's own
+validation; it writes no other key and no other file.
 
-Bare `/trace` uses native select/confirm/input dialogs for Current session (state,
-default or explicit origin, enable/disable and shared-identity scope), Catch up,
-Stop, Settings (labelled Global, read-only, effective values, sources and masked
-values), Runs and Status. Cancel changes no enrollment choice. Headless bare
-`/trace` prints status and available commands. `/trace enable`, `/trace disable`,
-`/trace catchup`, `/trace stop`, `/trace status`, `/trace runs [n]`, `/trace
-project <name>` and `/trace mark K<n>@<commit> <kind>` share existing operations;
-menu actions and commands call the same operations, and the catchup handler
+Bare `/trace` uses native select/confirm/input dialogs for four entries: Current
+session (the status text, On/Off with shared-identity scope, Runs with a count input,
+Project, Mark, and Retry fork only while downgraded), Catch up, Stop and Settings (the
+four global preferences; 24b supersedes 18a's read-only view of every key, which the
+menu no longer shows — the advanced keys remain configurable in the settings files).
+Cancel changes nothing and makes no request. Headless bare `/trace` prints status and
+the supported forms. The command forms are `/trace`, `/trace on`, `/trace off`,
+`/trace catchup`, `/trace stop`, `/trace project <name>` and
+`/trace mark K<n>@<commit> <kind>`; `enable`, `disable`, `status` and `runs` are
+retired without aliases, and a retired or malformed form prints the usage and changes
+nothing. Menu actions and commands call the same operations, and the catchup handler
 returns control to the TUI immediately so stop can be invoked while it runs. The
 existing footer adds Disabled while retaining its indicator, colors, counts and
 spend.
