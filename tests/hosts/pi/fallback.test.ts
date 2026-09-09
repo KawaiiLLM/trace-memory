@@ -15,10 +15,15 @@
 // mode change, and a later task may request fork again. Authentication and rate-limit rejections are
 // not capacity failures; a committed note, a cancellation and every failure after a commit end the
 // task where it is.
+//
+// 27c generalised the second path: whatever refuses a fork — the live state at admission, the launch,
+// the native gate, the provider — the task is admitted once more as a subagent on the CONFIGURED
+// Noter model and its capacity. `runWorker` reruns nothing; it returns the refusal, and the host
+// re-admits on the frozen batch's own entries.
 import { readFileSync } from "node:fs";
 import { expect, test, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { host } from "./test-host.ts";
+import { host, reply } from "./test-host.ts";
 import { fixture, say, call, worker, submitted, noteBatch, settled, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { runNative } from "../../../src/hosts/pi/native.ts";
@@ -92,11 +97,18 @@ test("27b 2026-09-10: the pre-send fallback decides before any provider request,
 }, 30000);
 
 test("27b 2026-09-10: a provider context-overflow rejection with nothing committed falls back once, on the same frozen evidence", async () => {
-  const f = await fixture();
+  // 27c: `notingModel` names a model the foreground is not on, so the re-admission's model is visible.
+  const f = await fixture({ notingModel: "fake/test-mini" });
   try {
     f.script((body: Body) => {
       if (!worker(body)) return say("好的。");
-      if (!fresh(body)) return rejected(OVERFLOW); // the fork attempt, rejected by the provider
+      if (!fresh(body)) {
+        // 27c: the foreground model could not hold this batch any more (11,000 − 10,000 = 1,000
+        // tokens for input), so the re-admission below happens at all only because it is priced by
+        // the Noter model's own window.
+        (f.h.ctx as { model: unknown }).model = { ...f.h.ctx.model!, contextWindow: 11_000 };
+        return rejected(OVERFLOW); // the fork attempt, rejected by the provider
+      }
       return submitted(body) ? say("Done.", wireUsage(7, 2)) : call("t1", "note", noteBatch, wireUsage(11, 3));
     });
     await f.turn();
@@ -105,6 +117,11 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     expect(f.sent.filter(forkAttempt)).toHaveLength(1); // one fork attempt, and only one
     expect(run.mode).toBe("subagent");
     expect(response.requestedMode).toBe("fork");
+    // 27c: the fork attempt ran on the session model; the re-admission runs — and is charged — on the
+    // configured Noter model, priced by that model's own capacity.
+    expect(f.sent.filter(forkAttempt)[0]!.model).toBe("test");
+    expect(f.sent.filter(fresh).map((body: Body) => body.model)).toEqual(["test-mini", "test-mini"]);
+    expect(run.model).toBe("fake/test-mini");
     expect(response.fallbackReason).toContain("context overflow");
     expect(response.fallbackReason).toContain(OVERFLOW);
     expect(response.verification.passed).toBe(true); // the attempt really went out: its gate result is kept
@@ -172,50 +189,44 @@ test("27b 2026-09-10: a cancelled fork attempt launches no fallback work", async
     // disabled enrollment all reach a running task exactly this way.
     const parentRequests = f.sent.length; // every later body is this worker's own
     f.script((_body: Body, index: number) => { if (index < parentRequests) return say("好的。"); controller.abort(); return rejected(OVERFLOW); });
-    const fallbacks: string[] = [];
     const task = {
-      kind: "noting", mode: "fork", model: "fake/test", sessionId: 1, branch: "main", signal: controller.signal,
+      kind: "noting", mode: "fork", model: "fake/test", sessionId: 1, branch: "main", signal: controller.signal, entryIds: [1],
       prompt: "You are the Noter.", text: { fresh: "note what happened", inherited: "the increment" },
       reportRequest: () => {}, reportProgress: () => {},
     } as unknown as NotingAgentInput;
     const binding: WorkerBinding = { model: f.model as never, checkCapacity: () => {},
       tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       fork: { parentFile: f.manager().getSessionFile()!, parentSessionId: f.manager().getSessionId(), checkpoint: f.manager().getLeafId()!, captured },
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {}, onFallback: reason => fallbacks.push(reason) };
+      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} };
     const result = await runWorker(task, binding);
     expect(result.outcome).toBe("cancelled");
     expect(result.mode).toBe("fork");
-    expect(fallbacks).toEqual([]);
+    expect(result.refused).toBeUndefined(); // a cancelled attempt is not re-admitted by anyone
     expect(f.sent.filter(fresh)).toEqual([]);
   } finally { await f.dispose(); }
 }, 30000);
 
-test("27b 2026-09-10: a fresh rebuild the last check refuses leaves the frozen evidence pending with that diagnostic", async () => {
+test("27c 2026-09-10: a fresh rebuild the re-admission cannot fit leaves the frozen evidence pending with that diagnostic", async () => {
+  // 27b rebuilt inside the worker; 27c re-admits, so the refusal that decides this case is the second
+  // admission's own — and it is what is reported, never hidden by the fallback warning.
   const f = await fixture();
   try {
-    const parentRequests = f.sent.length + 1; // the parent's turn below is the last body that is not this worker's
+    f.script((body: Body) => {
+      if (!worker(body)) return say("好的。");
+      // The provider rejects the fork body for capacity, and by the time the host admits the task
+      // again, the model it would run on can no longer hold even the instructions.
+      (f.h.ctx as { model: unknown }).model = { ...f.h.ctx.model!, contextWindow: 10_500 };
+      return rejected(OVERFLOW);
+    });
     await f.turn();
-    const captured = f.sent[parentRequests - 1]!;
-    f.script((_body: Body, index: number) => index < parentRequests ? say("好的。") : rejected(OVERFLOW));
-    const fallbacks: string[] = [];
-    let checks = 0;
-    const task = {
-      kind: "noting", mode: "fork", model: "fake/test", sessionId: 1, branch: "main",
-      prompt: "You are the Noter.", text: { fresh: "note what happened", inherited: "the increment" },
-      reportRequest: () => {}, reportProgress: () => {},
-    } as unknown as NotingAgentInput;
-    const binding: WorkerBinding = { model: f.model as never,
-      // The fork attempt's body leaves; the fresh child's does not fit any more.
-      checkCapacity: () => { if (++checks > 1) throw new Error("Noting capacity: the child's context of 300000 tokens leaves less than the 10000-token headroom"); },
-      tools: toolDefinitions.map(t => ({ ...t, execute: () => "committed" })), runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      fork: { parentFile: f.manager().getSessionFile()!, parentSessionId: f.manager().getSessionId(), checkpoint: f.manager().getLeafId()!, captured },
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {}, onFallback: reason => fallbacks.push(reason) };
-    const result = await runWorker(task, binding);
-    expect(fallbacks).toHaveLength(1); // the transition happened
-    expect(result.outcome).toBe("failure"); // and its own refusal is the outcome, not the warning
-    expect(String(result.output)).toContain("leaves less than the 10000-token headroom");
-    expect(result.mode).toBe("subagent");
-    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]); // nothing was committed by either attempt
+    await vi.waitFor(() => expect(f.h.notices.some(n => n.includes("left pending"))).toBe(true), { timeout: 5000 });
+    expect(f.sent.filter(forkAttempt)).toHaveLength(1);
+    expect(f.sent.filter(fresh)).toEqual([]); // the fresh child never started: nothing fit its window
+    expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1); // the transition happened
+    expect(f.h.notices.some(n => n.includes("already cost"))).toBe(true); // and its own refusal is the diagnostic
+    expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toEqual([]); // neither attempt recorded a run
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0); // the evidence waits
   } finally { await f.dispose(); }
 }, 30000);
 
@@ -299,3 +310,109 @@ test("27b 2026-09-10: a capacity fallback latches nothing — the next task requ
   } finally { await f.dispose(); }
 }, 30000);
 
+
+// ---------------------------------------------------------------- 27c: one fallback path
+
+/** The foreground model, left with 1,000 tokens for input: an admission that priced this batch by it
+ * would refuse the batch instead of running it, so a run at all is the capacity assertion. Only the
+ * two refusals decided at admission can state it — a launch-time refusal needs an admissible fork. */
+const foregroundTooSmall = (h: ReturnType<typeof host>) => { h.ctx.model = { ...h.ctx.model!, contextWindow: 11_000 }; };
+
+test.each([
+  ["the cache-miss latch", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); expect(h.memory.store.suppressFork(1)).toBe(true); }, "cache miss latch"],
+  ["pre-compaction evidence", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); h.compaction(); }, "pre-compaction evidence"],
+  ["a launch-time refusal", () => {}, "native runner: No current-branch provider payload captured"],
+])("27c: whatever the refusal, the subagent model (%s)", async (_kind, arrange, reason) => {
+  // `notingModel` is a model the foreground is not on, so the run record's model is the whole point:
+  // before 27c only the requested mode decided it, and an effective-subagent task was frozen on — and
+  // charged to — the foreground model at the foreground's own capacity.
+  const h = host({ "noting.triggerTokens": 20, notingModel: "fake/test-mini" }); // fork is the default mode
+  try {
+    await h.emit("session_start");
+    // A first turn too small to be due: it allocates the memory session the arrangement below needs.
+    await h.prompt("hi"); await h.answer("ok"); await h.emit("agent_settled"); await h.drain();
+    expect(h.memory.store.listRuns(1)).toEqual([]);
+    arrange(h);
+    await h.prompt("word ".repeat(200));
+    await h.answer("word ".repeat(200));
+    await h.emit("agent_settled"); await h.drain();
+    const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
+    expect(runs).toHaveLength(1); // one task, one run: a re-admission is neither a second run nor a drain
+    const run = runs[0]!, response = JSON.parse(run.response!);
+    expect(run.mode).toBe("subagent");
+    expect(response.requestedMode).toBe("fork"); // the audit keeps what was configured
+    expect(run.model).toBe("fake/test-mini");    // and names the model that ran and was charged
+    expect((h.requests[0] as { model?: string }).model).toBe("test-mini"); // which really is the one asked
+    expect(String(response.fallbackReason)).toContain(reason);
+    expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+    expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)"); // fresh material
+    expect(h.memory.config.noting.forkModeDefault).toBe(true); // no persisted mode change
+  } finally { await h.dispose(); }
+});
+
+test("27c 2026-09-10: the reported live case — evidence before a persisted compaction runs on the configured Noter model, at its own thinking level", async () => {
+  // The defect as it was reported: a Noter admitted as `fork` whose evidence precedes the compaction
+  // ran as a subagent on the FOREGROUND model, at the foreground's level. Here the foreground is
+  // `fake/test` and the configured Noter is a second model with its own configured level.
+  const f = await fixture({ notingModel: "fake/test-thinking", notingThinking: "high" });
+  try {
+    let notes = 0;
+    f.script((body: Body) => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call(`t${++notes}`, "note", noteBatch));
+    await f.turn(); // an ordinary fork Noting first: fork mode always runs on the session model
+    const first = await settled(f);
+    expect(first.mode).toBe("fork");
+    expect(first.model).toBe("fake/test");
+    // New foreground evidence, then a compaction Pi persists on this ancestry: the next Noter's
+    // entries precede the boundary, so its fork is refused at admission.
+    f.manager().appendMessage({ role: "user", content: "用 bun，不要 node " + "word ".repeat(400), timestamp: 1 } as never);
+    f.manager().appendMessage({ ...reply("an answer " + "word ".repeat(400)), timestamp: 1 } as never);
+    f.manager().appendCompaction("native summary", f.manager().getLeafId()!, 100);
+    await f.h.emit("message_start", { message: reply("") });
+    const second = await vi.waitFor(() => {
+      const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response);
+      expect(runs).toHaveLength(2); return runs.sort((a, b) => a.id - b.id)[1]!;
+    }, { timeout: 5000 });
+    const audit = JSON.parse(second.response!);
+    expect(second.mode).toBe("subagent");
+    expect(audit.requestedMode).toBe("fork");
+    expect(String(audit.fallbackReason)).toContain("pre-compaction evidence");
+    expect(second.model).toBe("fake/test-thinking");
+    const child = f.sent.filter((body: Body) => worker(body)).at(-1)!; // the second run's own child
+    expect(child.model).toBe("test-thinking"); // the model the request really named
+    // 26d: a fresh child of this task thinks at the phase's configured subagent level, frozen at its
+    // own admission — the foreground's `off` never reaches it.
+    expect(audit.thinking).toEqual({ requested: "high", effective: "high" });
+    expect(child.reasoning_effort).toBe("high");
+    expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+    expect(f.h.memory.store.forkSuppression(1)).toBeNull(); // a warning, not the latch
+  } finally { await f.dispose(); }
+}, 30000);
+
+test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evidence that arrives during the attempt waits", async () => {
+  const f = await fixture();
+  try {
+    let frozen: string[] = [];
+    f.script(async (body: Body) => {
+      if (!worker(body)) return say("好的。");
+      if (fresh(body)) return submitted(body) ? say("Done.") : call("t1", "note", noteBatch);
+      // The fork attempt is in flight when new foreground evidence lands, and the provider then
+      // rejects this body for context capacity.
+      if (frozen.length) return rejected(OVERFLOW);
+      frozen = f.h.memory.store.listSourceEntries(1).map(e => e.nativeId);
+      f.manager().appendMessage({ role: "user", content: "LATER EVIDENCE " + "word ".repeat(400), timestamp: 1 } as never);
+      f.manager().appendMessage({ ...reply("later answer " + "word ".repeat(400)), timestamp: 1 } as never);
+      await f.h.emit("message_start", { message: reply("") });
+      return rejected(OVERFLOW);
+    });
+    await f.turn();
+    const run = await settled(f);
+    const response = JSON.parse(run.response!);
+    expect(frozen.length).toBeGreaterThan(0);
+    expect(f.h.memory.store.listSourceEntries(1).length).toBeGreaterThan(frozen.length); // the newcomers were recorded
+    // 18b's boundary: the re-admission selects the batch the refused attempt was frozen on, never the
+    // range that grew under it, and the evidence that arrived meanwhile stays pending.
+    expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(frozen);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(f.h.memory.pendingEntries(1, "main", f.h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
+  } finally { await f.dispose(); }
+}, 30000);
