@@ -1,4 +1,4 @@
-export { toolDefinitions, validateReadInput } from "./tools.ts";
+export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type TopicGroups } from "./read.ts";

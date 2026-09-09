@@ -55,6 +55,20 @@ export function validateReadInput(name: "trace" | "search", raw: unknown): Recor
   return input;
 }
 
+/** The model-facing result format, read back. A tool result is a refusal when it is a `rejected:`
+ * receipt, and a batch writer's JSON `results` array carries one per item — both spellings are
+ * produced in this file. Every consumer that must classify a result rather than show it (either Pi
+ * adapter deciding whether a call committed, the test host deciding whether a result is an error)
+ * reads it here, so the format has one definition and one place to change. */
+export function toolRejected(name: string, content: string): boolean {
+  if (content.startsWith("rejected:")) return true;
+  if (name !== "note" && name !== "memory") return false;
+  try {
+    const { results } = JSON.parse(content);
+    return Array.isArray(results) && results.some((r: unknown) => typeof r === "string" && r.startsWith("rejected:"));
+  } catch { return false; }
+}
+
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);

@@ -2,14 +2,14 @@
 // and for receipts too. Reduce the task and re-freeze, or leave it pending with a capacity error; never
 // receipt an overage and run anyway.
 import { expect, test } from "vitest";
-import { TraceMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
-  const m = TraceMemory(":memory:", async raw => { calls.push(raw as ConsolidationAgentInput); return { outcome: "success", output: "", request: { probe: true } }; }, config);
+  const m = sourceSeededMemory(":memory:", async raw => { calls.push(raw as ConsolidationAgentInput); return { outcome: "success", output: "", request: { probe: true } }; }, config);
   const p = m.store.createProject({ name: "review", declaredBy: "mark" });
   const s = m.store.createSession({ host: "review", startedAt: "2026-09-08", firstReplyAt: "2026-09-08", projectId: p.id, enrollmentChoice: true });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Synthetic source", assistantText: "Synthetic reply", startedAt: "2026-09-08" });

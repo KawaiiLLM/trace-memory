@@ -1,12 +1,12 @@
 import { recorded } from "../../source-fixture.ts";
 import { afterEach, expect, test } from "vitest";
-import { TraceMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../source-fixture.ts";
-let memory: TraceMemory;
+import { sourceSeededMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+let memory: ReturnType<typeof sourceSeededMemory>;
 afterEach(() => memory?.close());
 const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
 const batch = { operations: [create], skipped: [] };
 function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult>) {
-  memory = TraceMemory(":memory:", raw => agent(raw as ConsolidationAgentInput));
+  memory = sourceSeededMemory(":memory:", raw => agent(raw as ConsolidationAgentInput));
   const project = memory.store.createProject({ name: "test", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   const t = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm", assistantText: "Okay", startedAt: "now" });

@@ -2,14 +2,14 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../source-fixture.ts";
+import { sourceSeededMemory, type NotingAgentInput, type RunAgentResult, type ConfigOverride, renderEntry } from "../../source-fixture.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { knowledgeBlock } from "../../../src/core/render/material.ts";
 import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
 
 let directory: string;
-let memory: ReturnType<typeof TraceMemory>;
+let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number;
 let calls: NotingAgentInput[];
 type ScriptResult = RunAgentResult & { noteInput?: unknown };
@@ -20,7 +20,7 @@ const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "
 const fact = (extra = {}) => ({ category: "observation", actor: "agent", text: memories.base, source: ["T1#assistant"], ...extra });
 const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#assistant" ? [`T${turnId}#assistant`] : f.source })) });
 function open(config: ConfigOverride = {}) {
-  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     const input = raw as NotingAgentInput;
     calls.push(input);
     const next = script.shift();
@@ -104,7 +104,7 @@ test("switching branch while pending preserves the old delivery and excludes the
 test("duplicate trigger is dropped, including another façade on the same file", async () => {
   const t = turn(), resolve = deferred(), pending = noting(t.id);
   expect(await noting(t.id)).toEqual({ outcome: "dropped" });
-  const other = TraceMemory(join(directory, "test.sqlite"), async () => { throw new Error("must not run"); });
+  const other = sourceSeededMemory(join(directory, "test.sqlite"), async () => { throw new Error("must not run"); });
   try { expect(await other.noting({ sessionId, branch: "main", headTurnId: t.id })).toEqual({ outcome: "dropped" }); }
   finally { other.close(); }
   expect(memory.store.getRun(1)).toBeNull();

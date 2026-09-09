@@ -3,11 +3,11 @@
 // fact's relations, a knowledge commit's marks, and the Turn occurrences an assembled trace shows.
 // Writing any of them between two pages must not change a page the query already established.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let memory: ReturnType<typeof TraceMemory>;
-beforeEach(() => { memory = TraceMemory(":memory:", async () => { throw new Error("these cases call no model"); }); });
+let memory: ReturnType<typeof sourceSeededMemory>;
+beforeEach(() => { memory = sourceSeededMemory(":memory:", async () => { throw new Error("these cases call no model"); }); });
 afterEach(() => { memory.close(); });
 
 /** One enrolled session with one Turn whose prompt matches the query used below. */

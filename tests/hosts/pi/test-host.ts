@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
-import { TraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory, toolRejected } from "../../../src/core/api/index.ts";
 
 type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1];
 export type Reply = Awaited<ReturnType<ExtensionContext["modelRegistry"]["complete"]>>;
@@ -21,13 +21,6 @@ export type NativeSource = () => { getSessionId(): string; getSessionFile(): str
 type Message = Conversation["messages"][number];
 const partsText = (content: unknown): string => typeof content === "string" ? content
   : Array.isArray(content) ? content.filter((c: any) => c?.type === "text" || typeof c?.text === "string").map((c: any) => c.text ?? "").join("") : "";
-/** A rejection receipt is not a successful tool result — the same rule the adapter applies. */
-const rejectedResult = (name: string, content: string): boolean => {
-  if (content.startsWith("rejected:")) return true;
-  if (name !== "note" && name !== "memory") return false;
-  try { const { results } = JSON.parse(content); return Array.isArray(results) && results.some((r: unknown) => typeof r === "string" && r.startsWith("rejected:")); }
-  catch { return false; }
-};
 /** The body the child actually sent, read back as the conversation the tests assert on. */
 export function conversationOf(body: any): Conversation {
   const messages: Message[] = [];
@@ -50,7 +43,7 @@ export function conversationOf(body: any): Conversation {
     if (message.role === "tool") {
       const text = partsText(message.content), name = names.get(message.tool_call_id) ?? "";
       messages.push({ role: "toolResult", toolCallId: message.tool_call_id, toolName: name, content: [{ type: "text", text }],
-        isError: rejectedResult(name, text), timestamp: 1 } as unknown as Message);
+        isError: toolRejected(name, text), timestamp: 1 } as unknown as Message);
     }
   }
   return { systemPrompt, messages, tools: (body.tools ?? []).map((tool: any) => tool.function ?? tool) } as Conversation;
@@ -76,9 +69,11 @@ function responseOf(value: Reply): Response {
 }
 
 /** One global `fetch` stub serves every live host: several 17c cases run two hosts at once, so each
- * host answers only its own provider base URL. Unknown URLs fall through to whatever was installed
- * before (a fixture's own stub, or the real fetch). */
+ * host answers only its own provider base URL. An unknown URL reaches an upstream stub a fixture
+ * deliberately installed before this one — and otherwise fails closed, because the alternative is a
+ * test suite that quietly talks to the internet. */
 const wires = new Map<string, (init: RequestInit) => Promise<Response>>();
+const network = globalThis.fetch; // the process's real fetch, captured before any fixture stubs it
 let replaced: typeof globalThis.fetch | undefined;
 let wireCount = 0;
 function install(origin: string, wire: (init: RequestInit) => Promise<Response>) {
@@ -87,7 +82,9 @@ function install(origin: string, wire: (init: RequestInit) => Promise<Response>)
   replaced = globalThis.fetch;
   globalThis.fetch = (async (url: unknown, init: RequestInit) => {
     const wired = wires.get(new URL(String(url)).origin);
-    return wired ? wired(init) : replaced!(url as never, init as never);
+    if (wired) return wired(init);
+    if (replaced === network) throw new Error(`test host: refusing to reach ${new URL(String(url)).origin}; no stub answers it`);
+    return replaced!(url as never, init as never);
   }) as typeof globalThis.fetch;
 }
 function uninstall(origin: string) {
@@ -97,7 +94,29 @@ function uninstall(origin: string) {
   replaced = undefined;
 }
 
-export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension } = {}) {
+/** `PI_CODING_AGENT_DIR` is process-wide and several cases run two hosts at once, so the fixture
+ * borrows it rather than owning it: the first live host remembers what was there, each host points
+ * it at its own agent directory, and the last one to be disposed puts the original value back —
+ * including a value that was absent, and including a host whose shutdown threw. */
+const agentDirs: string[] = [];
+let borrowedAgentDir: string | undefined;
+function claimAgentDir(agentDir: string) {
+  if (!agentDirs.length) borrowedAgentDir = process.env.PI_CODING_AGENT_DIR;
+  agentDirs.push(agentDir);
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+}
+function releaseAgentDir(agentDir: string) {
+  const at = agentDirs.lastIndexOf(agentDir);
+  if (at < 0) return;
+  agentDirs.splice(at, 1);
+  const still = agentDirs.at(-1);
+  if (still !== undefined) { process.env.PI_CODING_AGENT_DIR = still; return; }
+  if (borrowedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = borrowedAgentDir;
+  borrowedAgentDir = undefined;
+}
+
+export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
   const origin = `https://fake-${wireCount++}.invalid`;
   // Pi settings the child reads through its own SettingsManager (19c gate 6): a fast, deterministic
@@ -108,7 +127,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
     i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key", api,
       models: ["test", "test-mini"].map(id => ({ id, name: `Test ${id}`, reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
-  process.env.PI_CODING_AGENT_DIR = agentDir;
+  claimAgentDir(agentDir);
   const native = () => options.native?.();
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
@@ -214,21 +233,31 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // settles), and return immediately when a scripted reply is being held open by the test.
   // After shutdown the footer is frozen (showSpend returns early once the executor is closed), so the
   // indicator says nothing about work in flight.
+  //
+  // This is the wait for "whatever this host still has to do", and it still reads the indicator
+  // because nothing else in reach says the same thing: the open task claim, the obvious candidate,
+  // outlives a cancelled child and is released before a scheduled retry ends. A test that knows its
+  // own completion condition — a request sent, a fact committed, a run recorded — states it with
+  // `vi.waitFor` on that condition instead, as the native cases already do.
   const busy = () => !shuttingDown && /<(accent|success)>●</.test(statuses.get("trace-memory") ?? "");
   // `setImmediate`, not `setTimeout`: two 17c cases install fake timers, and the check phase still
   // lets Pi's own timers, file I/O and the stubbed wire run. Wall-clock comes from `performance`,
   // which those cases do not fake.
+  const BUDGET = 5_000;
+  /** Wait out this host's in-flight work. Exhausting the budget is a failure, not a quiet return: a
+   * wait that gave up must say so instead of letting the case continue as if the work had settled. */
   const drain = async () => {
     const started = performance.now();
     let idleSince = started, seen = activity;
-    while (performance.now() - started < 5_000) {
+    while (performance.now() - started < BUDGET) {
       await new Promise(r => setImmediate(r));
       if (busy() || activity !== seen) { seen = activity; idleSince = performance.now(); }
       else if (performance.now() - idleSince > 10) return;
       // A scripted reply held open by the test keeps its phase busy forever; give any sibling phase
       // time to reach the wire too, then hand control back.
-      if (inflight > 0 && performance.now() - started >= 150) return;
+      if (inflight + (options.inflight?.() ?? 0) > 0 && performance.now() - started >= 150) return;
     }
+    throw new Error(`test host: work was still in flight after ${BUDGET}ms of draining`);
   };
   const prompt = async (prompt = "用 pnpm，不要 npm") => {
     const result = await emit("before_agent_start", { prompt, systemPrompt: "host" });
@@ -238,8 +267,12 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   };
   const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); };
   const turn = async () => { await prompt(); await answer(); await emit("agent_settled"); await drain(); };
-  const dispose = async () => { await emit("session_shutdown", { reason: "quit" }); memory.close();
-    if (stubbed) uninstall(origin); rmSync(dir, { recursive: true, force: true }); };
+  // Cleanup this fixture owns runs whether or not the shutdown hook succeeded: a host that failed to
+  // shut down must still give the process-wide agent directory back.
+  const dispose = async () => {
+    try { await emit("session_shutdown", { reason: "quit" }); memory.close(); if (stubbed) uninstall(origin); }
+    finally { releaseAgentDir(agentDir); rmSync(dir, { recursive: true, force: true }); }
+  };
   return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }

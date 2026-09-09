@@ -7,11 +7,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, toolDefinitions, type NotingAgentInput } from "../../source-fixture.ts";
 import { countRunBodies } from "../../perf/fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let directory: string, dbPath: string, memory: ReturnType<typeof TraceMemory>;
+let directory: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: NotingAgentInput[], renders: number;
 let sessionId: number, turnId: number;
 
@@ -20,7 +20,7 @@ let sessionId: number, turnId: number;
  * render counter that needs no production hook. */
 function open(entries = 6) {
   calls = []; renders = 0;
-  memory = TraceMemory(dbPath, async input => { calls.push(input as NotingAgentInput); return { outcome: "success", output: "", request: { probe: true } }; },
+  memory = sourceSeededMemory(dbPath, async input => { calls.push(input as NotingAgentInput); return { outcome: "success", output: "", request: { probe: true } }; },
     {}, result => { renders++; return { text: result }; });
   const project = memory.store.createProject({ name: "capacity", declaredBy: "mark" });
   sessionId = memory.store.createSession({ host: "test", startedAt: time, firstReplyAt: time, projectId: project.id, enrollmentChoice: true }).id;

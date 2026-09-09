@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, type ToolDefinition } from "../../source-fixture.ts";
+import { sourceSeededMemory, type ToolDefinition } from "../../source-fixture.ts";
 
-let memory: TraceMemory, note: ToolDefinition;
+let memory: ReturnType<typeof sourceSeededMemory>, note: ToolDefinition;
 const fact = (extra = {}) => ({ category: "observation", actor: "user", text: "Use pnpm.", source: ["T1#user"], ...extra });
 beforeEach(() => {
-  memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
+  memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
   const p = memory.store.createProject({ name: "p", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use pnpm.", assistantText: "Done.", startedAt: "source time" });

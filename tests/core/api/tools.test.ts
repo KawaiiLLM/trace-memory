@@ -1,14 +1,14 @@
 import { recorded } from "../../source-fixture.ts";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
+import { sourceSeededMemory, toolRejected, type NotingAgentInput, type RunAgent, type ToolContext } from "../../source-fixture.ts";
 
-let memory: TraceMemory, agent: RunAgent;
+let memory: ReturnType<typeof sourceSeededMemory>, agent: RunAgent;
 const fact = (source = "T1#user", extra = {}) => ({ category: "observation", actor: "user", text: "project evidence", source: [source], ...extra });
 const manual = (sessionId = 1, currentTurnId = 1, branch = "main"): ToolContext => ({ kind: "manual", sessionId, currentTurnId, branch });
 const record = () => memory.noting({ sessionId: 1, branch: "main", headTurnId: 1 });
 beforeEach(() => {
   agent = async () => ({ outcome: "success", output: "", request: {} });
-  memory = TraceMemory(":memory:", raw => agent(raw));
+  memory = sourceSeededMemory(":memory:", raw => agent(raw));
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
   memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: project.id, startedAt: "now", firstReplyAt: "now" });
   memory.store.appendTurn({ sessionId: 1, kind: "turn", userPrompt: "project evidence", assistantText: "done", startedAt: "first source time" });
@@ -175,4 +175,23 @@ test("branch facts apply the full-source path rule: a fact citing a turn off the
   memory.tools(manual(1, 2))[2]!.execute({ facts: [fact("T1#user", { source: ["T1#user", "T2#user"] })] });
   expect(memory.store.listBranchFacts(1, "main", 2).map(f => f.id)).toEqual([1]);
   expect(memory.store.listBranchFacts(1, "main", 1)).toEqual([]); // T2 is not on the path that ends at T1
+});
+
+test("one reading of the model-facing result: a `rejected:` receipt and a batch `results` entry, for every consumer", () => {
+  // The wire format is unchanged; what is shared is its interpretation. Both Pi adapters and the
+  // test host classify a tool result through this one function instead of re-deriving the format —
+  // core produces both spellings here, so a change to either has one place to make it.
+  expect(toolRejected("trace", "rejected: unknown or expired cursor")).toBe(true);
+  expect(toolRejected("trace", "[F1] a fact line")).toBe(false);
+  // A batch writer answers with JSON: one rejected entry makes the whole call a refusal.
+  expect(toolRejected("note", JSON.stringify({ results: ["ok: F1", "rejected: invalid source"] }))).toBe(true);
+  expect(toolRejected("memory", JSON.stringify({ results: ["ok: K1@1"] }))).toBe(false);
+  // Only the batch writers speak that JSON; a read tool's body that happens to contain it does not.
+  expect(toolRejected("search", JSON.stringify({ results: ["rejected: not mine"] }))).toBe(false);
+  expect(toolRejected("note", "not json at all")).toBe(false);
+  // The real receipts a run produces, classified the same way.
+  const [trace, , note] = memory.tools(manual());
+  expect(toolRejected("trace", trace!.execute({ address: "F404" }))).toBe(true);
+  expect(toolRejected("note", note!.execute({ facts: [fact("T9#user")] }))).toBe(true);
+  expect(toolRejected("note", note!.execute({ facts: [fact()] }))).toBe(false);
 });

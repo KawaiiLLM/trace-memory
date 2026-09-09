@@ -8,17 +8,17 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CONSOLIDATED_TITLE, FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
-import { TraceMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
+import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
-let directory: string, memory: ReturnType<typeof TraceMemory>;
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: (NotingAgentInput | ConsolidationAgentInput)[];
 let runAgent: (input: NotingAgentInput | ConsolidationAgentInput) => Promise<RunAgentResult>;
 const time = "2026-09-08T00:00:00Z";
 const notingPrompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
 
 function open() {
-  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     calls.push(input);
     return runAgent(input);

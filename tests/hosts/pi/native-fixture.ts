@@ -29,15 +29,19 @@ export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "N
 export async function fixture(config: Record<string, unknown> = {}, provider = "fake") {
   const sent: Body[] = [];
   let respond: (body: Body, index: number) => Response | Promise<Response> = () => say("Done.");
+  // Requests this fixture is still answering. A case that holds a reply open holds one here, and
+  // `host`'s `drain` needs to see it: a worker kept open on purpose is not a wait that failed.
+  let inflight = 0;
   vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
     const body = JSON.parse(String(init.body));
     sent.push(body);
-    return respond(body, sent.length - 1);
+    inflight++;
+    try { return await respond(body, sent.length - 1); } finally { inflight--; }
   }));
   let manager: SessionManager | undefined;
   // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
   // the child the adapter builds.
-  const h = host({ "noting.triggerTokens": 20, ...config }, { native: () => manager as never, fetch: false });
+  const h = host({ "noting.triggerTokens": 20, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
   // 24c: the parent lives where real Pi puts a foreground session — one directory level under the
   // agent's own sessions root — so the worker logs the host writes are its siblings, exactly as they
   // are in production, and an external reader of that root sees the same tree a user would have.

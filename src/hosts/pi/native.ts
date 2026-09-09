@@ -10,7 +10,7 @@ import { mkdirSync } from "node:fs";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager,
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
-import type { ToolDefinition } from "../../core/api/index.ts";
+import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
 
 export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
 
@@ -84,16 +84,6 @@ export interface NativeResult {
 
 const text = (message: { content?: unknown }): string => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter((c: { type?: string }) => c.type === "text").map((c: { text?: string }) => c.text ?? "").join("\n") : "";
-
-// A rejection receipt is not a commit.
-const rejected = (name: string, content: string): boolean => {
-  if (content.startsWith("rejected:")) return true;
-  if (name !== "note" && name !== "memory") return false;
-  try {
-    const { results } = JSON.parse(content);
-    return Array.isArray(results) && results.some((r: unknown) => typeof r === "string" && r.startsWith("rejected:"));
-  } catch { return false; }
-};
 
 /** The SDK's stand-in usage on an errored or cancelled response: every counter zero or absent. */
 export function placeholderUsage(usage: unknown): boolean {
@@ -251,7 +241,8 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       let content: string;
       try { content = bound.execute(raw); }
       catch (error) { content = `rejected: ${String(error)}`; }
-      if (!rejected(tool.name, content)) committed ||= tool.name === "note" || tool.name === "memory";
+      // A rejection receipt is not a commit.
+      if (!toolRejected(tool.name, content)) committed ||= tool.name === "note" || tool.name === "memory";
       const review = task.feedback?.(content);
       // Consolidation's review round: a native user message, queued as steering so the child
       // reads it before its next model call. The two-submission protocol stays in core.
