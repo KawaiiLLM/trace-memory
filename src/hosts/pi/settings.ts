@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { CONFIG_ALIASES, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
+import { THINKING_LEVELS } from "./native.ts";
 
 /** The section of a Pi settings file this extension owns, and its status/entry identity in the host. */
 export const tag = "trace-memory";
@@ -24,7 +25,12 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // (default since 24c: `<Pi agent directory>/sessions/trace-memory`). 19c deleted `nativeRunner`:
 // the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
 // rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
-const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
+// 26d added `notingThinking`/`consolidationThinking`: each phase's configured worker thinking level,
+// `inherit` (the default) or one of Pi's own levels. Subagent execution only — a fork keeps
+// inheriting the foreground level 26b freezes, so its request prefix still matches the parent's.
+const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir", "notingThinking", "consolidationThinking"];
+export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
+const thinkingKeys = ["notingThinking", "consolidationThinking"];
 /** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
  * typed against its default, unknown keys and misspellings rejected by name, host strings required to
  * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
@@ -45,6 +51,9 @@ export function parseLayer(flat: FlatConfig, named: (key: string) => string = ke
   for (const key of Object.keys(flat)) if (key !== "closedSessionScope" && !hostStrings.includes(key) &&
     !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as "render" | "noting" | "consolidation"], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
   for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
+  // 26d: an unrecognized level is rejected by name with the accepted list, never normalized silently.
+  for (const key of thinkingKeys) if (flat[key] !== undefined && !thinkingChoices.includes(flat[key] as string))
+    throw new Error(`Invalid ${named(key)}: expected one of ${thinkingChoices.join(", ")}`);
   validateConfig(core);
   return core;
 }
@@ -107,18 +116,21 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 // Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
 // No advanced editor or second scheduling mechanism. Ticket 25 amendment 2 withdrew 24b's
 // Consolidator-mode entry: that phase has no mode to choose, so three preferences remain here.
-export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" } | { phase: "noting" | "consolidation"; kind: "model" } | { phase?: never; kind: "scope" });
+// 26d added each phase's thinking level beside its model, on the same select-and-write path.
+export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" } | { phase: "noting" | "consolidation"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
   { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
+  { name: "Noter thinking", key: "notingThinking", phase: "noting", kind: "thinking" },
   { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
+  { name: "Consolidator thinking", key: "consolidationThinking", phase: "consolidation", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
 // Noting stores "runs in fork mode": one preference reads that boolean without inventing a second
 // spelling of the same choice.
 export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
-  : p.kind === "model" ? "session" : DEFAULT_CONFIG.noting.forkModeDefault;
+  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : DEFAULT_CONFIG.noting.forkModeDefault;
 export const preferenceValue = (flat: FlatConfig, p: Preference) => flat[p.key] ?? preferenceDefault(p);
 export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
   : raw === "session" ? "follow foreground" : String(raw);
@@ -134,8 +146,11 @@ export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sou
   const { flat, sources, layers } = loaded;
   const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[p.key] && Object.hasOwn(values, p.key))
     .map(([layer, values]) => `${layer}=${shownValue(p, values[p.key])} masked`);
-  // Fork mode has no model of its own: the child inherits the foreground model, so the saved
-  // subagent preference is shown but never presented as the model this phase would use now.
-  const inherited = p.kind === "model" && configuredMode(flat, p.phase) === "fork" ? `; fork mode inherits the foreground model ${foregroundModel}` : "";
+  // Fork mode has no model and (26d) no thinking level of its own: the child inherits the
+  // foreground's, so the saved subagent preference is shown but never presented as what this phase
+  // would use now.
+  const forks = (p.kind === "model" || p.kind === "thinking") && configuredMode(flat, p.phase) === "fork";
+  const inherited = !forks ? "" : p.kind === "model" ? `; fork mode inherits the foreground model ${foregroundModel}`
+    : "; fork mode inherits the foreground thinking level";
   return `${p.name}: ${shownValue(p, preferenceValue(flat, p))} (${sources[p.key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${inherited}`;
 };

@@ -248,6 +248,9 @@ export interface TaskOptions {
    * Opaque to core, which only hands it back with the frozen task; the host's runtime resolves and
    * clamps it. Absent when the host has no such notion. */
   thinkingLevel?: string;
+  /** 26d: the second level the host froze, for the same task's fresh-context execution (its own
+   * setting, or the inherited one). Equally opaque: core carries it and never reads it. */
+  subagentThinkingLevel?: string;
 }
 export interface AgentControl {
   signal?: AbortSignal;
@@ -255,6 +258,8 @@ export interface AgentControl {
   /** 26b: the level frozen at admission (`TaskOptions.thinkingLevel`), returned to the host with the
    * frozen task so a level changed while the run is in flight cannot reach it. */
   thinkingLevel?: string;
+  /** 26d: the same, for the task's fresh-context execution (`TaskOptions.subagentThinkingLevel`). */
+  subagentThinkingLevel?: string;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -521,7 +526,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel,
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | undefined;

@@ -23,7 +23,8 @@ export class NotForkable extends Error {
 
 /** Pi's own thinking levels — `ThinkingLevel` in `@earendil-works/pi-agent-core`, which the
  * coding-agent package this adapter depends on does not re-export. */
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+export type ThinkingLevel = typeof THINKING_LEVELS[number];
 
 interface NativeCommon {
   runsDir: string;

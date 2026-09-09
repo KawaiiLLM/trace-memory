@@ -70,7 +70,8 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
       // 26b: the level the host froze with this task at admission, carried by the frozen task itself
       // (core keeps it opaque), so a foreground switch after admission reaches neither this run's
-      // later rounds nor its fallback.
+      // later rounds nor its fallback. This is the *inherited* one, which the fork run below keeps
+      // (26d): a fork's request prefix has to stay the captured parent's.
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
@@ -107,7 +108,11 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // the runs directory. A child that cannot be constructed at all is a run failure with a reason
     // (the outer catch below): there is no second runtime to fall back to, and the queue stays
     // pending for the next permitted trigger.
-    const native = await runNative({ ...common, mode: "subagent", systemPrompt: task.prompt, task: task.text.fresh });
+    // 26d: a fresh child thinks at the phase's own frozen subagent level — the configured preference
+    // when it is not `inherit`, the inherited foreground level otherwise (the host resolves that at
+    // admission; a host that froze only one level keeps 26b's single-level behaviour here).
+    const native = await runNative({ ...common, thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
+      mode: "subagent", systemPrompt: task.prompt, task: task.text.fresh });
     mode = "subagent";
     usage = native.usage; request = native.request ?? request;
     retries.splice(0, retries.length, ...native.retries);

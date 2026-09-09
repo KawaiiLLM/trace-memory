@@ -174,8 +174,13 @@ test("18a/24b, as 25b left it: Settings shows the three preferences with their e
   expect(shown).toEqual([
     "Noter mode: fork (Project); Global=subagent masked",
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
-    // The Consolidator runs as a subagent, so its model is never annotated with an inheriting mode.
+    // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here
+    // for the same reason the model line does.
+    "Noter thinking: inherit (Default); fork mode inherits the foreground thinking level",
+    // The Consolidator runs as a subagent, so neither its model nor its level is ever annotated
+    // with an inheriting mode.
     "Consolidator model: fake/test (Global)",
+    "Consolidator thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
