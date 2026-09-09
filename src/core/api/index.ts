@@ -273,7 +273,12 @@ export interface TraceMemory {
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
-  status(sessionId: number): string;
+  status(sessionId: number, branch?: string, headTurnId?: number | null): string;
+  /** Ticket 24a: the four footer counts of one session's selected branch and head — entries still to
+   * note, applicable committed facts, those not yet consolidated, and applicable current knowledge.
+   * Progress/applicability queries over one path snapshot: no Raw, no tokenizing, no freeze, no run
+   * body, and pending work stays pending until its business commit. */
+  progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number; knowledge: number };
   /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
   spend(sessionId: number): { runs: { noting: number; consolidation: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }

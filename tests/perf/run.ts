@@ -83,8 +83,9 @@ async function disabledHost(fixture: Fixture, size: string): Promise<Sample[]> {
     await time("host before_provider_request (disabled)", "before_provider_request", { payload: { messages: [] } });
     if (h.requests.length) throw new Error("the performance suite made a provider request");
     const status = h.statuses.get("trace-memory") ?? "";
-    if (!status.includes("Disabled")) throw new Error(`disabled footer does not say Disabled: ${status}`);
-    samples.push({ name: `  footer text: ${status}`, cold: NaN, warm: NaN, p95: NaN, reads: 0, note: "" });
+    // 24a: the off footer is the compact line, and it counts nothing at all.
+    if (!/^🧠 .*○ off/.test(status)) throw new Error(`disabled footer is not the off line: ${status}`);
+    samples.push({ name: `  footer text: ${status}`, cold: NaN, warm: NaN, p95: NaN, reads: 0, note: "off session" });
   } finally {
     counter.restore();
     await h.dispose();
@@ -407,11 +408,15 @@ async function runSize(size: string) {
     measure("pendingEntries (whole selected path)", () => store.pendingEntries(fixture.sessionId, fixture.branch, head)),
     measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }, "subagent"),
       `${fixture.pendingEntryCount} pending entries`),
+    // 24a: the enabled footer's whole refresh — the four counts as one core progress query over one
+    // path snapshot, plus this session's cumulative spend. The 22a scenario measured the three reads
+    // the old two-number footer made; this is its successor at the same place in the table.
     measure("footer counts (enabled)", () => {
-      store.listBranchFacts(fixture.sessionId, fixture.branch, head).length;
-      store.listCurrentKnowledge({ sessionId: fixture.sessionId, headTurnId: head }).length;
+      memory.progress(fixture.sessionId, fixture.branch, head);
       memory.spend(fixture.sessionId);
-    }, "the three reads showSpend makes"),
+    }, "the two reads showSpend makes: progress (4 counts) + spend"),
+    measure("footer progress alone (enabled)", () => memory.progress(fixture.sessionId, fixture.branch, head),
+      `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory ${store.consolidationBatch(fixture.sessionId, fixture.branch, head).length}->${store.listCurrentKnowledge({ sessionId: fixture.sessionId, headTurnId: head, branch: fixture.branch }).length}`),
     // 22c: one full tool occurrence inside the Turn with 40 tool calls.
     measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
       `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),

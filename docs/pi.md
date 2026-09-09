@@ -322,8 +322,8 @@ removed keys fail by name. Counts and token limits require positive safe integer
 `maxToolRounds` retains its documented zero-unlimited sentinel, and `nearThreshold`
 is a similarity in [0,1]. Mode settings require booleans. Impossible view capacity
 still fails with a capacity message and retains pending sources. Changing `dbPath`
-requires reloading the extension. The footer adds `Disabled` to its existing shape;
-Enabled but idle retains the dim hollow indicator without that label.
+requires reloading the extension. A disabled session's footer is the compact
+`🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow indicator and its counts.
 
 ## Compaction tiers and the post-compaction boundary (20c)
 
@@ -974,18 +974,72 @@ The host therefore publishes one footer status item through
 which a statusline extension renders as a segment:
 
 ```text
-🧠 <indicator> trace-memory 7/38 $22.58
+🧠 <indicator> notes: 24->102 memory: 15->54 cost: $0.12
 ```
 
-The ratio is the applicable current knowledge over the facts on this branch; the
-amount is this session's cumulative spend at the model's configured API rates
-(Pi's own cost formula).
+Every number describes the current memory session's **selected branch and head**
+(24a). The two arrows are stage inputs and existing outputs, not percentages and
+not expected model-request counts:
 
-The indicator uses Pi theme colours: dim `○` idle, accent `●` a Noting run in
-flight, success `●` an Consolidation run in flight, warning `●` a fork Noting
-paused until the next prompt delivers or the last run committed with problems,
-error `●` the last run failed. `/trace` prints the session's breakdown by run
-kind. Tree switching contributes no extraction usage to Pi totals.
+| Field | Left of the arrow | Right of the arrow |
+|---|---|---|
+| `notes` | imported source entries no Noting run has committed yet | every committed fact applicable on this branch, already consolidated ones included |
+| `memory` | those applicable facts Consolidation has not taken on this path | applicable current knowledge, counted in current-tip units, so two divergent tips of one identity are two items |
+| `cost` | — | this session's cumulative memory-run spend at the model's configured API rates (Pi's own cost formula) |
+
+A disabled session shows the compact line `🧠 ○ off`, with no counting at all;
+the stored counts and diagnostics stay available under Current session, which
+also prints them as a `Pending:` line. A value that cannot be read is `?` — an
+unknown is never a fabricated zero — and a Pi session that has not yet allocated
+a memory identity shows `notes: ?->? memory: ?->? cost: $?` and says so in its
+status details rather than claiming four zeros.
+
+The counts describe **imported evidence**. A disabled interval may hold native
+history that was never imported, so a zero is not proof that every available
+native message has been processed; enabling imports the paused interval through
+the ordinary path and the counts then say so. Work stays pending until its
+business commit: an admitted or running batch is still pending, a precommit
+failure or a cancellation advances nothing, and a provider failure *after* the
+commit restores nothing. A nonzero queue below its token trigger is idle, not a
+failure and not a request to drain.
+
+`cost` is this session's cumulative memory spend and nothing else: work another
+executor performed for this session counts, work this executor performed for a
+borrowed session is charged to that session. A statusline's own daily aggregate
+is a separate number over other sessions and the foreground; the two are not
+added together and this one is not today's total.
+
+The indicator is a Pi theme role, never a literal colour, in one precedence: off,
+active retry, running Noting, running Consolidation, last failure, last warning,
+idle. If both phases run, Noting is shown.
+
+| State | Indicator | Theme role |
+|---|---|---|
+| Off | `○ off` | `dim` |
+| Enabled, idle | `○` | `dim` |
+| Noting running | `●` | `accent` |
+| Consolidation running | `●` | `success` |
+| Retrying, blocked on a launch condition, or committed with problems | `●` | `warning` |
+| Last task failed | `●` | `error` |
+
+The indicator describes this executor, including while it works on a borrowed
+target; the counts and the cost stay this session's. Where colour support is
+absent the same line is printed unpainted. Merely staying below a trigger never
+turns it yellow, and colour is not the only way to find a condition: status
+details explain warnings, the actual fallback mode and the target of active work.
+
+A refresh costs a status refresh. The four counts are one core progress query
+over one path snapshot (22a) and the pending-entry identities (22b); it renders
+no Raw, tokenizes nothing, freezes no task and loads no run audit body, and
+spend projects usage in SQL. There is no timer and no polling scheduler: the
+existing lifecycle, commit, control and status points refresh it — session
+start and restore, tree switch, `tool_result`, `agent_end`, `agent_settled`,
+every phase admission and settle, a scheduled retry, a run's outcome, and the
+enable/disable/stop/retry-fork controls. Streaming `message_update` deltas do
+not. Another connection's commits therefore appear at the next refresh.
+
+`/trace` prints the session's breakdown by run kind. Tree switching contributes
+no extraction usage to Pi totals.
 
 ## Known limits
 

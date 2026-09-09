@@ -49,7 +49,7 @@ test("18a 2026-09-08: provisional toggle, cancel, menu parity and headless statu
   expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
   h.answers.push("Current session", "Disable", true); await command(h, "");
   expect(h.memory.status(1)).toContain("Disabled (explicit choice)");
-  expect(h.statuses.get("trace-memory")).toContain("trace-memory Disabled");
+  expect(h.statuses.get("trace-memory")).toBe("🧠 <dim>○ off</dim>"); // 24a: the off footer is the compact form
   await command(h, "enable"); expect(h.memory.status(1)).toContain("Enabled (explicit choice)");
 });
 
