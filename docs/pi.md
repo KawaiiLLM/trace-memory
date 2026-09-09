@@ -163,8 +163,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
   another eligible completion.
-  This is also the one effective Raw ceiling compact measures its pending views against; there is no
-  second Raw knob. The effective batch also reserves instructions, knowledge, tools, output and the
+  It bounds this phase only: since 25c compact measures its pending views against
+  `render.episodicBlockTokens` instead, so changing this key does not change what compaction keeps.
+  The effective batch also reserves instructions, knowledge, tools, output and the
   existing context: the host uses the model context window with a 15% estimation
   margin and reserves its output limit. An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity also leaves work pending.
@@ -442,9 +443,17 @@ but never incomplete. `memory.compact(...)` returns a tier rather than a string:
 
 | Tier | When | What the adapter returns |
 |---|---|---|
-| `primary` | every pending entry's normal shared view fits `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
-| `secondary` | the tier-1 views miss a cap but the tier-2 views of *all* the same entries fit | the text, as `compaction.summary` |
+| `primary` | every pending entry's normal shared view, with the framing, fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
+| `secondary` | the tier-1 views miss that envelope but the tier-2 views of *all* the same entries fit | the text, as `compaction.summary` |
 | `native` | not even the tier-2 views fit, or an entry's minima exceed the tier-2 `E` | nothing at all, with a reason naming the cap and the overage |
+
+Ticket 25 amendment 3 (25c) removed the inner `noting.batchTokens` cap on that pending
+Raw. Compaction's budgets are the knowledge block within `render.knowledgeBlockTokens`
+(10,000) and pending Raw plus historical facts sharing `render.episodicBlockTokens`
+(20,000), Raw and its framing reserved first: facts may receive none of the envelope, and
+with nothing pending they may use all of it. The total is unchanged, a backlog between
+10,000 and 20,000 tokens now stays in tier 1, and `noting.batchTokens` keeps its one
+meaning — the Noter's batch ceiling.
 
 Tier 2 is the same entry renderer under the tier-2 profile (ticket 23, superseding 20c's
 separate compact-only renderer and its version constant): `render.secondaryToolCallTokens`

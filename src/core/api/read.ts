@@ -231,10 +231,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const knowledge = store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch);
       const facts = store.listSessionFacts(sessionId);
       const factTurns = store.factTurnTimes(facts);
-      const caps = { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens };
+      // Ticket 25, amendment 3 (25c): compaction's two budgets are the knowledge cap and the shared
+      // episodic envelope, and nothing else. `noting.batchTokens` is no longer an inner ceiling on the
+      // pending Raw here — it is the Noter's batch ceiling, and a foreground backlog is not a batch —
+      // so `caps.current` is omitted and the whole envelope is available to Raw. Raw and its framing
+      // are still reserved first (`budgetMaterial` charges them before it fills), so historical facts
+      // take only what is left, down to none of it; with nothing pending they may take all of it.
+      const caps = { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens };
       // 4. Recheck the whole block: one accounting for both tiers. Identities, labels, retained tool
-      //    names, excerpts and omission markers are charged exactly as normal material is — the inner
-      //    ceiling for the joined views, the enclosing episodic budget for the framing around them.
+      //    names, excerpts and omission markers are charged exactly as normal material is, all of them
+      //    inside the one episodic budget that holds the views and the framing around them.
       const build = (views: { content: string; receipts: string[] }[], title: string) => {
         const budgeted = budgetMaterial({ knowledge, knowledgeLine, current: views.map((v) => v.content).join(BLOCK),
           framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), factTurns, caps });
@@ -242,16 +248,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           entries: pending.map((entry, i) => ({ id: entry.id, view: views[i]!.content })),
           receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title) };
       };
-      // 2. Try normal views: the shared primary views, against the shared Raw ceiling
-      //    (`noting.batchTokens`, not a second knob) and the episodic budget. No batch selector here —
-      //    the whole pending set is represented or this tier does not apply.
+      // 2. Try normal views: the shared primary views against the episodic envelope alone. No batch
+      //    selector here — the whole pending set is represented or this tier does not apply — and a
+      //    backlog between `noting.batchTokens` and that envelope now stays in tier 1 (25c).
       // A primary view that cannot hold its own labels is a capacity failure of tier 1, not of compact:
       // tier 2 is tried next. Any other rendering error is a data error and is reported (review 2026-09-08).
       let primaryViews: { content: string; receipts: string[] }[] | undefined;
       try { primaryViews = pending.map((e) => renderEntry(e, config.render, resultText)); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
       const primary = primaryViews && build(primaryViews, RAW_TITLE);
-      if (primary && !primary.over.current && !primary.over.episodic) return { tier: "primary", text: primary.text };
+      if (primary && !primary.over.episodic) return { tier: "primary", text: primary.text };
       // 3. Try tier 2: the same renderer under the tier-2 profile (ticket 23, superseding 20c's
       //    separate compact-only renderer), still every selected entry, still deterministic and local.
       //    An entry whose minima that tighter `E` cannot hold is a capacity failure of tier 2, and the
@@ -261,12 +267,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       let secondary: ReturnType<typeof build> | undefined;
       try { secondary = build(pending.map((e) => renderEntry(e, profile, resultText)), title); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      if (secondary && !secondary.over.current && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
+      if (secondary && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
       // 5. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
       //    can miss the cap even here. Ask for native compaction with the reason instead of hiding
-      //    entries, falsifying a receipt or relaxing the cap to force a success.
+      //    entries, falsifying a receipt or relaxing the cap to force a success. Since 25c there is
+      //    one cap left to miss, so the reason names the envelope or the tier-2 entry budget.
       const missed = !secondary ? `the tier-2 entry budget: their labels and omission markers exceed ${profile.entryTokens} tokens`
-        : secondary.over.current ? `the raw ceiling by ${secondary.over.current} tokens (cap ${caps.current})`
         : `the episodic budget by ${secondary.over.episodic} tokens (cap ${caps.episodic})`;
       return { tier: "native", reason: `tier-2 views of ${pending.length} pending entries exceed ${missed}` };
     },

@@ -19,8 +19,12 @@ const work = async (h: ReturnType<typeof host>, text: string) => { h.persist(rep
 test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summary and names the tier in its own diagnostics", async () => {
   const h = host(quiet);
   try {
-    await h.prompt("HEAD " + "word ".repeat(12_000) + " TAIL");
-    await h.answer();
+    // 25c: tier 1 now holds pending Raw up to `render.episodicBlockTokens` (20,000) and one entry view
+    // is worth at most `render.entryTokens` (10,000), so three such prompts are what escalates.
+    for (const head of ["HEAD", "SECOND", "THIRD"]) {
+      await h.prompt(`${head} ` + "word ".repeat(12_000) + " TAIL");
+      await h.answer();
+    }
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     // The custom entry names the view version and the profile its views were rendered under (23).
     expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v2-pi-lines, tool call budget 100 tokens, entry budget 1000 tokens):");
@@ -34,11 +38,14 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
 });
 
 test("20c 2026-09-08 scenario 11: the host returns no custom replacement when compact delegates, and an attempt that never persists establishes no boundary", async () => {
-  // Many tiny entries: their primary views together exceed the Raw ceiling, and their secondary views
-  // — each carrying its identity header — exceed it too, so even tier 2 cannot represent them all.
-  // Each entry alone still fits a batch, so a Noter can run afterwards (review 2026-09-08: a budget the
-  // mandatory material cannot fit reduces or holds the task rather than running over it).
-  const h = host({ ...eager, "noting.batchTokens": 300 });
+  // Many tiny entries: their primary views together exceed the episodic envelope, and their secondary
+  // views — each carrying its identity header — exceed it too, so even tier 2 cannot represent them
+  // all. 25c: that envelope is the only budget compact measures against, so this session is built by
+  // lowering `render.episodicBlockTokens` rather than the Noter's batch ceiling, which compact no
+  // longer reads. Each entry alone still fits a batch, so a Noter can run afterwards (review
+  // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
+  // running over it).
+  const h = host({ ...eager, "noting.batchTokens": 300, "render.episodicBlockTokens": 200 });
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }

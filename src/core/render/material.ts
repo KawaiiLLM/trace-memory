@@ -113,12 +113,15 @@ const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.t
  * | Component                                                   | Budget |
  * | ----------------------------------------------------------- | ------ |
  * | knowledge block, its category tags, its omission receipts    | `caps.knowledge` |
- * | selected current material: entry views or pending fact lines, with their own labels, omission markers and joining separators | `caps.current` |
+ * | selected current material: entry views or pending fact lines, with their own labels, omission markers and joining separators | `caps.current`, when the consumer has one |
  * | block titles, the range line, mandatory cues, block receipts, historical facts | `caps.episodic` |
  *
  * A consumer that emits no knowledge block and no historical facts omits those inputs rather than
- * passing empty ones, and pays for neither. The current material and the mandatory cues are reserved
- * first; historical facts fill the rest in the existing freshness order, never past `history`.
+ * passing empty ones, and pays for neither; a consumer whose current material has no ceiling of its
+ * own beyond the enclosing envelope omits `caps.current` the same way (25c: compaction's pending Raw,
+ * which is bounded only by the shared episodic envelope it is reserved out of). The current material
+ * and the mandatory cues are reserved first; historical facts fill the rest in the existing freshness
+ * order, never past `history`.
  * Selected evidence is never dropped to make room: a current material over its own ceiling, or
  * mandatory material over the episodic budget, is receipted, and reducing the task is the phase's own
  * oldest-first re-freeze (`freezeNoting`, `freezeConsolidation`). */
@@ -138,7 +141,11 @@ export interface MaterialBudget {
   facts?: Fact[];
   factLine?: (fact: Fact) => string;
   factTurns?: FactTurns;
-  caps: { knowledge?: number; episodic: number; current: number };
+  /** `current` is the inner ceiling of the selected current material. A consumer without one omits it
+   * (25c, parent amendment 3: compaction's pending Raw lost `noting.batchTokens` as an inner cap and
+   * is bounded by `episodic` alone), and then nothing here receipts or reports a current-material
+   * overage — the enclosing envelope is the only thing that can be missed. */
+  caps: { knowledge?: number; episodic: number; current?: number };
   /** What the current material is called in a receipt: Raw entries, or a Consolidation's range facts. */
   label?: "raw" | "range";
   /** The hard ceiling of the optional historical facts, independent of what the episodic budget would
@@ -156,8 +163,9 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
     : { groups: [] as KnowledgeGroup[], receipts: [] as string[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
+  const ceiling = input.caps.current; // absent: this consumer's current material has no inner cap (25c)
   const receipts: string[] = [];
-  if (current > input.caps.current) receipts.push(`${label} ceiling: ${current - input.caps.current} tokens over ${input.caps.current}; all ${kept} kept`);
+  if (ceiling !== undefined && current > ceiling) receipts.push(`${label} ceiling: ${current - ceiling} tokens over ${ceiling}; all ${kept} kept`);
   // The `Receipts:` heading `finish` emits is charged with the receipts (review 2026-09-08: every emitted
   // component counts, the heading included; it may be charged to both budgets, which over-counts safely).
   const receiptCost = (list: string[]) => list.length ? charge(list) + charge(["Receipts:"]) : 0;
@@ -175,7 +183,7 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
   return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts],
-    over: { current: Math.max(0, current - input.caps.current), episodic: Math.max(0, over) } };
+    over: { current: ceiling === undefined ? 0 : Math.max(0, current - ceiling), episodic: Math.max(0, over) } };
 }
 
 const block = (parts: string[]): string => parts.join(BLOCK);
