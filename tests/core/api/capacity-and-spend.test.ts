@@ -81,6 +81,41 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
   expect(tokens(run.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(run.text.fresh)).toBeLessThanOrEqual(generous);
 });
 
+// 27a: the host's half of the rule (`contextWindow - 10,000`) is pinned in tests/hosts/pi/capacity.test.ts.
+// This is core's half: whatever allowance it is handed, it admits material that exactly fits and
+// refuses the same material one token above it — for a fresh child and for an inherited one, whose
+// prefix is the host's context measure and is counted once.
+test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
+  const price = (input: NotingAgentInput, prefix = 0) =>
+    prefix ? prefix + tokens(input.prompt) + tokens(input.text.inherited!)
+      : tokens(input.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(input.text.fresh);
+  // What this batch costs, priced by the same terms the freeze prices it by.
+  expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
+  const whole = calls[0]!;
+  const fresh = price(whole);
+
+  // Each re-open seeds the same conversation as a new session in the same database, so the batches are
+  // compared by size and by price, not by entry id.
+  memory.close(); open();
+  expect((await noting({ inputTokens: fresh, prefixTokens: 0 })).outcome).toBe("success");
+  expect(calls[0]!.entryIds).toHaveLength(whole.entryIds.length); // equality: the whole batch, not a reduced one
+  expect(price(calls[0]!)).toBe(fresh);
+
+  memory.close(); open();
+  expect((await noting({ inputTokens: fresh - 1, prefixTokens: 0 })).outcome).toBe("success");
+  expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
+
+  // The same boundary for a fork, whose price adds the host's frozen context measure once.
+  const prefix = 20_000;
+  memory.close(); open();
+  const forked = { mode: "fork" as const, effectiveMode: "fork" as const };
+  expect((await noting({ inputTokens: price(whole, prefix), prefixTokens: prefix }, forked)).outcome).toBe("success");
+  expect(calls[0]!.entryIds).toHaveLength(whole.entryIds.length);
+  memory.close(); open();
+  expect((await noting({ inputTokens: price(whole, prefix) - 1, prefixTokens: prefix }, forked)).outcome).toBe("success");
+  expect(calls[0]!.entryIds.length).toBeLessThan(whole.entryIds.length); // one token more: refused, and reduced
+});
+
 test("22d: spend totals come from the recorded usage without loading a run's request or response body", async () => {
   expect((await noting()).outcome).toBe("success");
   const usage = { input: 1_200, output: 300, cacheRead: 4_000, cacheWrite: 100, cost: { total: 0.25 } };

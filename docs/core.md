@@ -110,11 +110,17 @@ every subagent task — explicit, fallback or borrowed — in a fresh native chi
 same `runAgent` contract either way, and a host that cannot construct its worker at all returns
 a failed run with a reason, which leaves the queue pending.
 
-**Budget before selection (ticket 19 gate 4, ticket 20 capacity negotiation).** The host reports its
-available material budget (`capacity {inputTokens, prefixTokens}`, the model window minus output
-reserve and inherited prefix) in the same `noting(...)` call that starts the task. Core selects and
-freezes once inside it: it prices the domain text it prepared for that frozen task — labels, titles,
-the range line and receipts included — drops the newest whole entries until the task fits, and leaves
+**Budget before selection (ticket 19 gate 4, ticket 20 capacity negotiation, ticket 27a).** The host
+reports its available material budget (`capacity {inputTokens, prefixTokens}`) in the same
+`noting(...)` call that starts the task. Since 27a `inputTokens` is the model's context window minus
+the host's fixed 10,000-token headroom — no output reserve and no 85% multiplier enter it — and
+`prefixTokens` is the host's own measure of the context an inherited-context run starts from, counted
+once (in the Pi host, `ctx.getContextUsage()` frozen at admission; docs/pi.md "Request capacity").
+Core prices against those two numbers and never learns how either was obtained: it reads no provider
+request body, no image and no transport field.
+
+Core selects and freezes once inside that call: it prices the domain text it prepared for that
+frozen task — labels, titles, the range line and receipts included — drops the newest whole entries until the task fits, and leaves
 every unselected entry pending. The material, the write eligibility and the audit membership are
 re-frozen together, so a reduced task can never keep the larger progress range. Extra context a host
 can supply is never evidence permission — the frozen range bounds what may be written whatever the
@@ -314,9 +320,9 @@ fact slice, and a small fact slice never buys a larger Raw batch. No new configu
 this; the cap is derived from the two that already exist.
 
 Fresh material is therefore at most 20,000 estimated tokens for the Noter and 20,000 for the
-Consolidator by default; system instructions, tool definitions, the output reserve, inherited native
-history and later tool/review messages are additional context costs, which is why the host's
-real-context capacity check stays independent of these domain limits.
+Consolidator by default; system instructions, tool definitions, inherited native history and later
+tool/review messages are additional context costs, which is why the host's real-context capacity
+check stays independent of these domain limits.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
 (`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over

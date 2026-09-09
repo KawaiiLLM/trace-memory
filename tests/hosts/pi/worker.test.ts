@@ -27,8 +27,8 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     let release = () => {};
     const held = new Promise<void>(resolve => { release = resolve; });
     f.script(async body => { sent.push(body); await held; return say("Done."); });
-    const checked: unknown[] = [], reported: unknown[] = [];
-    const binding: WorkerBinding = { model: f.model as never, checkCapacity: body => { checked.push(body); },
+    const checked: (number | undefined)[] = [], reported: unknown[] = [];
+    const binding: WorkerBinding = { model: f.model as never, checkCapacity: contextTokens => { checked.push(contextTokens); },
       tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {}, onFallback: () => {} };
     const frozen = { ...task("subagent"), reportRequest: (body: unknown) => { reported.push(body); } };
@@ -45,7 +45,11 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     expect(String(result.nativeLog).startsWith(f.runsDir)).toBe(true);        // the directory handed in at launch
     expect(existsSync(join(f.h.dir, "elsewhere"))).toBe(false);
     expect(reported).toEqual([result.request]);
-    expect(checked).toEqual([result.request]); // the capacity check saw every body before it left
+    // 27a: the last check is handed Pi's measure of the child's own context, once per outgoing body and
+    // before it leaves — never the body, so it can read no provider shape. One body left, one measure.
+    expect(checked).toHaveLength(1);
+    expect(checked[0]).toBeTypeOf("number");
+    expect(checked[0] as number).toBeGreaterThan(0);
   } finally { await f.dispose(); }
 });
 

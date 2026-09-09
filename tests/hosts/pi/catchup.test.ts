@@ -385,7 +385,10 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
 test("17c 2026-09-08: failed own capacity admission leaves the slot free for a smaller closed tail", async () => {
   const h = host({ "noting.forkModeDefault": false });
   try {
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 12000, maxTokens: 1000 };
+    // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
+    // reserve), so 20,000 leaves 10,000 for input — above the ~4,400 the small closed tail costs and
+    // below the ~14,500 of this session's own 15,000-word entry, which is the split this case needs.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

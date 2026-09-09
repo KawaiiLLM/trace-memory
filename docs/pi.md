@@ -158,9 +158,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   another eligible completion.
   It bounds this phase only: since 25c compact measures its pending views against
   `render.episodicBlockTokens` instead, so changing this key does not change what compaction keeps.
-  The effective batch also reserves instructions, knowledge, tools, output and the
-  existing context: the host uses the model context window with a 15% estimation
-  margin and reserves its output limit. An oldest entry that cannot fit remains
+  The effective batch also reserves instructions, knowledge, tools and the existing
+  context: since 27a the host reports `contextWindow - 10,000` as the input allowance
+  (see "Request capacity" below). An oldest entry that cannot fit remains
   pending with a capacity notification. Unknown model capacity also leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
@@ -1324,6 +1324,55 @@ back to the same compressed subagent input; source previews are not evidence of
 full prefix coverage. Native request capacity is checked before each Noting and
 Consolidation provider call, including continuations, without rewriting the prefix; both
 phases receive the model's capacity before selection (review 2026-09-08).
+
+**Request capacity (ticket 27a; parent 27 "Decision" and amendment 9).** Both memory-worker guards —
+phase admission and the last check before a request leaves — decide by one rule:
+
+```text
+context measure + 10,000 <= context window
+```
+
+The 10,000 tokens are fixed headroom, not an output reserve, not a promised output size and not a
+setting; `CONTEXT_HEADROOM` in `src/hosts/pi/index.ts` is the only place it is written. The 85%
+window multiplier and the subtraction of `model.maxTokens` are gone from both guards, and no
+accounting of ours reads a provider request body for tokens any more (the fork gate's own byte
+comparison of the captured body is untouched). A window that cannot exceed the headroom, and an
+invalid one, fail with a diagnostic before anything is sent.
+
+The measure is Pi's, taken where Pi takes it:
+
+- **Admission** hands core `contextWindow - 10,000` as its input allowance. For a fork it also hands
+  it `prefixTokens`, the value of `ctx.getContextUsage().tokens` read **once** at admission and frozen
+  with the task beside the model and the thinking level: Pi's real usage of the latest valid reply on
+  the path (`input + cacheRead + cacheWrite + output`, since that reply is history at the checkpoint)
+  plus Pi's own estimate of the messages after it. A foreground turn after admission cannot move it.
+  Because it is Pi's number, images and encrypted reasoning in the parent history need no rule of
+  ours — whatever they really cost is already inside it.
+- **Not a fork base:** an unknown measure (`tokens: null`, which is what Pi reports right after a
+  compaction until a valid reply answers on the new prefix), a missing model, or a capture whose model
+  or provider is not the current one. A capture from another branch or model is refused at launch and
+  runs as a fresh child, as before; an unknown measure is refused at admission instead, because
+  nothing downstream would. That task stays pending with a diagnostic, and no whole-body estimate ever
+  stands in for the measure. Ticket 27b turns the wait into the subagent reroute.
+- **A subagent** is priced by the existing core material accounting alone — instructions, tool
+  definitions and the frozen material — because a fresh child inherits no context to measure.
+- **Every round the child sends** is checked in `hosts/pi/native.ts` on the child session's own
+  `getContextUsage()` — Pi's getter, which runs pi-ai's `estimateContextTokens` over the child's
+  messages: its latest real assistant usage once it has one, plus an estimate of what follows it. For
+  a fork's first round that is the parent's reported prompt cost plus the increment. The guard is
+  handed that number and nothing else, so it reads no provider shape at all and a subagent on any API
+  the SDK can call keeps running; the four-API table belongs to the fork gate alone.
+
+  Pi's getter is used rather than importing `estimateContextTokens` directly because a subpath import
+  of `@earendil-works/pi-ai` does not resolve inside an installed Pi extension — the loader maps the
+  package to its compat entry, and `npm run smoke:package` fails on it. The one cost is that a child
+  with no assistant usage yet, which is the first round of a fresh subagent, is measured on its
+  messages alone, without the system prompt and tool definitions that admission has already priced
+  against the same allowance. `tokens: null` is Pi's unknown — a compaction inside the child with no
+  valid reply after it — and refuses nothing: unknown is not zero, and it is not an overflow either.
+
+Generation limits, `noting.batchTokens`, `consolidation.batchTokens`, `render.episodicBlockTokens`,
+`render.knowledgeBlockTokens` and foreground compaction are unchanged by this rule.
 
 Noting freezes entry identities on the selected path, not whole Turns. A
 successful zero-fact run — an explicit `note({facts: []})`, the only way to complete an

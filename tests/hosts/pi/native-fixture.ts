@@ -69,6 +69,10 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; } }));
   const { session } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
     sessionManager: manager, thinkingLevel: parent.thinkingLevel, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
+  // 27a: the fork base the host freezes at admission is Pi's own measure, so the fixture reports the
+  // REAL parent session's getter — the usage of its latest valid reply (whatever the scripted wire
+  // reported for it) plus Pi's estimate of the messages after it.
+  (h.ctx as unknown as { getContextUsage: () => unknown }).getContextUsage = () => session.getContextUsage();
   const original = { id: manager.getSessionId(), file: manager.getSessionFile()! };
   return { h, parent: session, model, agentDir, sessionsRoot, sessionsDir, runsDir, sent, original,
     manager: () => manager!,

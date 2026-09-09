@@ -7,9 +7,17 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, toolRejected, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
-const contextMargin = 0.85; // reserve 15% for the shared estimator and provider framing
+/** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
+ * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
+ * not an output reserve, not a guaranteed output size and not a setting: the 85% window multiplier
+ * and the subtraction of the model's declared maximum output are gone from both guards, and
+ * `model.maxTokens` is read by neither. Admission hands core `contextWindow - CONTEXT_HEADROOM` as
+ * its input allowance; the last check before every round applies the same subtraction to Pi's own
+ * measure of the child's context. Generation limits, `noting.batchTokens`, `consolidation.batchTokens`,
+ * the render block budgets and foreground compaction are untouched by it. */
+export const CONTEXT_HEADROOM = 10_000;
 const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
   : Array.isArray(message.content) ? message.content.filter(c => c.type === "text").map(c => c.text).join("\n") : "";
@@ -111,15 +119,15 @@ export default function (pi: ExtensionAPI) {
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
-    // The last check before a request leaves, for both phases (review 2026-09-08): the frozen batch
-    // fit the reported capacity, and the real body with the instructions, the tools and the output
-    // reserve must still fit the model.
-    const checkCapacity = !model ? undefined : (payload: unknown) => {
-      const body = payload as Record<string, unknown>;
-      const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
-        .map(key => typeof body[key] === "number" ? body[key] as number : 0));
-      if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
-        throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: provider request exceeds model context with output reserved`);
+    // The last check before a request leaves, for both phases (27a, superseding the 2026-09-08
+    // whole-body estimate): the frozen batch fit the reported capacity, and Pi's own measure of the
+    // child's context — the child session's `getContextUsage()`, taken in hosts/pi/native.ts where
+    // that session is — must still fit the same rule the allowance was cut by. Nothing here parses a
+    // provider body, so a child on an API the fork gate does not know keeps running, and images and
+    // encrypted fields need no rule of ours. An unknown measure refuses nothing.
+    const checkCapacity = !model ? undefined : (contextTokens: number | undefined) => {
+      if (contextTokens !== undefined && contextTokens > model.contextWindow - CONTEXT_HEADROOM)
+        throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
     };
     // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
@@ -336,17 +344,37 @@ export default function (pi: ExtensionAPI) {
     const effective = effectiveMode(selected.mode, { kind, target }); // admission pauses by what will run, not by what was asked
     const [provider, ...id] = selected.model.split("/");
     const model = selected.model === "session" || selected.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-    if (!model || !Number.isFinite(model.contextWindow) || !Number.isFinite(model.maxTokens)) {
-      const permanent = `${kind === "noting" ? "Noting" : "Consolidation"} capacity: unavailable model context/output limits; left pending`;
+    const phase = kind === "noting" ? "Noting" : "Consolidation";
+    // 27a: the allowance is the window minus the fixed headroom, so an invalid window and one that
+    // cannot even hold the headroom fail here, before anything is sent. `model.maxTokens` is read
+    // nowhere any more: it changes neither the allowance nor this verdict.
+    if (!model || !Number.isFinite(model.contextWindow) || model.contextWindow - CONTEXT_HEADROOM <= 0) {
+      const permanent = `${phase} capacity: unavailable model context window (it must exceed the ${CONTEXT_HEADROOM}-token headroom); left pending`;
       context.ui.notify(permanent, "error");
       // A configuration error, not a transient wait: a manual catchup must fail on it, never retry (review 2026-09-08).
       return Promise.resolve({ outcome: "dropped", permanent } as const);
     }
-    // Both phases negotiate capacity before selection (gate 4; review 2026-09-08 for Consolidation):
-    // the model window minus the output reserve, and the inherited prefix when the task will fork.
+    // Both phases negotiate capacity before selection (gate 4; review 2026-09-08 for Consolidation).
+    // 27a: a fork's inherited prefix is Pi's own measure of this session's context, read once here
+    // and frozen with the task beside the model and the thinking level — the real usage of the latest
+    // valid reply on the path plus Pi's estimate of the messages after it. It already holds the
+    // images and the encrypted fields of that history, so no accounting of ours walks a request body,
+    // and a later foreground turn cannot move the number this task was admitted on. A capture from
+    // another branch or another model is not a fork base and prices no prefix; the launch below
+    // refuses those to a fresh child, which is priced by the same freeze's subagent material.
     // A session the cache-miss latch has downgraded runs with fresh context, so there is no prefix.
-    const capacity = { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
-      prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 };
+    const base = effective === "fork" && session.capture?.branch === target.branch
+      && session.capture.model === model.id && session.capture.provider === model.provider;
+    const measure = base ? context.getContextUsage() : undefined;
+    // An unknown measure — right after a compaction, before a valid reply — is not a fork base either,
+    // and unlike the two above nothing downstream would refuse it, so this task waits here. 27b reroutes
+    // it to the subagent path; until then it stays pending and no whole-body estimate stands in for it.
+    if (base && typeof measure?.tokens !== "number") {
+      const diagnostic = `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base; left pending`;
+      context.ui.notify(diagnostic, "warning");
+      return Promise.resolve({ outcome: "dropped" } as const);
+    }
+    const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
     // material. The foreground level is read once here, as a value — every later round of this run
     // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to

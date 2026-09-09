@@ -21,9 +21,10 @@ export interface WorkerBinding {
   /** Resolved from Pi's registry by the host. Absent when the configured model does not exist, which
    * fails the run before anything is sent — and then `checkCapacity` is absent too, unused. */
   model?: WorkerModel;
-  /** The last check before a request leaves: the frozen batch fit the reported capacity, and the
-   * real body with the instructions, the tools and the output reserve must still fit the model. */
-  checkCapacity?: (payload: unknown) => void;
+  /** The last check before a request leaves (27a): the frozen batch fit the reported capacity, and
+   * Pi's own measure of the child's context — supplied by the runner, never read off the body — must
+   * still fit the one capacity rule. An unknown measure refuses nothing. */
+  checkCapacity?: (contextTokens: number | undefined) => void;
   /** The memory tools core bound for this run, as the host wrapped them. */
   tools: ToolDefinition[];
   runsDir: string;
@@ -73,7 +74,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
-      onRequest: (body: unknown) => { binding.checkCapacity!(body); request = body; task.reportRequest(body); },
+      onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[] }) => {
         usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
       onRetry: binding.onRetry, onRetryEnd: binding.onRetryEnd,
