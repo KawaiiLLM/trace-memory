@@ -4,12 +4,11 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
-import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
-import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, toolRejected, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type ClosedSessionScope } from "../../core/api/index.ts";
+import { checkpointReadiness } from "./native.ts";
+import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, writeGlobal, type Preference } from "./settings.ts";
+import { runWorker, type ForkLaunch, type WorkerModel } from "./worker.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, toolRejected, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
-type FlatConfig = Record<string, string | number | boolean>;
-type NativeModel = NativeForkTask["model"];
-const tag = "trace-memory";
 const contextMargin = 0.85; // reserve 15% for the shared estimator and provider framing
 const now = () => new Date().toISOString();
 const text = (message: { content?: unknown }) => typeof message.content === "string" ? message.content
@@ -34,65 +33,6 @@ export const piResultText: ResultExtractor = (result) => {
   return { text, ...(empty ? {} : { details: JSON.stringify(details) }) };
 };
 
-const agentDirectory = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-function settings(cwd: string, agentDir = agentDirectory()) {
-  const read = (path: string): Record<string, any> => {
-    try { return JSON.parse(readFileSync(path, "utf8")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw new Error(`Invalid settings.json ${path}: ${String(error)}`); }
-  };
-  return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
-}
-// Host settings that are not core config sections. `runsDir` places the native worker logs
-// (default since 24c: `<Pi agent directory>/sessions/trace-memory`). 19c deleted `nativeRunner`:
-// the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
-// rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
-const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
-/** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
- * typed against its default, unknown keys and misspellings rejected by name, host strings required to
- * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
- * merged Global layer through this same function before it writes, so a menu edit can never leave a
- * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
-function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
-  const core: ConfigOverride = { closedSessionScope: (flat.closedSessionScope === undefined ? DEFAULT_CONFIG.closedSessionScope : flat.closedSessionScope) as ClosedSessionScope };
-  for (const section of ["render", "noting", "consolidation"] as const) {
-    const values: Record<string, number | boolean> = {};
-    for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
-      const override = flat[`${section}.${key}`];
-      if (override !== undefined && (typeof override !== typeof value ||
-        (typeof override === "number" && (!Number.isFinite(override) || override < 0)))) throw new Error(`Invalid ${named(`${section}.${key}`)}`);
-      values[key] = (override ?? value) as number | boolean;
-    }
-    Object.assign(core, { [section]: values });
-  }
-  for (const key of Object.keys(flat)) if (key !== "closedSessionScope" && !hostStrings.includes(key) &&
-    !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as "render" | "noting" | "consolidation"], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
-  for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
-  validateConfig(core);
-  return core;
-}
-function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
-  const files = settings(cwd, agentDir);
-  const supplied = { Global: files.global[tag] ?? {}, Project: files.project[tag] ?? {}, Environment: JSON.parse(environment ?? "{}") };
-  for (const [name, layer] of Object.entries(supplied)) if (!layer || typeof layer !== "object" || Array.isArray(layer)) throw new Error(`Invalid trace-memory ${name}: expected an object`);
-  // Ticket 19 "Legacy input": every layer's legacy execution-mode key (`noting.branchModeDefault`)
-  // is mapped onto the canonical one by core's own alias table, keeping that layer as its source, so
-  // an existing settings.json keeps working and the read-only menu shows the canonical key. A layer
-  // supplying both spellings with different values fails the load naming both keys. Layers still
-  // mask one another exactly as before, so a project layer may override a global legacy spelling.
-  const layers = Object.fromEntries(Object.entries(supplied).map(([name, values]) => [name, canonicalFlatConfig(values as FlatConfig)])) as Record<keyof typeof supplied, FlatConfig>;
-  const spelling: Record<string, string> = {};
-  for (const values of Object.values(supplied)) for (const key of Object.keys(values)) spelling[CONFIG_ALIASES[key] ?? key] = key;
-  // A value rejected under an accepted legacy spelling names the key the user actually wrote (18a).
-  const named = (key: string) => spelling[key] && spelling[key] !== key ? `${key} (supplied as ${spelling[key]})` : key;
-  const flat: FlatConfig = Object.assign({}, ...Object.values(layers));
-  const sources: Record<string, string> = {};
-  for (const [layer, values] of Object.entries(layers)) for (const key of Object.keys(values)) sources[key] = layer;
-
-  const parse = (values: FlatConfig) => parseLayer(values, named);
-  for (const values of Object.values(layers)) parse(values);
-  const core = parse(flat);
-  return { flat, core, sources, layers };
-}
 // 19c gate 6: retry and provider policy are Pi's own, read by the `SettingsManager` the native child
 // is built with (hosts/pi/native.ts). The handwritten `retry` merge that used to live here — and its
 // stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
@@ -128,6 +68,38 @@ export default function (pi: ExtensionAPI) {
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
   const session: { capture?: Capture; notified?: boolean } = {};
+  /** Whether this task may still run with inherited context, decided against this host's live state
+   * at the moment it launches, and handed to the worker as a value: either the parent state to fork
+   * at or the reason it was refused. Every condition is rechecked here for every task, so a task
+   * queued before a transition cannot bypass one. */
+  const forkLaunch = (context: ExtensionContext, input: NotingAgentInput | ConsolidationAgentInput,
+      model: { id: string; provider: string }, piId: string): ForkLaunch | { refused: string } => {
+    // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
+    // while this memory session is automatically downgraded.
+    const suppression = memory.store.forkSuppression(input.sessionId);
+    if (suppression) return { refused: `cache miss latch: fork suppressed for this session since ${suppression.at}` };
+    // Ticket 20 "Post-compaction worker mode", rechecked here at the actual launch against the
+    // exact frozen entry set — a task prepared before a compaction but held for a slot, a claim
+    // or native readiness reaches this line with its evidence range already frozen. A fork
+    // would inherit a context those entries are no longer in, so the whole batch runs as a
+    // fresh child instead, recorded like any other fallback: requested mode fork, actual mode
+    // subagent, reason named. This is a per-task readiness decision, not the cache-miss latch.
+    if (input.kind === "noting") {
+      const evidence = preCompactionEvidence(context, input.entryAudit.entries.map(e => e.nativeId));
+      if (evidence) return { refused: evidence };
+    }
+    // A tree switch since admission invalidates this launch context; the new branch's history is
+    // never substituted for the task frozen on the old one.
+    if (state.branch !== input.branch) return { refused: "The selected branch changed after admission" };
+    const captured = session.capture;
+    if (!captured || captured.branch !== input.branch) return { refused: "No current-branch provider payload captured" };
+    if (captured.model !== model.id || captured.provider !== model.provider) return { refused: "Session model changed since capture" };
+    const parentFile = context.sessionManager.getSessionFile?.();
+    if (!parentFile) return { refused: "The parent session is not persisted" };
+    const checkpoint = context.sessionManager.getLeafId();
+    if (!checkpoint) return { refused: "The parent session has no persisted leaf entry" };
+    return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
+  };
   const memory = TraceMemory(dbPath, async raw => {
     const input = raw as NotingAgentInput | ConsolidationAgentInput;
     const callContext = ctx;
@@ -139,135 +111,52 @@ export default function (pi: ExtensionAPI) {
     const current = callContext.model;
     const model = input.model === "session" || (current && `${current.provider}/${current.id}` === input.model) ? current
       : registry.find(input.model.slice(0, slash), input.model.slice(slash + 1));
-    let request: unknown = null;
-    // The fork gate's result: the passing verification of a fork run, or — under `native` — the
-    // rejected one a fallback still records, with both hashes and the differing path.
-    let verification: (Partial<NativeVerification> & { rounds: NativeVerification["rounds"]; native?: NativeVerification }) | undefined;
-    let fallbackReason: string | undefined;
-    let mode: "fork" | "subagent" = "subagent";
-    let usage: unknown;
-    const retries: { attempt: number; error: string }[] = [];
-    const progress = () => input.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason });
+    // The last check before a request leaves, for both phases (review 2026-09-08): the frozen batch
+    // fit the reported capacity, and the real body with the instructions, the tools and the output
+    // reserve must still fit the model.
+    const checkCapacity = !model ? undefined : (payload: unknown) => {
+      const body = payload as Record<string, unknown>;
+      const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
+        .map(key => typeof body[key] === "number" ? body[key] as number : 0));
+      if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
+        throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: provider request exceeds model context with output reserved`);
+    };
     // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
     // committed progress while the trailing reply is still in flight and the running indicator stays.
     // Reads (`trace`, `search`) refresh too, cheaply; nothing polls and nothing decrements early.
     const tools = input.tools.map(tool => ({ ...tool, execute: (raw: unknown) => { try { return tool.execute(raw); } finally { showSpend(callContext); } } }));
-    try {
-      input.signal?.throwIfAborted();
-      if (!model) throw new Error(`Unavailable model: ${input.model}`);
-      // The last check before a request leaves, for both phases (review 2026-09-08): the frozen batch
-      // fit the reported capacity, and the real body with the instructions, the tools and the output
-      // reserve must still fit the model.
-      const checkCapacity = (payload: unknown) => {
-        const body = payload as Record<string, unknown>;
-        const output = Math.max(model.maxTokens, ...["max_tokens", "max_output_tokens", "max_completion_tokens"]
-          .map(key => typeof body[key] === "number" ? body[key] as number : 0));
-        if (tokens(JSON.stringify(payload)) + output > Math.floor(model.contextWindow * contextMargin))
-          throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: provider request exceeds model context with output reserved`);
-      };
+    // Everything the run needs, resolved now and frozen: the model, the runs directory, the tool
+    // round cap and the fork launch cannot be re-read by a run already in flight, and this host
+    // keeps its own state behind the callbacks below.
+    return runWorker(input, {
+      model: model as unknown as WorkerModel | undefined, checkCapacity, tools,
+      runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
+      maxToolRounds: memory.config[input.kind].maxToolRounds,
+      fork: input.mode === "fork" && model && !input.signal?.aborted ? forkLaunch(callContext, input, model, callPiId) : undefined,
+      onCache: observation => {
+        // User rulings 2026-09-09: every eligible miss is noticed once, with its count; a hit
+        // resets the count; the second consecutive miss downgrades the session — one transition,
+        // decided by the store's guarded UPDATE, so two phases reaching it together notice once.
+        // This run continues in its own native session; the first miss of a run is audited under
+        // `verification.cacheMiss` in its run record.
+        if (!observation.miss) { cacheMisses.delete(input.sessionId); return; }
+        const misses = (cacheMisses.get(input.sessionId) ?? 0) + 1;
+        cacheMisses.set(input.sessionId, misses);
+        callContext.ui.notify(`Trace Memory: fork cache miss ${Math.min(misses, 2)}/2 (${observation.cacheRead} of ${observation.total} input tokens read from cache).`, "warning");
+        if (misses < 2 || !memory.store.suppressFork(input.sessionId)) return;
+        missDetected.add(input.kind);
+        callContext.ui.notify("Trace Memory: fork downgraded after two consecutive cache misses. Future memory tasks in this session will use subagent.", "warning");
+      },
       // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
       // backoff stay the adapter's, exactly as they were before the cutover.
-      const retryNotice = (event: { attempt: number; maxAttempts: number; delayMs: number; error: string }) => {
+      onRetry: event => {
         activity.retrying = true; showSpend(callContext);
         callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
-      };
-      const retryFinished = () => { activity.retrying = false; showSpend(callContext); };
-      // 20a: core prepares the domain text of both representations from one frozen task; this adapter
-      // only binds it to native messages. A fork has no system slot of its own, so its appended user
-      // message carries the instructions and then the increment; a fresh child takes the instructions
-      // as its system prompt and the whole material as its first user message.
-      // 19a/19b/19c: the only runner. A fork task runs in Pi's own child `AgentSession` branched at
-      // the parent's persisted leaf; an unforkable fork task and every subagent task (explicit, a fork
-      // fallback, or borrowed closed-session work) run in a fresh private child session. Pi owns the
-      // model call, the tool loop, the retry policy and cancellation in both; this adapter keeps only
-      // the byte-level gate on a fork's first request.
-      if (input.mode === "fork") {
-        try {
-          // 19c cache-miss latch: the requested mode stays fork; admission resolves it to subagent
-          // while this memory session is automatically downgraded. Every task rechecks it here, so a
-          // task queued before the transition cannot bypass it.
-          const suppression = memory.store.forkSuppression(input.sessionId);
-          if (suppression) throw new NotForkable(`cache miss latch: fork suppressed for this session since ${suppression.at}`);
-          // Ticket 20 "Post-compaction worker mode", rechecked here at the actual launch against the
-          // exact frozen entry set — a task prepared before a compaction but held for a slot, a claim
-          // or native readiness reaches this line with its evidence range already frozen. A fork
-          // would inherit a context those entries are no longer in, so the whole batch runs as a
-          // fresh child instead, recorded like any other fallback: requested mode fork, actual mode
-          // subagent, reason named. This is a per-task readiness decision, not the cache-miss latch.
-          if (input.kind === "noting") {
-            const evidence = preCompactionEvidence(callContext, input.entryAudit.entries.map(e => e.nativeId));
-            if (evidence) throw new NotForkable(evidence);
-          }
-          // A tree switch since admission invalidates this launch context; the new branch's history is
-          // never substituted for the task frozen on the old one.
-          if (state.branch !== input.branch) throw new NotForkable("The selected branch changed after admission");
-          const captured = session.capture;
-          if (!captured || captured.branch !== input.branch) throw new NotForkable("No current-branch provider payload captured");
-          if (captured.model !== model.id || captured.provider !== model.provider) throw new NotForkable("Session model changed since capture");
-          const parentFile = callContext.sessionManager.getSessionFile?.();
-          if (!parentFile) throw new NotForkable("The parent session is not persisted");
-          const checkpoint = callContext.sessionManager.getLeafId();
-          if (!checkpoint) throw new NotForkable("The parent session has no persisted leaf entry");
-          const native = await runNative({
-            onCache: observation => {
-              // User rulings 2026-09-09: every eligible miss is noticed once, with its count; a hit
-              // resets the count; the second consecutive miss downgrades the session — one transition,
-              // decided by the store's guarded UPDATE, so two phases reaching it together notice once.
-              // This run continues in its own native session; the first miss of a run is audited under
-              // `verification.cacheMiss` in its run record.
-              if (!observation.miss) { cacheMisses.delete(input.sessionId); return; }
-              const misses = (cacheMisses.get(input.sessionId) ?? 0) + 1;
-              cacheMisses.set(input.sessionId, misses);
-              callContext.ui.notify(`Trace Memory: fork cache miss ${Math.min(misses, 2)}/2 (${observation.cacheRead} of ${observation.total} input tokens read from cache).`, "warning");
-              if (misses < 2 || !memory.store.suppressFork(input.sessionId)) return;
-              missDetected.add(input.kind);
-              callContext.ui.notify("Trace Memory: fork downgraded after two consecutive cache misses. Future memory tasks in this session will use subagent.", "warning");
-            },
-            mode: "fork", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
-            cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
-            task: `${input.prompt}\n\n${input.text.inherited}`, tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
-            signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
-            onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
-            onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
-            onRetry: retryNotice, onRetryEnd: retryFinished,
-          });
-          mode = "fork";
-          usage = native.usage; request = native.request ?? request; verification = native.verification;
-          retries.splice(0, retries.length, ...native.retries);
-          return { outcome: native.outcome, output: native.output, usage, request, mode, verification,
-            ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
-        } catch (error) {
-          if (!(error instanceof NotForkable)) throw error;
-          // Nothing was sent and nothing was committed: this task continues as a native subagent.
-          fallbackReason = `native runner: ${error.message}`;
-          if (error.verification) verification = { rounds: [], native: error.verification }; // a rejected gate still records both hashes
-          if (!session.notified) { contextNotice(input.kind, fallbackReason); session.notified = true; }
-        }
-      }
-      // Native subagent parity (19b): explicit subagent mode, a fork fallback and borrowed
-      // closed-session work all run in the same native runner, on a fresh private SessionManager in
-      // the runs directory. A child that cannot be constructed at all is a run failure with a reason
-      // (the outer catch below): there is no second runtime to fall back to, and the queue stays
-      // pending for the next permitted trigger.
-      const native = await runNative({
-        mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
-        model: model as unknown as NativeModel, systemPrompt: input.prompt, task: input.text.fresh,
-        tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
-        signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
-        onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
-        onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
-        onRetry: retryNotice, onRetryEnd: retryFinished,
-      });
-      mode = "subagent";
-      usage = native.usage; request = native.request ?? request;
-      retries.splice(0, retries.length, ...native.retries);
-      return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason,
-        ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
-    } catch (error) {
-      return { outcome: input.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "failure",
-        output: String(error), usage, retries, request, mode, verification, fallbackReason };
-    }
+      },
+      onRetryEnd: () => { activity.retrying = false; showSpend(callContext); },
+      onFallback: reason => { if (!session.notified) { contextNotice(input.kind, reason); session.notified = true; } },
+    });
   }, core, piResultText);
   const contextNotice = (kind: string, reason: string) => ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
@@ -979,39 +868,9 @@ export default function (pi: ExtensionAPI) {
   const applyMark = (address: string, kind: "verified" | "flagged" | "clear") =>
     ctx.ui.notify(memory.mark(address, kind, state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info");
 
-  // Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
-  // No advanced editor or second scheduling mechanism. Ticket 25 amendment 2 withdrew 24b's
-  // Consolidator-mode entry: that phase has no mode to choose, so three preferences remain here.
-  type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" } | { phase: "noting" | "consolidation"; kind: "model" } | { phase?: never; kind: "scope" });
-  const preferences: Preference[] = [
-    { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
-    { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
-    { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
-    { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
-  ];
-  // Noting stores "runs in fork mode": one preference reads that boolean without inventing a second
-  // spelling of the same choice.
-  const modeName = (value: boolean) => value ? "fork" : "subagent";
-  const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
-    : p.kind === "model" ? "session" : DEFAULT_CONFIG.noting.forkModeDefault;
-  const preferenceValue = (p: Preference) => flat[p.key] ?? preferenceDefault(p);
-  const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
-    : raw === "session" ? "follow foreground" : String(raw);
+  // 24b's preference descriptions live in hosts/pi/settings.ts; only the foreground model is this
+  // session's own, so a fork-mode line can name the model that child would inherit.
   const foregroundModel = () => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "the session model";
-  /** The mode this phase is configured to request. Consolidation has one (25b). For Noting, cache
-   * suppression, capacity/readiness fallback and post-compaction mode still decide what actually runs
-   * (`effectiveMode`); a fallback does not grant a different model-selection policy, so the display
-   * follows the configured mode. */
-  const configuredMode = (phase: "noting" | "consolidation") => phase === "consolidation" ? "subagent"
-    : modeName(preferenceValue(preferences.find(p => p.kind === "mode")!) as boolean);
-  const preferenceLine = (p: Preference) => {
-    const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[p.key] && Object.hasOwn(values, p.key))
-      .map(([layer, values]) => `${layer}=${shownValue(p, values[p.key])} masked`);
-    // Fork mode has no model of its own: the child inherits the foreground model, so the saved
-    // subagent preference is shown but never presented as the model this phase would use now.
-    const inherited = p.kind === "model" && configuredMode(p.phase) === "fork" ? `; fork mode inherits the foreground model ${foregroundModel()}` : "";
-    return `${p.name}: ${shownValue(p, preferenceValue(p))} (${sources[p.key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${inherited}`;
-  };
   /** Pi's own registry decides which models exist and which have resolved auth; nothing here asks for
    * a credential or calls a model to validate a choice. The foreground model is always offered: it is
    * demonstrably usable in this session even when a registry snapshot is empty. */
@@ -1025,33 +884,6 @@ export default function (pi: ExtensionAPI) {
     return [...names].sort();
   };
   const settingsFile = join(agentDir, "settings.json");
-  /** 24b "Global settings", the write itself: re-read the resolved global settings file, merge the
-   * one edited preference into its `trace-memory` section, validate the merged layer through the load
-   * path (`parseLayer` over `canonicalFlatConfig`), then replace the file atomically. Everything else
-   * in the file — Trace Memory's advanced values and every other extension's settings — is carried
-   * over as parsed. A malformed file, a non-object section or a value the next load would reject
-   * throws before anything is written, so a failed edit reports the failure and changes nothing.
-   * Returns the legacy spelling of this same preference if the write replaced one (19 "Legacy
-   * input": the two spellings must not be left beside each other for the next load to refuse). */
-  const writeGlobal = (key: string, value: string | boolean): string | undefined => {
-    let file: Record<string, unknown> = {};
-    try { file = JSON.parse(readFileSync(settingsFile, "utf8")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error(`Invalid settings.json ${settingsFile}: ${String(error)}`); }
-    if (!file || typeof file !== "object" || Array.isArray(file)) throw new Error(`Invalid settings.json ${settingsFile}: expected an object`);
-    const existing = file[tag] ?? {};
-    if (!existing || typeof existing !== "object" || Array.isArray(existing)) throw new Error(`Invalid trace-memory Global: expected an object`);
-    const layer: FlatConfig = { ...existing as FlatConfig, [key]: value };
-    const legacy = Object.entries(CONFIG_ALIASES).find(([, canonical]) => canonical === key)?.[0];
-    const replaced = legacy && Object.hasOwn(layer, legacy) ? legacy : undefined;
-    if (replaced) delete layer[replaced];
-    parseLayer(canonicalFlatConfig(layer));
-    const temporary = `${settingsFile}.${randomUUID()}`;
-    mkdirSync(dirname(settingsFile), { recursive: true });
-    writeFileSync(temporary, `${JSON.stringify({ ...file, [tag]: layer }, null, 2)}\n`, { flag: "wx" });
-    try { renameSync(temporary, settingsFile); }
-    finally { if (existsSync(temporary)) unlinkSync(temporary); }
-    return replaced;
-  };
   /** Application, in this instance, without a reload: the settings layers are re-read exactly as
    * `restore` reads them (so precedence, masking and validation are the load path's), the host's own
    * model selection follows `flat`, and core's mode booleans and borrowing scope are replaced through
@@ -1069,14 +901,14 @@ export default function (pi: ExtensionAPI) {
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
     let replaced: string | undefined;
-    try { replaced = writeGlobal(p.key, value); }
+    try { replaced = writeGlobal(settingsFile, p.key, value); }
     catch (error) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — ${String(error)}`, "error"); return; }
     try { applySettings(); }
     catch (error) { ctx.ui.notify(`Trace Memory: ${p.key} was saved in ${settingsFile}, but the settings could not be reloaded: ${String(error)}`, "error"); return; }
     const source = sources[p.key] ?? "Global";
     // Never claim a masked edit changed the effective behaviour: the override stays, and it is named.
     const override = source === "Global" ? "" :
-      ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(p, preferenceValue(p))} (${source}); it was not removed.`;
+      ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(p, preferenceValue(flat, p))} (${source}); it was not removed.`;
     ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(p, value)}) in ${settingsFile}.` +
       (replaced ? ` The legacy spelling ${replaced} of the same preference was replaced by ${p.key}.` : "") + override +
       (p.kind === "scope" ? " It applies to memory tasks admitted from now on; running tasks keep their admission scope. Use Stop to end running work."
@@ -1099,7 +931,7 @@ export default function (pi: ExtensionAPI) {
     const follow = "Follow foreground";
     const models = availableModels();
     if (!models.length) { ctx.ui.notify(`Trace Memory: ${p.name} unchanged — Pi's model registry lists no available model.`, "warning"); return; }
-    const title = configuredMode(p.phase) === "fork"
+    const title = configuredMode(flat, p.phase) === "fork"
       ? `${p.name} — ${p.phase === "noting" ? "Noting" : "Consolidation"} is configured for fork mode, which inherits the foreground model ${foregroundModel()}; this choice is used by subagent runs`
       : `${p.name} — used by this phase's subagent runs`;
     const choice = await ctx.ui.select(title, [follow, ...models]);
@@ -1121,7 +953,7 @@ export default function (pi: ExtensionAPI) {
     const logs = `Worker logs: ${runsDirectory(state.piId)}${runsOutsideScan() ? " — outside Pi's scanned sessions tree, so file-based daily statistics do not see them" : ""}`;
     const title = ["Settings — global defaults, saved under \"trace-memory\" in " + settingsFile,
       "Project and environment layers still take precedence; advanced values stay in the settings files.", logs].join("\n");
-    const lines = preferences.map(preferenceLine);
+    const lines = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
     const choice = await ctx.ui.select(title, lines);
     if (choice === undefined) return; // cancelling an entry or an input changes nothing
     const index = lines.indexOf(choice);
