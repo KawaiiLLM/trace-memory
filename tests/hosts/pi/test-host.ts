@@ -146,9 +146,14 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // Models the native child resolves through Pi's own ModelRuntime; the stubbed fetch answers them.
   // `test-thinking` is the one reasoning-capable model: Pi clamps every level to `off` on a model
   // that declares `reasoning: false`, so a case that needs a level to survive runs on this one.
+  // 27a: the window the fake models declare, to both this fixture's `ctx.model` and the real child the
+  // adapter builds through Pi's own ModelRuntime. A case that needs another window states it once here
+  // (`contextWindow`), like `retry` and the thinking levels below: it is Pi's model metadata, not this
+  // extension's configuration, and is stripped from TRACE_MEMORY_CONFIG with them.
+  const contextWindow = Number(config.contextWindow ?? 200_000);
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
     i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key", api,
-      models: MODELS.map(id => ({ id, name: `Test ${id}`, reasoning: reasoning(id), input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
+      models: MODELS.map(id => ({ id, name: `Test ${id}`, reasoning: reasoning(id), input: ["text", "image"], contextWindow, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
   claimAgentDir(agentDir);
   const native = () => options.native?.();
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
@@ -159,7 +164,12 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   let ignoreAbort = false; // a wedged connection that a cancelled child cannot end
   const model = { provider: "fake", id: "test", api: "openai-completions", name: "Test", baseUrl: `${origin}/v1`,
-    reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 200_000, maxTokens: 8192 };
+    reasoning: false, input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow, maxTokens: 8192 };
+  // 27a: Pi's own measure of this session's context, which the host reads once at admission as a
+  // fork's inherited prefix. The default is a session that has sent nothing yet; a case sets its own,
+  // including `{tokens: null}` for the unknown measure right after a compaction and `undefined` for a
+  // context with no model. `native-fixture.ts` replaces it with the real parent session's getter.
+  let contextUsage: { tokens: number | null; contextWindow: number; percent: number | null } | undefined = { tokens: 0, contextWindow, percent: 0 };
   const dialogs: { title: string; options?: string[] }[] = [];
   const answers: (string | boolean | undefined)[] = [];
   let headerTimestamp: unknown = "2099-01-01T00:00:00.000Z";
@@ -167,7 +177,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   const statuses = new Map<string, string | undefined>();
   // A notice is host activity: it keeps `drain` waiting through a short retry backoff, which
   // otherwise looks idle (a scheduled retry paints the footer warning, not the running indicator).
-  const ctx = { cwd: dir, model, hasUI: false, ui: { notify: (s: string) => { activity++; notices.push(s); }, setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+  const ctx = { cwd: dir, model, hasUI: false, getContextUsage: () => contextUsage, ui: { notify: (s: string) => { activity++; notices.push(s); }, setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
       select: async (title: string, options: string[]) => { dialogs.push({ title, options }); return answers.shift(); },
       confirm: async (title: string, message: string) => { dialogs.push({ title: `${title} ${message}` }); return answers.shift() ?? false; },
       input: async (title: string) => { dialogs.push({ title }); return answers.shift(); },
@@ -220,7 +230,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
   } as unknown as ExtensionAPI;
   const previous = process.env.TRACE_MEMORY_CONFIG;
-  const { retry: _retry, defaultThinkingLevel: _level, modelThinkingLevels: _levels, ...extensionConfig } = config as Record<string, unknown>;
+  const { retry: _retry, defaultThinkingLevel: _level, modelThinkingLevels: _levels, contextWindow: _window, ...extensionConfig } = config as Record<string, unknown>;
   process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
   const originalCwd = process.cwd();
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
@@ -303,6 +313,8 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     finally { releaseAgentDir(agentDir); rmSync(dir, { recursive: true, force: true }); }
   };
   return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; },
+    /** 27a: the context measure `ctx.getContextUsage()` reports, switchable per case. */
+    setContextUsage: (value: { tokens: number | null; contextWindow: number; percent: number | null } | undefined) => { contextUsage = value; },
     /** The foreground level this host reports to the extension, switchable mid-run by a case. */
     setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };

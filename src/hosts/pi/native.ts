@@ -41,8 +41,11 @@ interface NativeCommon {
   /** 0 = unlimited, as `maxToolRounds` has always meant. */
   maxToolRounds: number;
   signal?: AbortSignal;
-  /** Called for every outgoing body, in order; in fork mode the first one is the verified one. */
-  onRequest(request: unknown): void;
+  /** Called for every outgoing body, in order; in fork mode the first one is the verified one.
+   * `contextTokens` is Pi's own measure of the child's context at that moment (27a), which the host's
+   * last capacity check decides by, or undefined when Pi reports it unknown; the body is passed for
+   * the run record, never for accounting. */
+  onRequest(request: unknown, contextTokens: number | undefined): void;
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[] }): void;
   /** Consolidation's review feedback, delivered to the child as a native user message. */
   feedback?(result: string): string | undefined;
@@ -319,7 +322,22 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // The run record stores the last request sent, which embeds every earlier round (spec: Run record
     // contract). The first body's hashes are kept separately by the gate, in `verification`.
     request = snapshot(body);
-    task.onRequest(snapshot(body));
+    // 27a: what the host's last capacity check decides by is Pi's measure of THIS CHILD's context, not
+    // this body — `AgentSession.getContextUsage()`, the same number Pi shows for the foreground, which
+    // runs pi-ai's `estimateContextTokens` over the child's own messages: the child's latest real
+    // assistant usage once it has one, plus an estimate of what follows it. For a fork's first round
+    // that is the parent's own reported prompt cost plus the increment. The guard therefore reads no
+    // provider shape at all, and a subagent on an API the fork gate does not support keeps running.
+    //
+    // Pi's getter is used rather than importing `estimateContextTokens` directly because a subpath
+    // import of `@earendil-works/pi-ai` does not resolve inside an installed Pi extension (the loader
+    // maps the package to its compat entry; tests/package-smoke.mjs catches it). Its one cost is that
+    // a child with no assistant usage yet — the first round of a fresh subagent — is measured on its
+    // messages alone, without the system prompt and tool definitions that admission already priced
+    // against the same allowance. `null` is Pi's unknown (a compaction inside the child with no valid
+    // reply after it): unknown is not zero and not an overflow either, so it refuses nothing.
+    const measured = session.getContextUsage()?.tokens;
+    task.onRequest(snapshot(body), measured ?? undefined);
     task.onProgress({ usage, retries });
     return inherited ? inherited(payload as never, model as never) : payload;
   };

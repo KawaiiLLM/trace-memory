@@ -1,7 +1,9 @@
 import { expect, test } from "vitest";
 import { TraceMemory, renderEntry, tokens, DEFAULT_CONFIG, type SourceEntry, type NotingAgentInput } from "../../../src/core/api/index.ts";
 import { join } from "node:path";
-import { host, reply } from "./test-host.ts";
+import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
+import { conversationOf, host, reply, usage } from "./test-host.ts";
+import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 
 const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [] } as SourceEntry, DEFAULT_CONFIG.render).content;
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nReceipts:")[0]!;
@@ -67,13 +69,20 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
     await h.emit("session_start");
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 24000, maxTokens: 1000 };
+    // 27a: the allowance is 30,000 - 10,000 = 20,000 tokens, which holds the fixed cost (~4,400) and
+    // one 10,000-token entry view — with the headroom the child's own context still needs — but not
+    // two views. `maxTokens` no longer enters the allowance and is not set here.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 30000 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
-    expect(tokens(JSON.stringify(h.requests[0])) + 1000).toBeLessThanOrEqual(Math.floor(24000 * 0.85));
+    // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
+    // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
+    // assistant usage yet on a first round — with the headroom left over.
+    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(30000);
     const pending = h.memory.pendingEntries(1, "main", 1);
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 1000, maxTokens: 500 };
+    // An allowance of 1,000 tokens: under the fixed instruction and tool cost, so nothing is admitted.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 11000 };
     h.persist(reply("next completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // the refused admission adds none
     expect(h.memory.pendingEntries(1, "main", 1).slice(0, pending.length)).toEqual(pending);
@@ -196,8 +205,12 @@ test.each(["batch", "native prefix"])("17b 2026-09-08: an oldest entry blocked b
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("tail"));
     await h.emit("session_start");
     if (limit === "native prefix") {
-      h.ctx.model = { ...h.ctx.model!, contextWindow: 30000, maxTokens: 1000 };
-      await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "word ".repeat(30000) }] } });
+      // 27a: a fork's inherited prefix is Pi's own context measure, not an estimate of the captured
+      // body, so this case states the measure. 25,000 inherited tokens plus the 3,122-token Noter
+      // instructions exceed the 30,000 - 10,000 = 20,000 the allowance leaves for input.
+      h.ctx.model = { ...h.ctx.model!, contextWindow: 30000 };
+      h.setContextUsage({ tokens: 25_000, contextWindow: 30_000, percent: 83 });
+      await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "word ".repeat(30) }] } });
     }
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toEqual([]);
@@ -244,24 +257,27 @@ test("17b 2026-09-08: facade infers the source path before a Turn is fully recor
   } finally { runner.close(); await h.dispose(); }
 });
 
-test("17b 2026-09-08: native payload overhead is capacity-checked before sending or advancing entries", async () => {
+test("17b 2026-09-08, on 27a's rule: a round the child's own context cannot hold is refused before sending or advancing entries", async () => {
   const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false });
   try {
-    // The overhead is real now (19c): core prices the material it froze, while the body the child
-    // actually sends also carries the domain system prompt and the four tool schemas. This window
-    // admits the material and cannot hold the body. It is calibrated to the fixed cost of the day
-    // (Noter prompt 3,062 + tool schemas 1,251 tokens after 25a/25d): below it the 22d preflight
-    // rejects before admission (no run), about 200 tokens above it the body fits and a request goes
-    // out. Recalibrate when the prompt or the tool descriptions grow: the window must sit between
-    // "priced material fits" and "real body fits".
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 6500, maxTokens: 500 };
+    // 27a recalibration. The overhead the old formula caught in the first body — the whole request JSON
+    // priced as prose against `floor(window x 0.85) - maxTokens` — is not what the guard reads any
+    // more: the last check is Pi's measure of the child's own context, which is that child's latest
+    // real assistant usage plus an estimate of what follows it. The overhead is therefore a LATER
+    // round: this child's first reply reports a 50,000-token prompt and calls a read-only memory tool,
+    // and the round after it — that usage plus the tool result — cannot fit the 55,000 - 10,000 = 45,000
+    // the allowance leaves. Admission and the first round pass, so the refusal really is the last check.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 55_000 };
+    h.provider(async conversation => conversation.messages.some(m => m.role === "toolResult") ? reply("Done.")
+      : { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "t1", name: "search", arguments: { query: "pnpm" } }],
+          usage: { ...usage, input: 50_000, totalTokens: 50_002 } });
     await h.prompt("word ".repeat(500)); await h.answer("word ".repeat(500));
     await h.emit("agent_settled"); await h.drain();
-    expect(h.requests).toEqual([]);
+    expect(h.requests).toHaveLength(1); // the first round left; the round over the rule did not
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.role)).toEqual(["user", "assistant"]);
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.outcome).toBe("failure");
-    expect(JSON.parse(run.response!).problems.join("\n")).toContain("provider request exceeds model context");
+    expect(JSON.parse(run.response!).problems.join("\n")).toMatch(/the child's context of \d+ tokens leaves less than the 10000-token headroom in the 55000-token window/);
   } finally { await h.dispose(); }
 });
 

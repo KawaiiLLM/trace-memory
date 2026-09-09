@@ -22,7 +22,10 @@ export interface NotingInput extends TaskOptions {
   sessionId: number;
   branch: string;
   headTurnId: number;
-  /** Host model capacity after reserving output; prefix includes native tools and context. */
+  /** Host model capacity (27a): `inputTokens` is the model's context window minus the host's fixed
+   * headroom — no output reserve enters it — and `prefixTokens` is the host's measure of the context a
+   * fork inherits, counted once. Core prices its own material and fixed costs against the allowance
+   * and never learns how either number was obtained. */
   capacity?: { inputTokens: number; prefixTokens: number };
   model?: string;
   mode?: "fork" | "subagent";
@@ -102,10 +105,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // budget check inside the loop below is unchanged and still decides every freeze that passes here
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const { instructions, tools } = fixedCost();
-  const mandatory = Math.max(instructions + tools,
-    (input.effectiveMode ?? mode) === "fork" ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
+  const inheriting = (input.effectiveMode ?? mode) === "fork";
+  const mandatory = Math.max(instructions + tools, inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, tools and output reserved: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context: instructions ${instructions}, tools ${tools}`
+      + `${inheriting ? ` and the inherited context ${input.capacity.prefixTokens}` : ""} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const entries: typeof pending = [];
   const views: string[] = [];
   // 22d: an entry's view is immutable within one freeze — the same stored entry, the same profile,
@@ -141,6 +145,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // the defaults — and an under-budget Raw batch never enlarges the history block, nor the reverse.
   const historyCap = Math.max(0, config.render.episodicBlockTokens - config.noting.batchTokens);
   let history = historyCap; // lowered further by the capacity negotiation below
+  let last: { priced: number; episodic: number } | undefined; // what the smallest candidate cost, for the diagnostic
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -163,7 +168,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited!)  /* Noting always prepares the increment */;
     // Capacity is priced by the mode that will actually run (review 2026-09-08): a requested fork the
     // host resolves to subagent sends fresh material, not the inherited increment.
-    const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);
+    const priced = Math.max(subagentTokens, inheriting ? forkTokens : 0);
+    last = { priced, episodic: prepared.over.episodic };
     // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
     // signal too, never a receipt that lets the task run over it.
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
@@ -173,7 +179,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
     entries.pop(); history = historyCap;
   }
-  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, tools and output reserved; left pending");
+  // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
+  // smallest one, the oldest entry alone.
+  if (pending.length) throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context: `
+    + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
+    + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 

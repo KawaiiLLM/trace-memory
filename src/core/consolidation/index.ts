@@ -28,9 +28,10 @@ export interface ConsolidateInput extends TaskOptions {
    * in, and asking for the retired `fork` is refused by name (the façade's `execute` guard), not
    * normalized. The union is the shape every task request shares with Noting, which still has two. */
   sessionId: number; branch: string; headTurnId?: number; model?: string; mode?: "fork" | "subagent";
-  /** Host model capacity after reserving output (review 2026-09-08: Consolidation negotiates capacity
-   * exactly as Noting does). One shape for both phases; `prefixTokens` is an inherited context's cost,
-   * so this phase, which never inherits one (25b), prices with `inputTokens` alone. */
+  /** Host model capacity (27a; review 2026-09-08: Consolidation negotiates capacity exactly as Noting
+   * does). `inputTokens` is the model's context window minus the host's fixed headroom — no output
+   * reserve enters it. One shape for both phases; `prefixTokens` is an inherited context's cost, so
+   * this phase, which never inherits one (25b), prices with `inputTokens` alone. */
   capacity?: { inputTokens: number; prefixTokens: number };
 }
 export interface ConsolidationRange { from: string; to: string; facts: Fact[] }
@@ -92,7 +93,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   const { instructions, tools } = fixedCost();
   const mandatory = instructions + tools;
   if (capacity && applicable.length && mandatory > capacity.inputTokens)
-    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions and tools alone cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions ${instructions} and tools ${tools} already cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
@@ -140,6 +141,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // eligibility re-freeze together on every step. An oldest fact that cannot fit alone stays pending.
   // 25a removed this phase's already-consolidated history block, so there is no optional material to
   // trim first: the batch itself is the only reducible unit left.
+  let last: { priced: number; episodic: number } | undefined; // what the smallest candidate cost, for the diagnostic
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
       knowledge, lines, reminders: remindersFor(rangeFacts),
@@ -147,11 +149,16 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     const prepared = consolidationMaterial(frozen, config);
     // Priced by the mode that runs, which since 25b is the only mode this phase has.
     const priced = instructions + tools + tokens(prepared.text.fresh);
+    last = { priced, episodic: prepared.over.episodic };
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
     rangeFacts.pop();
   }
-  if (applicable.length) throw new Error("Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context; left pending");
+  // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
+  // smallest one, the oldest fact with its cues alone.
+  if (applicable.length) throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: `
+    + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
+    + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
   const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, lines, factTurns, reminders: [] as string[],
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
