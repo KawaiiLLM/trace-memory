@@ -7,12 +7,12 @@
 // what the numeric span suggests, and it answers an empty range with an empty result rather than with
 // a missing-record diagnostic per integer.
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory, toolDefinitions, type ToolContext } from "../../source-fixture.ts";
+import { sourceSeededMemory, toolDefinitions, type ToolContext } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let memory: ReturnType<typeof TraceMemory>;
-beforeEach(() => { memory = TraceMemory(":memory:", async () => { throw new Error("these cases call no model"); }); });
+let memory: ReturnType<typeof sourceSeededMemory>;
+beforeEach(() => { memory = sourceSeededMemory(":memory:", async () => { throw new Error("these cases call no model"); }); });
 afterEach(() => { memory.close(); });
 
 /** One enrolled session with one Turn and `count` facts on it, in allocation order. */
@@ -38,6 +38,18 @@ function countFactReads() {
   prototype.listFactIdsInRange = function (this: Store, from: number, to: number) { queries++; return range.call(this, from, to); };
   return { records: () => records, queries: () => queries, reset: () => { records = 0; queries = 0; },
     restore: () => { prototype.getFact = one; prototype.listFactIdsInRange = range; } };
+}
+
+/** Count the two ways a fact's relations are read: once for a fact whose line is being printed now,
+ * and once for the whole remainder a query freezes. */
+function countRelationReads() {
+  const prototype = Store.prototype as { listFactRelations: Store["listFactRelations"]; listFactRelationsOf: Store["listFactRelationsOf"] };
+  const one = prototype.listFactRelations, many = prototype.listFactRelationsOf;
+  let single = 0, batched = 0;
+  prototype.listFactRelations = function (this: Store, id: number) { single++; return one.call(this, id); };
+  prototype.listFactRelationsOf = function (this: Store, ids: number[]) { batched++; return many.call(this, ids); };
+  return { single: () => single, batched: () => batched, reset: () => { single = 0; batched = 0; },
+    restore: () => { prototype.listFactRelations = one; prototype.listFactRelationsOf = many; } };
 }
 
 test("25d goldens: single, list, interval and mixed expressions read the same records, in the order asked", () => {
@@ -142,6 +154,28 @@ test("25d pagination: a wide interval pages by cap, completely and without dupli
   for (const id of ids) expect(whole.split(`[F${id}]`)).toHaveLength(2); // each record once, none lost
   // The remainder of an address is never dropped: one line at a time reaches the same whole.
   expect(paged("F1-F12,F1-F3", () => {}, 1).joined).toBe(memory.trace("F1-F12,F1-F3"));
+});
+
+test("a first page of an interval costs the page: one record rendered, one batched read for the rest", () => {
+  const { ids } = facts(200);
+  const records = countFactReads(), relations = countRelationReads();
+  try {
+    records.reset(); relations.reset();
+    const first = memory.trace(`F1-F${ids.length}`, { cap: 1 });
+    expect(first).toContain("[F1]");
+    expect(first).not.toContain("[F2]"); // the page, and only the page, was formatted
+    // One range query names the interval's facts; exactly one of them is read and rendered. The 199
+    // the reader has not asked for yet cost one batched relation read — what 22c's snapshot rule
+    // needs to keep a later page stable — and no record read at all.
+    expect(records.queries()).toBe(1);
+    expect(records.records()).toBe(1);
+    expect(relations.single()).toBe(1);
+    expect(relations.batched()).toBe(1);
+    // A cap wide enough for every line is what it always was: every record in the interval.
+    records.reset();
+    memory.trace(`F1-F${ids.length}`, { cap: ids.length * 3 });
+    expect(records.records()).toBe(ids.length);
+  } finally { records.restore(); relations.restore(); }
 });
 
 test("25d pagination: a fact negated, a knowledge marked or a profile changed between pages does not reach an established page", () => {

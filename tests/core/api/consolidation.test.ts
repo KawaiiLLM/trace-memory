@@ -3,21 +3,21 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
+import { sourceSeededMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
 import memories from "../../fixtures/noting/facts.json";
 import { charge, renderFactGroups } from "../../../src/core/render/index.ts";
 import { RANGE_FACTS_TITLE, REMINDER_TITLE } from "../../../src/core/render/material.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 
 type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
-let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number, projectId: number;
 let calls: ConsolidationAgentInput[], script: ((input: ConsolidationAgentInput) => Promise<RunAgentResult>)[];
 const time = "2026-08-16 02:54";
 const empty = { operations: [], skipped: [] };
 const success = (output: unknown, input: ConsolidationAgentInput): RunAgentResult => ({ outcome: "success", output: output === empty ? { ...empty, skipped: input.range.facts.map(f => ({ fact: `F${f.id}`, because: "Not retained in this test." })) } : output,
   usage: { tokens: 12 }, request: input.request });
 function open(config: ConfigOverride = {}) {
-  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => {
     // A stub host: it receives structured material and never a core-composed message, and builds its
     // own provider record out of the material, the tool rounds and core's review feedback (19b).
     let input = { ...raw as CoreInput, round: "candidate" as const } as ConsolidationAgentInput;
@@ -227,7 +227,7 @@ for (const round of ["candidate", "final"] as const) for (const bad of ["json", 
 
 test("duplicate trigger is dropped across facades during either round; different branches and sessions of the project remain independent", async () => {
   fact(); const resolveFirst = deferred(), pending = consolidation();
-  const other = TraceMemory(join(directory, "test.sqlite"), async () => { throw new Error("must not call"); });
+  const other = sourceSeededMemory(join(directory, "test.sqlite"), async () => { throw new Error("must not call"); });
   try {
     expect(await other.consolidate({ sessionId, branch: "main" })).toEqual({ outcome: "dropped" });
     expect(await consolidation("other")).toEqual({ outcome: "empty" });

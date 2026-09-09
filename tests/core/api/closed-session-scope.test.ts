@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
-import { TraceMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
 
 const at = "2026-09-09T00:00:00Z";
-function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof TraceMemory>[1] = async () => ({ outcome: "success", output: "", request: {} })) {
-  const memory = TraceMemory(":memory:", agent, { closedSessionScope: scope });
+function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async () => ({ outcome: "success", output: "", request: {} })) {
+  const memory = sourceSeededMemory(":memory:", agent, { closedSessionScope: scope });
   const p = memory.store.createProject({ name: "same", declaredBy: "mark" });
   const other = memory.store.createProject({ name: "other", declaredBy: "mark" });
   const session = (projectId: number, closed: boolean) => {

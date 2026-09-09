@@ -9,12 +9,12 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory, renderEntry, renderEntryWhole, type ConfigOverride } from "../../source-fixture.ts";
+import { sourceSeededMemory, renderEntry, renderEntryWhole, type ConfigOverride } from "../../source-fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number;
+let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number;
 const open = (config: ConfigOverride = {}) =>
-  TraceMemory(join(directory, "trace.db"), async () => { throw new Error("these cases call no model"); }, config);
+  sourceSeededMemory(join(directory, "trace.db"), async () => { throw new Error("these cases call no model"); }, config);
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-23b-"));
   memory = open();

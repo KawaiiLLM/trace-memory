@@ -6,16 +6,16 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { countSourceReads, countGraphResolutions } from "../../perf/fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let dir: string, dbPath: string, memory: ReturnType<typeof TraceMemory>;
+let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-22c-"));
   dbPath = join(dir, "trace.db");
-  memory = TraceMemory(dbPath, async () => { throw new Error("these cases call no model"); });
+  memory = sourceSeededMemory(dbPath, async () => { throw new Error("these cases call no model"); });
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -184,4 +184,19 @@ test("22c: continuation is complete and stable, and a commit between pages moves
   const after = memory.search(corpus.query, "knowledge", options);
   expect(after.split("\n").find(l => l.startsWith(`[K${last.knowledgeId}@${last.commit}]`))).toContain("superseded on this path");
   expect(addresses(after)).toHaveLength(13);
+});
+
+test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", () => {
+  const corpus = knowledgeCorpus(4, 3);
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId };
+  const cursorOf = (page: string) => /cursor=(\S+)/.exec(page)![1]!;
+  // Asking for page one and never asking for page two is ordinary use, so a remainder is a cache
+  // entry with a bound, not an obligation held for the process's lifetime.
+  const abandoned = cursorOf(memory.search(corpus.query, "knowledge", { ...options, cap: 1 }));
+  let newest = abandoned;
+  for (let i = 0; i < 16; i++) newest = cursorOf(memory.search(corpus.query, "knowledge", { ...options, cap: 1 }));
+  // The sixteen newest remainders are all still answerable; the seventeenth-oldest is gone, and it
+  // is gone through the failure contract an unknown cursor already had.
+  expect(memory.search("", "knowledge", { ...options, cursor: newest })).toContain("[K");
+  expect(() => memory.search("", "knowledge", { ...options, cursor: abandoned })).toThrow("unknown or expired cursor");
 });

@@ -12,6 +12,23 @@ function host(...args: Parameters<typeof createHost>) {
   return h;
 }
 
+test("the fixture borrows PI_CODING_AGENT_DIR: two live hosts nest, and a failed shutdown still gives it back", async () => {
+  const before = process.env.PI_CODING_AGENT_DIR;
+  const outer = createHost(), inner = createHost();
+  try {
+    expect(process.env.PI_CODING_AGENT_DIR).toBe(join(inner.dir, "agent"));
+    await inner.dispose();
+    // The host that is still live keeps the variable; it is not reset to the value from before it.
+    expect(process.env.PI_CODING_AGENT_DIR).toBe(join(outer.dir, "agent"));
+  } finally {
+    // Cleanup this fixture owns runs on the failure path too: a shutdown hook that throws must not
+    // leave the process pointing at a directory this dispose is about to delete.
+    outer.hooks.set("session_shutdown", () => { throw new Error("shutdown failed"); });
+    await expect(outer.dispose()).rejects.toThrow("shutdown failed");
+  }
+  expect(process.env.PI_CODING_AGENT_DIR).toBe(before);
+});
+
 test("smoke: the default extension loads and registers the Pi hooks, tools, and read-only command", async () => {
   const h = host();
   expect([...h.tools.keys()]).toEqual(["trace", "search", "note", "memory"]);

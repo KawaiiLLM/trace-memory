@@ -6,17 +6,17 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 import { Store, type KnowledgePath } from "../../../src/core/store/index.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { countPathBuilds, countSourceReads } from "../../perf/fixture.ts";
 
 const time = "2026-09-09T00:00:00Z";
-let dir: string, dbPath: string, memory: ReturnType<typeof TraceMemory>;
+let dir: string, dbPath: string, memory: ReturnType<typeof sourceSeededMemory>;
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "trace-memory-snapshot-"));
   dbPath = join(dir, "trace.db");
-  memory = TraceMemory(dbPath, async () => { throw new Error("these cases call no model"); });
+  memory = sourceSeededMemory(dbPath, async () => { throw new Error("these cases call no model"); });
 });
 afterEach(() => { memory.close(); rmSync(dir, { recursive: true, force: true }); });
 

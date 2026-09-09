@@ -3,11 +3,11 @@
 // same escape-safe units as a nested one; a search continuation renders its deferred Raw hits under
 // the profile the query was made with, not the configuration in force when the page is asked for.
 import { expect, test } from "vitest";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 import { renderEntry } from "../../../src/core/render/index.ts";
 
 const setup = () => {
-  const m = TraceMemory(":memory:", async () => { throw new Error("no model requests"); });
+  const m = sourceSeededMemory(":memory:", async () => { throw new Error("no model requests"); });
   const projectId = m.store.createProject({ name: "p", declaredBy: "mark" }).id;
   const s = m.store.createSession({ projectId, host: "fake", enrollmentChoice: true, startedAt: "t", firstReplyAt: "t" });
   return { m, s };

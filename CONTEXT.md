@@ -49,7 +49,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 - **Trace** — the tool that walks addresses: knowledge → its facts → the source turn; knowledge revisions (`K7@2`, `K7@2..4`); a fact's later strong negations (`F101..`). Also the project name.
 - **Search** — lexical lookup over facts and knowledge (and optionally a session's raw) returning addresses. No hit does not mean absent.
 - **Mark** — the user's verified / flagged / clear annotation on a knowledge revision, applied through `/trace mark K<n>[@<commit>] <kind>` (or the menu's Current session > Mark) and the façade. Project declaration is a separate user command.
-- **Global preference** — one of the four defaults the Pi menu's Settings entry saves under `trace-memory` in the resolved agent settings file: each phase's execution mode and its model. They are the existing canonical configuration keys, not a second system; a project or environment layer still overrides them, and a saved value reaches tasks admitted afterwards while running tasks keep the mode and model frozen with them.
+- **Global preference** — one of the five defaults the Pi menu's Settings entry saves under `trace-memory` in the resolved agent settings file: each phase's execution mode and its model, and the closed-session scope that decides whose finished sessions this executor may work on. They are the existing canonical configuration keys, not a second system; a project or environment layer still overrides them, and a saved value reaches tasks admitted afterwards while running tasks keep the mode, model and scope frozen with them.
 
 ## Process
 

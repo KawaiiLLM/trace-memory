@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { readFileSync } from "node:fs";
-import { TraceMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
+import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
 const time = "2026-09-06T00:00:00Z";
-let memory: TraceMemory, calls: number;
-beforeEach(() => { calls = 0; memory = TraceMemory(":memory:", async () => { calls++; return { outcome: "success", output: [], request: {} }; }); });
+let memory: ReturnType<typeof sourceSeededMemory>, calls: number;
+beforeEach(() => { calls = 0; memory = sourceSeededMemory(":memory:", async () => { calls++; return { outcome: "success", output: [], request: {} }; }); });
 afterEach(() => memory.close());
 function session(projectId?: number, declaration: "marker" | "undeclared" = "marker") {
   const project = projectId ?? memory.store.createProject({ name: "mapC", declaredBy: "marker" }).id;

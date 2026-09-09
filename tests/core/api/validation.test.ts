@@ -1,9 +1,9 @@
 import { describe, expect, test } from "vitest";
-import { TraceMemory, type ConsolidationAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, type ConsolidationAgentInput } from "../../source-fixture.ts";
 
 // These former model-unit cases now drive the host's actual Consolidation seam.
 async function checkMemoryBatch(output: unknown) {
-  const memory = TraceMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { consolidation: { nearThreshold: 1 } });
+  const memory = sourceSeededMemory(":memory:", async raw => { const input = raw as ConsolidationAgentInput; input.reportRequest({ fake: true }); const tool = input.tools.find(t => t.name === "memory")!; tool.execute(output); input.reportRequest({ fake: true }); tool.execute(output); return { outcome: "success", output: "done", request: { fake: true } }; }, { consolidation: { nearThreshold: 1 } });
   try {
     const p = memory.store.createProject({ name: "validation", declaredBy: "mark" });
     const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: p.id, startedAt: "now", firstReplyAt: "now" });

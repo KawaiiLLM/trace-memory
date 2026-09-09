@@ -38,6 +38,11 @@ export type CompactResult = { tier: "primary" | "secondary"; text: string } | { 
  * or already frozen by the query, so these three annotations are the whole remainder. */
 interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile }
 
+/** One component of a `trace` comma list, in request order: either a fact an interval selected —
+ * rendered when a page asks for it, from the relations the query froze — or text a named component
+ * already resolved at query time. */
+type TraceUnit = { fact: number; relations?: FactRelation[] } | { text: string };
+
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string,
   resultText: ResultExtractor = rawResultText) {
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
@@ -49,7 +54,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
      * their lines will read. The pages formatted at query time need nothing frozen, so the whole
      * hit set is never formatted and no transaction is held; the deferred hits carry their own. */
     capture?: (deferred: readonly unknown[]) => readonly unknown[] }
-  const cursors = new Map<string, Continuation & { footer: string; cap: number; owner: string }>();
+  /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
+   * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
+   * crossed the page edge — `cap` counts output lines, so one record may straddle two pages. */
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string };
+  // A model asks for page one and usually never asks for page two, so a continuation is a cache
+  // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
+  // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
+  // A count bound needs no clock and no timer; add an age bound only if a single query's remainder
+  // ever becomes large enough that sixteen of them matter.
+  const CURSORS = 16;
+  const cursors = new Map<string, Remainder>();
   const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = ""): string => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
@@ -60,16 +75,25 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) footer = saved.footer;
     const receipts = footer ? [footer] : [];
-    if (items.length > cap) {
+    // Only the hits this page prints are formatted: the rest are identities until a page asks for
+    // them. One record at a time, because a record's line count is not known before it is rendered.
+    const lines = [...(saved?.pending ?? [])];
+    let at = saved?.offset ?? 0;
+    while (lines.length < cap && at < items.length) lines.push(...format([items[at++]]));
+    const pending = lines.splice(cap);
+    if (options.cursor) cursors.delete(options.cursor);
+    if (pending.length || at < items.length) {
       const cursor = randomUUID();
-      // The snapshot is taken here, once, at the moment this query first defers hits — and is not
-      // carried into the stored continuation, whose items already hold it.
-      const deferred = items.slice(cap);
-      cursors.set(cursor, { items: capture ? capture(deferred) : deferred, format, footer, cap, owner });
+      // The snapshot is taken here, once, at the moment this query first defers hits. Later pages of
+      // the same query re-use that one frozen array and move an offset through it; nothing is copied
+      // again, and the stored remainder carries no `capture` because its items already hold it.
+      cursors.set(cursor, saved ? { ...saved, offset: at, pending }
+        : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner }
+        : { items, offset: at, pending, format, footer, cap, owner });
+      for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
       receipts.push(`cursor=${cursor}`);
     }
-    if (options.cursor) cursors.delete(options.cursor);
-    return finish({ content: format(items.slice(0, cap)).join("\n"), receipts });
+    return finish({ content: lines.join("\n"), receipts });
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -113,17 +137,28 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     const targets = address.split(",").map((a) => a.trim());
     const intervals = targets.map(factInterval);
-    // A comma list and an interval are the same read: every component is rendered in request order, at
-    // query time, and `page` hands the caller one cap's worth of the lines with a cursor for the rest.
-    // Rendering here is also what freezes an interval's relations — like the rest of the batch, its
-    // lines exist before the first page is returned, so a relation written between two pages cannot
-    // reach an established one (22c's snapshot rule, met by having nothing left to read).
-    if (targets.length > 1 || intervals.some(Boolean)) return page(targets.flatMap((target, index) => {
-      const range = intervals[index];
-      if (!range) return trace(target, { ...options, cap: Number.MAX_SAFE_INTEGER }).split("\n");
-      const ids = store.listFactIdsInRange(range.from, range.to);
-      return ids.length ? ids.flatMap((id) => factLine(id).split("\n")) : [`${target}: no facts exist in this range`];
-    }), options);
+    // A comma list and an interval are the same read: every component contributes its lines in request
+    // order, repeats included. An interval contributes its facts as identities — one range query, no
+    // record read — so the first page costs the page, not the interval; only the components the reader
+    // named individually are resolved at query time, as they always were. What a deferred fact's line
+    // still reads from the database is its relations, and those are frozen for the whole remainder in
+    // one batched read the moment the query defers (22c's snapshot rule, the same one search meets).
+    if (targets.length > 1 || intervals.some(Boolean)) {
+      const items = targets.flatMap((target, index): TraceUnit[] => {
+        const range = intervals[index];
+        if (!range) return [{ text: trace(target, { ...options, cap: Number.MAX_SAFE_INTEGER }) }];
+        const ids = store.listFactIdsInRange(range.from, range.to);
+        return ids.length ? ids.map((fact) => ({ fact })) : [{ text: `${target}: no facts exist in this range` }];
+      });
+      const format = (units: readonly unknown[]) => (units as TraceUnit[])
+        .flatMap((unit) => ("fact" in unit ? factLine(unit.fact, unit.relations) : unit.text).split("\n"));
+      const capture = (deferred: readonly unknown[]): TraceUnit[] => {
+        const units = deferred as TraceUnit[];
+        const relations = store.listFactRelationsOf(units.flatMap((unit) => "fact" in unit ? [unit.fact] : []));
+        return units.map((unit) => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
+      };
+      return page({ items, format, capture }, options);
+    }
     const s = /^S([1-9]\d*)$/.exec(address);
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
     let project = store.findProjectByName(address);

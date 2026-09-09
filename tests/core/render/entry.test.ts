@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { DEFAULT_CONFIG, renderEntry, renderEntryWhole, tokens, type EntryProfile, type ResultExtractor, type SourceEntry } from "../../../src/core/api/index.ts";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 
 // Ticket 23 "One entry view, two budgets", in 23c's line format: Pi's own compaction shape
 // (`core/compaction/utils.js`) with our addresses as the labels, byte for byte on synthetic entries.
@@ -285,7 +285,7 @@ test("23 fidelity: a target path after a long argument value still appears, with
 });
 
 test("23 fidelity: an omitted middle states an honest count and its address fetches the original", () => {
-  const memory = TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
+  const memory = sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }));
   try {
     const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
     const session = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: "t", firstReplyAt: "t", projectId: project.id });
@@ -307,7 +307,7 @@ test("23 fidelity: an omitted middle states an honest count and its address fetc
 test("23: the profiles are the two shipped ones, and B is rejected above its ceiling", () => {
   expect([tier1.toolCallTokens, tier1.entryTokens]).toEqual([300, 10_000]);
   expect([tier2.toolCallTokens, tier2.entryTokens]).toEqual([100, 1000]);
-  const open = (render: Record<string, number>) => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render });
+  const open = (render: Record<string, number>) => sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render });
   expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
   expect(() => open({ secondaryToolCallTokens: 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");
   const ceiling = open({ toolCallTokens: 1_000 });

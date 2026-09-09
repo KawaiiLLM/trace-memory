@@ -2,32 +2,46 @@ import { TraceMemory as createMemory, type CompactResult, type SourceEntry } fro
 export type TraceMemory = ReturnType<typeof createMemory>;
 export * from "../src/core/api/index.ts";
 
-/** A completed-message fixture producer; native identities are assigned by this fake host. */
-export const TraceMemory: typeof createMemory = (...args) => {
+/** Seed one completed source entry — the record a host writes when a native message is finished, and
+ * the only thing pending-entry discovery, Noting batches and compaction ever see. Text and calls are
+ * the completed message's own; the native identity is this fake host's. An entry with neither text
+ * nor calls is not a completed message and is not written. */
+export function seedSourceEntry(memory: TraceMemory, turnId: number, role: SourceEntry["role"], text: string, calls: SourceEntry["calls"] = []) {
+  if (!text && !calls.length) return;
+  const store = memory.store, sessionId = store.getTurn(turnId)!.sessionId;
+  memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId: `message-${store.listSourceEntries(sessionId).length + 1}`,
+    turnId, role, text, raw: JSON.stringify({ role, text, calls }), calls });
+}
+
+/** The production façade with three store writers wrapped, for the core cases written before source
+ * entries were their own record: `appendTurn`, `appendToolCall` and `updateTurn` also seed the
+ * completed entries a host's ingestion would have written, so appending a Turn is enough to give
+ * those cases something to note.
+ *
+ * Production does none of this. Appending a Turn there creates no source entry, and what a real host
+ * imports is covered by the Pi host tests and by direct store cases — never through this wrapper.
+ * The substitution is here, named, rather than hidden behind a factory that looks like the real one. */
+export const sourceSeededMemory: typeof createMemory = (...args) => {
   const memory = createMemory(...args);
   const store = memory.store;
   const append = store.appendTurn.bind(store), tool = store.appendToolCall.bind(store), update = store.updateTurn.bind(store);
-  const source = (turnId: number, role: SourceEntry["role"], text: string, calls: SourceEntry["calls"] = []) => {
-    if (!text && !calls.length) return;
-    const sessionId = store.getTurn(turnId)!.sessionId;
-    memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId: `message-${store.listSourceEntries(sessionId).length + 1}`,
-      turnId, role, text, raw: JSON.stringify({ role, text, calls }), calls });
-  };
+  const seed = (turnId: number, role: SourceEntry["role"], text: string, calls: SourceEntry["calls"] = []) =>
+    seedSourceEntry(memory, turnId, role, text, calls);
   store.appendTurn = input => {
     const turn = append(input);
-    if (turn.kind === "turn") { source(turn.id, "user", turn.userPrompt ?? ""); source(turn.id, "assistant", turn.assistantText ?? ""); }
+    if (turn.kind === "turn") { seed(turn.id, "user", turn.userPrompt ?? ""); seed(turn.id, "assistant", turn.assistantText ?? ""); }
     return turn;
   };
   store.appendToolCall = input => {
     const call = tool(input), base = { ordinal: call.ordinal, name: call.name, callId: `call-${call.id}` };
-    source(call.turnId, "assistant", "", [{ ...base, input: call.input ?? "", status: "attempted" }]);
-    if (call.result !== null) source(call.turnId, "toolResult", "", [{ ...base, result: call.result, status: call.status }]);
+    seed(call.turnId, "assistant", "", [{ ...base, input: call.input ?? "", status: "attempted" }]);
+    if (call.result !== null) seed(call.turnId, "toolResult", "", [{ ...base, result: call.result, status: call.status }]);
     return call;
   };
   store.updateTurn = (id, patch) => {
     if (patch.assistantText && store.getTurn(id)!.assistantText !== null) throw new Error("fixture update must supply one first completed assistant message; use appendEntry for later occurrences");
     const turn = update(id, patch);
-    if (patch.assistantText && turn.kind === "turn") source(id, "assistant", patch.assistantText);
+    if (patch.assistantText && turn.kind === "turn") seed(id, "assistant", patch.assistantText);
     return turn;
   };
   return memory;

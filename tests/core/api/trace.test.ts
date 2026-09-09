@@ -1,14 +1,14 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { TraceMemory } from "../../source-fixture.ts";
+import { sourceSeededMemory } from "../../source-fixture.ts";
 import fixture from "../../fixtures/trace.json";
 
-let memory: ReturnType<typeof TraceMemory>;
+let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number;
 const time = "2026-09-07T00:00:00Z";
 // The reasons the shared helpers below write, so the rendered commit history can be asserted literally.
 const admit = "Initial admission of this conclusion.", update = "Substantive correction of the recorded conclusion.";
 const archived = "Retired: the cited evidence withdraws this conclusion.";
-type Operation = Parameters<ReturnType<typeof TraceMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
+type Operation = Parameters<ReturnType<typeof sourceSeededMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
 function consolidation(...operations: Operation[]) {
   const result = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations });
   expect(result.ok).toBe(true);
@@ -22,7 +22,7 @@ function edit(knowledgeId: number, baseCommit: number, text: string, extra: Part
   consolidation({ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId, baseCommit, text, category: "reference", scope: "project", supports: [1], createdAt: time, ...extra });
 }
 beforeEach(() => {
-  memory = TraceMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
+  memory = sourceSeededMemory(":memory:", async () => { throw new Error("trace must not call the model"); });
   const project = memory.store.createProject({ name: "trace", declaredBy: "mark" });
   sessionId = memory.store.createSession({ enrollmentChoice: true, host: "test", projectId: project.id, startedAt: time, firstReplyAt: time }).id;
   const turn = memory.store.appendTurn({ sessionId, kind: "turn", startedAt: time });

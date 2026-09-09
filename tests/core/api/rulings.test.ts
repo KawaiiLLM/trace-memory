@@ -5,12 +5,12 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, TraceMemory, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, sourceSeededMemory, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
 let directory: string;
-let memory: TraceMemory;
+let memory: ReturnType<typeof sourceSeededMemory>;
 let calls: NotingAgentInput[];
 const time = "2026-09-06T00:00:00Z";
 const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: JSON.stringify(output), request: { fake: true } });
@@ -18,7 +18,7 @@ const ok = (output: unknown): RunAgentResult => ({ outcome: "success", output: J
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "trace-memory-rulings-"));
   calls = [];
-  memory = TraceMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NotingAgentInput); return ok([]); });
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async (raw) => { calls.push(raw as NotingAgentInput); return ok([]); });
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
@@ -62,7 +62,7 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   const { s, t } = session();
   // 17c 2026-09-08 supersedes concurrent sibling admission. A failed input probe leaves the
   // same evidence pending for the subagent comparison; exact branch bytes remain the ruling.
-  const probe = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
   try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
@@ -115,7 +115,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
 test("20a 2026-09-08: the full text and the inherited increment come from one frozen task, and the writable range is identical in both modes", async () => {
   const { s, t } = session();
   // A failed probe run leaves the same evidence pending, so the second mode freezes the same task.
-  const probe = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
   try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
@@ -197,7 +197,7 @@ test("2026-09-07: a rejected item writes nothing", () => {
 // “A Noting run commits at most one batch.”
 test("2026-09-07: one batch per run", async () => {
   const { s, t } = session(); memory.close();
-  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as NotingAgentInput;
     input.reportRequest({ round: 1 });
     const note = input.tools[2]!;
@@ -222,7 +222,7 @@ test("2026-09-07: one batch per run", async () => {
 test("2026-09-07: bounced is not empty", async () => {
   const { s, t } = session(); memory.close();
   let reject = true;
-  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     if (reject) (raw as NotingAgentInput).tools[2]!.execute({ facts: [{ category: "invalid" }] });
     return { outcome: "success", output: "No more text", request: {} };
   });
@@ -303,7 +303,7 @@ test("2026-09-07: merge atomic", () => {
 
 test("2026-09-07: second submission commits, first does not", async () => {
   const { create, s } = memoryWriter(); memory.close();
-  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
     const batch = { operations: [create], skipped: [{ fact: "F2", because: "Already expressed." }] };
     input.reportRequest({ messages: ["first"] });
@@ -474,7 +474,7 @@ test("2026-09-07 B: pre-fork evidence applies to both branches and rejects the s
 test("2026-09-07 B: cross-session concurrent edits reject linearly, then re-read and resubmit", () => {
   const { root, peer, content } = commitPaths();
   const other = peer();
-  const second = TraceMemory(join(directory, "test.sqlite"), async () => ok([]));
+  const second = sourceSeededMemory(join(directory, "test.sqlite"), async () => ok([]));
   try {
     const writer = second.tools({ kind: "manual", sessionId: other.sessionId, currentTurnId: other.headTurnId, branch: "main" });
     expect(root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "First writer") }]).committed[0].commit).toBe(2);
@@ -628,7 +628,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
   const third = peer();
   const integrate = async (path: typeof third, expected: number[]) => {
     memory.close();
-    memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+    memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
       const input = raw as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
       expect(input.readKnowledgeCommits.map(r => r.commit)).toEqual(expected);
       for (const id of expected) expect(input.material.knowledge.map(g => g.text).join("\n")).toContain(`[K1@${id}]`);
@@ -650,7 +650,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
   expect(result.diagnostics.some(d => d.kind === "uncited_facts")).toBe(false);
   // A sibling's support cannot cover this branch's user fact during accounting.
   memory.close();
-  memory = TraceMemory(join(directory, "test.sqlite"), async raw => {
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     const input = raw as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
     const own = input.readKnowledgeCommits.filter(r => r.knowledgeId === 1);
     expect(own.map(r => r.commit)).toEqual([2]);
@@ -902,7 +902,7 @@ test("23c 2026-09-09: 23a's quarter/three-quarter call split is superseded; argu
 // and 1,000 becomes the hard ceiling, rejected above; `entryTokens` keeps its 17a value.
 test("23 2026-09-09: 17a's 1,000-token per-call default becomes 300 with 1,000 as a hard ceiling, and entryTokens is unchanged", () => {
   expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 1_000 });
-  const open = (render: Record<string, number>) => TraceMemory(join(directory, "ceiling.sqlite"), async () => ok([]), { render });
+  const open = (render: Record<string, number>) => sourceSeededMemory(join(directory, "ceiling.sqlite"), async () => ok([]), { render });
   expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
   const ceiling = open({ toolCallTokens: 1_000 });
   try { expect(ceiling.config.render.toolCallTokens).toBe(1_000); } finally { ceiling.close(); }
@@ -1026,18 +1026,18 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
 // ---- 19c: the execution mode is fork; branch remains the evidence path (ticket 19 "Naming and compatibility") ----
 
 test("19c 2026-09-08: the legacy branchModeDefault spelling is accepted, mapped onto forkModeDefault, and not kept", () => {
-  const legacy = TraceMemory(join(directory, "alias.sqlite"), async () => ok([]), { noting: { branchModeDefault: false } });
+  const legacy = sourceSeededMemory(join(directory, "alias.sqlite"), async () => ok([]), { noting: { branchModeDefault: false } });
   try {
     expect(legacy.config.noting.forkModeDefault).toBe(false);              // the old key still selects the mode
     expect(Object.hasOwn(legacy.config.noting, "branchModeDefault")).toBe(false); // only the canonical key survives
   } finally { legacy.close(); }
   // Both spellings supplied and agreeing: the canonical one wins, silently.
-  const agreeing = TraceMemory(join(directory, "agreeing.sqlite"), async () => ok([]), { noting: { branchModeDefault: false, forkModeDefault: false } });
+  const agreeing = sourceSeededMemory(join(directory, "agreeing.sqlite"), async () => ok([]), { noting: { branchModeDefault: false, forkModeDefault: false } });
   try { expect(agreeing.config.noting.forkModeDefault).toBe(false); } finally { agreeing.close(); }
 });
 
 test("19c 2026-09-08: both execution-mode spellings with different values fail the load naming both keys", () => {
-  const load = () => TraceMemory(join(directory, "conflict.sqlite"), async () => ok([]), { noting: { branchModeDefault: true, forkModeDefault: false } });
+  const load = () => sourceSeededMemory(join(directory, "conflict.sqlite"), async () => ok([]), { noting: { branchModeDefault: true, forkModeDefault: false } });
   expect(load).toThrow(/noting\.branchModeDefault/);
   expect(load).toThrow(/noting\.forkModeDefault/);
   expect(load).toThrow(/Conflicting settings/);
@@ -1080,21 +1080,21 @@ test("19c 2026-09-08: new work records the canonical fork spelling, in the task 
 });
 
 test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy execution and is never rewritten", async () => {
-  const seed = (m: TraceMemory) => {
+  const seed = (m: ReturnType<typeof sourceSeededMemory>) => {
     const project = m.store.createProject({ name: "historical", declaredBy: "mark" });
     const s = m.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
     const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。", startedAt: time });
     return { s, t };
   };
   const path = join(directory, "historical.sqlite");
-  const before = TraceMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
+  const before = sourceSeededMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
   const { s, t } = seed(before);
   // A pre-rename row, exactly as the deleted request-copy runner wrote it. No migration touches it.
   before.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", mode: "branch", model: "old/model",
     rangeFrom: `S${s.id}/T${t.id}`, rangeTo: `S${s.id}/T${t.id}`, createdAt: time }, facts: [] });
   const legacy = before.store.listRuns(s.id).at(-1)!.id;
   before.close();
-  const after = TraceMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
+  const after = sourceSeededMemory(path, async raw => { calls.push(raw as NotingAgentInput); return ok([]); });
   try {
     expect(after.store.getRun(legacy)!.mode).toBe("branch");   // reopening the database migrates nothing
     expect(after.trace(`R${legacy}`)).toContain("mode legacy request-copy execution (branch)");

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
-import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type ClosedSessionScope } from "../../core/api/index.ts";
+import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, toolRejected, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type ClosedSessionScope } from "../../core/api/index.ts";
 
 type FlatConfig = Record<string, string | number | boolean>;
 type NativeModel = NativeForkTask["model"];
@@ -93,15 +93,6 @@ function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFI
   const core = parse(flat);
   return { flat, core, sources, layers };
 }
-function rejected(name: string, content: string): boolean {
-  if (content.startsWith("rejected:")) return true;
-  if (name !== "note" && name !== "memory") return false;
-  try {
-    const { results } = JSON.parse(content);
-    return Array.isArray(results) && results.some(r => typeof r === "string" && r.startsWith("rejected:"));
-  } catch { return false; }
-}
-
 // 19c gate 6: retry and provider policy are Pi's own, read by the `SettingsManager` the native child
 // is built with (hosts/pi/native.ts). The handwritten `retry` merge that used to live here — and its
 // stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
@@ -923,7 +914,7 @@ export default function (pi: ExtensionAPI) {
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
       const content = bound.find(t => t.name === definition.name)!.execute(raw);
-      if (rejected(definition.name, content)) throw new Error(content);
+      if (toolRejected(definition.name, content)) throw new Error(content);
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);

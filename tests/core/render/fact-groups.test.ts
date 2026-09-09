@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { budgetFacts, charge, renderFact, renderFactGroups } from "../../../src/core/render/index.ts";
-import { TraceMemory, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, type ConsolidationAgentInput, type NotingAgentInput } from "../../source-fixture.ts";
 
 const fact = (id: number, turnId: number, text = `claim ${id}`): Fact => ({ id, turnId, text,
   category: "observation", actor: "user", quote: null, source: [`T${turnId}#user`], createdAt: "recorded time" });
@@ -57,7 +57,7 @@ test("history selection keeps its priority prefix, charges a heading once, then 
 
 test("delivery, carry, compact, Noter history and the Consolidator range share the one fact-group renderer", async () => {
   const calls: (NotingAgentInput | ConsolidationAgentInput)[] = [];
-  const m = TraceMemory(":memory:", async input => {
+  const m = sourceSeededMemory(":memory:", async input => {
     calls.push(input as NotingAgentInput | ConsolidationAgentInput);
     return { outcome: "failure", output: "leave work pending", request: {} };
   });
@@ -108,7 +108,7 @@ test("delivery, carry, compact, Noter history and the Consolidator range share t
 
 test("Consolidation cannot dispatch a fact when only its ungrouped line fits the batch ceiling", async () => {
   let dispatched = false;
-  const m = TraceMemory(":memory:", async () => { dispatched = true; return { outcome: "failure", output: "unexpected" }; });
+  const m = sourceSeededMemory(":memory:", async () => { dispatched = true; return { outcome: "failure", output: "unexpected" }; });
   try {
     const projectId = m.store.createProject({ name: "p", declaredBy: "mark" }).id;
     const s = m.store.createSession({ host: "fake", projectId, startedAt: early, firstReplyAt: early, enrollmentChoice: true });
@@ -125,7 +125,7 @@ test("Consolidation cannot dispatch a fact when only its ungrouped line fits the
 
 test("negated-evidence reminders and CLOSER feedback also use Turn groups without losing their roles", async () => {
   let input: ConsolidationAgentInput | undefined, feedback: string | undefined;
-  const m = TraceMemory(":memory:", async raw => {
+  const m = sourceSeededMemory(":memory:", async raw => {
     input = raw as ConsolidationAgentInput;
     const receipt = await input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
       skipped: input.range.facts.map(f => ({ fact: `F${f.id}`, because: "Review only." })) });
