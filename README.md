@@ -8,7 +8,11 @@ Traceable cross-session memory for Pi. A background Noter extracts facts from co
 
 **Use a new database when coming from a development build.** There is no migration for older development schemas, including those before commit reasons and topics. Keep the old database and its logs; choose an unused path instead of deleting them.
 
-Upgrading from `0.1.0-beta.1` does not require a new database. Project marker files are no longer read; existing stored project assignments are retained.
+Upgrading from `0.1.0-beta.1`, `0.1.0-beta.2` or `0.1.0-beta.3` does not require a new database. Project marker files are no longer read; existing stored project assignments are retained.
+
+**Beta.3 configuration change:** remove `consolidation.subagentModeDefault` from any configuration layer that contains it, whether its value is `true` or `false`. Consolidation now always uses subagent mode; the retired key causes a named load error. Explicit Consolidation fork requests are also rejected. Closed-session background work now defaults to same-project executors (`closedSessionScope: "project"`); choose `"global"` to retain cross-project borrowing or `"off"` to leave closed tails pending.
+
+**Beta.4 changes:** no configuration change is required. A Noter now completes an empty batch only by an explicit `note({facts: []})`; a run that ends without submitting is recorded as incomplete and leaves its entries pending, and two consecutive incomplete runs pause automatic Noting for that session until `/trace catchup` or a reopen. Memory workers inherit the foreground thinking level; the optional `notingThinking` and `consolidationThinking` settings (default `inherit`) fix a level for subagent execution. Worker admission uses one capacity rule, Pi's own context measure plus 10,000 tokens within the model window; a fork that cannot fit, or whose request the provider rejects for context size, runs once more as a subagent. Memory worker sessions run with Pi's automatic compaction disabled.
 
 Before loading the extension, merge this example into `~/.pi/agent/settings.json`, preserving your other settings:
 
@@ -29,7 +33,7 @@ pi install /absolute/path/to/trace-memory
 Install the Beta from npm instead:
 
 ```sh
-pi install npm:trace-memory@0.1.0-beta.2
+pi install npm:trace-memory@0.1.0-beta.4
 ```
 
 Start a new Pi process, run `/trace` (the menu, or status when headless), and use `/trace on` if the session is disabled. Sessions created before the plugin's initialization baseline default to disabled; explicit choices persist.
@@ -50,10 +54,10 @@ The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit rea
 
 ## Data and limits
 
-- **Storage:** the default database is `~/.trace-memory/trace.db`; the installation example uses a separate Beta database. Private worker logs live beside the database in `runs/`. The files contain conversation content and model requests: keep them private. Log retention is not automatic.
+- **Storage:** the default database is `~/.trace-memory/trace.db`; the installation example uses a separate Beta database. New worker logs default to `<Pi agent directory>/sessions/trace-memory/`; an explicit `runsDir` override is preserved. Existing logs are not moved. The files contain conversation content and model requests: keep them private. Log retention is not automatic.
 - **Evidence:** original stored source entries remain traceable. Facts are attributed records, not certified truth; knowledge revisions preserve their evidence and history.
 - **Compatibility:** Node 24.6.0 or later is required; Pi 0.85.1 is the tested host. Pi 0.85.0 has a known public-SDK import issue. Other host versions and providers are not all verified.
-- **Budget:** default Noter admission uses 10k pending primary-view tokens and batches at most 10k. A fork still inherits the foreground context; this batch limit is not a 10k provider-request limit. Fresh memory material targets a 30k budget, excluding instructions, tools and later tool results.
+- **Budget:** default Noter admission uses 10k pending primary-view tokens and batches at most 10k. A fork still inherits the foreground context; this batch limit is not a 10k provider-request limit. Fresh Noter material contains at most 10k historical facts and 10k compressed Raw; Consolidation contains at most 10k knowledge and 10k pending facts. Compaction uses up to 10k knowledge plus a shared 20k for facts and pending Raw, prioritizing Raw. Instructions, tools and later tool results additionally count toward the model-context guard.
 
 See the [Pi configuration and behavior reference](docs/pi.md) and [live verification record](docs/live-verification.md) for details and remaining coverage gaps.
 
