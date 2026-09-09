@@ -248,8 +248,12 @@ test("17b 2026-09-08: native payload overhead is capacity-checked before sending
   try {
     // The overhead is real now (19c): core prices the material it froze, while the body the child
     // actually sends also carries the domain system prompt and the four tool schemas. This window
-    // admits the material and cannot hold the body.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 6200, maxTokens: 500 };
+    // admits the material and cannot hold the body. It is calibrated to the fixed cost of the day
+    // (Noter prompt 3,062 + tool schemas 1,251 tokens after 25a/25d): below it the 22d preflight
+    // rejects before admission (no run), about 200 tokens above it the body fits and a request goes
+    // out. Recalibrate when the prompt or the tool descriptions grow: the window must sit between
+    // "priced material fits" and "real body fits".
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 6500, maxTokens: 500 };
     await h.prompt("word ".repeat(500)); await h.answer("word ".repeat(500));
     await h.emit("agent_settled"); await h.drain();
     expect(h.requests).toEqual([]);
