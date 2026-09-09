@@ -398,6 +398,7 @@ test("20c 2026-09-08 scenario 16: 18b's single Consolidation call is superseded 
     // Noting comes first and is exhausted before Consolidation starts.
     expect(Math.max(...notingRuns.map(r => r.id))).toBeLessThan(Math.min(...consolidationRuns.map(r => r.id)));
     // Both phases always run in subagent mode and ignore the triggers, but not the batch ceilings.
+    // 25b: this is also the third of Consolidation's launch paths, and it has no other mode on any of them.
     expect([...notingRuns, ...consolidationRuns].every(r => r.mode === "subagent")).toBe(true);
     for (const run of consolidationRuns) expect(h.memory.store.listConsolidatedFacts(run.id).length).toBeLessThan(frozenFacts.length);
     // The frozen target — the pending entries plus the frozen facts and the ones those batches produced

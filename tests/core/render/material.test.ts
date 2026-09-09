@@ -88,7 +88,8 @@ test("25a 2026-09-09: the Consolidator's fresh order is knowledge, range, the pe
 test("20a 2026-09-08 for ruling 08:53: the Consolidator's inherited increment is the range, the exact fact list and the review cues alone", async () => {
   const { s, first } = consolidated();
   await first;
-  await memory.consolidate({ sessionId: s.id, branch: "main", mode: "fork" });
+  await memory.consolidate({ sessionId: s.id, branch: "main" });
+  // 25b: this phase runs one mode, and core still prepares both representations of its material.
   const input = calls[1]! as ConsolidationAgentInput;
   expect(input.text.inherited).toBe("Range: F2..F2\n\nFacts to integrate: F2\n\nNegated-evidence reminder (review cues only; no status derived):\nnone");
   expect(input.text.inherited).not.toContain("Range facts:");

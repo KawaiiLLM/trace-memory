@@ -127,8 +127,9 @@ and `memory` calls, `/trace project`, `/trace mark` and `/compact` were not driv
 The acceptor should use an isolated database and the README's capture extension
 and reverse-chain verification script, loaded after payload-rewriting extensions.
 Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
-`consolidation.triggerTokens: 1` (20b replaced the removed fact count); choose Consolidation mode explicitly
-(`consolidation.subagentModeDefault: false` exercises fork mode as well).
+`consolidation.triggerTokens: 1` (20b replaced the removed fact count). Consolidation has no mode to
+set: since 25b it always runs as a subagent, and `consolidation.subagentModeDefault` — which the
+dated records above still show — now fails the load by name.
 
 1. Start Pi with all four tools active. Save the captured main-agent body and
    verify its tool schemas are `trace`, `search`, `note`, `memory` (alongside any

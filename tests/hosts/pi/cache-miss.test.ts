@@ -154,12 +154,13 @@ test("19c ruling 2026-09-09: a response is a miss when its cacheRead is below ha
   expect(cacheObservation({ api: "anthropic-messages", id: "claude-sonnet-4", provider: "fake" }, { input: 100, cacheRead: 0, cacheWrite: 29900 }, true)).toMatchObject({ total: 30000, miss: true });
 });
 
-test("19c 2026-09-08: two phases reporting a miss together produce one transition and one warning", async () => {
-  const f = await fixture({ "consolidation.triggerTokens": 1, "consolidation.subagentModeDefault": false });
+test("19c 2026-09-08, as 25b left it: only the Noter forks, so the Consolidator beside it observes nothing and the transition stays single", async () => {
+  const f = await fixture({ "consolidation.triggerTokens": 1 });
   try {
-    // The first turn's own Noting task must not latch the session before the two-phase opportunity
-    // below, so its response reports a below-minimum input; only the two frozen fork tasks of that
-    // opportunity report an eligible zero-cache response.
+    // The first turn's own Noting task must not latch the session before the shared opportunity
+    // below, so its response reports a below-minimum input; the later fork tasks report eligible
+    // zero-cache responses. The Consolidator runs fresh context (25b) and never forks, so it has no
+    // prefix to verify and no cache observation to make, however large its own responses are.
     let notings = 0;
     f.script(body => !worker(body) && !worker(body, "Consolidation") ? say("好的。", small())
       : worker(body, "Consolidation") ? (toolResults(body) >= 2 ? say("Integrated.", big()) : call(`t${toolResults(body)}`, "memory", memoryBatch, big()))
@@ -169,21 +170,30 @@ test("19c 2026-09-08: two phases reporting a miss together produce one transitio
       .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
     recorded(f.h.memory, 1, "main", 1);
     const before = new Set(f.h.memory.store.listRuns(1).map(r => r.id)); // the manual note and its receipt
-    await f.turn("tick " + long); // one opportunity, both phases due, both requesting fork
+    await f.turn("tick " + long); // one opportunity, both phases due: one fork task and one subagent task
     await vi.waitFor(() => {
       expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response)).not.toHaveLength(0);
       expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.response)).not.toHaveLength(0);
     }, { timeout: 8000 });
     const both = f.h.memory.store.listRuns(1).filter(r => !before.has(r.id)); // this opportunity's two runs
     expect(both.map(r => r.kind).sort()).toEqual(["consolidation", "noting"]);
-    expect(both.map(r => r.mode)).toEqual(["fork", "fork"]); // both kept their frozen fork tasks
-    // Both really forked and both really reported a zero-cache response of their own.
-    expect(both.map(r => JSON.parse(r.response!).verification.passed)).toEqual([true, true]);
-    expect(both.filter(r => JSON.parse(r.response!).verification.cacheMiss)).toHaveLength(2);
-    expect(misses(f.h).length).toBeGreaterThanOrEqual(2); // each miss noticed once
-    expect(downgrades(f.h)).toEqual([DOWNGRADE]); // one transition, one downgrade notice
+    const modes = new Map(both.map(r => [r.kind, r.mode]));
+    expect(modes.get("noting")).toBe("fork");           // the frozen fork task kept its mode
+    expect(modes.get("consolidation")).toBe("subagent"); // and the other phase has only this one
+    const audit = (kind: string) => JSON.parse(both.find(r => r.kind === kind)!.response!);
+    expect(audit("noting").verification.passed).toBe(true); // it really forked and really reported a zero-cache response
+    expect(audit("noting").verification.cacheMiss).toMatchObject({ miss: true });
+    expect(audit("consolidation").verification).toBeUndefined(); // a fresh child verifies no prefix and observes no cache
+    expect(misses(f.h).map(n => n.slice(0, 33))).toEqual(["Trace Memory: fork cache miss 1/2"]); // one fork, one miss
+    expect(downgrades(f.h)).toEqual([]);                 // one miss is not a transition
+    expect(f.h.memory.store.forkSuppression(1)).toBeNull();
+    // The next opportunity's fork run is the second consecutive miss: one transition, one notice.
+    await f.turn("tick again " + long);
+    await vi.waitFor(() => expect(f.h.memory.store.forkSuppression(1)).toBeTruthy(), { timeout: 8000 });
+    expect(misses(f.h).map(n => n.slice(0, 33))).toEqual(["Trace Memory: fork cache miss 1/2", "Trace Memory: fork cache miss 2/2"]);
+    expect(downgrades(f.h)).toEqual([DOWNGRADE]);
     const suppression = f.h.memory.store.forkSuppression(1)!;
-    expect(both.map(r => r.id)).toContain(suppression.runId); // whichever won the transition names itself
+    expect(notingRuns(f.h).map(r => r.id)).toContain(suppression.runId); // the run that detected it names itself
     // The store's guarded UPDATE is the transition: a second reporter never re-arms it.
     expect(f.h.memory.store.suppressFork(1)).toBe(false);
     expect(f.h.memory.store.forkSuppression(1)!.at).toBe(suppression.at);

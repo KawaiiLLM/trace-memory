@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, sourceSeededMemory, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
@@ -1043,14 +1043,13 @@ test("19c 2026-09-08: both execution-mode spellings with different values fail t
   expect(load).toThrow(/Conflicting settings/);
 });
 
-test("24 amendment 2 2026-09-09: configure replaces the two execution-mode defaults, validated like the load path, and nothing else", async () => {
+test("24 amendment 2 2026-09-09, as 25 amendment 2 left it: configure replaces the one execution-mode default, validated like the load path, and nothing else", async () => {
   // A saved global preference must reach tasks admitted afterwards without a reload. Admission reads
-  // its mode from the configuration frozen at construction, so exactly those two booleans may move.
+  // its mode from the configuration frozen at construction, so exactly that boolean may move —
+  // Consolidation's was retired with the mode it chose (25b), and is refused below like any other key.
   expect(memory.config.noting.forkModeDefault).toBe(true);
-  expect(memory.config.consolidation.subagentModeDefault).toBe(true);
-  memory.configure({ noting: { forkModeDefault: false }, consolidation: { subagentModeDefault: false } });
+  memory.configure({ noting: { forkModeDefault: false } });
   expect(memory.config.noting.forkModeDefault).toBe(false);
-  expect(memory.config.consolidation.subagentModeDefault).toBe(false);
   expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
   // A task admitted after the call runs in the new mode; the run record keeps what it was launched with.
   const { s, t } = session();
@@ -1066,9 +1065,64 @@ test("24 amendment 2 2026-09-09: configure replaces the two execution-mode defau
   expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("noting.batchTokens is not reconfigurable at runtime");
   expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
   expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } as never })).toThrow("Removed setting");
+  expect(() => memory.configure({ consolidation: { nearThreshold: 0.5 } })).toThrow("Unknown setting consolidation");
   expect(memory.config.noting.forkModeDefault).toBe(true);
-  expect(memory.config.consolidation.subagentModeDefault).toBe(false);
+  expect(memory.config.consolidation.nearThreshold).toBe(DEFAULT_CONFIG.consolidation.nearThreshold);
   expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
+});
+
+// ---- 25 amendment 2 2026-09-09: Consolidation has one execution mode ----
+
+test("25 amendment 2 2026-09-09: the retired Consolidation mode preference is refused by name at load, in every configuration space", () => {
+  // The mode is gone, so the key that chose it is a removed setting, not an alias: a saved value —
+  // `true`, which asked for what happens anyway, as much as `false` — fails the load naming the key
+  // and the only remedy there is. Nothing is normalized and no file is rewritten.
+  expect(REMOVED_SETTINGS["consolidation.subagentModeDefault"]).toBe(CONSOLIDATION_SUBAGENT_ONLY);
+  const message = `Removed setting consolidation.subagentModeDefault: ${CONSOLIDATION_SUBAGENT_ONLY}`;
+  for (const saved of [true, false]) {
+    const load = () => sourceSeededMemory(join(directory, `saved-${saved}.sqlite`), async () => ok([]), { consolidation: { subagentModeDefault: saved } as never });
+    expect(load).toThrow(message);
+    // The flat `section.key` space every host loads its settings files through, and the runtime surface.
+    expect(() => canonicalFlatConfig({ "consolidation.subagentModeDefault": saved })).toThrow(message);
+    expect(() => memory.configure({ consolidation: { subagentModeDefault: saved } as never })).toThrow(message);
+  }
+  expect(Object.hasOwn(DEFAULT_CONFIG.consolidation, "subagentModeDefault")).toBe(false); // and the menu that builds itself from the defaults shows it nowhere
+});
+
+test("25 amendment 2 2026-09-09: an explicit Consolidation fork request is refused with the same sentence, and the default run is a subagent with normal attribution", async () => {
+  const { s, t } = session();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  const pending = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  // Refused, not quietly run as a subagent: the caller learns the mode no longer exists.
+  await expect(memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }))
+    .rejects.toThrow(`Invalid consolidation mode fork: ${CONSOLIDATION_SUBAGENT_ONLY}`);
+  expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation")).toEqual([]); // no run, no claim, no progress
+  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual(pending);
+  // The same for the mode a host reports it will actually run in.
+  await expect(memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, effectiveMode: "fork" }))
+    .rejects.toThrow(CONSOLIDATION_SUBAGENT_ONLY);
+  // The request that says nothing gets the one mode, recorded as itself on the task and on the run.
+  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("subagent");
+  const run = memory.store.listRuns(s.id).at(-1)!;
+  expect([run.kind, run.mode, run.model]).toEqual(["consolidation", "subagent", "session"]);
+  expect(JSON.parse(run.response!).requestedMode).toBe("subagent");
+});
+
+test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its recorded mode and is never rewritten", async () => {
+  const { s, t } = session();
+  // A run this database recorded before the mode was retired, exactly as it was written then.
+  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, branch: "main", mode: "fork", model: "old/model",
+    rangeFrom: "F1", rangeTo: "F1", createdAt: time }, operations: [] });
+  const historical = memory.store.listRuns(s.id).at(-1)!.id;
+  expect(memory.trace(`R${historical}`)).toContain("mode fork"); // read back as what it was, not relabelled
+  // New work in the same database records the one mode and leaves the old row alone.
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(memory.store.getRun(historical)!.mode).toBe("fork");
+  expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["fork", "subagent"]);
 });
 
 test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {

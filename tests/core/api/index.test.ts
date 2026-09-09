@@ -31,8 +31,8 @@ test("opens a store at the given path and applies default config", () => {
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {
   const dir2 = mkdtempSync(join(tmpdir(), "trace-memory-api-"));
-  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { consolidation: { subagentModeDefault: false, triggerTokens: 10 } });
-  expect(other.config.consolidation).toEqual({ subagentModeDefault: false, triggerTokens: 10, batchTokens: 10_000, nearThreshold: 0.28, maxToolRounds: 0 });
+  const other = sourceSeededMemory(join(dir2, "t.sqlite"), neverCalledRunAgent, { consolidation: { triggerTokens: 10, nearThreshold: 0.5 } });
+  expect(other.config.consolidation).toEqual({ triggerTokens: 10, batchTokens: 10_000, nearThreshold: 0.5, maxToolRounds: 0 });
   expect(other.config.render).toEqual(DEFAULT_CONFIG.render);
   expect(other.config.noting).toEqual(DEFAULT_CONFIG.noting);
   other.close();
