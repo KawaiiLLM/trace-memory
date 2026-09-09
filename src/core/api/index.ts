@@ -62,7 +62,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     toolCallTokens: 300,
     entryTokens: 10_000,
     secondaryToolCallTokens: 100,
-    secondaryEntryTokens: 150,
+    secondaryEntryTokens: 1_000,
     knowledgeBlockTokens: 10_000,
     episodicBlockTokens: 20_000,
   },

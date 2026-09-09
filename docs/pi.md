@@ -341,7 +341,7 @@ but never incomplete. `memory.compact(...)` returns a tier rather than a string:
 
 Tier 2 is the same entry renderer under the tier-2 profile (ticket 23, superseding 20c's
 separate compact-only renderer and its version constant): `render.secondaryToolCallTokens`
-(100) and `render.secondaryEntryTokens` (150). It is deterministic local work: entry order,
+(100) and `render.secondaryEntryTokens` (1,000). It is deterministic local work: entry order,
 the source addresses, user boundaries and the non-text placeholder are preserved; each tool
 part keeps its name, its `T<id>#t<n>` address and, for a result, its status, and shows what
 the tighter budget holds of its arguments or result; text is cut with the same
@@ -1034,7 +1034,7 @@ in the run's entry audit.
 `render.toolCallTokens` (`B`) defaults to **300** with a hard ceiling of **1,000**,
 rejected above it; `render.entryTokens` (`E`) keeps its 17a **10,000**. The
 compaction tier-2 pair is `render.secondaryToolCallTokens` (**100**) and
-`render.secondaryEntryTokens` (**150**). All four are positive safe integers
+`render.secondaryEntryTokens` (**1,000**). All four are positive safe integers
 through the existing flat configuration, are configuration rather than per-batch
 decisions, and count the rendered text of the part or the entry — label lines, key
 names, separators and every marker included. Inside `B`, arguments take a quarter

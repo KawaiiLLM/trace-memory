@@ -486,5 +486,5 @@ test("23 2026-09-09: the three removed budget keys and a per-call budget above t
   }
   expect(() => host({ "render.toolCallTokens": 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
   expect(() => host({ "render.secondaryToolCallTokens": 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");
-  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 150 });
+  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 1_000 });
 });

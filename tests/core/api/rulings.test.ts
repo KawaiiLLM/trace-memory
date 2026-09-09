@@ -852,7 +852,7 @@ test("23 2026-09-09: 17a's permanent half/half call split is superseded by a qua
 // 17a, 2026-09-08: `toolCallTokens` defaulted to 1,000. Superseded by ticket 23: the default is 300
 // and 1,000 becomes the hard ceiling, rejected above; `entryTokens` keeps its 17a value.
 test("23 2026-09-09: 17a's 1,000-token per-call default becomes 300 with 1,000 as a hard ceiling, and entryTokens is unchanged", () => {
-  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 150 });
+  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 1_000 });
   const open = (render: Record<string, number>) => TraceMemory(join(directory, "ceiling.sqlite"), async () => ok([]), { render });
   expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
   const ceiling = open({ toolCallTokens: 1_000 });

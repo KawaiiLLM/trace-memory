@@ -23,7 +23,7 @@ test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summa
     await h.answer();
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     // The custom entry names the view version and the profile its views were rendered under (23).
-    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v1-uniform-parts, tool call budget 100 tokens, entry budget 150 tokens):");
+    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v1-uniform-parts, tool call budget 100 tokens, entry budget 1000 tokens):");
     expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
     expect(h.notices.at(-1)).toContain("compaction used secondary views");

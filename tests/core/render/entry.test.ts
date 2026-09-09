@@ -94,8 +94,9 @@ test("23 golden: an entry over E without tool parts is the text cut head and tai
 test("23: the two stages in order — text yields only after every tool part is at its minimum", () => {
   const source = entry("assistant", "A long reply. " + "word ".repeat(300),
     [call(1, "bash", { input: JSON.stringify({ command: "make build" }) })]);
-  const rendered = view(source, tier2);
-  expect(tokens(rendered)).toBeLessThanOrEqual(tier2.entryTokens);
+  const tight: EntryProfile = { toolCallTokens: 100, entryTokens: 150 }; // tighter than the shipped tier 2, to force the second stage
+  const rendered = view(source, tight);
+  expect(tokens(rendered)).toBeLessThanOrEqual(tight.entryTokens);
   // The tool part is at its label-plus-marker minimum, and only then is the text cut.
   expect(rendered).toContain("[T7#t1] bash\n[omitted 10 characters]");
   expect(rendered).toContain("[omitted ");
@@ -191,7 +192,7 @@ test("23 fidelity: an omitted middle states an honest count and its address fetc
 
 test("23: the profiles are the two shipped ones, and B is rejected above its ceiling", () => {
   expect([tier1.toolCallTokens, tier1.entryTokens]).toEqual([300, 10_000]);
-  expect([tier2.toolCallTokens, tier2.entryTokens]).toEqual([100, 150]);
+  expect([tier2.toolCallTokens, tier2.entryTokens]).toEqual([100, 1000]);
   const open = (render: Record<string, number>) => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render });
   expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
   expect(() => open({ secondaryToolCallTokens: 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");

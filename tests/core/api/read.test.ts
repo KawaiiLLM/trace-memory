@@ -170,15 +170,15 @@ test("20c/23 2026-09-08 scenario 10: primary views over the shared ceiling becom
   const text = compacted(result);
   // Explicitly labelled, and named with the view version and the profile that produced these views,
   // so a reader knows which rule truncated the text in front of them (23, superseding 20c's own view).
-  expect(text).toContain(`Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget 100 tokens, entry budget 150 tokens):`);
+  expect(text).toContain(`Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget 100 tokens, entry budget 1000 tokens):`);
   expect(text).not.toContain("\nRaw:\n");
   // Every selected entry is represented, in order, by the addresses its labels carry; native identity
   // stays in storage and in the run audit, never in the model-facing text.
-  const profile = { toolCallTokens: 100, entryTokens: 150 };
+  const profile = { toolCallTokens: 100, entryTokens: 1000 };
   for (const entry of pending) {
     const view = renderEntry(entry, profile, memory.resultText).content;
     expect(text).toContain(view);
-    expect(tokens(view)).toBeLessThanOrEqual(150);
+    expect(tokens(view)).toBeLessThanOrEqual(1000);
   }
   expect(text).not.toContain(`[entry ${JSON.stringify([pending[0]!.nativeLineage, pending[0]!.nativeId])}]`);
   expect(text.indexOf(`[Source entry id: T${next.id}#user]`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
@@ -221,7 +221,7 @@ function retiredSecondaryView(entry: { sessionId: number; turnId: number; native
   return lines.join("\n");
 }
 
-test("23 2026-09-09 conversation-dense acceptance: tier 1 cannot fit a set of long replies, tier 2 still can, within half again of the retired view's total", () => {
+test("23 2026-09-09 conversation-dense acceptance, amended by the user the same day (tier-2 E = 1,000): a dozen long replies escalate to native with the reason, four longer ones fit tier 2", () => {
   const s = session();
   // Long replies with few tool calls: the shape the retired view handled and tier 1 cannot.
   let parent: number | undefined;
@@ -240,13 +240,28 @@ test("23 2026-09-09 conversation-dense acceptance: tier 1 cannot fit a set of lo
   // Tier 1 is over the shared Raw ceiling, so this set escalates; the retired view fitted it.
   expect(tier1).toBeGreaterThan(memory.config.noting.batchTokens);
   expect(retired).toBeLessThan(memory.config.noting.batchTokens);
-  // Tier 2 fits it too — no escalation to the native tier that did not happen before — and costs at
-  // most half again what the retired view cost, for tool identity and status the retired view dropped.
+  // The user raised the tier-2 E from 150 to 1,000 (2026-09-09): a long reply keeps up to a thousand
+  // tokens instead of a label and a few lines, so tier 2 no longer guarantees what the retired view
+  // fitted. A dozen such replies exceed the raw ceiling under tier 2 as well, and compact says so
+  // instead of cutting harder than the profile allows.
+  expect(tier2).toBeGreaterThan(memory.config.noting.batchTokens);
   const result = memory.compact(s.id, "main", parent!);
-  expect(result.tier).toBe("secondary");
-  expect(tier2).toBeLessThan(memory.config.noting.batchTokens);
-  expect(tier2, `tier 2 ${tier2} tokens against the retired view's ${retired}`).toBeLessThanOrEqual(Math.floor(retired * 1.5));
-  for (const entry of pending) expect(compacted(result)).toContain(renderEntry(entry, profile, memory.resultText).content);
+  expect(result.tier).toBe("native");
+  expect((result as { reason: string }).reason).toContain("tier-2 views");
+  for (const entry of pending) expect(tokens(renderEntry(entry, profile, memory.resultText).content)).toBeLessThanOrEqual(profile.entryTokens);
+  // Four replies three times as long are over the ceiling for tier 1 (kept whole) and fit tier 2
+  // (each cut to E), every entry represented under the tier-2 profile.
+  const s2 = session();
+  let parent2: number | undefined;
+  for (let i = 0; i < 4; i++) {
+    const t = turn(s2.id, `Question ${i}: ` + "word ".repeat(30), parent2);
+    memory.store.updateTurn(t.id, { assistantText: `Answer ${i}: ` + "word ".repeat(3_000) });
+    parent2 = t.id;
+  }
+  expect(total(memory.pendingEntries(s2.id, "main", parent2!).map(e => renderEntry(e, memory.config.render).content))).toBeGreaterThan(memory.config.noting.batchTokens);
+  const fewer = memory.compact(s2.id, "main", parent2!);
+  expect(fewer.tier).toBe("secondary");
+  for (const entry of memory.pendingEntries(s2.id, "main", parent2!)) expect(compacted(fewer)).toContain(renderEntry(entry, profile, memory.resultText).content);
 });
 
 test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact asks for native compaction with the reason, and changes nothing", () => {
