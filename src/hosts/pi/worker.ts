@@ -4,7 +4,7 @@
 // result. It holds no session state — everything it needs is an argument, so a host state change
 // after `runWorker` was called cannot reach a run that is already going (the abort signal is the one
 // deliberate exception: cancellation must reach a running child).
-import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
+import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
 import type { ConsolidationAgentInput, NotingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 
@@ -67,6 +67,10 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // the byte-level gate on a fork's first request.
     const common = {
       runsDir: binding.runsDir, cwd: binding.cwd, agentDir: binding.agentDir, model,
+      // 26b: the level the host froze with this task at admission, carried by the frozen task itself
+      // (core keeps it opaque), so a foreground switch after admission reaches neither this run's
+      // later rounds nor its fallback.
+      thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
       onRequest: (body: unknown) => { binding.checkCapacity!(body); request = body; task.reportRequest(body); },
@@ -87,7 +91,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         mode = "fork";
         usage = native.usage; request = native.request ?? request; verification = native.verification;
         retries.splice(0, retries.length, ...native.retries);
-        return { outcome: native.outcome, output: native.output, usage, request, mode, verification,
+        return { outcome: native.outcome, output: native.output, usage, request, mode, verification, thinking: native.thinking,
           ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
       } catch (error) {
         if (!(error instanceof NotForkable)) throw error;
@@ -106,7 +110,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     mode = "subagent";
     usage = native.usage; request = native.request ?? request;
     retries.splice(0, retries.length, ...native.retries);
-    return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason,
+    return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason, thinking: native.thinking,
       ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
   } catch (error) {
     return { outcome: task.signal?.aborted || (error instanceof Error && error.name === "AbortError") ? "cancelled" : "failure",

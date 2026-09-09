@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
+import type { ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { TraceMemory, toolRejected } from "../../../src/core/api/index.ts";
 
 type Conversation = Parameters<ExtensionContext["modelRegistry"]["complete"]>[1];
@@ -94,6 +95,10 @@ function uninstall(origin: string) {
   replaced = undefined;
 }
 
+/** The models `models.json` declares, and which of them Pi treats as reasoning-capable. */
+const MODELS = ["test", "test-mini", "test-thinking"];
+const reasoning = (id: string) => id === "test-thinking";
+
 /** `PI_CODING_AGENT_DIR` is process-wide and several cases run two hosts at once, so the fixture
  * borrows it rather than owning it: the first live host remembers what was there, each host points
  * it at its own agent directory, and the last one to be disposed puts the original value back —
@@ -122,11 +127,18 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // Pi settings the child reads through its own SettingsManager (19c gate 6): a fast, deterministic
   // retry policy instead of the user's ~/.pi/agent.
   const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) } }));
+  // `defaultThinkingLevel` and `modelThinkingLevels` are Pi's own settings, not this extension's
+  // configuration: 26b's cases put a global default and a per-model preference here to prove that
+  // neither of them decides a worker's level.
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: true, maxRetries: 1, baseDelayMs: 5, ...(config.retry as object ?? {}) },
+    ...(config.defaultThinkingLevel ? { defaultThinkingLevel: config.defaultThinkingLevel } : {}),
+    ...(config.modelThinkingLevels ? { modelThinkingLevels: config.modelThinkingLevels } : {}) }));
   // Models the native child resolves through Pi's own ModelRuntime; the stubbed fetch answers them.
+  // `test-thinking` is the one reasoning-capable model: Pi clamps every level to `off` on a model
+  // that declares `reasoning: false`, so a case that needs a level to survive runs on this one.
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
     i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key", api,
-      models: ["test", "test-mini"].map(id => ({ id, name: `Test ${id}`, reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
+      models: MODELS.map(id => ({ id, name: `Test ${id}`, reasoning: reasoning(id), input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
   claimAgentDir(agentDir);
   const native = () => options.native?.();
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
@@ -141,6 +153,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   const dialogs: { title: string; options?: string[] }[] = [];
   const answers: (string | boolean | undefined)[] = [];
   let headerTimestamp: unknown = "2099-01-01T00:00:00.000Z";
+  let thinkingLevel: ThinkingLevel = "off";
   const statuses = new Map<string, string | undefined>();
   // A notice is host activity: it keeps `drain` waiting through a short retry backoff, which
   // otherwise looks idle (a scheduled retry paints the footer warning, not the running indicator).
@@ -154,9 +167,10 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       getLeafId: () => native() ? native()!.getLeafId() : entries.at(-1)?.id ?? null,
       getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
-      find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
+      find: (p: string, id: string) => p === "fake" ? { ...model, id, reasoning: reasoning(id) } : undefined,
       // 24b: the models a settings edit may choose from. Pi's registry answers `getAvailable` with
-      // the auth-resolved snapshot; the fake answers the two its models.json defines.
+      // the auth-resolved snapshot; the fake offers the two ordinary ones (`test-thinking` exists in
+      // models.json for the cases that need reasoning support, and is resolved by `find`).
       getAvailable: () => ["test", "test-mini"].map(id => ({ ...model, id })),
       getAll: () => ["test", "test-mini"].map(id => ({ ...model, id })),
       complete: async () => { throw new Error("19c: the host has no request-copy runner; scripted replies arrive at the wire"); } },
@@ -186,12 +200,17 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   }));
   const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
     registerCommand: (name: string, command: any) => commands.set(name, command),
+    // 26b: the foreground thinking level, as Pi's own extension API exposes it. The default is the
+    // level a real Pi foreground would hold on these models: they declare `reasoning: false`, so Pi
+    // clamps every level to `off`. A case that wants another foreground level sets it.
+    getThinkingLevel: () => thinkingLevel,
+    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; },
     appendEntry: (customType: string, data: unknown) => {
       if (native()) { native()!.appendCustomEntry(customType, structuredClone(data)); return; }
       const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom", customType, data: structuredClone(data) }; entries.push(entry); allEntries.push(entry); },
   } as unknown as ExtensionAPI;
   const previous = process.env.TRACE_MEMORY_CONFIG;
-  const { retry: _retry, ...extensionConfig } = config as { retry?: unknown } & Record<string, unknown>;
+  const { retry: _retry, defaultThinkingLevel: _level, modelThinkingLevels: _levels, ...extensionConfig } = config as Record<string, unknown>;
   process.env.TRACE_MEMORY_CONFIG = JSON.stringify({ dbPath, ...extensionConfig });
   const originalCwd = process.cwd();
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
@@ -273,7 +292,9 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     try { await emit("session_shutdown", { reason: "quit" }); memory.close(); if (stubbed) uninstall(origin); }
     finally { releaseAgentDir(agentDir); rmSync(dir, { recursive: true, force: true }); }
   };
-  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; }, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+  return { setHeaderTimestamp: (value: unknown) => { headerTimestamp = value; },
+    /** The foreground level this host reports to the extension, switchable mid-run by a case. */
+    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
 export function notingFact(conversation: Conversation) {

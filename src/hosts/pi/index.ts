@@ -322,7 +322,14 @@ export default function (pi: ExtensionAPI) {
     // A session the cache-miss latch has downgraded runs with fresh context, so there is no prefix.
     const capacity = { inputTokens: Math.max(0, Math.floor(model.contextWindow * contextMargin) - model.maxTokens),
       prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 };
-    const common = { ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
+    // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
+    // material. The foreground level is read once here, as a value — every later round of this run
+    // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to
+    // meanwhile — and Pi's own session constructor clamps it to what the worker model supports, so
+    // no per-model preference and no global default decides a worker's level. Borrowed closed-session
+    // work and manual catchup reach this line too, and inherit this executor's level, never a
+    // historical target session's.
+    const common = { ...target, ...selected, effectiveMode: effective, thinkingLevel: pi.getThinkingLevel(), borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}) };
     return kind === "consolidation" ? memory.consolidate(common) : memory.noting(common);
   };

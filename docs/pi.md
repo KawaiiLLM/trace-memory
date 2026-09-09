@@ -765,6 +765,19 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 - **Task delivery.** The text core prepared is the child's user prompt; the
   Consolidation review answer is delivered as a native user message queued with
   `deliverAs: "steer"`, so the two-submission protocol in core is untouched.
+- **Thinking level (26b).** The child is created with Pi's own `thinkingLevel` option, set to the
+  foreground level the host read once at admission (`pi.getThinkingLevel()`) and froze with the task,
+  beside its model and its material. That frozen level therefore wins over the level a forked
+  ancestry carries, over the per-model preference and over the global default, and Pi's own clamp
+  normalizes a level the worker model does not support. The rule covers Noter and Consolidator,
+  ordinary automatic work, `/trace catchup` and borrowed closed-session work — which inherits the
+  active executor's level, never a historical target session's — and a fork-to-subagent fallback
+  keeps the launch-time value, so a level changed while a worker runs reaches neither that worker's
+  later rounds nor its fallback. There is no setting for it. The gate is untouched: a level that
+  makes the inherited request differ from the captured parent request is refused by the existing
+  prefix verification and falls back like any other mismatch. The run record's response carries
+  `thinking: { requested, effective }` — the frozen level and the level the child really ran at,
+  side by side, so a clamp is visible instead of silent.
 
 ### The fresh child (19b subagent parity)
 
@@ -1081,7 +1094,9 @@ indicator while one waits and posts one notice per scheduled attempt.
 
 Every Noting, Consolidation and manual write leaves a row in `runs` with the
 exact last provider request, the final output, summed usage, the tool-call
-sequence, fetches and problems. `trace R<n>` renders a run as a summary (kind,
+sequence, fetches and problems. The response envelope also carries
+`thinking: { requested, effective }`, the level frozen at admission and the level
+Pi's clamp left the child at (26b). `trace R<n>` renders a run as a summary (kind,
 outcome, range, model, mode, what it created, usage, cost, tool counts,
 problems); `full` adds each tool round and cut previews of the raw request and
 response. The menu's Current session > Runs lists the session's last n runs, with a
