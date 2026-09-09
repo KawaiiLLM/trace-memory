@@ -259,12 +259,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     compact: (sessionId: number, branch = "main", headTurnId?: number): CompactResult => {
       if (!store.enabled(sessionId)) return { tier: "primary", text: "" };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
+      const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       // 1. Freeze a read snapshot: every pending original entry on this path, selected once. The
       //    tiers below re-render this same set; none of them may change it.
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
-      const knowledge = store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch);
-      const facts = store.listSessionFacts(sessionId);
+      const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
+      // 26 amendment 2: the historical facts are the ones applicable on the selected path, never the
+      // whole session's — a sibling branch's fact is not history here. `listSessionFacts`'s freshness
+      // order is what `budgetFacts` selects by, so it is filtered, not replaced by `listBranchFacts`.
+      const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot));
       const factTurns = store.factTurnTimes(facts);
       // Ticket 25, amendment 3 (25c): compaction's two budgets are the knowledge cap and the shared
       // episodic envelope, and nothing else. `noting.batchTokens` is no longer an inner ceiling on the

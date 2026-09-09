@@ -134,8 +134,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   // 25a: neither Noter mode receives a knowledge block, but a run still records which commits its
   // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
-  const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
-  const facts = store.listSessionFacts(session.id);
+  const path = store.knowledgePath(session.id, input.branch, input.headTurnId); // entry-aware (review 2026-09-08)
+  const snapshot = store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
+  const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
+  // 26 amendment 2: the history block carries the facts applicable on this freeze's path, never the
+  // whole session's — a sibling branch's fact is not this Noter's history. `listSessionFacts`'s
+  // freshness order is what `budgetFacts` selects by, so it is filtered, not replaced.
+  const facts = store.listSessionFacts(session.id).filter(f => store.factOnPath(f, path, snapshot));
   const factTurns = store.factTurnTimes(facts);
   // The same fact renders the same line for the whole freeze, and one Turn's tool calls are the same
   // rows on every candidate: both are read and rendered once here rather than inside the loop.

@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
+import { countPathSnapshots } from "../../perf/fixture.ts";
+import { freezeNoting } from "../../../src/core/noting/index.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -1286,4 +1288,84 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+});
+
+/** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the
+ * prefix, a fact on the selected child, a fact on its sibling. Manual writes, so the facts carry no
+ * entry bindings and applicability is answered from the Turn ancestry and the citable addresses. */
+function pathFacts() {
+  const { s, t } = session();
+  const write = (headTurnId: number, branch: string, text: string): number => {
+    const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: headTurnId, branch });
+    const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${headTurnId}#user`] }] }));
+    expect(receipt.results[0]).toMatch(/^ok:/);
+    return receipt.factIds[0] as number;
+  };
+  const child = (branch: string, parentTurnId: number, prompt: string) =>
+    memory.store.appendTurn({ sessionId: s.id, parentTurnId, kind: "turn", userPrompt: prompt, assistantText: `${branch} reply`, startedAt: time });
+  const shared = write(t.id, "main", "SHARED PREFIX");
+  const selected = child("C", t.id, "C prompt"), sibling = child("D", t.id, "D prompt");
+  return { s, t, selected, sibling, shared, child,
+    onPath: write(selected.id, "C", "ON PATH"), siblingOnly: write(sibling.id, "D", "SIBLING ONLY") };
+}
+
+test("26 amendment 2: compaction and the Noter's history take only path-applicable facts", async () => {
+  const { s, selected, shared, onPath, siblingOnly, child } = pathFacts();
+  const path = { sessionId: s.id, branch: "C", headTurnId: selected.id };
+  const store = memory.store;
+  // The list both consumers read, and the list they must read: `listSessionFacts`' freshness order
+  // (`source_time DESC, id DESC`) with the sibling's fact removed — filtered, never re-queried through
+  // `listBranchFacts`, which orders by fact id ascending and would reverse what `budgetFacts` selects.
+  expect(store.listSessionFacts(s.id).map(f => f.id)).toEqual([siblingOnly, onPath, shared]);
+  expect(store.listSessionFacts(s.id).filter(f => store.factOnPath(f, path)).map(f => f.id)).toEqual([onPath, shared]);
+  expect(store.listBranchFacts(s.id, "C", selected.id).map(f => f.id)).toEqual([shared, onPath]);
+
+  // --- compaction, tier 1: the applicable facts are carried, the sibling's is not, and the whole
+  // operation answers membership from one snapshot rather than rebuilding it per fact.
+  const snapshots = countPathSnapshots();
+  const measure = (run: () => string) => { snapshots.reset(); const text = run(); return { text, snapshots: snapshots.snapshots() }; };
+  const tier1 = measure(() => compacted(memory.compact(s.id, "C", selected.id)));
+  expect(tier1.snapshots).toBe(1);
+  expect(tier1.text).toContain(`[F${shared}]`); expect(tier1.text).toContain(`[F${onPath}]`);
+  expect(tier1.text).not.toContain(`[F${siblingOnly}]`); expect(tier1.text).not.toContain("SIBLING ONLY");
+
+  // --- compaction, tier 2: the same block under the tighter profile, the same membership.
+  const body = "word ".repeat(12_000);
+  let head = selected.id;
+  for (const i of [1, 2, 3]) head = child("C", head, `FILLER_${i} ${body}`).id;
+  const tier2 = measure(() => {
+    const result = memory.compact(s.id, "C", head);
+    expect(result.tier).toBe("secondary");
+    return compacted(result);
+  });
+  expect(tier2.snapshots).toBe(1);
+  expect(tier2.text).toContain(`[F${shared}]`); expect(tier2.text).toContain(`[F${onPath}]`);
+  expect(tier2.text).not.toContain(`[F${siblingOnly}]`); expect(tier2.text).not.toContain("SIBLING ONLY");
+
+  // --- the freshness order survives the filter. Squeezed below one fact group, the block keeps the
+  // raw and the receipt enumerates the candidates `budgetFacts` was given, newest first: the sibling's
+  // fact is not among them, because it is not omitted for budget but absent for membership.
+  memory.config.render.episodicBlockTokens = 105 + tokens(`[T${selected.id}] ${time} (selected facts)\n`);
+  const squeezed = compacted(memory.compact(s.id, "C", selected.id));
+  expect(squeezed).not.toContain(`[F${onPath}]`); expect(squeezed).not.toContain(`[F${shared}]`);
+  expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`);
+  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+
+  // --- the Noter's freeze: the same list in the same order, from one snapshot. The write-tool
+  // binding builds its own later, which is a different operation, so the freeze is measured directly.
+  const target = { sessionId: s.id, branch: "C", headTurnId: selected.id, mode: "subagent" as const };
+  snapshots.reset();
+  const frozen = freezeNoting(store, target, memory.config);
+  expect(snapshots.snapshots()).toBe(1);
+  snapshots.restore();
+  expect(frozen.facts.map(f => f.id)).toEqual([onPath, shared]);
+
+  // --- and the history block the subagent actually receives.
+  calls.length = 0;
+  expect(await memory.noting(target)).toMatchObject({ outcome: "success" });
+  const material = calls[0] as NotingAgentInput;
+  const history = material.material.facts.join("\n");
+  expect(history).toContain(`[F${shared}] `); expect(history).toContain(`[F${onPath}] `);
+  expect(history).not.toContain(`[F${siblingOnly}]`); expect(history).not.toContain("SIBLING ONLY");
+  expect(material.text.fresh).not.toContain("SIBLING ONLY");
 });

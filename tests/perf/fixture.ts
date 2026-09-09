@@ -217,6 +217,17 @@ export function countPathBuilds(): { builds: () => number; reset: () => void; re
   return { builds: () => count, reset: () => { count = 0; }, restore: () => { prototype.pathTurns = original; } };
 }
 
+/** Count the snapshots themselves, one level above `countPathBuilds`: an operation that shares its
+ * membership builds exactly one, and `factOnPath`'s default argument — a snapshot per fact — shows
+ * up here as a count that grows with the facts (26 amendment 2). Same test-only prototype hook. */
+export function countPathSnapshots(): { snapshots: () => number; reset: () => void; restore: () => void } {
+  const prototype = Store.prototype as { pathSnapshot: Store["pathSnapshot"] };
+  const original = prototype.pathSnapshot;
+  let count = 0;
+  prototype.pathSnapshot = function (this: Store, path) { count++; return original.call(this, path); };
+  return { snapshots: () => count, reset: () => { count = 0; }, restore: () => { prototype.pathSnapshot = original; } };
+}
+
 /** Count the reads that load and parse a whole Raw payload — the audit's "source reads". Test-only:
  * it replaces the public method on the prototype (so a store the extension owns is counted too) and
  * restores it afterwards; production carries no hook. */
