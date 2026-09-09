@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import type { KnowledgeRevision } from "../model/index.ts";
+import type { FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderEntry, rawResultText, xmlBlock, type ResultExtractor } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
  * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
  * since 23b, which of a Turn's native occurrences an assembled `trace` shows. An unbound read is
- * unrestricted, as it always was. */
-export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string }
+ * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
+ * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
+ * reachable from a model's tool arguments. */
+export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[] }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** Ticket 20 "Compaction escalation" (20c): what compact can produce for one frozen read snapshot.
@@ -30,13 +32,23 @@ export interface TopicGroups {
 
 export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
 
+/** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page, with
+ * the mutable state its line would otherwise read from the database then. Everything else a hit
+ * prints — the fact and commit records, the path, the labels the commit graph decided — is immutable
+ * or already frozen by the query, so these three annotations are the whole remainder. */
+interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[] }
+
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string,
   resultText: ResultExtractor = rawResultText) {
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
   // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
   // asked for later prints the labels that query established, and nothing but values is held between
   // pages — no open transaction, no reserved connection.
-  interface Continuation { items: readonly unknown[]; format: (items: readonly unknown[]) => string[] }
+  interface Continuation { items: readonly unknown[]; format: (items: readonly unknown[]) => string[];
+    /** 22c "complete snapshot": run once, on the hits this query defers, to freeze the mutable state
+     * their lines will read. The pages formatted at query time need nothing frozen, so the whole
+     * hit set is never formatted and no transaction is held; the deferred hits carry their own. */
+    capture?: (deferred: readonly unknown[]) => readonly unknown[] }
   const cursors = new Map<string, Continuation & { footer: string; cap: number; owner: string }>();
   const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = ""): string => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
@@ -44,12 +56,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
-    const { items, format } = saved ?? (Array.isArray(source) ? { items: source, format: (lines: readonly unknown[]) => lines as string[] } : source);
+    const { items, format, capture } = saved ?? (Array.isArray(source)
+      ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) footer = saved.footer;
     const receipts = footer ? [footer] : [];
     if (items.length > cap) {
       const cursor = randomUUID();
-      cursors.set(cursor, { items: items.slice(cap), format, footer, cap, owner });
+      // The snapshot is taken here, once, at the moment this query first defers hits — and is not
+      // carried into the stored continuation, whose items already hold it.
+      const deferred = items.slice(cap);
+      cursors.set(cursor, { items: capture ? capture(deferred) : deferred, format, footer, cap, owner });
       receipts.push(`cursor=${cursor}`);
     }
     if (options.cursor) cursors.delete(options.cursor);
@@ -60,8 +76,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (!value) throw new Error(`session S${id} does not exist`);
     return value;
   };
-  const factLine = (id: number) => renderFact(store.getFact(id)!, store.listFactRelations(id));
-  const knowledgeLine = (value: KnowledgeWithRevision) => renderKnowledge(value, store.listKnowledgeMarks(value.knowledge.id).filter((m) => m.commitId === value.revision.id));
+  // Both read one mutable annotation of an otherwise immutable record. A caller that froze it at
+  // query time (22c) supplies it; everyone else reads it now, exactly as before.
+  const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
+  const knowledgeLine = (value: KnowledgeWithRevision, marks: readonly KnowledgeMark[] = store.listKnowledgeMarks(value.knowledge.id)) =>
+    renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id));
   // The knowledge part of the shared material contract (20a): the same parts, budgeted the same way,
   // that a Noting or Consolidation task freezes. Its block layout lives in core/render/material.ts.
   const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string): SharedMaterial => {
@@ -78,7 +97,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
     let project = store.findProjectByName(address);
     while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
-    if (project) return page([...store.listVisibleKnowledge(0, project.id).map(knowledgeLine),
+    if (project) return page([...store.listVisibleKnowledge(0, project.id).map((k) => knowledgeLine(k)),
       ...store.listProjectFacts(project.id).map((f) => factLine(f.id))].map(listingLine), options);
     const result = expand(address, options);
     return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
@@ -207,7 +226,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
-        "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map(knowledgeLine),
+        "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
         "Pending raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
       // Escape payload markup so injected content cannot close or nest the carry boundary.
       return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
@@ -223,9 +242,26 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const graph = addresses.some(a => a.startsWith("K")) ? store.commitGraph(path) : null;
       const tips = new Map<number, KnowledgeRevision[]>();
       for (const r of graph?.current ?? []) tips.set(r.knowledgeId, [...(tips.get(r.knowledgeId) ?? []), r]);
-      const format = (hits: readonly unknown[]) => (hits as string[]).map((address) => {
-        if (address.startsWith("F")) return factLine(Number(address.slice(1)));
-        if (address.startsWith("T")) return expand(address);
+      // The graph freezes what a hit *is*; this freezes the mutable state its line *reads*: a fact's
+      // relations, a commit's marks, a Turn's occurrence membership. Each is read for the deferred
+      // hits in one query — identities for the Turns, never their Raw — so a fact negated, a commit
+      // marked or a message completed after this query changes no page it already established.
+      const capture = (deferred: readonly unknown[]): FrozenHit[] => {
+        const rest = deferred as string[];
+        const record = (address: string) => Number(address.slice(1)), commitOf = (address: string) => Number(address.split("@")[1]);
+        const ids = (prefix: string, of: (address: string) => number) => rest.filter(a => a.startsWith(prefix)).map(of);
+        const relations = store.listFactRelationsOf(ids("F", record));
+        const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
+        const entries = store.listSourceEntryIdsOf(ids("T", record));
+        return rest.map(address => address.startsWith("F") ? { address, relations: relations.get(record(address))! }
+          : address.startsWith("T") ? { address, entryIds: entries.get(record(address))! }
+          : { address, marks: marks.get(commitOf(address))! });
+      };
+      const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
+        const frozen: FrozenHit | undefined = typeof item === "string" ? undefined : item;
+        const address = frozen?.address ?? item as string;
+        if (address.startsWith("F")) return factLine(Number(address.slice(1)), frozen?.relations);
+        if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds });
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
         const hit = graph!.revisions.find(r => r.id === commit)!;
@@ -238,9 +274,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
           : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
-        return knowledgeLine({ knowledge, revision: hit }) + `\n  note: ${status}`;
+        return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}`;
       }).map(listingLine);
-      return page({ items: addresses, format }, options, "Search uses literal substring search. No hit does not mean absent.");
+      return page({ items: addresses, format, capture }, options, "Search uses literal substring search. No hit does not mean absent.");
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

@@ -763,7 +763,9 @@ a **hit** otherwise. A response whose input is below the provider's documented c
 The session is downgraded only on the **second consecutive** eligible miss. The count lives in
 the executor process, per memory session: an eligible hit resets it, an unknown response neither
 counts nor resets, a reopen starts at zero (the persisted latch below is the session-scoped
-state), and the menu's **Retry fork** resets it with the latch. Every eligible miss emits one TUI
+state), and the menu's **Retry fork** resets it with the latch. The reopen boundary is the one
+`restore()` reopens the memory session at; a tree switch moves position inside the same session,
+so its misses stay consecutive and only the position changes. Every eligible miss emits one TUI
 notice with its count — `Trace Memory: fork cache miss 1/2 (… of … input tokens read from cache).`
 — and the downgrade emits its own single notice: `Trace Memory: fork downgraded after two
 consecutive cache misses. Future memory tasks in this session will use subagent.`

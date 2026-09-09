@@ -840,6 +840,21 @@ export class Store {
     }));
   }
 
+  /** 22c "complete snapshot": the same answer as `listFactRelations` for many facts in one read, so a
+   * paged search can freeze what its deferred hits print without formatting or re-reading them. */
+  listFactRelationsOf(factIds: number[]): Map<number, FactRelation[]> {
+    const wanted = new Set(factIds), relations = new Map<number, FactRelation[]>([...wanted].map(id => [id, []]));
+    if (!wanted.size) return relations;
+    const ids = JSON.stringify([...wanted]);
+    for (const r of this.db.prepare(`SELECT * FROM fact_relations
+      WHERE from_fact IN (SELECT value FROM json_each(?)) OR to_fact IN (SELECT value FROM json_each(?))
+      ORDER BY from_fact, to_fact, kind, strength`).all(ids, ids) as any[]) {
+      const relation = { fromFact: r.from_fact, toFact: r.to_fact, kind: r.kind, strength: r.strength };
+      for (const id of new Set([relation.fromFact, relation.toFact])) relations.get(id)?.push(relation);
+    }
+    return relations;
+  }
+
   // -- runs (standalone: failure / cancelled, or a run with nothing else to commit) --
 
   recordRun(input: RunInput & { outcome: RunOutcome }): Run {
@@ -1301,6 +1316,18 @@ export class Store {
       .map((row: any) => ({ knowledgeId: row.knowledge_id, commitId: row.commit_id, kind: row.kind, createdAt: row.created_at }));
   }
 
+  /** 22c "complete snapshot": the marks of many commits in one read, keyed by the commit asked for
+   * (`commit_id` is unique, so each key holds at most one mark). A mark written later is not in it. */
+  listKnowledgeMarksOf(commitIds: number[]): Map<number, KnowledgeMark[]> {
+    const marks = new Map<number, KnowledgeMark[]>([...new Set(commitIds)].map(id => [id, []]));
+    if (!marks.size) return marks;
+    for (const row of this.db.prepare("SELECT * FROM knowledge_marks WHERE commit_id IN (SELECT value FROM json_each(?)) ORDER BY created_at ASC")
+      .all(JSON.stringify([...marks.keys()])) as any[]) {
+      marks.get(row.commit_id)!.push({ knowledgeId: row.knowledge_id, commitId: row.commit_id, kind: row.kind, createdAt: row.created_at });
+    }
+    return marks;
+  }
+
   // -- pending deliveries --
 
   addPendingDelivery(runId: number, sessionId: number, branch: string | null): void {
@@ -1517,6 +1544,16 @@ export class Store {
       : this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
         .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
     return rows.map(r => this.getSourceEntry(r.id)!);
+  }
+  /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
+   * unbound `listSourceEntries` returns them. Identities only — no Raw is loaded to freeze which
+   * occurrences a read saw, so the cost follows the hit count, not the conversation's volume. */
+  listSourceEntryIdsOf(turnIds: number[]): Map<number, number[]> {
+    const entries = new Map<number, number[]>([...new Set(turnIds)].map(id => [id, []]));
+    if (!entries.size) return entries;
+    for (const row of this.db.prepare("SELECT id, turn_id FROM source_entries WHERE turn_id IN (SELECT value FROM json_each(?)) ORDER BY id")
+      .all(JSON.stringify([...entries.keys()])) as { id: number; turn_id: number }[]) entries.get(row.turn_id)!.push(row.id);
+    return entries;
   }
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {

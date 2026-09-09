@@ -388,8 +388,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // extractor (the stored string as is), and its read scope is unchanged — unrestricted, every
     // native occurrence of the Turn's calls whatever branch selected them (17a), which is also why
     // each occurrence shows as its own entry instead of a merged `multiple results` call.
-    return finish(renderTrace(turn, store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch),
-      cfg.render, options, options.full ? rawResultText : resultText));
+    // 22c: `entryIds` is a paged read's own frozen occurrence membership for this Turn, supplied
+    // instead of a branch; without it the branch selects (never for `full`), exactly as 23b left it.
+    const occurrences = display.entryIds
+      ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
+      : store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch);
+    return finish(renderTrace(turn, occurrences, cfg.render, options, options.full ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, trace, resultText);

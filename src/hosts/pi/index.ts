@@ -448,7 +448,12 @@ export default function (pi: ExtensionAPI) {
       : provisional() ?? latest?.enrollment ?? saved?.enrollment ?? { defaultEnabled: enrollmentDefault(ctx.sessionManager.getHeader()?.timestamp, baseline), choice: null };
     if (!state.sessionId) { persistProvisional(state.enrollment); state.enrollment = provisional()!; }
     state.shared = state.shared || (!!state.sessionId && memory.store.getSession(state.sessionId)!.host !== `pi:${piId}`);
-    if (state.sessionId && !fork) memory.store.reopenSession(state.sessionId, memory.executorId);
+    // 19 amendment 2026-09-09: "a reopen starts at zero; the persisted latch itself is unchanged".
+    // The reopen of the memory session is that boundary, so the process-local consecutive-miss count
+    // is cleared exactly here — not on a tree switch (`fork`), which moves position inside the same
+    // session and leaves its misses consecutive, and never together with `forkSuppression`, which is
+    // database state and survives (its only reset is the menu's Retry fork).
+    if (state.sessionId && !fork) { memory.store.reopenSession(state.sessionId, memory.executorId); cacheMisses.delete(state.sessionId); }
     // 18b lifecycle: switching away from a catchup's frozen path ends it and cancels its owned
     // in-flight work; it is never retargeted to the newly selected branch or resumed on reopen.
     if (catchup && !catchup.outcome && (catchup.sessionId !== state.sessionId || catchup.branch !== state.branch)) {

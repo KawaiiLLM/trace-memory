@@ -456,7 +456,12 @@ facade reads remain available to hosts. Raw uses literal substring LIKE
 bound search includes raw as well as facts and knowledge. Each hit is
 one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
 Results order facts by id, then knowledge id/revision; raw orders turns by id.
-Every search page states that no hit does not mean absent.
+Every search page states that no hit does not mean absent. A `cursor` continues the
+query that issued it, not the database as it now stands: the hits, the commit labels,
+and the mutable annotations each line prints — a fact's relations, a commit's marks,
+and the Turn occurrences a raw hit assembles — are the ones that query saw. Writing
+any of them between two pages adds no hit, drops none and moves no label, and nothing
+is held between pages: no open transaction, no reserved connection.
 
 `trace` additionally accepts session addresses, exact project names, comma lists,
 and `{ cap?, cursor? }`. Projects list global/project knowledge and project facts;
