@@ -151,6 +151,11 @@ export default function (pi: ExtensionAPI) {
     let usage: unknown;
     const retries: { attempt: number; error: string }[] = [];
     const progress = () => input.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason });
+    // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
+    // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
+    // committed progress while the trailing reply is still in flight and the running indicator stays.
+    // Reads (`trace`, `search`) refresh too, cheaply; nothing polls and nothing decrements early.
+    const tools = input.tools.map(tool => ({ ...tool, execute: (raw: unknown) => { try { return tool.execute(raw); } finally { showSpend(callContext); } } }));
     try {
       input.signal?.throwIfAborted();
       if (!model) throw new Error(`Unavailable model: ${input.model}`);
@@ -224,7 +229,7 @@ export default function (pi: ExtensionAPI) {
             },
             mode: "fork", parentFile, parentSessionId: callPiId, checkpoint, runsDir: runsDirectory(callPiId),
             cwd: callContext.cwd, agentDir, model: model as unknown as NativeModel, captured: captured.payload,
-            task: `${input.prompt}\n\n${input.text.inherited}`, tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+            task: `${input.prompt}\n\n${input.text.inherited}`, tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
             signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
             onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
             onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },
@@ -251,7 +256,7 @@ export default function (pi: ExtensionAPI) {
       const native = await runNative({
         mode: "subagent", runsDir: runsDirectory(callPiId), cwd: callContext.cwd, agentDir,
         model: model as unknown as NativeModel, systemPrompt: input.prompt, task: input.text.fresh,
-        tools: input.tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
+        tools, maxToolRounds: memory.config[input.kind].maxToolRounds,
         signal: input.signal, feedback: input.kind === "consolidation" ? input.reviewFeedback : undefined,
         onRequest: body => { checkCapacity(body); request = body; input.reportRequest(body); },
         onProgress: state => { usage = state.usage; retries.splice(0, retries.length, ...state.retries); progress(); },

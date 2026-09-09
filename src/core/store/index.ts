@@ -870,6 +870,12 @@ export class Store {
       .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "noting" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
   }
 
+  /** The session a run was run for, as metadata: one column, never the request and response bodies.
+   * Scope checks and delivery confirmation need only this (review 2026-09-09: a footer refresh with
+   * scoped knowledge was loading whole audit bodies through `getRun` to read one id). */
+  runSessionId(runId: number): number | null {
+    return (this.db.prepare("SELECT session_id FROM runs WHERE id = ?").get(runId) as { session_id: number } | undefined)?.session_id ?? null;
+  }
   getRun(id: number): Run | null {
     const row = this.db.prepare("SELECT * FROM runs WHERE id = ?").get(id);
     return row ? toRun(row) : null;
@@ -1050,7 +1056,7 @@ export class Store {
 
   private admits(revision: KnowledgeRevision, sessionId: number): boolean {
     if (revision.scope === "global") return true;
-    const origin = revision.runId === null ? null : this.getRun(revision.runId)?.sessionId;
+    const origin = revision.runId === null ? null : this.runSessionId(revision.runId);
     if (revision.scope === "session") return origin === sessionId;
     return origin != null && this.getSession(origin)?.projectId === this.getSession(sessionId)?.projectId;
   }
@@ -1077,7 +1083,7 @@ export class Store {
       parents.get(link.to_commit)!.push(link.from_commit);
     }
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
-      (r.scope === "project" && r.runId !== null && this.getSession(this.getRun(r.runId)!.sessionId!)?.projectId === projectId)) &&
+      (r.scope === "project" && r.runId !== null && this.getSession(this.runSessionId(r.runId)!)?.projectId === projectId)) &&
       (!path || this.commitApplies(r, path, snapshot!)));
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
@@ -1432,7 +1438,7 @@ export class Store {
   }
   confirmDeliveries(runIds: number[]): void {
     const at = new Date().toISOString();
-    this.transaction(() => { for (const runId of runIds) { const id = this.getRun(runId)?.sessionId; if (id && this.enabled(id)) this.clearPendingDelivery(runId, at); } });
+    this.transaction(() => { for (const runId of runIds) { const id = this.runSessionId(runId); if (id && this.enabled(id)) this.clearPendingDelivery(runId, at); } });
   }
 
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {
