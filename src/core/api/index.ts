@@ -15,10 +15,10 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 export { notingText, notingIncrement, consolidationText, consolidationIncrement, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, MaterialText, TaskRange } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
-export type { Enrollment } from "../store/index.ts";
+export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
-import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget } from "../store/index.ts";
+import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
 export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationMaterial, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
@@ -27,6 +27,7 @@ export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, Cons
 // ---- Flat config, defaults in one place (spec.md: render budgets, noting/consolidation triggers and modes) ----
 
 export interface TraceMemoryConfig {
+  closedSessionScope: ClosedSessionScope;
   render: {
     /** Ticket 23 tier 1: `B`, the most one tool call is worth (ceiling `TOOL_CALL_CEILING`). */
     toolCallTokens: number;
@@ -58,6 +59,7 @@ export interface TraceMemoryConfig {
 }
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
+  closedSessionScope: "project",
   render: {
     toolCallTokens: 300,
     entryTokens: 10_000,
@@ -82,6 +84,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
 };
 
 export type ConfigOverride = {
+  closedSessionScope?: ClosedSessionScope;
   render?: Partial<TraceMemoryConfig["render"]>;
   /** `branchModeDefault` is the accepted legacy spelling of `forkModeDefault` (CONFIG_ALIASES). */
   noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
@@ -163,11 +166,13 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
   override = canonicalConfig(override);
   for (const [section, values] of Object.entries(override)) {
     if (!Object.hasOwn(base, section)) throw new Error(`Unknown setting ${section}`);
-    const defaults = base[section as keyof TraceMemoryConfig];
+    if (section === "closedSessionScope") continue;
+    const defaults = base[section as Exclude<keyof TraceMemoryConfig, "closedSessionScope">];
     if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error(`Invalid ${section}: expected an object`);
     for (const key of Object.keys(values)) if (!Object.hasOwn(defaults, key)) throw new Error(`Unknown setting ${section}.${key}`);
   }
   return {
+    closedSessionScope: override.closedSessionScope === undefined ? base.closedSessionScope : override.closedSessionScope,
     render: { ...base.render, ...override.render },
     noting: { ...base.noting, ...override.noting },
     consolidation: { ...base.consolidation, ...override.consolidation },
@@ -180,7 +185,8 @@ export const TOOL_CALL_CEILING = 1_000;
 
 export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
   const cfg = mergeConfig(DEFAULT_CONFIG, override);
-  for (const [section, values] of Object.entries(cfg)) for (const [key, value] of Object.entries(values)) {
+  if (!["off", "project", "global"].includes(cfg.closedSessionScope)) throw new Error("Invalid closedSessionScope: expected off, project or global");
+  for (const section of ["render", "noting", "consolidation"] as const) for (const [key, value] of Object.entries(cfg[section])) {
     const name = `${section}.${key}`;
     if (key.endsWith("ModeDefault")) {
       if (typeof value !== "boolean") throw new Error(`Invalid ${name}: expected boolean`);
@@ -249,12 +255,10 @@ export interface TraceMemory {
   readonly config: TraceMemoryConfig;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
-   * this frozen configuration — so exactly the two mode booleans may be replaced here
-   * (`noting.forkModeDefault`, `consolidation.subagentModeDefault`), validated like the load path
-   * (aliases mapped, removed keys refused, booleans required). Any other section or key is refused:
-   * this is not a second configuration source and it reloads nothing. A task already admitted keeps
-   * the mode frozen with it, because admission captured that value before this call. */
-  configure(modes: ConfigOverride): void;
+   * this configuration. Only the two mode booleans and closedSessionScope may be replaced here,
+   * validated like the load path. Other keys are refused: this is not a second configuration source
+   * and reloads nothing. Admitted tasks retain their frozen mode and borrowing scope. */
+  configure(settings: ConfigOverride): void;
   close(): void;
   appendEntry(input: SourceInput): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
@@ -441,10 +445,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
     const target = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
+    const closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | null;
     try { frozen = store.transaction(() => {
+      // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
+      // with claim acquisition, before loading a closed target's evidence or constructing material.
+      if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
       const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
         : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       const boundary = input.boundary;
@@ -477,6 +485,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     tasks.add(task);
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
+      if (input.borrowed) run.closedSessionScope = closedSessionScope;
       const binding = bindTools(store, read, context, run, review);
       task.close = binding.close;
       return binding;
@@ -505,20 +514,25 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     store, executorId, resultText, cancelTasks, taskEligibility,
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
-    configure: (modes) => {
-      // The load path's own rules first: legacy spellings map onto canonical ones, a removed key and
-      // an alias conflict fail by name (canonicalConfig), and only then the two reconfigurable keys.
-      const requested = canonicalConfig(modes ?? {});
+    configure: (settings) => {
+      // Reuse load validation, then restrict edits to modes and the borrowing scope.
+      const requested = canonicalConfig(settings ?? {});
       if (!requested || typeof requested !== "object" || Array.isArray(requested)) throw new Error("Invalid configuration: expected an object");
       const reconfigurable: Record<string, string> = { noting: "forkModeDefault", consolidation: "subagentModeDefault" };
       for (const [section, values] of Object.entries(requested)) {
+        if (section === "closedSessionScope") continue;
         if (!Object.hasOwn(reconfigurable, section)) throw new Error(`Unknown setting ${section}`);
         if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error(`Invalid ${section}: expected an object`);
         for (const key of Object.keys(values)) if (key !== reconfigurable[section]) throw new Error(`Setting ${section}.${key} is not reconfigurable at runtime`);
       }
-      const next = validateConfig({ render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation } });
+      const next = validateConfig({
+        closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
+        render: cfg.render, noting: { ...cfg.noting, ...requested.noting },
+        consolidation: { ...cfg.consolidation, ...requested.consolidation },
+      });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.
+      cfg.closedSessionScope = next.closedSessionScope;
       cfg.noting.forkModeDefault = next.noting.forkModeDefault;
       cfg.consolidation.subagentModeDefault = next.consolidation.subagentModeDefault;
     },

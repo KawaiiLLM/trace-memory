@@ -283,8 +283,12 @@ export interface TaskClaim {
   borrowed: boolean; reserved: boolean;
 }
 
+export type ClosedSessionScope = "off" | "project" | "global";
+
 export interface RunInput {
   claim?: TaskClaim;
+  /** Borrowing policy frozen at admission; not a new persisted queue or claim field. */
+  closedSessionScope?: ClosedSessionScope;
   projectId?: number;
   executorSessionId?: number;
   kind: RunKind;
@@ -729,14 +733,27 @@ export class Store {
         current.token !== claim.token || current.executorId !== claim.executorId || current.expiresAt <= Date.now())
       throw new Error("task claim is no longer current and unexpired");
     if (current.borrowed && this.getSession(claim.sessionId)?.closedAt == null) throw new Error("borrowed target is no longer closed");
+    if (current.borrowed && !this.canBorrow(claim.sessionId, run.executorSessionId, run.closedSessionScope))
+      throw new Error("borrowed work no longer satisfies its scope and active-executor requirements");
     if (run.projectId !== undefined && this.getSession(claim.sessionId)?.projectId !== run.projectId)
       throw new Error("target project changed after admission");
   }
 
-  closedTasks(phase: Phase, executorSessionId: number): TaskTarget[] {
-    if (!this.enabled(executorSessionId)) return [];
+  /** Closed tails require an enabled, open executor. Project scope additionally requires the same
+   * project id. Rechecked at admission and commit; project names/cwd are never inferred. */
+  canBorrow(targetSessionId: number, executorSessionId?: number, scope: ClosedSessionScope = "project"): boolean {
+    if (scope === "off" || executorSessionId === undefined || executorSessionId === targetSessionId) return false;
+    const executor = this.getSession(executorSessionId), target = this.getSession(targetSessionId);
+    return !!executor && !!target && executor.closedAt === null && target.closedAt !== null &&
+      (scope === "global" || executor.projectId === target.projectId) && this.enabled(executorSessionId) && this.enabled(targetSessionId);
+  }
+
+  closedTasks(phase: Phase, executorSessionId: number, scope: ClosedSessionScope = "project"): TaskTarget[] {
+    const executor = this.getSession(executorSessionId);
+    if (scope === "off" || !executor || executor.closedAt !== null || !this.enabled(executorSessionId)) return [];
     const targets: (TaskTarget & { oldest: number })[] = [];
-    const sessions = this.db.prepare("SELECT id FROM sessions WHERE closed_at IS NOT NULL AND id != ? AND COALESCE(enrollment_choice, enrollment_default) = 1 ORDER BY id").all(executorSessionId);
+    const sessions = this.db.prepare("SELECT id FROM sessions WHERE (? = 'global' OR project_id = ?) AND closed_at IS NOT NULL AND id != ? AND COALESCE(enrollment_choice, enrollment_default) = 1 ORDER BY id")
+      .all(scope, executor.projectId, executorSessionId);
     for (const row of sessions) {
       const sessionId = Number(row.id);
       if ((this.getClaim(sessionId, phase)?.expiresAt ?? 0) > Date.now()) continue;

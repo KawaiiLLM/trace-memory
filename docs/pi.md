@@ -172,7 +172,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - `consolidation.triggerUnconsolidatedFacts` is **removed** (ticket 20). Any layer that still supplies
   it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
-  token budget. The menu never offers it: since 24b the menu edits four preferences and nothing else,
+  token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
@@ -225,7 +225,10 @@ Consolidation slot, including borrowed tasks. Each eligible entry completion che
 free slots. Own eligible work has priority under the normal thresholds and branch
 pending-delivery gates. If no own task can be claimed, one enabled normally closed
 target with a nonempty phase queue may use that slot, even for one entry or one
-fact. Closed targets are ordered by oldest pending entry/fact allocation id, then
+fact. `closedSessionScope` controls both phases: `project` (default) requires matching
+project ids, `global` permits any project, and `off` leaves closed tails pending.
+An executor must itself be enabled and open. This setting does not restrict
+current-session work, manual current-session catchup, or explicit reads. Closed targets are ordered by oldest pending entry/fact allocation id, then
 session id and branch name; sibling paths never combine into one writable range.
 Failed claims may try another target. Completion only releases capacity; it never
 launches another batch. New own work does not preempt a borrowed worker.
@@ -235,7 +238,10 @@ rechecks eligibility during atomic admission. A SQLite claim excludes other
 workers of the same target phase across branches, hosts and processes. It records
 executor id, a random token and a thirty-minute expiry; no transaction spans a
 provider request. Commits require the current unexpired token and target enrollment.
-Borrowed commits also require a closed target; release compares token and executor.
+Borrowed commits also require a closed target and an enabled, open executor. The
+scope is frozen at admission; under `project`, the two sessions must still share a
+project at commit. Target project changes remain fenced under either scope.
+Release compares token and executor.
 Pi supplies the executor's memory-session id so external disable is rechecked at
 admission and commit as well.
 Borrowed work uses subagent mode and the configured phase model, with `session`
@@ -349,7 +355,7 @@ Bare `/trace` opens four native dialogs:
 - **Catch up:** starts (or reports) the manual finite drain described below.
 - **Stop:** cancels this executor's background work, including a running or
   waiting catchup. It never changes participation.
-- **Settings:** the four global preferences below.
+- **Settings:** the global preferences below.
 
 Cancelling any dialog or input changes nothing and makes no model request. Menu and
 command paths call the same functions, so validation, confirmations and core's own
@@ -357,11 +363,10 @@ rejections (an ambiguous mark address, a project without an assistant reply) are
 identical from either. The catchup handler starts the cancellable drain and returns
 immediately, so stop can be invoked while it runs.
 
-#### The four global preferences
+#### Global preferences
 
 **Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
-effective key with its source; it edits exactly four preferences, mapped onto the
-canonical keys that already existed:
+effective key with its source; it edits these preferences:
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
@@ -369,6 +374,7 @@ canonical keys that already existed:
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
 | Consolidator mode | fork / subagent | `consolidation.subagentModeDefault` | subagent |
 | Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
+| Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
 Each line shows the effective value, its `Default`/`Global`/`Project`/`Environment`
 source and every masked layer, exactly as the old read-only view did for these keys;
@@ -399,10 +405,11 @@ edit look effective; the notice names the layer that keeps winning.
 
 A saved preference applies to memory tasks admitted afterwards **in this instance**,
 without a reload: the settings layers are re-read exactly as a session start reads
-them, the host's model selection follows them, and core's two mode booleans are
-replaced through the façade's `configure` (parent 24, amendment 2 — the only runtime
-configuration surface; every other key is refused there). A task already running keeps
-the mode, model, evidence and budgets frozen with it. Another Pi process sees the new
+them, the host's model selection follows them, and core's mode booleans and
+`closedSessionScope` are replaced through the façade's `configure`; other core keys
+are refused there. A task already running keeps its admission scope, mode, model,
+evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
+running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
 Editing a setting starts no worker and does not touch the cache-miss latch.
 

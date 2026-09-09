@@ -7,7 +7,8 @@ import { host, reply, notingFact, type Reply } from "./test-host.ts";
 type Memory = ReturnType<typeof TraceMemory>;
 const at = "2026-09-08T00:00:00.000Z";
 function target(memory: Memory, options: { closed?: boolean; enabled?: boolean; facts?: number; noted?: boolean; branch?: string; project?: string } = {}) {
-  const project = memory.store.createProject({ name: options.project ?? "target", declaredBy: "mark" });
+  const project = options.project ? memory.store.findProjectByName(options.project) ?? memory.store.createProject({ name: options.project, declaredBy: "mark" })
+    : memory.store.getProject(memory.store.getSession(1)!.projectId)!;
   const session = memory.store.createSession({ host: "target-host", projectId: project.id, startedAt: at, firstReplyAt: at, enrollmentChoice: true });
   const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "Target evidence", startedAt: at });
   const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeId: `u${session.id}`, nativeLineage: "target", role: "user", text: "Target evidence", raw: "Target evidence", calls: [] });
@@ -103,6 +104,8 @@ test("17c 2026-09-08: two active executors share target claims and the loser sel
   b.ctx.sessionManager.getSessionId = () => "pi-second";
   try {
     await a.turn(); await b.turn();
+    a.memory.declareProject(1, "Shared executor project");
+    a.memory.declareProject(2, "Shared executor project");
     const first = target(a.memory, { facts: 1 }), second = target(a.memory, { facts: 1 });
     const ar = hold(a), br = hold(b);
     await Promise.all([tick(a), tick(b)]);
@@ -125,6 +128,7 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs,
   const h = host({ "consolidation.subagentModeDefault": false });
   try {
     await h.turn();
+    h.memory.declareProject(1, "Borrowed project");
     const t = target(h.memory, { facts: 1, project: "Borrowed project", branch: "target-branch" });
     const f = h.memory.store.listSessionFacts(t.sessionId)[0]!;
     const operations = [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Target knowledge", category: "term", scope: "project", supports: [`F${f.id}`] }];
@@ -145,8 +149,9 @@ test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s commit trans
   let input!: NotingAgentInput | ConsolidationAgentInput, finish!: () => void;
   const worker = TraceMemory(h.dbPath, async raw => { input = raw as typeof input; input.reportRequest({ request: phase }); await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: { request: phase } }; });
   try {
+    await h.turn();
     const t = target(h.memory, { facts: 1 });
-    const pending = phase === "noting" ? worker.noting({ ...t, borrowed: true }) : worker.consolidate({ ...t, borrowed: true });
+    const pending = phase === "noting" ? worker.noting({ ...t, borrowed: true, executorSessionId: 1 }) : worker.consolidate({ ...t, borrowed: true, executorSessionId: 1 });
     const old = h.memory.store.getClaim(t.sessionId, phase)!;
     h.memory.store.invalidateExecutor(old.executorId); // Do not close tools: exercise the transaction fence itself.
     const replacement = h.memory.store.acquireClaim(t, phase, old.executorId, true)!;
@@ -170,8 +175,9 @@ test("17c 2026-09-08: reopen blocks selection and immediately replaces borrowed 
   const old = TraceMemory(h.dbPath, async () => { await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
   const own = TraceMemory(h.dbPath, async () => ({ outcome: "success", output: "", request: {} }));
   try {
+    await h.turn();
     const t = target(h.memory);
-    const pending = old.noting({ ...t, borrowed: true });
+    const pending = old.noting({ ...t, borrowed: true, executorSessionId: 1 });
     const before = h.memory.store.getClaim(t.sessionId, "noting")!;
     own.store.reopenSession(t.sessionId, own.executorId);
     const replaced = own.store.getClaim(t.sessionId, "noting")!;
@@ -273,6 +279,7 @@ test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s cleanup or a
     return { outcome: "success", output: "", request: { phase } };
   });
   try {
+    await h.turn();
     const t = target(h.memory, { facts: 1 });
     const release = vi.spyOn(worker.store, "releaseClaim").mockImplementation(() => { throw new Error("release unavailable"); });
     const audit = vi.spyOn(worker.store, "updateRun").mockImplementation(() => { throw new Error("audit unavailable"); });

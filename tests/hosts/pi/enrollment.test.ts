@@ -172,6 +172,7 @@ test("18a/24b: Settings shows the four preferences with their effective source a
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
     "Consolidator mode: fork (Global)",
     "Consolidator model: fake/test (Global); fork mode inherits the foreground model fake/test",
+    "Closed-session scope: project (Default)",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
@@ -213,7 +214,7 @@ test.each(["2099-02-30T00:00:00Z", "2099", "2099-01-01", 4070908800000])("18a 20
 
 test("18a 2026-09-08: all count/token keys and masked layers validate by key", async () => {
   const h = setup();
-  for (const [section, values] of Object.entries(DEFAULT_CONFIG)) for (const [key, value] of Object.entries(values)) {
+  for (const section of ["render", "noting", "consolidation"] as const) for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
     if (typeof value !== "number" || key === "nearThreshold" || key === "maxToolRounds") continue;
     for (const invalid of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Infinity]) {
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);

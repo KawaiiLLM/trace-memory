@@ -55,8 +55,44 @@ test("24b: each control writes only its canonical key, and every other setting i
     "Noter model: fake/test-mini (Global)",
     "Consolidator mode: fork (Global)",
     "Consolidator model: fake/test (Global); fork mode inherits the foreground model fake/test",
+    "Closed-session scope: project (Default)",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
+});
+
+test("closed-session scope is saved globally and changes subsequent queue admission without reload", async () => {
+  const h = setup({ "noting.triggerTokens": 1_000_000_000 });
+  await h.turn();
+  const projectId = h.memory.store.createProject({ name: "foreign", declaredBy: "mark" }).id;
+  const s = h.memory.store.createSession({ host: "closed", projectId, enrollmentChoice: true, startedAt: "t", firstReplyAt: "t" });
+  const t = h.memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "closed evidence", startedAt: "t" });
+  const e = h.memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeId: "closed", nativeLineage: "closed", role: "user", text: "closed evidence", raw: "closed evidence", calls: [] });
+  h.memory.selectEntries(s.id, "main", [e.id]); h.memory.store.closeSession(s.id);
+  const tick = async () => { h.persist(reply("small new completion")); await h.emit("agent_end"); await h.drain(); };
+  await tick(); expect(h.requests).toEqual([]); // default project: foreign tail is invisible
+  await edit(h, "Closed-session scope: project (Default)", "off");
+  expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("off");
+  await tick(); expect(h.requests).toEqual([]);
+  await edit(h, "Closed-session scope: off (Global)", "global");
+  expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("global");
+  expect(h.requests).toEqual([]); // a settings change is not an extraction opportunity
+  await tick(); expect(h.requests).toHaveLength(1);
+  expect(h.memory.store.listRuns(s.id).some(r => r.kind === "noting")).toBe(true);
+});
+
+test("closed-session scope respects a project override and invalid values never overwrite settings", async () => {
+  const h = setup();
+  const project = join(h.dir, ".pi", "settings.json");
+  mkdirSync(join(h.dir, ".pi"), { recursive: true });
+  writeFileSync(project, JSON.stringify({ "trace-memory": { closedSessionScope: "off" } }));
+  await h.emit("session_start");
+  await edit(h, "Closed-session scope: off (Project)", "global");
+  expect(globalFile(h)["trace-memory"].closedSessionScope).toBe("global");
+  expect(h.notices.at(-1)).toContain("effective Closed-session scope stays off (Project)");
+  const before = readFileSync(globalPath(h), "utf8");
+  await edit(h, "Closed-session scope: off (Project); Global=global masked", "invalid");
+  expect(readFileSync(globalPath(h), "utf8")).toBe(before);
+  expect(h.notices.at(-1)).toContain("Invalid closedSessionScope");
 });
 
 test("24b: a saved mode reaches the next admitted task without a reload, and a task already running keeps its own", async () => {

@@ -42,7 +42,7 @@ Enabled sessions make background model requests using your Pi credentials and ma
 - **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Turn off:** `/trace off` pauses this session's processing and future injection without deleting memory; `/trace on` resumes it. There is no global switch.
-- **Settings:** the menu's Settings entry saves four global defaults — Noter and Consolidator mode (fork or subagent) and model (follow the foreground model, or an available `provider/model-id`). They apply to work admitted afterwards; running tasks keep what they started with.
+- **Settings:** saves Noter and Consolidator mode/model preferences and `closedSessionScope`: `project` (default, same-project executors), `global` (any executor), or `off` (leave closed-session work pending). Scope governs both background phases, not current-session processing or manual catchup. Changes apply to later tasks; running tasks keep their admission settings. Use Stop to end running work.
 - **Watch:** the footer says what each stage still owes and what it has produced — `🧠 ● notes: 24->102 memory: 15->54 cost: $0.12` is 24 entries left to note over 102 facts on this branch, 15 facts left to consolidate over 54 current knowledge items, and this session's cumulative memory spend. A disabled session shows `🧠 ○ off`.
 - **Share a project:** after the first assistant reply, use `/trace project <name>`. The same name in the same database shares a project across sessions. Without a declaration, each session has its own project. Files, working directories and Git remotes do not declare project membership.
 

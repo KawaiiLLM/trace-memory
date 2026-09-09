@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { runNative, checkpointReadiness, NotForkable, type NativeForkTask, type Verification as NativeVerification } from "./native.ts";
-import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
+import { CONFIG_ALIASES, DEFAULT_CONFIG, TraceMemory, canonicalFlatConfig, enrollmentDefault, validateConfig, validateReadInput, tokens, toolDefinitions, type ConfigOverride, type NotingAgentInput, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type ClosedSessionScope } from "../../core/api/index.ts";
 
 type FlatConfig = Record<string, string | number | boolean>;
 type NativeModel = NativeForkTask["model"];
@@ -53,7 +53,7 @@ const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
  * merged Global layer through this same function before it writes, so a menu edit can never leave a
  * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
 function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
-  const core: ConfigOverride = {};
+  const core: ConfigOverride = { closedSessionScope: (flat.closedSessionScope === undefined ? DEFAULT_CONFIG.closedSessionScope : flat.closedSessionScope) as ClosedSessionScope };
   for (const section of ["render", "noting", "consolidation"] as const) {
     const values: Record<string, number | boolean> = {};
     for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
@@ -64,8 +64,8 @@ function parseLayer(flat: FlatConfig, named: (key: string) => string = key => ke
     }
     Object.assign(core, { [section]: values });
   }
-  for (const key of Object.keys(flat)) if (!hostStrings.includes(key) &&
-    !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as keyof typeof DEFAULT_CONFIG], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
+  for (const key of Object.keys(flat)) if (key !== "closedSessionScope" && !hostStrings.includes(key) &&
+    !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as "render" | "noting" | "consolidation"], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
   for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
   validateConfig(core);
   return core;
@@ -738,7 +738,7 @@ export default function (pi: ExtensionAPI) {
       // closed-session work is fresh-context and is never held back by this.
       const waiting = due && !paused ? forkWait(context, effective) : undefined;
       const candidates = [...(due && !paused && !waiting ? [{ ...own, borrowed: false }] : []),
-        ...memory.store.closedTasks(kind, own.sessionId).map(target => ({ ...target, borrowed: true }))];
+        ...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope).map(target => ({ ...target, borrowed: true }))];
       if (!candidates.length) continue;
       slots.add(kind); // Reserve before any asynchronous admission or model work.
       const work = async () => {
@@ -987,22 +987,21 @@ export default function (pi: ExtensionAPI) {
   const applyMark = (address: string, kind: "verified" | "flagged" | "clear") =>
     ctx.ui.notify(memory.mark(address, kind, state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null } : undefined), "info");
 
-  // ---- 24b: the four global preferences ----
-  // Exactly four, on the canonical keys that already exist; no new key, no second mode/model system
-  // and no advanced editor. Modes are stored as the booleans core reads at admission; models as
-  // `session` or `provider/model-id`, which is what `modelName` already resolves.
-  type Preference = { name: string; key: string; phase: "noting" | "consolidation"; kind: "mode" | "model" };
+  // Global preferences: existing mode/model keys plus the closed-session borrowing scope.
+  // No advanced editor or second scheduling mechanism.
+  type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" } | { phase?: never; kind: "scope" });
   const preferences: Preference[] = [
     { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
     { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
     { name: "Consolidator mode", key: "consolidation.subagentModeDefault", phase: "consolidation", kind: "mode" },
     { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
+    { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
   ];
   // Noting stores "runs in fork mode", Consolidation stores "runs in subagent mode": one preference
   // reads either boolean without inventing a third spelling of the same choice.
   const modeName = (phase: "noting" | "consolidation", value: boolean) => phase === "noting" ? (value ? "fork" : "subagent") : (value ? "subagent" : "fork");
   const modeFlag = (phase: "noting" | "consolidation", mode: string) => phase === "noting" ? mode === "fork" : mode === "subagent";
-  const preferenceDefault = (p: Preference) => p.kind === "model" ? "session"
+  const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope : p.kind === "model" ? "session"
     : p.phase === "noting" ? DEFAULT_CONFIG.noting.forkModeDefault : DEFAULT_CONFIG.consolidation.subagentModeDefault;
   const preferenceValue = (p: Preference) => flat[p.key] ?? preferenceDefault(p);
   const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(p.phase, raw as boolean)
@@ -1063,9 +1062,9 @@ export default function (pi: ExtensionAPI) {
   };
   /** Application, in this instance, without a reload: the settings layers are re-read exactly as
    * `restore` reads them (so precedence, masking and validation are the load path's), the host's own
-   * model selection follows `flat`, and core's two mode booleans are replaced through the façade's
-   * `configure` (ticket 24 amendment 2). Tasks admitted from now on use the new values; a running
-   * task keeps the mode, model, evidence and budgets frozen with it. Nothing here dispatches a
+   * model selection follows `flat`, and core's mode booleans and borrowing scope are replaced through
+   * `configure`. Tasks admitted from now on use the new values; running tasks retain their scope,
+   * mode, model, evidence and budgets. Nothing here dispatches a
    * worker, touches the cache-miss latch or reopens the database. */
   const applySettings = () => {
     const loaded = configuration(ctx.cwd, environment, agentDir);
@@ -1074,7 +1073,7 @@ export default function (pi: ExtensionAPI) {
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
-    memory.configure({ noting: { forkModeDefault: effective.noting.forkModeDefault },
+    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault },
       consolidation: { subagentModeDefault: effective.consolidation.subagentModeDefault } });
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
@@ -1089,9 +1088,16 @@ export default function (pi: ExtensionAPI) {
       ` A ${source} setting takes precedence, so the effective ${p.name} stays ${shownValue(p, preferenceValue(p))} (${source}); it was not removed.`;
     ctx.ui.notify(`Trace Memory: saved ${p.key} = ${JSON.stringify(value)} (${shownValue(p, value)}) in ${settingsFile}.` +
       (replaced ? ` The legacy spelling ${replaced} of the same preference was replaced by ${p.key}.` : "") + override +
-      " It applies to memory tasks admitted from now on; running tasks keep the mode and model they started with.", "info");
+      (p.kind === "scope" ? " It applies to memory tasks admitted from now on; running tasks keep their admission scope. Use Stop to end running work."
+        : " It applies to memory tasks admitted from now on; running tasks keep the mode and model they started with."), "info");
   };
   const editPreference = async (p: Preference) => {
+    if (p.kind === "scope") {
+      const choice = await ctx.ui.select("Closed-session scope — off: keep tails pending; project: same-project executors; global: any executor. New tasks only; Stop ends running work.", ["off", "project", "global"]);
+      if (choice === undefined) return;
+      saveGlobal(p, choice);
+      return;
+    }
     if (p.kind === "mode") {
       const choice = await ctx.ui.select(`${p.name} — applies to tasks admitted from now on; running tasks keep their mode`,
         ["fork", "subagent"]);
@@ -1122,7 +1128,7 @@ export default function (pi: ExtensionAPI) {
     // 24c's disclosure keeps its home here: where new worker logs go is a global fact about this
     // installation, and the settings entry is where the superseded read-only view stated it.
     const logs = `Worker logs: ${runsDirectory(state.piId)}${runsOutsideScan() ? " — outside Pi's scanned sessions tree, so file-based daily statistics do not see them" : ""}`;
-    const title = ["Settings — four global defaults, saved under \"trace-memory\" in " + settingsFile,
+    const title = ["Settings — global defaults, saved under \"trace-memory\" in " + settingsFile,
       "Project and environment layers still take precedence; advanced values stay in the settings files.", logs].join("\n");
     const lines = preferences.map(preferenceLine);
     const choice = await ctx.ui.select(title, lines);

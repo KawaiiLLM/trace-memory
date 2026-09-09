@@ -536,8 +536,15 @@ queue inspection remain available; automatic blocks and confirmation are gated.
 No Pi SDK or migration enters core. The facade owns an executor id, atomic task
 admission, cancellation signals and conditional claim release. `taskEligibility`
 shares the threshold/delivery predicate with host preselection; `automatic: true`
-rechecks it in admission. `borrowed: true` requires a closed target and forces
-subagent mode. `cancelTasks(true)` stops admission and fences tokens before abort;
+rechecks it in admission. `borrowed: true` requires a closed target and an enabled,
+open `executorSessionId`, and forces subagent mode. `closedSessionScope` defaults to
+`project` (matching project ids); `global` allows any project and `off` leaves closed
+tails pending. Hosts pass `memory.config.closedSessionScope` to `store.closedTasks`;
+core rechecks the policy transactionally at admission and commit. `configure` accepts
+this scalar and the two mode booleans, retaining other configuration and applying
+changes only to future admissions. Running tasks retain their admission scope, but
+project-scoped commits still require matching projects. Current-session work and
+manual catchup are unaffected. `cancelTasks(true)` stops admission and fences tokens before abort;
 `forceTasks()` ends local waits at the host cleanup deadline. The host awaits those
 local tasks before `close()`. Cancellation preserves available audit and unknown
 usage; closed tools and rejection handlers prevent late store access.
