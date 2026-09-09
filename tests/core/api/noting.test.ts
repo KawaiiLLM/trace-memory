@@ -16,7 +16,10 @@ type ScriptResult = RunAgentResult & { noteInput?: unknown };
 let script: ((input: NotingAgentInput) => Promise<ScriptResult>)[];
 const time = "2026-08-16 02:54";
 const request = { system: "actual host system", messages: [{ role: "user", content: "actual provider input" }], tools: [] };
-const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: batches.length ? { facts: batches.flatMap((b) => b.facts) } : undefined, request, usage: { tokens: 12 } });
+// 26a: a Noter completes its batch by calling `note`, and an empty batch is submitted explicitly as
+// `note({facts: []})`. `silent` is the run that submits nothing at all, which is incomplete.
+const success = (batches: { facts: unknown[] }[]): ScriptResult => ({ outcome: "success", output: "Done.", noteInput: { facts: batches.flatMap((b) => b.facts) }, request, usage: { tokens: 12 } });
+const silent = (): ScriptResult => ({ outcome: "success", output: "Nothing to note.", request, usage: { tokens: 12 } });
 const fact = (extra = {}) => ({ category: "observation", actor: "agent", text: memories.base, source: ["T1#assistant"], ...extra });
 const batch = (turnId: number, facts = [fact()]) => ({ turn: `S${sessionId}/T${turnId}`, title: "mapC terrain", topic: "terrain", facts: facts.map((f) => ({ ...f, source: f.source[0] === "T1#assistant" ? [`T${turnId}#assistant`] : f.source })) });
 function open(config: ConfigOverride = {}) {
@@ -152,13 +155,16 @@ for (const [label, changes, problem] of [
   expect(JSON.parse(run.response!).problems).toEqual(result.problems);
 });
 
-test("final text is never parsed; a successful reply without provider request fails", async () => {
+test("26a: final text is never parsed and never an implicit submission; a successful reply without provider request fails", async () => {
   const t = turn(); script.push(async () => ({ outcome: "success", output: "[", request }));
-  expect((await noting(t.id)).outcome).toBe("success");
+  expect((await noting(t.id)).outcome).toBe("failure"); // ended without calling note: incomplete
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  const next = turn(t.id);
+  unchanged(); // and no entry of the batch advanced, so the same entries are pending
   script.push(async () => ({ outcome: "success", output: "[]" }));
-  expect((await noting(next.id)).outcome).toBe("failure");
+  expect((await noting(t.id)).outcome).toBe("failure");
+  const next = turn(t.id);
+  script.push(async () => success([]));
+  expect((await noting(next.id)).outcome).toBe("success"); // the explicit empty batch does advance them
   expect(memory.store.sourcePath(sessionId, "main", t.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
 });
@@ -169,7 +175,7 @@ test("model cannot write to a late turn outside the frozen range", async () => {
   expect((await pending).outcome).toBe("bounced"); unchanged();
 });
 
-test("empty output notings the range; compactions cannot acquire facts", async () => {
+test("an explicit empty submission notings the range; compactions cannot acquire facts", async () => {
   const t = memory.store.appendTurn({ sessionId, kind: "compaction", startedAt: time });
   // 17a supersedes whole-Turn progress: compactions have no eligible source entry.
   expect((await noting(t.id)).outcome).toBe("empty");

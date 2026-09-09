@@ -116,6 +116,16 @@ function releaseAgentDir(agentDir: string) {
   borrowedAgentDir = undefined;
 }
 
+/** 26a: the default worker reply of a Noting run. A batch is completed only by a `note` call, so a
+ * worker with nothing to record submits the explicit empty batch instead of stopping on prose (which
+ * is now incomplete). Every other conversation, Consolidation included, keeps the old text reply. */
+export const emptyNoteReply = (): Reply => ({ ...reply(""), stopReason: "toolUse",
+  content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: { facts: [] } }] });
+export const emptyNote = (conversation: Conversation): Reply | undefined =>
+  conversation.systemPrompt?.startsWith("# Noting")
+    && !conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note")
+    ? emptyNoteReply() : undefined;
+
 export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
   const origin = `https://fake-${wireCount++}.invalid`;
@@ -133,7 +143,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   const hooks = new Map<string, (event: any, ctx: ExtensionContext) => any>();
   const tools = new Map<string, any>(), commands = new Map<string, any>(), entries: any[] = [], allEntries: any[] = [], notices: string[] = [];
   const requests: unknown[] = [], conversations: Conversation[] = [], signals: AbortSignal[] = [];
-  let provider = async (_conversation: Conversation, _signal?: AbortSignal) => reply("[]");
+  let provider = async (conversation: Conversation, _signal?: AbortSignal) => emptyNote(conversation) ?? reply("[]");
   let autoStop = true; // the fake model stops by itself after a write unless a test drives the rounds
   let ignoreAbort = false; // a wedged connection that a cancelled child cannot end
   const model = { provider: "fake", id: "test", api: "openai-completions", name: "Test", baseUrl: `${origin}/v1`,

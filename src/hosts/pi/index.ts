@@ -213,6 +213,28 @@ export default function (pi: ExtensionAPI) {
   // Consecutive eligible fork cache misses per memory session, in this process only (user ruling
   // 2026-09-09): a reopen starts at zero; the persisted latch itself is the session-scoped state.
   const cacheMisses = new Map<number, number>();
+  // 26a (ticket 26 amendment 5): consecutive incomplete Noting runs per memory session, keyed by the
+  // batch's oldest frozen entry — a batch whose head has not advanced is the same batch, whatever
+  // arrived at its tail. Process-local like the cache-miss count above, and not `forkSuppression`:
+  // no column, no setting, no scheduler. `/trace catchup` and a session reopen clear it.
+  const incompleteNoting = new Map<number, { headEntryId: number; count: number }>();
+  const notingPaused = (sessionId: number) => (incompleteNoting.get(sessionId)?.count ?? 0) >= 2;
+  /** Amendment 5's counting rule, applied to every Noting outcome this executor learns — ordinary,
+   * borrowed and manual-catchup work alike. Only an incomplete run (the provider run ended normally,
+   * nothing was committed, nothing was rejected: core reports its head entry) increments; a
+   * submission — nonempty, explicitly empty or bounced, which arrive as `success` or `bounced` —
+   * resets the count to zero; a provider failure, a cancellation, a dropped admission and a capacity
+   * wait leave it unchanged, because they say nothing about the model's behaviour. */
+  const countNoting = (sessionId: number, result: unknown, context: ExtensionContext) => {
+    const outcome = (result as { outcome?: string }).outcome;
+    const head = (result as { incompleteHeadEntryId?: number }).incompleteHeadEntryId;
+    if (head === undefined) { if (outcome === "success" || outcome === "bounced") incompleteNoting.delete(sessionId); return; }
+    const seen = incompleteNoting.get(sessionId);
+    const count = seen?.headEntryId === head ? seen.count + 1 : 1;
+    incompleteNoting.set(sessionId, { headEntryId: head, count });
+    if (count === 2) context.ui.notify("Trace Memory: automatic Noting paused for this session after two consecutive runs ended without calling note." +
+      " Consolidation, reads, receipts and manual tools continue; /trace catchup or reopening the session resumes it.", "warning");
+  };
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
   /** Ticket 20 "Post-compaction worker mode". The boundary is the last compaction entry on the
    * target's currently selected ancestry. Pi writes that entry only when a compaction was persisted
@@ -294,7 +316,10 @@ export default function (pi: ExtensionAPI) {
     }
     const value = (count?: number) => count === undefined ? "?" : String(count);
     context.ui.setStatus(tag, `🧠 ${indicator} notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
-      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.knowledge)} cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`);
+      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.knowledge)} cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}` +
+      // 26a: the one state this line adds — this session's automatic Noting paused by two consecutive
+      // incomplete runs. Nothing else about the pause is inferable from the counts, which do not move.
+      (state?.sessionId && notingPaused(state.sessionId) ? " noting: paused" : ""));
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
@@ -324,7 +349,9 @@ export default function (pi: ExtensionAPI) {
       prefixTokens: effective === "fork" && session.capture?.branch === target.branch ? tokens(JSON.stringify(session.capture.payload)) : 0 };
     const common = { ...target, ...selected, effectiveMode: effective, borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}) };
-    return kind === "consolidation" ? memory.consolidate(common) : memory.noting(common);
+    if (kind === "consolidation") return memory.consolidate(common);
+    // 26a: this is where the host learns a Noting outcome, on every admission path it has.
+    return memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
   const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)
@@ -378,7 +405,9 @@ export default function (pi: ExtensionAPI) {
     // is cleared exactly here — not on a tree switch (`fork`), which moves position inside the same
     // session and leaves its misses consecutive, and never together with `forkSuppression`, which is
     // database state and survives (its only reset is the menu's Retry fork).
-    if (state.sessionId && !fork) { memory.store.reopenSession(state.sessionId, memory.executorId); cacheMisses.delete(state.sessionId); }
+    // 26a: the incomplete-Noting count is process-local for the same reason and clears at the same
+    // boundary — a reopen resumes automatic Noting; a tree switch inside the session does not.
+    if (state.sessionId && !fork) { memory.store.reopenSession(state.sessionId, memory.executorId); cacheMisses.delete(state.sessionId); incompleteNoting.delete(state.sessionId); }
     // 18b lifecycle: switching away from a catchup's frozen path ends it and cancels its owned
     // in-flight work; it is never retargeted to the newly selected branch or resumed on reopen.
     if (catchup && !catchup.outcome && (catchup.sessionId !== state.sessionId || catchup.branch !== state.branch)) {
@@ -619,7 +648,11 @@ export default function (pi: ExtensionAPI) {
       // closed-session work is fresh-context and is never held back by this.
       const waiting = due && !paused ? forkWait(context, effective) : undefined;
       const candidates = [...(due && !paused && !waiting ? [{ ...own, borrowed: false }] : []),
-        ...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope).map(target => ({ ...target, borrowed: true }))];
+        ...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope).map(target => ({ ...target, borrowed: true }))]
+        // 26a: automatic Noting is paused for a session whose last two runs ended without a
+        // submission, and for that session alone — the other phase, other sessions and every
+        // explicit path (manual tools, reads, receipts, /trace catchup) are untouched.
+        .filter(target => kind !== "noting" || !notingPaused(target.sessionId));
       if (!candidates.length) continue;
       slots.add(kind); // Reserve before any asynchronous admission or model work.
       const work = async () => {
@@ -721,6 +754,9 @@ export default function (pi: ExtensionAPI) {
     if (catchup && !catchup.outcome) { ctx.ui.notify(catchupLine()!, "info"); return; } // Repeating catchup reports the active operation, never a second one.
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
     reconcile(false); // Reconcile available native history (17a) before freezing the boundary.
+    // 26a: an explicit drain clears this session's incomplete-Noting pause, and the footer says so
+    // even on the paths below that start no batch.
+    incompleteNoting.delete(state.sessionId); showSpend(ctx);
     const { sessionId, branch } = state, headTurnId = state.head;
     const pendingNow = memory.pendingEntries(sessionId, branch, headTurnId);
     const maxEntryId = pendingNow.length ? Math.max(...pendingNow.map(e => e.id)) : undefined;
@@ -819,7 +855,12 @@ export default function (pi: ExtensionAPI) {
     // its one reset. The run that detected it keeps its own fork mode in the run record.
     const downgrade = suppressed();
     const fork = downgrade ? `Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu` : undefined;
-    return [base, fork, lastCompaction && `Compaction: ${lastCompaction}`, catchupLine()].filter(Boolean).join("\n");
+    // 26a: the incomplete-Noting pause is disclosed by the same rule — the state, what still runs and
+    // the two things that clear it.
+    const stalled = state.sessionId && notingPaused(state.sessionId) ? incompleteNoting.get(state.sessionId)! : undefined;
+    const noting = stalled && `Noting: automatic runs paused after ${stalled.count} consecutive runs ended without calling note (batch head E${stalled.headEntryId});`
+      + " Consolidation, reads and manual tools continue; /trace catchup or reopening the session resumes it";
+    return [base, fork, noting, lastCompaction && `Compaction: ${lastCompaction}`, catchupLine()].filter(Boolean).join("\n");
   };
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);

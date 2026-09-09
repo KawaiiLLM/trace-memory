@@ -153,14 +153,20 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     });
     problems = results.filter((r) => r.startsWith("rejected:"));
     if (problems.length) return JSON.stringify({ results });
-    const receipt = (ids: number[]) => JSON.stringify({ results: ids.map((id) => `ok: F${id}`), factIds: ids });
+    // 26a: an explicit `note({facts: []})` is how a Noter completes a genuinely empty batch, so its
+    // receipt says the batch committed instead of returning two empty arrays and nothing else.
+    const receipt = (ids: number[]) => JSON.stringify(ids.length ? { results: ids.map((id) => `ok: F${id}`), factIds: ids }
+      : { results: [], factIds: [], committed: "zero facts; this batch is complete" });
     const committedRun = store.commitNotingRun({ run: { ...run,
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "noting" ? context.readKnowledgeCommits : [] }) }, facts: commits,
       responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
       ...(context.kind === "noting" ? { entryIds: frozenEntries,
         pendingDelivery: { sessionId: session.id, branch: context.branch } } : {}) });
-    if (!committedRun.ok) { problems = committedRun.problems; return JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }); }
+    // 26a: an empty submission has no per-item slot to carry a refused commit, so it is refused as a
+    // plain `rejected:` receipt — the same refusal the reader and `toolRejected` already classify.
+    if (!committedRun.ok) { problems = committedRun.problems;
+      return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
     const result = receipt(committedRun.facts.map((f) => f.id));
     if (context.kind === "noting") committed = committedRun;
     return result;

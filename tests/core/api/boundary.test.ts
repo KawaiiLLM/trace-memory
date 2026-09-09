@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FACTS_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
-  compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+  compacted, NOTING_INCOMPLETE, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: (NotingAgentInput | ConsolidationAgentInput)[];
@@ -197,6 +197,7 @@ test("19b 2026-09-08: the frozen material carries the whole batch, and core's fr
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.text.fresh).toContain("用 pnpm");
+    input.tools.find(t => t.name === "note")!.execute({ facts: [] }); // 26a: a batch is completed by a submission
     return { outcome: "success", output: "", request: { fake: true } };
   };
   expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
@@ -310,4 +311,68 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   expect(memory.store.sourcePath(sessionId, "main", second.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(owned);
   // The excluded tail is untouched, for a later permitted trigger.
   expect(memory.pendingEntries(sessionId, "main", second.id).map(e => e.turnId)).toEqual([second.id, second.id]);
+});
+
+// ----------------------------------------------------------------- 26a: explicit Noting completion
+
+/** Ticket 26 "Explicit Noting completion", acceptance scenario 1, as 26a implements it. A batch is
+ * completed only by a `note` call. A run that ended normally, committed nothing and had nothing
+ * rejected is incomplete: the existing `failure` outcome with the explicit diagnostic, the attempt
+ * and its usage recorded, and no business progress at all — the same entries are frozen again. */
+test("26a scenario 1: a run that never calls note is incomplete, records its usage and advances nothing", async () => {
+  const sessionId = session();
+  const t = turn(sessionId, null, "用 pnpm", "好的。");
+  const before = memory.pendingEntries(sessionId, "main", t.id).map(e => e.id);
+  runAgent = async () => ({ outcome: "success", output: "I answered a question instead.", request: { fake: true }, usage: { tokens: 12 } });
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  if (result.outcome !== "failure") throw new Error(`expected failure, got ${result.outcome}`);
+  expect(result.problems).toEqual([NOTING_INCOMPLETE]);
+  expect(result.incompleteHeadEntryId).toBe(before[0]); // the batch identity a host counts by
+  const run = memory.store.getRun(result.runId)!;
+  expect(run.outcome).toBe("failure"); // no new outcome value, no schema change
+  const response = JSON.parse(run.response!);
+  expect(response.usage).toEqual({ tokens: 12 }); // the available usage is kept
+  expect(response.problems).toEqual([NOTING_INCOMPLETE]);
+  expect(response.output).toBe("I answered a question instead."); // final prose is audit content, never facts
+  // No business progress: no facts, no processed entry, no delivery — and the next freeze selects the same entries.
+  expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
+  expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]);
+  expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(before);
+  let frozen: number[] = [];
+  runAgent = async raw => {
+    const input = raw as NotingAgentInput;
+    frozen = input.entryIds;
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "", request: { fake: true } };
+  };
+  expect((await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" })).outcome).toBe("success");
+  expect(frozen).toEqual(before);
+});
+
+/** Ticket 26 "Empty submission" and acceptance scenario 1: `note({facts: []})` is a valid explicit
+ * submission. It commits a successful zero-fact run, marks exactly the frozen entries processed,
+ * creates no delivery (there is no payload), closes the batch to later `note` calls, and a provider
+ * failure after that commit keeps the success and only appends the trailing problem. */
+test("26a scenario 1: note({facts: []}) commits a zero-fact run with no delivery, and a later provider failure keeps it", async () => {
+  const sessionId = session();
+  const t = turn(sessionId, null, "用 pnpm", "好的。");
+  const before = memory.pendingEntries(sessionId, "main", t.id).map(e => e.id);
+  let receipt = "", second = "";
+  runAgent = async raw => {
+    const note = (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!;
+    receipt = note.execute({ facts: [] });
+    second = note.execute({ facts: [fact(`T${t.id}#user`)] }); // the empty submission closed the batch
+    return { outcome: "failure", output: "provider exploded after the commit", request: { fake: true } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error(`expected success, got ${result.outcome}`);
+  expect(result.facts).toEqual([]);
+  expect(JSON.parse(receipt)).toEqual({ results: [], factIds: [], committed: "zero facts; this batch is complete" });
+  expect(second).toBe("rejected: already committed");
+  expect(result.problems?.join(" ")).toContain("provider failed after commit"); // trailing problem, commit intact
+  expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
+  expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
+  expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]); // an empty batch has nothing to deliver
+  expect(memory.store.sourcePath(sessionId, "main", t.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
+  expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual([]);
 });

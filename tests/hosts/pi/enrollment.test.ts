@@ -77,7 +77,8 @@ test("18a 2026-09-08: historical import and pause resume use native identities w
   await command(h, "on"); expect(h.memory.store.listTurns(1)).toHaveLength(4);
   expect(h.memory.pendingEntries(1, "main", state(h).head)).toHaveLength(8); expect(h.requests).toEqual([]);
   await h.answer("eligible completion"); await h.drain();
-  expect(h.requests).toHaveLength(1); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
+  // 26a: one Noting run, two requests — the one that submits the batch and its closing reply.
+  expect(h.requests).toHaveLength(2); expect(h.memory.pendingEntries(1, "main", state(h).head)).toEqual([]);
 });
 
 test("18a 2026-09-08: historical tree and newer clone never overwrite the current shared switch", async () => {

@@ -1,7 +1,7 @@
 import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
-import { host, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
+import { host, reply, notingFact, consolidationReply, emptyNote, type Reply } from "./test-host.ts";
 import { recorded } from "../../source-fixture.ts";
 
 // Ticket 18b — manual catchup and stop. Parent scenarios 18 (manual finite drain), 19 (capacity
@@ -91,7 +91,7 @@ test("18b 2026-09-08: an empty target completes without a model call; a disabled
     expect(h.notices.at(-1)).toContain("no assistant reply");
     expect(h.memory.store.getSession(1)).toBeNull();
     await h.turn();
-    h.provider(async () => reply("No durable material."));
+    h.provider(async c => emptyNote(c) ?? reply("No durable material.")); // 26a: the drain's Noter submits its empty batch
     await command(h, "catchup");
     await settle(h);
     expect(h.requests.length).toBeGreaterThan(0);
@@ -120,7 +120,7 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
     await command(h, "catchup"); // repeating reports the same waiting operation, not a second one
     expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
-    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : reply("No durable material."));
+    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : emptyNote(c) ?? reply("No durable material."));
     release[0]!(reply("No durable material.")); // free the ordinary worker's slot
     await settle(h);
     expect(h.requests.length).toBeGreaterThan(1); // the released slot let the waiting catchup continue
@@ -343,7 +343,7 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
       return result;
     });
     try {
-      h.provider(async () => reply("No durable material."));
+      h.provider(async c => emptyNote(c) ?? reply("No durable material.")); // 26a: a batch commits only through a submission
       await command(h, "catchup");
       await settle(h);
     } finally { spy.mockRestore(); }

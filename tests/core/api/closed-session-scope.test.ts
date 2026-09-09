@@ -2,7 +2,13 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory, validateConfig, type ClosedSessionScope, type NotingAgentInput } from "../../source-fixture.ts";
 
 const at = "2026-09-09T00:00:00Z";
-function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async () => ({ outcome: "success", output: "", request: {} })) {
+/** 26a: a Noting batch is completed by a submission, so a run that has nothing to record submits the
+ * explicit empty batch. Consolidation's protocol is unchanged and submits nothing here. */
+const submitted = (raw: unknown) => {
+  const input = raw as NotingAgentInput;
+  if (input.kind === "noting") input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+};
+function setup(scope: ClosedSessionScope = "project", agent: Parameters<typeof sourceSeededMemory>[1] = async raw => { submitted(raw); return { outcome: "success", output: "", request: {} }; }) {
   const memory = sourceSeededMemory(":memory:", agent, { closedSessionScope: scope });
   const p = memory.store.createProject({ name: "same", declaredBy: "mark" });
   const other = memory.store.createProject({ name: "other", declaredBy: "mark" });
@@ -55,7 +61,7 @@ test.each(["noting", "consolidation"] as const)("%s discovery filters project/gl
 
 test.each(["noting", "consolidation"] as const)("%s admission rechecks the project, requires an executor, and global permits foreign tails", async phase => {
   let dispatched = 0;
-  const { memory, active, same, other } = setup("project", async () => { dispatched++; return { outcome: "success", output: "", request: {} }; });
+  const { memory, active, same, other } = setup("project", async raw => { dispatched++; submitted(raw); return { outcome: "success", output: "", request: {} }; });
   const run = (target: typeof same, executorSessionId?: number) => phase === "noting"
     ? memory.noting({ ...target, borrowed: true, executorSessionId }) : memory.consolidate({ ...target, borrowed: true, executorSessionId });
   try {
@@ -77,8 +83,9 @@ test.each(["noting", "consolidation"] as const)("%s admission rechecks the proje
 
 test.each(["project", "global"] as const)("%s is frozen for a running task when future borrowing is disabled", async scope => {
   let finish!: () => void;
-  const { memory, active, same, other } = setup(scope, async () => {
+  const { memory, active, same, other } = setup(scope, async raw => {
     await new Promise<void>(resolve => { finish = resolve; });
+    submitted(raw);
     return { outcome: "success", output: "", request: {} };
   });
   try {
@@ -93,8 +100,9 @@ test.each(["project", "global"] as const)("%s is frozen for a running task when 
 
 test.each(["noting", "consolidation"] as const)("%s rechecks a closed executor at commit without advancing progress", async phase => {
   let finish!: () => void;
-  const { memory, active, same } = setup("project", async () => {
+  const { memory, active, same } = setup("project", async raw => {
     await new Promise<void>(resolve => { finish = resolve; });
+    submitted(raw); // 26a: the batch is submitted, so the closed-executor recheck really runs at commit
     return { outcome: "success", output: "", request: {} };
   });
   try {

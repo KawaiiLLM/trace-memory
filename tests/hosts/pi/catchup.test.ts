@@ -88,7 +88,7 @@ test("17c 2026-09-08: tiny closed tails bypass thresholds; empty Noting does not
     const factsOnly = target(h.memory, { facts: 1, noted: true });
     const entryOnly = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(2);
+    expect(h.requests).toHaveLength(3); // 26a: the borrowed Noting run submits, so it costs two requests
     expect(h.memory.store.listRuns(live.sessionId)).toHaveLength(1);
     expect(h.memory.store.listRuns(disabled.sessionId)).toHaveLength(1);
     expect(h.memory.store.consolidationBatch(factsOnly.sessionId, factsOnly.branch, factsOnly.headTurnId)).toEqual([]);
@@ -174,7 +174,9 @@ test("17c 2026-09-08: reopen blocks selection and immediately replaces borrowed 
   const h = host();
   let finish!: () => void;
   const old = TraceMemory(h.dbPath, async () => { await new Promise<void>(r => { finish = r; }); return { outcome: "success", output: "", request: {} }; });
-  const own = TraceMemory(h.dbPath, async () => ({ outcome: "success", output: "", request: {} }));
+  // 26a: the new owner's run completes its batch with the explicit empty submission.
+  const own = TraceMemory(h.dbPath, async raw => { (raw as NotingAgentInput).tools.find(t => t.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "", request: {} }; });
   try {
     await h.turn();
     const t = target(h.memory);
@@ -388,7 +390,7 @@ test("17c 2026-09-08: failed own capacity admission leaves the slot free for a s
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
     await tick(h);
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(h.conversations[0]!.messages[0]!.content).toContain(`S${t.sessionId}/T${t.headTurnId}`);
     expect(h.notices.join(" ")).toContain("oldest entry cannot fit");
     expect(h.memory.store.getClaim(1, "noting")).toBeNull();

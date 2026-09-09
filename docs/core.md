@@ -56,8 +56,14 @@ The noting result has `outcome`: `success` with `runId` and facts; `bounced`,
 `failure` or `cancelled` with `runId` and problems; or `dropped`/`empty` without
 a run record. A duplicate is dropped per target session and phase across branches,
 hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
-Stopping normally without submitting is a zero-fact success: process exactly the frozen
-entries without a delivery. An uncorrected rejected submission is `bounced`
+A batch is completed only by a `note` call (26a). `note({facts: []})` is the explicit
+empty submission: it commits a successful zero-fact run, processes exactly the frozen
+entries and creates no delivery, and it closes the batch to later `note` calls.
+Stopping normally without submitting is **incomplete**: outcome `failure` with the
+exported `NOTING_INCOMPLETE` diagnostic and the oldest frozen entry on
+`incompleteHeadEntryId`, the attempt and its usage recorded, and no business progress —
+the same entries are frozen again next time. Final prose is never read as facts nor as an
+implicit empty submission. An uncorrected rejected submission is `bounced`
 and advances nothing. Failure/cancellation before commit also advances nothing.
 A committed batch keeps outcome `success` even if the provider subsequently
 fails or is cancelled; the trailing problem is recorded without undoing business
@@ -80,7 +86,9 @@ with `{kind: "noting", sessionId, branch, range: {from, to},
 readKnowledgeCommits, entryIds}`. `note({facts})` validates every item and commits nothing
 on any rejection; a corrected whole batch may be resubmitted. Success returns
 `results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
-`rejected: <reason>`. A Noting binding commits at most one batch. The batch,
+`rejected: <reason>`. An accepted empty batch returns `results: []`, `factIds: []` and
+`committed: "zero facts; this batch is complete"`; a refused one, having no item slot to
+carry the reason, returns a plain `rejected: <reason>`. A Noting binding commits at most one batch. The batch,
 run record, frozen entry progress and applicable nonempty delivery commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Consolidation range. They do not

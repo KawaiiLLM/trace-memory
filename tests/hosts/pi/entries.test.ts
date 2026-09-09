@@ -109,6 +109,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
       const forkInput = raw as NotingAgentInput;
       expect(forkInput.text.inherited).not.toContain("T1#user");
       expect(forkInput.text.inherited).toContain("late assistant");
+      forkInput.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); // 26a: completed by a submission
       return { outcome: "success", output: "", request: {} };
     });
     try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "fork" })).outcome).toBe("success"); }
@@ -179,7 +180,9 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
 
 test("17a 2026-09-08: forks reuse shared identities and ordinals but native short ids in different lineages never collide", async () => {
   const h = host(quiet);
-  const noter = TraceMemory(join(h.dir, "trace.db"), async () => ({ outcome: "success", output: "", request: {} }));
+  // 26a: a Noting run completes its batch with a submission; nothing to record is `{facts: []}`.
+  const noter = TraceMemory(join(h.dir, "trace.db"), async raw => { (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "", request: {} }; });
   try {
     await h.prompt("same Turn");
     await h.emit("message_end", { message: { ...reply(""), content: [{ type: "toolCall", id: "one", name: "bash", arguments: { command: "first" } }] } });
