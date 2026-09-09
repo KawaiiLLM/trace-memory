@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONSOLIDATED_TITLE, FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
+import { FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
 import { TraceMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
@@ -245,16 +245,17 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   // Injection is knowledge-only: sharing the material type adds no facts and no Raw to it.
   expect(injected).not.toContain(FACTS_TITLE);
   expect(injected).not.toContain("\nRaw:");
-  // A later Noting task starts with that identical block, before anything task-specific.
+  // A later Noting task carries no knowledge at all (25a) and starts with its own first block.
   runAgent = async raw => { noted = (raw as NotingAgentInput).text.fresh; return { outcome: "success", output: "", request: { fake: true } }; };
   const next = turn(sessionId, t.id, "再来一次", "好。");
   await memory.noting({ sessionId, branch: "main", headTurnId: next.id, mode: "subagent" });
-  expect(noted.startsWith(`${knowledgeBlock}\n\n${FACTS_TITLE}`)).toBe(true);
-  expect(integrated.startsWith(`${knowledgeBlock}\n\n${CONSOLIDATED_TITLE}`)).toBe(false); // that run read no knowledge yet
+  expect(noted.startsWith(FACTS_TITLE)).toBe(true);
+  expect(noted).not.toContain("<knowledge>");
+  expect(integrated.startsWith(`${knowledgeBlock}\n\nRange: `)).toBe(false); // that run read no knowledge yet
 });
 
 test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review blocks", () => {
-  const titles = [FACTS_TITLE, CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, INTEGRATE_TITLE, REMINDER_TITLE,
+  const titles = [FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, INTEGRATE_TITLE, REMINDER_TITLE,
     "<knowledge>", "Range: ${"];
   const directory = new URL("../../../src/hosts/", import.meta.url);
   const files: URL[] = [];

@@ -74,23 +74,25 @@ test("review 2026-09-08: capacity is priced by the effective mode; a requested f
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: a smaller model window trims the optional historical facts before it drops a selected fact", async () => {
+// 25a removed the Consolidator's optional historical facts, so this review pin now names the phase
+// that still has optional material: a Noting batch whose selected entries are mandatory and whose
+// historical facts are not. The rule — optional history yields before selected evidence — is unchanged.
+test("review 2026-09-08, on Noting since 25a: a smaller model window trims the optional historical facts before it drops a selected entry", async () => {
   const f = seeded();
   try {
-    expect(f.note("Pending fact")).toContain("ok: F1");
-    await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
-    const bare = f.calls[0] as ConsolidationAgentInput;
-    const capacity = tokens(bare.prompt) + tokens(JSON.stringify(bare.tools)) + tokens(bare.text.fresh) + 300;
-    for (let i = 0; i < 4; i++) f.note("Optional historical evidence " + "word ".repeat(1500));
-    await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
-    f.note("Pending fact");
-    const n = f.calls.length;
-    const result = await f.m.consolidate({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
+    await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: f.t.id, mode: "subagent" });
+    const bare = f.calls[0] as NotingAgentInput;
+    const size = (input: NotingAgentInput) => tokens(input.prompt) + tokens(JSON.stringify(input.tools)) + tokens(input.text.fresh);
+    for (let i = 0; i < 4; i++) expect(f.note("Optional historical evidence " + "word ".repeat(1500))).toContain(`ok: F${i + 1}`);
+    const next = f.m.store.appendTurn({ sessionId: f.s.id, parentTurnId: f.t.id, kind: "turn", userPrompt: "Second request", assistantText: "Second reply", startedAt: "2026-09-08" });
+    const entries = f.m.pendingEntries(f.s.id, "main", next.id).length;
+    const capacity = size(bare) + 500;
+    const result = await f.m.noting({ sessionId: f.s.id, branch: "main", headTurnId: next.id, mode: "subagent", capacity: { inputTokens: capacity, prefixTokens: 0 } });
     expect(result.outcome).toBe("success");
-    const run = f.calls[n] as ConsolidationAgentInput;
-    expect(run.range.facts.map(fact => fact.id)).toEqual([6]); // the selected fact ran
-    expect(run.material.facts.length).toBeLessThan(5); // the optional history gave way
-    expect(tokens(bare.prompt) + tokens(JSON.stringify(run.tools)) + tokens(run.text.fresh)).toBeLessThanOrEqual(capacity);
+    const run = f.calls.at(-1) as NotingAgentInput;
+    expect(run.entryIds).toHaveLength(entries); // every selected entry ran
+    expect(run.material.facts.length).toBeLessThan(4); // the optional history gave way first
+    expect(size(run)).toBeLessThanOrEqual(capacity);
   } finally { f.m.close(); }
 });
 

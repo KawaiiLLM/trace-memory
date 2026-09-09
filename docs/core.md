@@ -170,19 +170,25 @@ memory writers are gone (ticket 23b), and so are their budgets. The host records
 tool status; the renderer does not infer completion from text.
 
 In fork mode the run sends core's inherited increment — the range, the head reply and the frozen
-source index: the raw turns, the facts delivered after earlier notings, and the injected knowledge
-are already in the conversation the host appends to. The native prefix remains uncompressed; fork
-Noting gains nothing from the compressed view (accepted 2026-09-08). Subagent
-Noting and fallback send the shared entry views below. Core freezes one material for both.
+source index: the raw turns and the facts delivered after earlier notings are already in the
+conversation the host appends to, and 25a adds no historical-fact block, no fact index and no Raw
+view on top of them. The native prefix remains uncompressed; fork Noting gains nothing from the
+compressed view (accepted 2026-09-08). Subagent Noting and fallback send the shared entry views
+below. Core freezes one material for both, and a fork downgraded to subagent is priced on that
+complete subagent material (22d).
 
-Noting context uses the episodic budget for the selected raw plus recent facts
-by descending timestamp, then id. Raw is never dropped or clipped: a selected batch whose
-mandatory material (its views, the framing, the negation cues) cannot fit the episodic budget
-or the host's reported capacity is reduced oldest-first and re-frozen, and an oldest unit that
-cannot fit alone stays pending with a capacity error (review 2026-09-08; no overage receipt
-lets a task run over a hard budget). Older facts are dropped first. Active knowledge items use the knowledge budget in glossary
-category order. Every visible
-knowledge revision read at start is recorded, including budget-omitted knowledge.
+Noting context is two independent allowances (25a): the selected raw within `noting.batchTokens`,
+and the historical facts within what remains of `render.episodicBlockTokens` once that Raw ceiling is
+reserved — 10,000 each at the defaults. The reservation is what makes them independent: an
+under-budget Raw batch never enlarges the fact slice, and unused fact space never enlarges the batch.
+Facts are selected by descending timestamp, then id. Raw is never dropped or clipped: a selected
+batch whose mandatory material (its views, the framing) cannot fit the episodic budget or the host's
+reported capacity is reduced oldest-first and re-frozen, and an oldest unit that cannot fit alone
+stays pending with a capacity error (review 2026-09-08; no overage receipt lets a task run over a
+hard budget). Older facts are dropped first. **Neither Noter mode receives a knowledge block** (25a,
+superseding ticket 20's leading knowledge block for this consumer): a Noter reads knowledge by
+address when it needs it. Every visible knowledge revision current at the start is still recorded, so
+such a read is judged against a frozen base.
 The budgets themselves, and what each one charges, are in "Material budgets (20b)" below.
 Knowledge expansion addresses are emitted for future trace support; this ticket
 implements only `T<n>` and `F<n>` trace targets. The other façade methods retain
@@ -196,32 +202,38 @@ The shared parts are the rendered knowledge (in category groups), the historical
 compressed Raw entry views with their source identity, and the budget receipts. A task adds its own
 parts: Noting the head reply and the source index, Consolidation the pending facts (as addresses and
 as lines) and the negated-evidence review cues. The frozen range travels beside the material as the
-run's own label. A consumer whose order has no facts or Raw block simply omits those parts: sharing
-the type never adds a block to an order, and initial injection stays knowledge-only.
+run's own label. A consumer whose order has no knowledge, no facts or no Raw block simply omits those
+parts: sharing the type never adds a block to an order, and initial injection stays knowledge-only.
 
-One function per consumer renders that contract, in the ruled order (ticket 20):
+One function per consumer renders that contract, in the ruled order (ticket 20, as ticket 25a
+corrected it):
 
 | Consumer | Block order |
 | --- | --- |
-| Noter (`notingText`) | knowledge → historical facts → range → selected Raw → receipts |
-| Consolidator (`consolidationText`) | knowledge → already-consolidated facts → range → selected pending facts → negation reminders → receipts |
+| Noter (`notingText`) | historical facts → range → selected Raw → receipts |
+| Consolidator (`consolidationText`) | knowledge → range → selected pending facts → negation reminders → receipts |
 | Main-agent injection (`injectionText`) | knowledge → receipts |
 | Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (tier-1 or, in tier 2, tier-2 entry views) → receipts |
+
+25a supersedes ticket 20 on two blocks of that table: the Noter's leading knowledge block, in both
+modes, and the Consolidator's already-consolidated history block. Both consumers reach that material
+by explicit read instead, and knowledge a fork already inherited from the foreground is untouched.
 
 Both workers also get the inherited-context increment from that same frozen task (`notingIncrement`,
 `consolidationIncrement`; user ruling 2026-09-06 08:53): the instruction, the range, and then the
 head reply and source index, or the exact fact list and the review cues. It is what the inherited
-conversation does not already carry, never a second copy of the knowledge, facts and Raw. Both
-representations are prepared for every run as `input.text.fresh` and `input.text.inherited`, so the
-execution mode cannot change the writable evidence range.
+conversation does not already carry, never a second copy of the knowledge, facts and Raw — and, since
+25a, never a fact index or a Raw view either. Both representations are prepared for every run as
+`input.text.fresh` and `input.text.inherited`, so the execution mode cannot change the writable
+evidence range.
 
-The leading knowledge block is `renderKnowledgeBlock`, the same `<knowledge>` block all four
-consumers use; nothing task-specific may enter it — no range, no entry id of the new batch, no
+The leading knowledge block is `renderKnowledgeBlock`, the same `<knowledge>` block the three
+consumers that carry one use; nothing task-specific may enter it — no range, no entry id of the new batch, no
 timestamp, run id or omission count — so two tasks with the same selected knowledge render the same
 leading bytes even when the range and the Raw differ. That is a byte-layout rule, not a cache
 promise: knowledge is revised, archived and dropped under budget, repeated material is not
-automatically an append-only prefix, and the Noter and the Consolidator have different instructions
-and are not one cache chain. The existing historical-fact freshness order was not changed for it.
+automatically an append-only prefix, and the Consolidator and the main agent have different
+instructions and are not one cache chain. The existing historical-fact freshness order was not changed for it.
 
 Titles and separators are constants in that module (`FACTS_TITLE`, `RAW_TITLE`, …), and `finish`
 still appends the receipts. Nothing here knows a host message type, and no host file lays out these
@@ -229,8 +241,11 @@ blocks (pinned by a source check in `tests/core/api/boundary.test.ts`).
 
 ## Fact groups
 
-Newly injected fact lists share `renderFactGroups`: Noter history, Consolidator history and current
-facts, delivery (`<noted>`), compaction, branch carry, and the facts in review reminders/feedback.
+Newly injected fact lists share `renderFactGroups`: Noter history, the Consolidator range facts,
+delivery (`<noted>`), compaction, branch carry, and the facts in review reminders/feedback. It is
+the one full-fact renderer of ticket 25: the same selected facts and annotation snapshot give the
+same bytes in a foreground `<noted>` receipt and in a Noter subagent history block; only the
+enclosing title differs.
 Groups use the owning Turn's start time in ascending chronological order, with Turn id as a tie-break;
 within a group, facts use ascending F ids. Unknown Turn times remain explicit and sort last by id.
 A group heading looks like `[T42] 2026-09-09T10:30:00Z (selected facts)`: it identifies a selected
@@ -261,17 +276,27 @@ charged once, to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| knowledge block, its category tags and its omission receipts | `render.knowledgeBlockTokens` | 10,000 |
+| knowledge block, its category tags and its omission receipts (Consolidator, injection, compact) | `render.knowledgeBlockTokens` | 10,000 |
 | selected current material — entry or fact views with their own source labels, omission markers and joining separators | `noting.batchTokens` (Raw, shared with compact) / `consolidation.batchTokens` (pending facts) | 10,000 |
-| block titles, the range line, mandatory cues, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
+| Noter and compact: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
+| Consolidator: its titles, range line, mandatory review cues and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 The current material and the mandatory cues are reserved first; historical facts then fill whatever
 episodic space is left, in the existing freshness order. Raw consumes at most its own ceiling, not a
-guaranteed allocation, and Consolidation has no automatic Raw block at all — its selected pending
-facts take the current-material allowance. Outer framing is never charged against the inner ceiling,
-so an otherwise valid 10,000-token entry stays batchable. Fresh material is therefore at most 30,000
-estimated tokens by default; system instructions, tool definitions, the output reserve, inherited
-native history and later tool/review messages are additional context costs, which is why the host's
+guaranteed allocation, and Consolidation has no automatic Raw block and no history block at all — its
+selected pending facts and their required framing share the current-material allowance. Outer framing
+is never charged against the Noter's inner Raw ceiling, so an otherwise valid 10,000-token entry stays
+batchable.
+
+The Noter's two allowances are independent, and the reservation is what makes them so: its historical
+facts are capped at `render.episodicBlockTokens − noting.batchTokens` (10,000 at the defaults), so the
+Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch never buys a larger
+fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
+this; the cap is derived from the two that already exist.
+
+Fresh material is therefore at most 20,000 estimated tokens for the Noter and 20,000 for the
+Consolidator by default; system instructions, tool definitions, the output reserve, inherited native
+history and later tool/review messages are additional context costs, which is why the host's
 real-context capacity check stays independent of these domain limits.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
@@ -345,11 +370,15 @@ in allocation-id order; the rest stays pending for the next batch. An oldest fac
 alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
 or marked consolidated unpresented. The range freezes those facts, the visible active knowledge
 revisions (including budget omissions), relation lines and reminders before the
-candidate call. Context remains project-wide: already-consolidated facts outside the range,
-ordered by descending timestamp then id. All range facts are retained; their
-rendered size takes the current-material allowance before context. Knowledge follows the
-same hard knowledge budget. Reminders are mandatory cues charged to the episodic budget; feedback is
-unbudgeted so every matching visible knowledge and both relation strengths remain available.
+candidate call. Since 25a the automatic material is exactly two blocks: the active knowledge within
+`render.knowledgeBlockTokens`, and the pending facts within `consolidation.batchTokens`, which also
+carries their review cues, the titles and the range line — required framing is charged to the
+allowance of the material it frames, never to a second budget. **There is no already-consolidated
+history block and no automatic Raw block**; both are reached by explicit `trace`. All range facts are
+retained: a batch whose facts and mandatory cues cannot fit that allowance is reduced oldest-first and
+re-frozen, and one that cannot fit its smallest admissible unit stays pending with the capacity
+diagnostic. Feedback is unbudgeted so every matching visible knowledge and both relation strengths
+remain available.
 
 The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound
 `tools`, and `reportRequest`. It executes tool calls and extends the same conversation

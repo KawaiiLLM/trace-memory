@@ -8,18 +8,24 @@
 // rather than replaced: there is no generic builder or provider-strategy framework here, only one
 // function per consumer over the shared parts.
 //
-// Block order (ticket 20, "Material order and cache scope"):
-//   Noter                  knowledge -> historical facts -> range -> selected Raw -> receipts
-//   Consolidator           knowledge -> already-consolidated facts -> range -> selected pending
-//                          facts -> negation reminders -> receipts
+// Block order (ticket 20 "Material order and cache scope", as ticket 25a corrected it):
+//   Noter                  historical facts -> range -> selected Raw -> receipts
+//   Consolidator           knowledge -> range -> selected pending facts -> negation reminders ->
+//                          receipts
 //   Main-agent injection   knowledge -> receipts
 //   Main-agent compact     knowledge -> historical facts -> pending Raw -> receipts
+//
+// Ticket 25a supersedes ticket 20's leading knowledge block for the Noter in both modes, and the
+// Consolidator's already-consolidated history block: a Noter reads knowledge explicitly when it needs
+// it and never receives it automatically, and a Consolidator's automatic material is the active
+// knowledge plus the pending facts it must integrate. Nothing here removes knowledge a fork already
+// inherited from the foreground; explicit reads are unchanged for both.
 //
 // Stable prefix: the leading knowledge block carries no task range, no entry id of the new batch, no
 // timestamp, no run id and no omission count, so two tasks with the same selected knowledge render
 // the same leading bytes. That is a byte-layout rule, not a cache claim: knowledge is revised,
-// archived and dropped under budget, and the Noter and the Consolidator have different instructions
-// and are not one shared cache chain.
+// archived and dropped under budget, and the Consolidator and the main agent have different
+// instructions and are not one shared cache chain.
 //
 // Ruling 2026-09-06 08:53: an inherited-context run carries only its instruction, the range, the
 // head reply and the frozen source index, because the raw turns, the facts delivered after earlier
@@ -36,11 +42,12 @@ export interface TaskRange { from: string; to: string }
 
 /** The parts every memory consumer shares (ticket 20, "Shared contract"): rendered knowledge,
  * historical facts, compressed Raw entries with their concrete source identity, and budget receipts.
- * A consumer whose ruled order has no facts or no Raw block simply omits those parts; sharing this
- * type never adds a block to a consumer's order (initial injection stays knowledge-only). */
+ * A consumer whose ruled order has no knowledge, no facts or no Raw block simply omits those parts;
+ * sharing this type never adds a block to a consumer's order (initial injection stays knowledge-only,
+ * and since 25a neither Noter mode carries knowledge at all). */
 export interface SharedMaterial {
-  /** Active knowledge within the knowledge budget, in category order. */
-  knowledge: KnowledgeGroup[];
+  /** Active knowledge within the knowledge budget, in category order; absent for the Noter (25a). */
+  knowledge?: KnowledgeGroup[];
   /** Historical facts selected by freshness, displayed in chronological Turn groups, within budget. */
   facts?: string[];
   /** Compressed Raw entries, oldest first, each with the source identity of its own view. */
@@ -61,10 +68,11 @@ export interface NotingMaterial extends SharedMaterial {
 }
 
 /** The frozen task material of one Consolidation run. Task-specific parts: the pending facts (as
- * addresses and as lines) and the negated-evidence review cues. No field is a composed message. */
+ * addresses and as lines) and the negated-evidence review cues. No field is a composed message.
+ * 25a: there is no already-consolidated history part — that block is removed, and those facts stay
+ * reachable through explicit reads. */
 export interface ConsolidationMaterial extends SharedMaterial {
-  /** Already-consolidated project facts selected by freshness, displayed in chronological Turn groups. */
-  facts: string[];
+  knowledge: KnowledgeGroup[];
   /** The facts to integrate, as addresses: an inherited context already carries their lines. */
   factAddresses: string[];
   /** The same selected facts, rendered with relations in chronological Turn groups. */
@@ -83,7 +91,6 @@ export interface MaterialText {
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
-export const CONSOLIDATED_TITLE = "Already-consolidated facts (by Turn):";
 export const RAW_TITLE = "Raw:";
 /** Compaction tier 2 (20c) under ticket 23's one renderer: the block title replaces `RAW_TITLE` —
  * never joins it — and names the view version and the profile that produced these views, because a
@@ -105,16 +112,19 @@ const rangeLine = (range: TaskRange): string => `Range: ${range.from}..${range.t
  *
  * | Component                                                   | Budget |
  * | ----------------------------------------------------------- | ------ |
- * | knowledge block, its category tags, its omission receipts    | `caps.knowledge` (10,000) |
- * | selected current material: entry views or pending fact lines, with their own labels, omission markers and joining separators | `caps.current` (10,000) |
- * | block titles, the range line, mandatory cues, block receipts, historical facts | `caps.episodic` (20,000) |
+ * | knowledge block, its category tags, its omission receipts    | `caps.knowledge` |
+ * | selected current material: entry views or pending fact lines, with their own labels, omission markers and joining separators | `caps.current` |
+ * | block titles, the range line, mandatory cues, block receipts, historical facts | `caps.episodic` |
  *
- * The current material and the mandatory cues are reserved first; historical facts fill the rest in
- * the existing freshness order. Selected evidence is never dropped to make room: a current material
- * over its own ceiling, or mandatory material over the episodic budget, is receipted, and reducing
- * the task is the phase's own oldest-first re-freeze (`freezeNoting`, `freezeConsolidation`). */
+ * A consumer that emits no knowledge block and no historical facts omits those inputs rather than
+ * passing empty ones, and pays for neither. The current material and the mandatory cues are reserved
+ * first; historical facts fill the rest in the existing freshness order, never past `history`.
+ * Selected evidence is never dropped to make room: a current material over its own ceiling, or
+ * mandatory material over the episodic budget, is receipted, and reducing the task is the phase's own
+ * oldest-first re-freeze (`freezeNoting`, `freezeConsolidation`). */
 export interface MaterialBudget {
-  knowledge: KnowledgeWithRevision[];
+  /** Knowledge candidates; omitted by a consumer whose order has no knowledge block (25a: the Noter). */
+  knowledge?: KnowledgeWithRevision[];
   /** How one knowledge item renders; the read facade adds its marks. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
   /** The selected current material, already joined with the separator this consumer emits. */
@@ -123,15 +133,18 @@ export interface MaterialBudget {
   framing: string[];
   /** The frozen range, when this consumer shows one; it is a label, charged like any other line. */
   range?: TaskRange;
-  /** Historical facts in the existing freshness order, and how one renders. */
-  facts: Fact[];
-  factLine: (fact: Fact) => string;
-  factTurns: FactTurns;
-  caps: { knowledge: number; episodic: number; current: number };
+  /** Historical facts in the existing freshness order, and how one renders; omitted by a consumer
+   * whose order has no history block (25a: the Consolidator). */
+  facts?: Fact[];
+  factLine?: (fact: Fact) => string;
+  factTurns?: FactTurns;
+  caps: { knowledge?: number; episodic: number; current: number };
   /** What the current material is called in a receipt: Raw entries, or a Consolidation's range facts. */
   label?: "raw" | "range";
-  /** An allowance for the optional historical facts below the episodic budget, in tokens (review
-   * 2026-09-08): capacity negotiation trims this optional material before dropping selected evidence. */
+  /** The hard ceiling of the optional historical facts, independent of what the episodic budget would
+   * otherwise allow (25a: the Noter's history and its Raw batch are two independent caps, so unused
+   * Raw space never enlarges the history block). Capacity negotiation lowers it further to trim this
+   * optional material before it drops selected evidence (review 2026-09-08). */
   history?: number;
 }
 
@@ -139,7 +152,8 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   /** How far past each cap this material is, in tokens; zero when it fits. Every consumer receipts an
    * overage; only compact escalates on it (ticket 20 "Compaction escalation", steps 2 and 4). */
   over: { current: number; episodic: number } } {
-  const active = budgetKnowledge(input.knowledge, input.caps.knowledge, input.knowledgeLine);
+  const active = input.knowledge ? budgetKnowledge(input.knowledge, input.caps.knowledge!, input.knowledgeLine)
+    : { groups: [] as KnowledgeGroup[], receipts: [] as string[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
   const receipts: string[] = [];
@@ -153,8 +167,10 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   // `history` caps the optional historical facts below what the episodic budget would allow: a phase
   // negotiating a smaller model window trims this optional material before it drops selected evidence.
   const room = () => Math.min(input.history ?? Infinity, input.caps.episodic - reserved());
-  let filled = budgetFacts(input.facts, input.factLine, room(), input.factTurns);
-  if (filled.receipts.length) filled = budgetFacts(input.facts, input.factLine, room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])), input.factTurns);
+  const fill = (cap: number) => input.facts?.length
+    ? budgetFacts(input.facts, input.factLine!, cap, input.factTurns!) : { recent: [] as string[], receipts: [] as string[] };
+  let filled = fill(room());
+  if (filled.receipts.length) filled = fill(room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])));
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
@@ -168,7 +184,7 @@ const rawText = (material: SharedMaterial): string => (material.entries ?? []).m
 /** The leading knowledge block of all four consumers, and the only knowledge layout in this
  * repository. Nothing task-specific may enter it (see "Stable prefix" above); empty knowledge
  * renders no block at all rather than a bare title. */
-export const knowledgeBlock = (material: SharedMaterial): string => renderKnowledgeBlock(material.knowledge);
+export const knowledgeBlock = (material: SharedMaterial): string => renderKnowledgeBlock(material.knowledge ?? []);
 const leading = (material: SharedMaterial): string[] => {
   const knowledge = knowledgeBlock(material);
   return knowledge ? [knowledge] : [];
@@ -186,9 +202,10 @@ export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TIT
   finish({ content: block([...leading(material), xmlBlock("episodic",
     block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });
 
-/** Noter, fresh context: knowledge, historical facts, range, the selected Raw, then receipts. */
+/** Noter, fresh context: historical facts, range, the selected Raw, then receipts. 25a: no knowledge
+ * block in either Noter mode — a Noter that needs knowledge reads it by address. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
-  finish({ content: block([...leading(material), FACTS_TITLE, material.facts.join("\n"),
+  finish({ content: block([FACTS_TITLE, material.facts.join("\n"),
     rangeLine(range), RAW_TITLE, rawText(material)]), receipts: material.receipts });
 
 /** Noter, inherited context: the range, the head reply and the frozen source index (ruling 08:53).
@@ -198,10 +215,10 @@ export const notingIncrement = (material: NotingMaterial, range: TaskRange): str
   block([rangeLine(range), ...(material.head ? [material.head] : []),
     `${SOURCES_TITLE}\n${material.sources.join("\n")}`]);
 
-/** Consolidator, fresh context: knowledge, already-consolidated facts, range, the selected pending
- * facts, the negation reminders, then receipts. */
+/** Consolidator, fresh context: knowledge, range, the selected pending facts, the negation reminders,
+ * then receipts. 25a: no already-consolidated history block — those facts are read by address. */
 export const consolidationText = (material: ConsolidationMaterial, range: TaskRange): string =>
-  finish({ content: block([...leading(material), CONSOLIDATED_TITLE, material.facts.join("\n"),
+  finish({ content: block([...leading(material),
     rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n"),
     REMINDER_TITLE, material.reminders.join(BLOCK) || "none"]), receipts: material.receipts });
 

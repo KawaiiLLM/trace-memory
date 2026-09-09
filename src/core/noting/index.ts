@@ -94,7 +94,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   const mandatory = Math.max(instructions + tools,
     (input.effectiveMode ?? mode) === "fork" ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, tools and output reserved: instructions, tools and the inherited prefix alone cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const entries: typeof pending = [];
   const views: string[] = [];
   // 22d: an entry's view is immutable within one freeze — the same stored entry, the same profile,
@@ -106,6 +106,8 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
   }
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
+  // 25a: neither Noter mode receives a knowledge block, but a run still records which commits its
+  // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
   const factTurns = store.factTurnTimes(facts);
@@ -123,7 +125,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     if (list === undefined) calls.set(turnId, list = store.listToolCalls(turnId));
     return list;
   };
-  let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
+  // 25a: the Noter's two allowances are independent. The Raw ceiling is reserved out of the episodic
+  // budget whether or not this batch uses it, so history is capped at what remains — 10,000 tokens at
+  // the defaults — and an under-budget Raw batch never enlarges the history block, nor the reverse.
+  const historyCap = Math.max(0, config.render.episodicBlockTokens - config.noting.batchTokens);
+  let history = historyCap; // lowered further by the capacity negotiation below
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
     const turns = ancestry.filter(t => ids.has(t.id)).map(turn => {
@@ -154,9 +160,9 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
     if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
-    entries.pop(); history = Infinity;
+    entries.pop(); history = historyCap;
   }
-  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, knowledge, tools and output reserved; left pending");
+  if (pending.length) throw new Error("Noting capacity: oldest entry cannot fit the episodic budget or the model context with instructions, tools and output reserved; left pending");
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 
@@ -171,10 +177,11 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   const raw = entries.map(view);
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
   // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
-  // — the titles and the range against the episodic budget, and the knowledge block against its own.
-  const budgeted = budgetMaterial({ knowledge, current: raw.map((r) => r.content).join(BLOCK),
+  // — and the titles, the range and the historical facts against the episodic budget. 25a: no
+  // knowledge candidates are passed, because neither Noter mode emits a knowledge block.
+  const budgeted = budgetMaterial({ current: raw.map((r) => r.content).join(BLOCK),
     framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, factTurns, history,
-    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
+    caps: { episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;
   // Every part of the run's material, rendered and budgeted once. An inherited-context run does not
@@ -186,7 +193,6 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
     // are what an inherited-context run still needs.
     head: head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
     sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
-    knowledge: budgeted.knowledge.filter((g) => g.text),
     facts: budgeted.facts,
     receipts,
   };

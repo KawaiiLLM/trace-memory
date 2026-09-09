@@ -55,7 +55,7 @@ test("history selection keeps its priority prefix, charges a heading once, then 
   }
 });
 
-test("delivery, carry, compact, Noter history, Consolidator range and history share fact groups", async () => {
+test("delivery, carry, compact, Noter history and the Consolidator range share the one fact-group renderer", async () => {
   const calls: (NotingAgentInput | ConsolidationAgentInput)[] = [];
   const m = TraceMemory(":memory:", async input => {
     calls.push(input as NotingAgentInput | ConsolidationAgentInput);
@@ -82,7 +82,7 @@ test("delivery, carry, compact, Noter history, Consolidator range and history sh
     if (compact.tier === "native") throw new Error(compact.reason);
     expect(compact.text).toContain(`Recent facts (by Turn):\n\n${expected}\n\nRaw:`);
     await m.noting({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
-    expect(calls.at(-1)!.material.facts.join("\n")).toBe(expected);
+    expect((calls.at(-1)! as NotingAgentInput).material.facts.join("\n")).toBe(expected);
     await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
     const input = calls.at(-1)! as ConsolidationAgentInput;
     expect(input.material.rangeFacts.join("\n")).toBe(expected);
@@ -96,7 +96,12 @@ test("delivery, carry, compact, Noter history, Consolidator range and history sh
       facts: [{ ...fact(4, b.id, "next fact"), createdAt: late }] });
     expect(next.ok).toBe(true);
     await m.consolidate({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
-    expect(calls.at(-1)!.material.facts.join("\n")).toBe(expected);
+    // 25a: the Consolidator receives no already-consolidated history block at all; F1–F3 are stored,
+    // consolidated and readable, and only the newly pending F4 is supplied as its range.
+    const later = calls.at(-1)! as ConsolidationAgentInput, next4 = [m.store.getFact(4)!];
+    expect(later.material.rangeFacts.join("\n")).toBe(renderFactGroups(next4, f => m.trace(`F${f.id}`), m.store.factTurnTimes(next4)).join("\n"));
+    expect("facts" in later.material).toBe(false);
+    expect(later.text.fresh).not.toContain(expected);
     expect(m.trace("F2")).not.toContain("(selected facts)"); // explicit single-fact reads stay unchanged
   } finally { m.close(); }
 });

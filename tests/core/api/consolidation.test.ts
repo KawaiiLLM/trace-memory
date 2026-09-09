@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
 import memories from "../../fixtures/noting/facts.json";
-import { renderFactGroups } from "../../../src/core/render/index.ts";
+import { charge, renderFactGroups } from "../../../src/core/render/index.ts";
+import { RANGE_FACTS_TITLE, REMINDER_TITLE } from "../../../src/core/render/material.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 
 type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
@@ -247,19 +248,29 @@ test("empty ranges do not call the agent or create records", async () => {
   expect(memory.store.getRun(3)).toBeNull(); expect(calls).toEqual([]);
 });
 
-test("context uses timestamp freshness while range remains complete and categories follow noting budgets", async () => {
+// 25a removed the already-consolidated context block, so the freshness half of this scenario no
+// longer has a subject here; it survives on the Noter's history block, pinned in noting.test.ts
+// ("selected historical facts display by Turn time rather than insertion id"). The knowledge half is
+// unchanged, and the removal itself is pinned below.
+test("already-consolidated facts are not supplied while the range remains complete, and categories follow the knowledge budget", async () => {
   const newest = fact(memories.base, { createdAt: "2026-08-17" }), oldest = fact(memories.observation, { createdAt: "2026-08-15" });
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   for (const category of categories) knowledge([newest], { category });
   watermark(newest); watermark(oldest); const current = fact(memories.interpretation);
+  // The two consolidated facts are stored and readable; neither is injected, and the range is exactly
+  // the one fact that is still pending.
+  expect(memory.store.listConsolidatedProjectFacts(projectId).map(f => f.id).sort()).toEqual([newest, oldest].sort());
   queue(empty, empty); await consolidation();
   const input = calls[0]!.text.fresh;
-  expect(input.indexOf(`[F${newest}]`)).toBeLessThan(input.indexOf(`[F${oldest}]`));
+  expect(input).not.toContain(`[F${newest}]`);
+  expect(input).not.toContain(`[F${oldest}]`);
+  expect(input).toContain(`[F${current}]`);
+  expect(calls[0]!.range.facts.map(f => f.id)).toEqual([current]);
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
   // 20b: the knowledge cap is hard — not even the three categories 17b's exemption protected survive a
   // one-token budget — and, since the review of 2026-09-08, hard for its receipt too: a budget that
   // holds neither an item nor the receipt naming it leaves the batch pending rather than running.
-  memory.close(); open({ render: { knowledgeBlockTokens: 1, episodicBlockTokens: 1 } });
+  memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
   fact(memories.interpretation);
   const runs = memory.store.listRuns(sessionId).length;
   await expect(consolidation()).rejects.toThrow(/capacity/);
@@ -369,7 +380,7 @@ for (const bad of ["missing fact", "foreign fact", "late fact", "unread knowledg
   expect(memory.store.currentCommit(e)[0]?.id).toBe(1);
 });
 
-test("each session settles only its own branch facts and shares already-settled context", async () => {
+test("each session settles only its own branch facts; another session's settled facts stay readable but unsupplied", async () => {
   const first = fact(), secondSession = session();
   const second = fact(memories.observation, { sessionId: secondSession, branch: "fork" });
   queue(createOutput(second), createOutput(second));
@@ -381,7 +392,10 @@ test("each session settles only its own branch facts and shares already-settled 
   const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
-  expect(calls[2]!.text.fresh).toContain(memory.trace(`F${second}`));
+  // 25a: the other session's settled fact is no longer injected as context; an explicit read still
+  // returns it, unrestricted across sessions and projects.
+  expect(calls[2]!.text.fresh).not.toContain(memory.trace(`F${second}`));
+  expect(memory.trace(`F${second}`)).toContain(`[F${second}]`);
   expect(consolidated(second, "fork", secondSession)).toBe(true);
   expect(consolidated(first)).toBe(true);
   expect(await consolidation()).toEqual({ outcome: "empty" });
@@ -512,6 +526,10 @@ test("19b 2026-09-08: Consolidation material carries the exact fact list, the fa
 /** The rendered representation of the applicable unconsolidated facts: the same `renderFact` lines,
  * with their relations and their joining separator, that the trigger and the selection both count. */
 const grouped = (facts: Fact[]) => renderFactGroups(facts, f => memory.trace(`F${f.id}`), memory.store.factTurnTimes(facts));
+/** 25a: the pending-fact allowance also carries this batch's titles and range line, so a cap stated
+ * as "holds N facts" must state their framing too. Reminders are per batch and are zero here. */
+const withFraming = (facts: Fact[]) => tokens(grouped(facts).join("\n"))
+  + charge([RANGE_FACTS_TITLE, REMINDER_TITLE, `Range: F${facts[0]!.id}..F${facts.at(-1)!.id}`]);
 const applicableTokens = (branch = "main") =>
   tokens(grouped(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)).join("\n"));
 const due = (branch = "main") => memory.taskEligibility("consolidation",
@@ -534,7 +552,8 @@ test("20b 2026-09-08 scenario 6: Consolidation is due on rendered fact tokens, e
   expect(applicableTokens()).toBeLessThan(rendered);
   // The batch takes the oldest-first whole-fact prefix that fits its own ceiling, in arrival order.
   const pending = memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined);
-  const cap = tokens(grouped(pending.slice(0, 3)).join("\n"));
+  const cap = withFraming(pending.slice(0, 3));
+  expect(withFraming(pending.slice(0, 4))).toBeGreaterThan(cap); // a fourth whole fact does not fit
   memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: cap } });
   queue(empty, empty);
   const result = await consolidation();
@@ -549,9 +568,9 @@ test("20b 2026-09-08 scenario 6: Consolidation is due on rendered fact tokens, e
  * watermark over the range label, no cross-branch leakage, nothing advanced by a failed batch. */
 test("20b 2026-09-08 scenario 7: successive token-bounded batches advance exactly their selected fact ids, and a failed batch advances nothing", async () => {
   const first = fact(memories.base), second = fact(memories.observation), third = fact(memories.interpretation);
-  const lines = [first, second, third].map(id => grouped([memory.store.getFact(id)!]).join("\n"));
-  // A ceiling that holds any one of these fact lines but never two: one whole fact per batch.
-  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: Math.max(...lines.map(line => tokens(line))) } });
+  const alone = [first, second, third].map(id => withFraming([memory.store.getFact(id)!]));
+  // A ceiling that holds any one of these facts with its framing but never two: one whole fact per batch.
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: Math.max(...alone) } });
   // A failed first batch advances nothing at all.
   script.push(async () => ({ outcome: "failure", output: "provider failed", request: {} }));
   expect((await consolidation()).outcome).toBe("failure");
@@ -642,4 +661,23 @@ test("21a 2026-09-08: NEAR compares knowledge text, never the commit message", a
   if (result.outcome !== "success") throw new Error("expected success");
   expect(calls[1]!.feedback).toContain("NEAR:\n\nnone");
   expect(result.unansweredNear).toEqual([]);
+});
+
+/** Ticket 25a: the pending-fact allowance carries the batch's required framing too, so a ceiling that
+ * holds a fact line alone does not make that fact admissible. It stays pending with the capacity
+ * diagnostic — never clipped, never framed outside a budget, never marked consolidated unpresented. */
+test("25a 2026-09-09: a batch whose smallest unit and required framing exceed the pending-fact allowance stays pending with the diagnostic", async () => {
+  const one = fact(memories.base);
+  const alone = memory.store.getFact(one)!;
+  const line = tokens(grouped([alone]).join("\n")), framed = withFraming([alone]);
+  expect(framed).toBeGreaterThan(line);
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: line } });
+  await expect(consolidation()).rejects.toThrow(/Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation\.batchTokens/);
+  expect(calls).toEqual([]);
+  expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([one]); // still pending
+  // Room for the fact and the framing it must be sent with, and the same batch runs.
+  memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: framed } });
+  queue(empty, empty);
+  const result = await consolidation();
+  expect(result.outcome === "success" && result.range.facts.map(f => f.id)).toEqual([one]);
 });

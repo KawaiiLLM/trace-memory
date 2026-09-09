@@ -128,6 +128,15 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   range ends. Anything the conversation does not
   hold, a manual note or a fact dropped by a compaction budget, is fetched with
   `trace`.
+
+  A fork Noting appends control material only (25a): the range, the head turn's
+  final reply and the source-address index. It adds no knowledge block, no
+  historical-fact block, no fact index and no Raw view — the foreground it inherits
+  already carries the injected knowledge and the `<noted>` receipts of earlier runs,
+  and those receipts are the same bytes a subagent's history block would show. A
+  fork that falls back to a subagent sends the complete subagent material — history
+  within 10,000 tokens and tier-1 Raw within 10,000, independently capped — and is
+  priced on it.
 - Source identity is `(Trace Memory session, native session lineage, Pi entry id)`.
   The host reconciles completed messages from the selected persisted ancestry on
   attach and at safe subsequent boundaries. Pi runs `message_end` extension hooks

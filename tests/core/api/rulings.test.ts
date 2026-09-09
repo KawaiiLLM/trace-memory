@@ -99,7 +99,7 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   const input = calls[0]!;
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
   expect(input.text.fresh).toContain(input.material.entries[0]!.view);
-  expect(input.text.fresh.startsWith("<knowledge>")).toBe(true);
+  expect(input.text.fresh.startsWith("Recent facts (by Turn):")).toBe(true); // 25a: no leading knowledge block
   expect(input.prompt).toContain("Noting (fact extraction)");
   expect(input.text.fresh).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
@@ -136,18 +136,26 @@ test("20a 2026-09-08: the full text and the inherited increment come from one fr
 
 // Ticket 20 "Stable prefix": keep task ranges, entry ids belonging only to the new batch, timestamps,
 // run ids and omission counts out of the leading knowledge block. A byte-layout rule, not a cache claim.
-test("20a 2026-09-08: nothing task-specific enters the leading knowledge block, and all four consumers render it identically", async () => {
+// 25a supersedes this ruling's "all four consumers" for the Noter: it renders no knowledge block in
+// either mode, so the identical-block pin covers the three consumers that still carry one, and the
+// Noter is pinned to carry none.
+test("20a 2026-09-08, narrowed by 25a: nothing task-specific enters the leading knowledge block, and the three knowledge consumers render it identically", async () => {
   const { s, t } = session();
   seededKnowledge(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  const block = calls[0]!.text.fresh.split("\n\nRecent facts")[0]!;
-  expect(block).toBe(memory.inject(s.id)); // the initial injection and the Noter share one block
+  expect(calls[0]!.text.fresh).not.toContain("<knowledge>"); // the fourth consumer no longer
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+  const consolidation = calls.at(-1)! as unknown as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
+  const block = consolidation.text.fresh.split("\n\nRange: ")[0]!;
+  expect(block).toBe(memory.inject(s.id)); // the initial injection and the Consolidator share one block
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");
-  expect(block).not.toContain(calls[0]!.range.from);
+  expect(block).not.toContain(`Range: ${consolidation.range.from}..${consolidation.range.to}`);
   expect(block).not.toContain("[entry ");
   expect(block).not.toContain("omitted");
-  for (const id of calls[0]!.material.entries.map(e => e.id)) expect(block).not.toContain(`entry ${id}`);
+  for (const line of consolidation.material.rangeFacts) expect(block).not.toContain(line); // no copy of this task's own facts
   expect(block).not.toMatch(/\bR\d+\b/); // no run id
   expect(block).not.toContain(memory.store.getTurn(t.id)!.startedAt); // no timestamp of this task
 });
