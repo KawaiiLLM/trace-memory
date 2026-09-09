@@ -68,7 +68,9 @@ writes (user ruling 2026-09-07).
 parameters, and synchronous `execute(input): string`. Hosts execute calls and
 continue the provider conversation until it stops. `reportRequest(request)`
 reports each exact provider request before tool execution; the returned `request`
-is the last request sent. Final text is audit content, never parsed for facts.
+is the last request sent. A result carrying no request — `null` or absent — leaves the last reported
+request in the run record instead of erasing it; both phases finalize their run audit by one rule
+(`core/api/audit.ts`). Final text is audit content, never parsed for facts.
 `runs.response` holds final text, usage, frozen read knowledge revisions, fetched
 trace evidence, the tool-call input/result sequence, problems and committed IDs.
 
