@@ -117,8 +117,40 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     }
     return totals;
   };
+  /** 24a "Footer counts": the four progress/applicability numbers of one session's selected branch
+   * and head, answered from one path snapshot (22a) and the pending-entry identities (22b).
+   *
+   * - `entries`: imported source entries of this path that no Noting run has committed yet. The
+   *   `noted_entries` rows a run writes inside its business transaction are what removes an entry
+   *   here, so an admitted, running, failed or cancelled batch is still pending, and a provider
+   *   failure after the commit restores nothing.
+   * - `facts`: every committed fact applicable on this path, the ones already consolidated included.
+   * - `unconsolidated`: those of them Consolidation still owes work for — the same exact membership
+   *   `consolidationBatch` selects, never `facts` minus the cited ones.
+   * - `knowledge`: the applicable current knowledge, in `listCurrentKnowledge`'s own counting unit,
+   *   so two divergent tips of one identity count as the two items they are.
+   *
+   * Nothing here loads a Raw payload, tokenizes, freezes a task or reads a run's audit body; the
+   * snapshot is built for this one read and dropped with it, so another connection's commits are
+   * seen by the next call. The branch defaults like `deliver`'s, so a caller without a host path
+   * still asks about a named branch rather than about Turn-only membership. */
+  const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
+    session(sessionId);
+    const path = store.knowledgePath(sessionId, branch, headTurnId);
+    const snapshot = store.pathSnapshot(path);
+    const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
+    return {
+      // No head means no Turn on this path, so nothing of it has been imported: the enumeration's
+      // own answer, not a placeholder for one it could not compute.
+      entries: path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId, snapshot).length,
+      facts: facts.length,
+      unconsolidated: store.unconsolidated(facts, path, snapshot).length,
+      knowledge: store.listCurrentKnowledge(path, {}, snapshot).length,
+    };
+  };
   return {
     spend,
+    progress,
     trace,
     // 21b: a read organization projection over the same selected set the automatic material uses; it
     // changes no injection order, no scope and no applicability.
@@ -293,12 +325,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const commitId = store.mark(tips[0]!.id, kind, new Date().toISOString());
       return `K${id}@${commitId}: ${kind}`;
     },
-    status: (sessionId: number): string => {
+    status: (sessionId: number, branch?: string, headTurnId?: number | null): string => {
       const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);
+      const counts = progress(sessionId, branch, headTurnId);
       const branches = [...new Set(runs.map((r) => r.branch))];
       return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
+        // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
+        // history of a disabled interval is imported when the session is enabled again, so a zero
+        // here is not proof that every available native message has been processed.
+        `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note, ${counts.unconsolidated} of ${counts.facts} applicable ${counts.facts === 1 ? "fact" : "facts"} to consolidate; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
         ...(["noting", "consolidation"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),

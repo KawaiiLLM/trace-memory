@@ -90,7 +90,7 @@ test("19a 2026-09-08: a child run leaves the parent file, id and tree position b
     const parentFile = f.manager().getSessionFile()!;
     const before = readFileSync(parentFile), id = f.manager().getSessionId(), leaf = f.manager().getLeafId();
     const first = JSON.parse(run.response!).nativeLog as string;
-    expect(first).toBe(join(f.h.dir, "runs", id, `${first.split("/").at(-1)}`)); // dirname(dbPath)/runs/<parent id>/
+    expect(first).toBe(join(f.runsDir, `${first.split("/").at(-1)}`)); // 24c: a direct child of sessions/trace-memory
     expect(statSync(first).isFile()).toBe(true);
     // A second child on the same parent: still no mutation, and its own id and file.
     const second = await runNative(f.task(captured));
@@ -98,10 +98,11 @@ test("19a 2026-09-08: a child run leaves the parent file, id and tree position b
     expect(f.manager().getSessionId()).toBe(id);
     expect(f.manager().getLeafId()).toBe(leaf);
     expect(second.nativeLog).not.toBe(first);
-    const logs = readdirSync(join(f.h.dir, "runs", id));
+    const logs = readdirSync(f.runsDir);
     expect(logs).toHaveLength(2);
     expect(new Set(logs.map(name => name.split("_").at(-1)))).not.toContain(`${id}.jsonl`);
-    // The foreground session list scans Pi's sessions directory; the children are not in it.
+    // The children live beside the foreground session, not inside its own directory: the foreground
+    // session list still holds only the parent (24c: they are a sibling directory of Pi's session root).
     expect(readdirSync(f.sessionsDir)).toEqual([parentFile.split("/").at(-1)]);
     expect((await SessionManager.list(f.h.dir, f.sessionsDir)).map(s => s.id)).toEqual([id]);
   } finally { await f.dispose(); }
@@ -202,7 +203,7 @@ test("19a 2026-09-08: copied plugin custom state activates no extension and star
     // parent's definitions, not a set an extension registered inside the child.
     expect(f.h.memory.store.listRuns(1)).toHaveLength(1);
     expect(f.sent[1]!.tools.map((t: Body) => t.function.name)).toEqual(["read", "trace", "search", "note", "memory"]);
-    expect(readdirSync(join(f.h.dir, "runs", f.manager().getSessionId()))).toHaveLength(1);
+    expect(readdirSync(f.runsDir)).toHaveLength(1);
   } finally { await f.dispose(); }
 });
 
@@ -293,7 +294,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
     expect(String(JSON.stringify(child.messages[1]))).toContain("Raw:"); // the full fresh-context material
     // Its own private session in the runs directory, not a fork of the parent file.
     const log = response.nativeLog as string;
-    expect(log.startsWith(join(f.h.dir, "runs", f.manager().getSessionId()))).toBe(true);
+    expect(log.startsWith(`${f.runsDir}/`)).toBe(true);
     expect(readFileSync(log, "utf8")).not.toContain('"customType":"trace-memory"');
     expect(readFileSync(f.original.file, "utf8")).toContain('"customType":"trace-memory"');
     expect(f.manager().getSessionId()).toBe(f.original.id);
@@ -435,7 +436,7 @@ test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared run
     // its own system prompt and only the four memory tools. A hand-built request has none of this —
     // it would replay the captured parent prefix and leave no child session behind.
     const log = response.nativeLog as string;
-    expect(log.startsWith(join(f.h.dir, "runs", f.manager().getSessionId()))).toBe(true);
+    expect(log.startsWith(`${f.runsDir}/`)).toBe(true);
     expect(existsSync(log)).toBe(true);
     const worker0 = f.sent.find(body => worker(body))!;
     expect(worker0.messages[0].role).toBe("system");
@@ -516,7 +517,7 @@ test("review 2026-09-08: a fresh child runs on any API the SDK can call; only th
     let error: unknown;
     try {
       await runNative({ mode: "subagent", model: { ...f.model, api: "google-generative-ai" } as never, cwd: f.h.dir, agentDir: f.agentDir,
-        runsDir: join(f.h.dir, "runs"), systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, onRequest: () => {}, onProgress: () => {} });
+        runsDir: f.runsDir, systemPrompt: "Test", task: "Reply OK", tools, maxToolRounds: 0, onRequest: () => {}, onProgress: () => {} });
     } catch (caught) { error = caught; }
     // Whatever the unlisted adapter makes of the stubbed wire, the adapter's own fork check is not what
     // stops the child: the gate's message-shape table is consulted for forks only.

@@ -43,9 +43,9 @@ function settings(cwd: string, agentDir = agentDirectory()) {
   return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
 }
 // Host settings that are not core config sections. `runsDir` places the native worker logs
-// (default: dbPath's directory/runs). 19c deleted `nativeRunner`: the native runner is the only
-// runner, so the key no longer selects anything and 18a's unknown-key rule rejects it like any
-// other misspelling instead of silently accepting a setting that does nothing.
+// (default since 24c: `<Pi agent directory>/sessions/trace-memory`). 19c deleted `nativeRunner`:
+// the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
+// rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
 const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
@@ -107,9 +107,24 @@ export default function (pi: ExtensionAPI) {
   let { flat, core, sources, layers } = configuration(process.cwd());
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
-  // Ruling 19:5 — native worker logs live next to the database, never in Pi's own sessions
-  // directory (which /resume scans) and never in the project tree. Retention is a v1 limit.
-  const runsDirectory = (piId: string) => join(resolve(String(flat.runsDir ?? join(dirname(resolve(dbPath === ":memory:" ? join(homedir(), ".trace-memory", "trace.db") : dbPath)), "runs")).replace(/^~\//, `${homedir()}/`)), piId);
+  // 24c supersedes ruling 19:5's default destination (`<dbPath's directory>/runs/<parent id>/`).
+  // With no explicit `runsDir`, a new worker log is a DIRECT child of `<agent dir>/sessions/
+  // trace-memory` — one level under Pi's own sessions root, with no per-parent subdirectory —
+  // because the external daily-cost reader scans the sessions root plus exactly one directory
+  // level, and a second level would hide the file from it. The tradeoff, documented in docs/pi.md,
+  // is that worker sessions become visible in Pi's all-session browser under `trace-memory`.
+  // Old logs are not moved, copied or rewritten, and no historical `nativeLog` is rewritten:
+  // this changes where the NEXT log is written and nothing else. Retention is still a v1 limit.
+  const sessionsRoot = join(agentDir, "sessions");
+  // An explicit `runsDir` keeps 19a's precedence and its `<runsDir>/<parent Pi session id>/` layout.
+  // Read from `flat` on every call, as before: `restore` reloads the settings layers on each
+  // session start, so a directory decided once at construction would go stale.
+  const configuredRunsDir = () => flat.runsDir === undefined ? undefined : resolve(String(flat.runsDir).replace(/^~\//, `${homedir()}/`));
+  const runsDirectory = (piId: string) => { const configured = configuredRunsDir(); return configured === undefined ? join(sessionsRoot, "trace-memory") : join(configured, piId); };
+  // Disclosure for the read-only settings view: with the per-parent level an explicit directory
+  // puts its logs two levels down unless it IS the sessions root, so file-based daily statistics
+  // do not see them.
+  const runsOutsideScan = () => { const configured = configuredRunsDir(); return configured !== undefined && configured !== sessionsRoot; };
   let ctx: ExtensionContext;
   let closed = false;
   type Capture = { payload: Body; model: string; provider: string; branch: string };
@@ -350,26 +365,44 @@ export default function (pi: ExtensionAPI) {
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
-  // Footer status item (user ruling 2026-09-07): one indicator in Pi theme colours — dim ○ idle,
-  // accent ● noting running, success ● consolidation running, warning ● paused or committed with
-  // problems, error ● the last run failed — then today's plugin spend as ☉ $x.xx, reset daily.
   const activity = { running: new Map<"noting" | "consolidation", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
   const runningKind = (kind: "noting" | "consolidation") => (activity.running.get(kind) ?? 0) > 0;
+  /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a). One status item, one line:
+   *
+   *     🧠 ● notes: 24->102 memory: 15->54 cost: $0.12
+   *
+   * The arrows are stage inputs and existing outputs, not percentages: `notes` is the entries still
+   * to note over every applicable committed fact, `memory` the facts still to consolidate over the
+   * applicable current knowledge, `cost` this memory session's cumulative run spend (work another
+   * executor performed *for* it included, work it performed for another session excluded, because
+   * each run is charged to the session it was run for). Off is the compact `🧠 ○ off`; the stored
+   * counts stay available in Current session.
+   *
+   * Every count comes from one core progress/applicability query over the current selected branch
+   * and head (`memory.progress`), so nothing here renders Raw, tokenizes, freezes a task or loads a
+   * run's audit body, and no timer refreshes it — the existing lifecycle, commit, control and
+   * status points do. A value that cannot be read is `?`: an unknown is not a fabricated zero, and
+   * before this Pi session has allocated a memory identity there is nothing to count at all.
+   *
+   * The indicator is Pi theme roles, never a literal colour, in the ruled precedence: off, active
+   * retry, running Noting, running Consolidation, last failure, last warning, idle. Both phases
+   * running shows Noting. It describes this executor, including while it works on a borrowed
+   * target; the counts and the cost stay this session's. */
   const showSpend = (context: ExtensionContext) => {
     if (closed || !context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
-    const indicator = !enabled() ? paint("dim", "○") : activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
+    if (!enabled()) { context.ui.setStatus(tag, `🧠 ${paint("dim", "○ off")}`); return; }
+    const indicator = activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
-    // Fixed reading (user ruling 2026-09-07): applicable current knowledge / facts on this branch;
-    // $ = this session's cumulative spend.
-    let facts = 0, knowledge = 0, cost = 0;
+    let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined;
     if (state?.sessionId) {
-      facts = memory.store.listBranchFacts(state.sessionId, state.branch, state.head).length;
-      knowledge = memory.store.listCurrentKnowledge({ sessionId: state.sessionId, headTurnId: state.head ?? null }).length;
-      cost = memory.spend(state.sessionId).cost;
+      try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
+      try { cost = memory.spend(state.sessionId).cost; } catch { /* the same rule for the amount */ }
     }
-    context.ui.setStatus("trace-memory", `🧠 ${indicator} trace-memory${enabled() ? "" : " Disabled"} ${knowledge}/${facts} $${cost.toFixed(2)}`);
+    const value = (count?: number) => count === undefined ? "?" : String(count);
+    context.ui.setStatus(tag, `🧠 ${indicator} notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
+      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.knowledge)} cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
@@ -644,16 +677,21 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
-  pi.on("tool_result", (_event, context) => { ensure(context); persistState(); });
-  pi.on("agent_end", (_event, context) => { ensure(context); persistState(); });
+  // 24a: a tool result, the end of an agent run and the settle are the existing boundaries at which
+  // this turn's evidence became importable, so they are where the footer's counts are re-read. A
+  // streaming update is not one of them: `message_update` fires per delta and refreshes nothing.
+  pi.on("tool_result", (_event, context) => { ensure(context); persistState(); showSpend(context); });
+  pi.on("agent_end", (_event, context) => { ensure(context); persistState(); showSpend(context); });
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
-    if (!enabled()) { unconfirmed.deliveries = []; unconfirmed.injected = false; showSpend(context); return; }
-    // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
-    if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
-    if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
-    if (!state.sessionId || !state.head) return;
-    if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
+    try {
+      if (!enabled()) { unconfirmed.deliveries = []; unconfirmed.injected = false; return; }
+      // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
+      if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
+      if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
+      if (!state.sessionId || !state.head) return;
+      if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
+    } finally { showSpend(context); } // one refresh at the settle, whichever path this turn took
   });
   // The reason a due fork-mode task must wait for a later boundary, or undefined when it may launch
   // now. Only the inherited-context path has a checkpoint to be ready: a fresh-context run and a
@@ -880,7 +918,11 @@ export default function (pi: ExtensionAPI) {
   for (const definition of definitions) pi.registerTool(definition);
   const status = () => {
     const e = enrollment();
-    const base = state.sessionId ? memory.status(state.sessionId) : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no session id.`;
+    // 24a: with an identity, the counts are the footer's own, for this selected branch and head.
+    // Without one there is nothing to count — that is stated, not shown as a row of zeros, and it is
+    // a different condition from an allocated session whose imported history happens to be empty.
+    const base = state.sessionId ? memory.status(state.sessionId, state.branch, state.head ?? null)
+      : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no memory identity allocated, so no session id and no counts (this is not a claim that no native history exists).`;
     // 19c: the automatic downgrade is session state a user can act on, so status shows it and names
     // its one reset. The run that detected it keeps its own fork mode in the run record.
     const downgrade = suppressed();
@@ -930,11 +972,14 @@ export default function (pi: ExtensionAPI) {
       stopCatchup();
     } else if (selected === "Settings (Global, read-only)") {
       const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
-        runsDir: "<dbPath directory>/runs",
+        runsDir: "<Pi agent directory>/sessions/trace-memory",
         ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
       ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
         const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);
-        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}`;
+        // 24c: an explicit runsDir keeps its own layout, and is disclosed when that layout puts the
+        // logs outside the sessions tree file-based daily statistics scan.
+        const note = key === "runsDir" && runsOutsideScan() ? `; worker logs go to <runsDir>/<parent Pi session id>/, outside Pi's scanned sessions tree` : "";
+        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${note}`;
       }).join("\n"), "info");
     } else if (selected === "Runs") {
       const count = await ctx.ui.input("Runs: number to show", "10");

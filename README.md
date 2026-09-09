@@ -42,6 +42,7 @@ Enabled sessions make background model requests using your Pi credentials and ma
 - **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Disable:** `/trace disable` pauses processing and future injection without deleting memory.
+- **Watch:** the footer says what each stage still owes and what it has produced — `🧠 ● notes: 24->102 memory: 15->54 cost: $0.12` is 24 entries left to note over 102 facts on this branch, 15 facts left to consolidate over 54 current knowledge items, and this session's cumulative memory spend. A disabled session shows `🧠 ○ off`.
 - **Share a project:** after the first assistant reply, use `/trace project <name>`. The same name in the same database shares a project across sessions. Without a declaration, each session has its own project. Files, working directories and Git remotes do not declare project membership.
 
 The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit reads can search across the local database; automatic knowledge selection and write evidence follow scope and conversation ancestry. Topics organize knowledge without changing those permissions.

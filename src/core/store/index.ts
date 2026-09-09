@@ -1057,17 +1057,20 @@ export class Store {
 
   /** All citations from the reader's own session constrain applicability; since 21a that is one
    * `supports` list per commit, archives included. */
-  private currentSet(path: KnowledgePath | null, projectId?: number): KnowledgeWithRevision[] {
-    return this.commitGraph(path, projectId).current.map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+  private currentSet(path: KnowledgePath | null, projectId?: number, snapshot?: PathSnapshot): KnowledgeWithRevision[] {
+    return this.commitGraph(path, projectId, snapshot).current.map(revision => ({ knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
   }
 
   /** One resolution of the commit DAG (22c): every revision, which of them apply to `path` (and to
    * `projectId`, where a scope filter is asked for), which of those are current, and the descendants
    * of any commit. A read resolves this once and answers every hit from it instead of rebuilding the
    * graph per hit. Like the path snapshot it is a value that never outlives its read, so the next
-   * read sees another executor's commits; a page asked for later still reports its own query's. */
-  commitGraph(path: KnowledgePath | null, projectId?: number): CommitGraph {
-    const snapshot = path ? this.pathSnapshot(path) : null;
+   * read sees another executor's commits; a page asked for later still reports its own query's.
+   *
+   * An operation that has already built the path snapshot (22a) passes it: the footer's four counts
+   * (24a) are one operation and share one membership, exactly as `consolidationBatch` does. */
+  commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot): CommitGraph {
+    const snapshot = path ? prepared ?? this.pathSnapshot(path) : null;
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
@@ -1181,8 +1184,8 @@ export class Store {
     return this.currentSet(path).filter(k => k.knowledge.id === knowledgeId).map(k => k.revision);
   }
 
-  listCurrentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}): KnowledgeWithRevision[] {
-    return this.currentSet(path, filter.projectId).filter(({ revision: r }) => r.op !== "archive" &&
+  listCurrentKnowledge(path: KnowledgePath | null = null, filter: KnowledgeFilter = {}, snapshot?: PathSnapshot): KnowledgeWithRevision[] {
+    return this.currentSet(path, filter.projectId, snapshot).filter(({ revision: r }) => r.op !== "archive" &&
       (!filter.scope || r.scope === filter.scope));
   }
 
@@ -1469,13 +1472,20 @@ export class Store {
     return candidates.filter(fact => this.factOnPath(fact, path, view)); // every source on the path, not only the first
   }
 
+  /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
+   * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
+   * The one definition both the batch and the footer's second count are built from. */
+  unconsolidated(facts: Fact[], path: KnowledgePath, snapshot = this.pathSnapshot(path)): Fact[] {
+    return facts.filter(f => !this.consolidatedOnPath(f.id, path, snapshot));
+  }
+
   /** Committed facts are immediately eligible; progress is path-aware exact membership. */
   consolidationBatch(sessionId: number, branch: string, headTurnId?: number): Fact[] {
     const path = this.knowledgePath(sessionId, branch, headTurnId);
     // A head that names no Turn of this session has no facts, the answer the lineage query below gives.
     if (this.getTurn(path.headTurnId ?? 0)?.sessionId !== sessionId) return [];
     const snapshot = this.pathSnapshot(path);
-    return this.listBranchFacts(sessionId, branch, path.headTurnId, snapshot).filter(f => !this.consolidatedOnPath(f.id, path, snapshot));
+    return this.unconsolidated(this.listBranchFacts(sessionId, branch, path.headTurnId, snapshot), path, snapshot);
   }
 
   markConsolidated(factId: number, runId: number, projectId: number): void {
@@ -1570,8 +1580,8 @@ export class Store {
   /** The selected path's entry ids, in the branch's own order, decided by `turn_id` alone: no Raw
    * payload is loaded to answer membership (22b). `json_each`'s key is the position in the stored
    * array, so the branch order survives the join. */
-  private pathEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
-    const turns = this.pathTurns({ sessionId, headTurnId });
+  private pathEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
+    const turns = prepared?.turns ?? this.pathTurns({ sessionId, headTurnId });
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
     const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
       : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)) as { id: number; turn_id: number }[];
@@ -1585,8 +1595,8 @@ export class Store {
   }
   /** 22b: `noted_entries` decides which of the path's ids are still pending before any content is
    * loaded, so a caller that needs only the first views does not pay for the whole path. */
-  pendingEntryIds(sessionId: number, branch: string, headTurnId: number): number[] {
-    const ids = this.pathEntryIds(sessionId, branch, headTurnId);
+  pendingEntryIds(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number[] {
+    const ids = this.pathEntryIds(sessionId, branch, headTurnId, prepared);
     const noted = new Set((this.db.prepare("SELECT entry_id FROM noted_entries WHERE entry_id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(ids)) as { entry_id: number }[]).map(r => r.entry_id));
     return ids.filter(id => !noted.has(id));
