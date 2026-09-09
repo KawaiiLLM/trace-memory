@@ -235,7 +235,7 @@ export interface NativeEntry { id: string; parentId: string | null; timestamp: s
  * same seeded word pools, the same tool-heavy Turn of 40 calls, the same non-text user boundaries, the
  * same repeated prompts and the same second native occurrence of one tool call — so an import of this
  * ancestry produces a database of the same shape as the store-level fixture. Nothing is persisted: the
- * caller pushes these entries into the fake host's branch and lets `/trace enable` import them. */
+ * caller pushes these entries into the fake host's branch and lets `/trace on` import them. */
 export function nativeAncestry(options: FixtureOptions = {}): NativeEntry[] {
   const targetEntries = options.entries ?? 2_000;
   const resultChars = options.resultChars ?? 20_000;

@@ -32,16 +32,17 @@ Install the Beta from npm instead:
 pi install npm:trace-memory@0.1.0-beta.2
 ```
 
-Start a new Pi process, run `/trace status`, and use `/trace enable` if the session is disabled. Sessions created before the plugin's initialization baseline default to disabled; explicit choices persist.
+Start a new Pi process, run `/trace` (the menu, or status when headless), and use `/trace on` if the session is disabled. Sessions created before the plugin's initialization baseline default to disabled; explicit choices persist.
 
 ## Use
 
 Enabled sessions make background model requests using your Pi credentials and may incur charges. By default, Noter requests fork execution and Consolidator uses a fresh subagent; both follow the foreground model unless configured otherwise.
 
-- **Inspect:** `/trace` opens the menu; `/trace runs 10` lists recent memory runs.
+- **Inspect:** `/trace` opens the menu — Current session (status, On/Off, runs, project, marks), Catch up, Stop and Settings.
 - **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
-- **Disable:** `/trace disable` pauses processing and future injection without deleting memory.
+- **Turn off:** `/trace off` pauses this session's processing and future injection without deleting memory; `/trace on` resumes it. There is no global switch.
+- **Settings:** the menu's Settings entry saves four global defaults — Noter and Consolidator mode (fork or subagent) and model (follow the foreground model, or an available `provider/model-id`). They apply to work admitted afterwards; running tasks keep what they started with.
 - **Watch:** the footer says what each stage still owes and what it has produced — `🧠 ● notes: 24->102 memory: 15->54 cost: $0.12` is 24 entries left to note over 102 facts on this branch, 15 facts left to consolidate over 54 current knowledge items, and this session's cumulative memory spend. A disabled session shows `🧠 ○ off`.
 - **Share a project:** after the first assistant reply, use `/trace project <name>`. The same name in the same database shares a project across sessions. Without a declaration, each session has its own project. Files, working directories and Git remotes do not declare project membership.
 

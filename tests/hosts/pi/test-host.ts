@@ -107,7 +107,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // Models the native child resolves through Pi's own ModelRuntime; the stubbed fetch answers them.
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: Object.fromEntries((["openai-completions", "anthropic-messages"] as const).map((api, i) => [
     i === 0 ? "fake" : "fakeanthropic", { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key", api,
-      models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] }])) }));
+      models: ["test", "test-mini"].map(id => ({ id, name: `Test ${id}`, reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) }])) }));
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const native = () => options.native?.();
   const dbPath = String(config.dbPath ?? join(dir, "trace.db"));
@@ -136,6 +136,10 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id } : undefined,
+      // 24b: the models a settings edit may choose from. Pi's registry answers `getAvailable` with
+      // the auth-resolved snapshot; the fake answers the two its models.json defines.
+      getAvailable: () => ["test", "test-mini"].map(id => ({ ...model, id })),
+      getAll: () => ["test", "test-mini"].map(id => ({ ...model, id })),
       complete: async () => { throw new Error("19c: the host has no request-copy runner; scripted replies arrive at the wire"); } },
   } as unknown as ExtensionContext;
   // The wire. A test that brings its own parent AgentSession (native-fixture.ts) stubs `fetch` itself.

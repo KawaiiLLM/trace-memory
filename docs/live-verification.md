@@ -13,6 +13,14 @@ chain in step 4 walks the child's own bodies (its tail is the inherited head rep
 task message, and both sides are compared with `cache_control` stripped), and each run record
 carries `nativeLog`, the child's own JSONL under `runsDir`.
 
+**24b note.** The command surface the records below used (`/trace status`, `/trace enable`,
+`/trace disable`, `/trace runs`) was retired in 24b. In an rpc or `-p` session, which has no menu,
+the forms are now `/trace` (prints status and the supported forms), `/trace on`, `/trace off`,
+`/trace catchup`, `/trace stop`, `/trace project <name>` and
+`/trace mark K<n>[@<commit>] verified|flagged|clear`; run history and the four global mode/model
+preferences are reachable only from the TUI menu (Current session > Runs, and Settings). Read the
+old records with that substitution; a retired spelling now prints the usage and changes nothing.
+
 # Live verification record (2026-09-08, ticket 20c compaction, after fb83b41)
 
 Environment as in the record below (Pi 0.85.1, `openai-codex/gpt-5.6-sol`, `pi --mode rpc`,
@@ -131,8 +139,9 @@ Set `noting.forkModeDefault: true`, `noting.triggerTokens: 100`,
    call IDs/results, the single review user message, and the final stored request.
 5. Exercise a manual `note` and `memory` call; check immediate kind `manual`
    receipts and one raw `tool_result` row per call. Exercise `/trace project <name>`
-   and `/trace mark K<n> verified|flagged|clear`; verify `/trace` alone changes
-   neither stored runs nor watermarks.
+   and `/trace mark K<n>[@<commit>] verified|flagged|clear`; verify `/trace` alone
+   (which prints status in rpc mode) changes neither stored runs nor watermarks, and
+   that `/trace off` then `/trace on` pause and resume this session alone.
 
 Record Pi/pi-ai versions, model/provider, config, capture and database paths,
 Noting/Consolidation run IDs, tool sequences, all verification hashes and outcomes.

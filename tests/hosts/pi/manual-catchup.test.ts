@@ -74,7 +74,7 @@ test("18b 2026-09-08: manual catchup drains bounded Noting batches then integrat
     expect(h.requests.length).toBe(requestsBefore); // nothing auto-triggered (both are far below threshold)
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted, ${allFacts.length} facts integrated)`);
   } finally { await h.dispose(); }
 }, 30000);
@@ -84,9 +84,9 @@ test("18b 2026-09-08: an empty target completes without a model call; a disabled
   try {
     h.setHeaderTimestamp("2000-01-01T00:00:00Z"); // pre-baseline: defaults disabled
     await h.emit("session_start");
-    await expect(command(h, "catchup")).rejects.toThrow("/trace enable");
+    await expect(command(h, "catchup")).rejects.toThrow("/trace on");
     expect(h.memory.store.getSession(1)).toBeNull(); // rejection never silently enrolls the session
-    await command(h, "enable");
+    await command(h, "on");
     await command(h, "catchup"); // no assistant reply yet: nothing could be pending
     expect(h.notices.at(-1)).toContain("no assistant reply");
     expect(h.memory.store.getSession(1)).toBeNull();
@@ -125,7 +125,7 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     await settle(h);
     expect(h.requests.length).toBeGreaterThan(1); // the released slot let the waiting catchup continue
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 });
@@ -154,7 +154,7 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
     await h.turn(); // the next ordinary opportunity retries the waiting catchup
     await settle(h);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 });
@@ -173,7 +173,7 @@ test("18b 2026-09-08: stop during a Noting batch cancels it, leaves it pending, 
     await settle(h);
     expect(h.requests).toHaveLength(1); // no further batch was ever scheduled
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0); // the cancelled batch stays pending
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
     await command(h, "stop"); // repeating stop is a harmless no-op
     expect(h.notices.at(-1)).toContain("nothing to stop");
@@ -186,7 +186,7 @@ test("18b 2026-09-08: stop during a Noting batch cancels it, leaves it pending, 
     await command(h, "catchup"); // an explicit new catchup creates a fresh snapshot over any remaining backlog
     await settle(h);
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 }, 30000);
@@ -205,7 +205,7 @@ test("18b 2026-09-08: stop while waiting for an occupied slot prevents the froze
     release[0]!(reply("No durable material."));
     await settle(h);
     expect(h.requests).toHaveLength(1); // stop cancelled the wait; the frozen batch never started
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
   } finally { await h.dispose(); }
 });
@@ -226,7 +226,7 @@ test("18b 2026-09-08: stop during Consolidation cancels it and preserves an alre
     await settle(h);
     expect(h.memory.store.getRun(notingRun.id)!.outcome).toBe("success"); // the prior commit remains successful
     expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual(h.memory.store.listSessionFacts(1).map(f => f.id)); // Consolidation never committed
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
   } finally { await h.dispose(); }
 });
@@ -241,13 +241,13 @@ test("18b 2026-09-08: disable cancels an in-flight catchup batch; re-enable does
     await command(h, "catchup");
     await h.drain();
     expect(h.requests).toHaveLength(1);
-    await command(h, "disable");
+    await command(h, "off");
     await settle(h);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0); // the cancelled batch committed nothing
-    await command(h, "enable");
+    await command(h, "on");
     await h.drain();
     expect(h.requests).toHaveLength(1); // re-enable imports/resumes ordinary processing only, not the old drain
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).not.toContain("Catchup: running");
     expect(h.notices.at(-1)).not.toContain("Catchup: waiting");
   } finally { await h.dispose(); }
@@ -276,7 +276,7 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
     await h.emit("session_tree"); // reopening the original path does not resume the old drain
     await h.drain();
     expect(h.requests).toHaveLength(1);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).not.toContain("Catchup: running");
     expect(h.notices.at(-1)).not.toContain("Catchup: waiting");
   } finally { await h.dispose(); }
@@ -300,7 +300,7 @@ test("18b 2026-09-08: a failure after one successful Noting batch preserves it a
     expect(notingRuns[0]!.outcome).toBe("success");
     expect(notingRuns.some(r => r.outcome === "failure")).toBe(true);
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0); // the rest stays pending
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: failed");
     expect(h.notices.at(-1)).toContain("boom");
   } finally { await h.dispose(); }
@@ -350,7 +350,7 @@ test("18b 2026-09-08: stop prevents the next batch from being scheduled even whe
     expect(stoppedOnce).toBe(true);
     expect(h.requests).toHaveLength(1); // the committed batch must not chain into a second one after stop
     expect(h.memory.pendingEntries(1, "main", head).length).toBeGreaterThan(0);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
   } finally { await h.dispose(); }
 }, 30000);
@@ -447,13 +447,13 @@ test("20c 2026-09-08 scenario 16: stop between Consolidation batches discards th
     const remaining = h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id);
     expect(remaining.length).toBeGreaterThan(0);
     expect(remaining.every(id => frozen.includes(id) || !frozen.includes(id))).toBe(true);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
     // A new catchup freezes a fresh target over what is left and drains it.
     await command(h, "catchup");
     await settle(h);
     expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 }, 60000);
@@ -473,7 +473,7 @@ test("review 2026-09-08: an unavailable Consolidator model fails the catchup onc
     expect(lookups).toBe(1); // one admission, one lookup: a configuration error is not a wait to retry
     expect(h.notices.filter(n => n.includes("Consolidation capacity: unavailable model"))).toHaveLength(1);
     expect(h.requests).toEqual([]);
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: failed");
     expect(h.notices.at(-1)).toContain("unavailable model");
   } finally { await h.dispose(); }

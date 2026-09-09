@@ -84,8 +84,8 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   worker resource/extension discovery stays disabled and nothing imports a directory.
 - An explicit `runsDir` keeps 19a's precedence and 19a's layout,
   `<runsDir>/<parent Pi session id>/<timestamp>_<child id>.jsonl`. Unless it *is* Pi's sessions
-  root, that layout puts the logs outside the tree those readers scan, and the read-only settings
-  view says so next to the value. Each run record still stores the absolute path as `nativeLog`
+  root, that layout puts the logs outside the tree those readers scan, and the menu's Settings entry
+  says so under its `Worker logs:` line (24b moved that disclosure when it replaced the read-only view). Each run record still stores the absolute path as `nativeLog`
   inside its response JSON; a directory or persistence failure fails the run rather than recording a
   success naming a file that does not exist.
 - Changing the default moved nothing. Logs written under an earlier default stay where they are —
@@ -172,7 +172,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - `consolidation.triggerUnconsolidatedFacts` is **removed** (ticket 20). Any layer that still supplies
   it fails the load with `Removed setting consolidation.triggerUnconsolidatedFacts: use
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
-  token budget, and the key appears nowhere in the read-only settings display.
+  token budget. The menu never offers it: since 24b the menu edits four preferences and nothing else,
+  and the advanced keys live in the settings files.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
@@ -209,11 +210,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `topics` label set, whose schema core owns. Main-agent executions call `tools(context)` with kind `manual` and
   the current session, branch and turn. Writes commit immediately; `tool_result`
   records each raw call once. No prompt asks the main agent to maintain memory.
-- `/trace` opens the native menu described below; `/trace status` reads status. `/trace project <name>`
-  declares the project, saves host state and displays refreshed injection.
-  `/trace mark K<n> verified|flagged|clear` marks a knowledge revision. These are
-  user commands; the former model-facing `mark` tool is removed. `/trace catchup`
-  and `/trace stop` (18b) start and cancel the manual finite drain described below.
+- `/trace` opens the native menu described below, or prints status and the command
+  forms when there is no dialog-capable UI. `/trace on` and `/trace off` change this
+  memory session's participation. `/trace project <name>` declares the project, saves
+  host state and displays refreshed injection. `/trace mark K<n>[@<commit>]
+  verified|flagged|clear` marks a knowledge revision. These are user commands; the
+  former model-facing `mark` tool is removed. `/trace catchup` and `/trace stop` (18b)
+  start and cancel the manual finite drain described below.
 
 ## Executor slots, claims and shutdown
 
@@ -286,7 +289,10 @@ when the package was installed before its first run. A native session created
 before that first run therefore defaults Disabled. No migration exists in v1;
 database presence is never explicit enrollment.
 
-Use `/trace enable` to opt in or `/trace disable` to pause. Explicit choices survive
+Use `/trace on` to opt in or `/trace off` to pause; both act on this memory session
+alone, immediately and without a reload (24b supersedes the `enable`/`disable`
+spellings, which are retired without aliases). There is no global participation
+switch. Explicit choices survive
 reopen, configuration reload and tree navigation. Before a memory identity exists,
 the host persists provisional intent in a native custom entry and transfers it at
 allocation after the first assistant reply. Pi defers writing a new native file until
@@ -303,7 +309,7 @@ call and does not synthesize a completion. The next eligible completion checks
 normal queue thresholds. Repeating enable does not duplicate imported sources.
 
 Disabled sessions ingest nothing, inject nothing and start neither worker. Manual
-`note` and `memory` reject with `/trace enable`; `trace`, `search` and status remain
+`note` and `memory` reject with `/trace on`; `trace`, `search` and status remain
 available even before allocation. Compaction and tree hooks return no plugin
 override so Pi proceeds with native context handling. Stored Raw, facts, knowledge,
 runs and knowledge scope stay intact; other sessions still see shared knowledge.
@@ -313,25 +319,92 @@ pending; a batch committed before disable remains successful. Disabling this
 executor invalidates its tokens and cancels active model calls and retry waits.
 Another executor still rechecks the disabled target inside its commit transaction.
 
-Bare `/trace` opens native dialogs:
+### Commands, menu and global settings (24b)
 
-- **Current session:** Enabled/Disabled, default or explicit origin, enable/disable
-  with confirmation and shared fork/clone scope.
+The direct command forms are exactly these, and nothing else acts:
+
+| Form | Behaviour |
+|---|---|
+| `/trace` | Opens the menu; without dialog-capable UI (`-p`, rpc) prints status and this table's forms |
+| `/trace on` / `/trace off` | Enables or disables **this** memory-session identity, at once, without a reload |
+| `/trace catchup` / `/trace stop` | Start and cancel the manual finite drain described below |
+| `/trace project <name>` | Declares the project after the first assistant reply |
+| `/trace mark K<n>[@<commit>] verified\|flagged\|clear` | Marks a knowledge revision |
+
+`enable`, `disable`, `status` and `runs` are **retired without aliases**: status and
+runs live in the menu's Current session, and a headless bare `/trace` prints status.
+A retired spelling, an unknown word or a malformed argument prints the usage above,
+names where the retired function went, and changes nothing — no enrollment change, no
+project declaration, no mark, no worker. The four retained forms exist because `-p`
+and rpc sessions have no menu (parent 24, amendment 1); they are documented forms of
+the same operations the menu performs, not hidden aliases of a menu entry.
+
+Bare `/trace` opens four native dialogs:
+
+- **Current session:** the status text (enrollment, 24a's pending counts, deliveries,
+  runs, spend, catchup state, fork suppression) as the dialog's own title, then
+  `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
+  `Project` with a name input, `Mark` with an address input and a kind selection, and
+  `Retry fork` only while this session is automatically downgraded.
 - **Catch up:** starts (or reports) the manual finite drain described below.
 - **Stop:** cancels this executor's background work, including a running or
-  waiting catchup.
-- **Settings (Global, read-only):** every effective value, its Default/Global/Project/
-  Environment source, and masked file values. Edit files by hand; there is no editor.
-- **Runs:** the existing run view, with an optional count input.
-- **Status:** enrollment, counts, pending deliveries, last runs, spend and any
-  catchup state.
+  waiting catchup. It never changes participation.
+- **Settings:** the four global preferences below.
 
-Cancel leaves enrollment unchanged. Headless bare `/trace` prints status and the
-available commands. `/trace enable`, `/trace disable`, `/trace catchup`, `/trace
-stop`, `/trace status`, `/trace runs [n]`, `/trace project <name>` and `/trace
-mark K<n>@<commit> verified|flagged|clear` remain available; menu and command
-actions share the same operations. The catchup handler starts the cancellable
-drain and returns immediately, so stop can be invoked while it runs.
+Cancelling any dialog or input changes nothing and makes no model request. Menu and
+command paths call the same functions, so validation, confirmations and core's own
+rejections (an ambiguous mark address, a project without an assistant reply) are
+identical from either. The catchup handler starts the cancellable drain and returns
+immediately, so stop can be invoked while it runs.
+
+#### The four global preferences
+
+**Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
+effective key with its source; it edits exactly four preferences, mapped onto the
+canonical keys that already existed:
+
+| Preference | Choices | Key | Default |
+|---|---|---|---|
+| Noter mode | fork / subagent | `noting.forkModeDefault` | fork |
+| Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
+| Consolidator mode | fork / subagent | `consolidation.subagentModeDefault` | subagent |
+| Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
+
+Each line shows the effective value, its `Default`/`Global`/`Project`/`Environment`
+source and every masked layer, exactly as the old read-only view did for these keys;
+the dialog's header names the settings file a save writes to and where new worker logs
+go. Removing the display of the advanced keys did **not** remove them: every file and
+environment value is still loaded, still validated by name, and still documented above.
+
+Models come from Pi's own registry (`getAvailable`, the auth-resolved snapshot, plus
+the foreground model). Nothing asks for a credential and nothing calls a model to
+validate a selection; a chosen identity is checked with `find(provider, id)`. In fork
+mode the model line discloses that the child inherits the foreground model, and the
+selection dialog says the choice applies to subagent runs — a saved subagent model is
+preserved across mode switches, and selecting a model never switches the mode.
+
+A save re-reads the resolved global settings file, merges the one canonical key into
+its `trace-memory` section, validates the merged layer through the load path, and
+replaces the file atomically. Everything else in the file — Trace Memory's advanced
+values and every other extension's settings — survives. A malformed file, a
+`trace-memory` section that is not an object, a value the next load would reject, or a
+failed write reports the failure and changes nothing; no edit ever reports a success it
+did not achieve. If the same preference is present under its legacy spelling
+(`noting.branchModeDefault`), the write replaces it with the canonical key and says so,
+so the next load has no alias conflict.
+
+Precedence is unchanged (defaults, global, project, environment). A higher-priority
+override is displayed as the effective source and is **never** erased to make a global
+edit look effective; the notice names the layer that keeps winning.
+
+A saved preference applies to memory tasks admitted afterwards **in this instance**,
+without a reload: the settings layers are re-read exactly as a session start reads
+them, the host's model selection follows them, and core's two mode booleans are
+replaced through the façade's `configure` (parent 24, amendment 2 — the only runtime
+configuration surface; every other key is refused there). A task already running keeps
+the mode, model, evidence and budgets frozen with it. Another Pi process sees the new
+global default through its own settings load; there is no cross-process watcher.
+Editing a setting starts no worker and does not touch the cache-miss latch.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
@@ -371,7 +444,8 @@ adapter declines the custom replacement and Pi's own compaction runs, succeeds, 
 is cancelled under its own outcome handling. The adapter manufactures no summary, appends
 no oversized block to Pi's result and starts no extraction flush; an unused custom summary
 prepared before the fallback confirms no delivery and no initial injection. The tier used
-and its reason go to a `ui.notify` info line and to a `Compaction:` line in `/trace status`.
+and its reason go to a `ui.notify` info line and to a `Compaction:` line in the status text
+(the menu's Current session, or headless bare `/trace`).
 
 **Post-compaction worker mode.** A compaction entry that Pi persisted on the target's
 selected ancestry — whatever produced its summary — is the boundary. A request to compact,
@@ -438,8 +512,8 @@ Disable, executor shutdown/session replacement, and switching away from the
 catchup's frozen session or branch all end an active catchup and request the
 same cancellation — never retargeting its frozen task to a newly selected
 branch, and never resuming the drain automatically on reopen or re-enable. None
-of these events launch a flush. `/trace status`, the menu's Current-session
-entry and the footer's underlying status text report the drain honestly:
+of these events launch a flush. The menu's Current-session entry, headless bare
+`/trace` and the footer's underlying status text report the drain honestly:
 running (with phase and bounded progress), waiting (with the occupied phase),
 completed, stopped (with how much of the frozen target was processed) or
 failed (with the diagnostic).
@@ -505,12 +579,12 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
   --extension /absolute/path/to/trace-memory/src/hosts/pi/index.ts
 ```
 
-1. Run `/trace status` before speaking. Expect no Trace Memory session id. Use `/trace enable` if this session predates the first initialization baseline.
+1. Run `/trace` before speaking (headless it prints status; in the TUI open Current session). Expect no Trace Memory session id. Use `/trace on` if this session predates the first initialization baseline.
 2. Send these six prompts separately, waiting for each assistant reply:
    “For this project use pnpm.”; “Do not use npm.”; “Keep code and comments in
    English.”; “Preserve the language of quoted conversation.”; “Please repeat
    those constraints.”; “What constraints are we following?”
-3. Run `/trace status` after the replies. Short exchanges below 10,000 compressed-view
+3. Read the status again after the replies. Short exchanges below 10,000 compressed-view
    tokens produce no Noting. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
    entry audit and exact progress. Deliveries are confirmed only after a prompt
@@ -811,7 +885,7 @@ On the second consecutive eligible miss:
   unchanged; branches and copied hosts sharing the memory session share the latch, and it
   survives reopen because it lives in the database.
 
-`/trace status` adds one line while the latch is set:
+The status text adds one line while the latch is set:
 
 ```
 Fork: suppressed since <ISO timestamp> (cache miss on R<n>); Retry fork in the /trace menu
@@ -856,7 +930,7 @@ This is a human-run check, not an automated claim of live cache hits.
    No payload rewriter should follow Trace Memory.
 
 3. Send a substantial prompt with several explicit project constraints. Wait for
-   the assistant and the noting to finish before another prompt; `/trace status` is
+   the assistant and the noting to finish before another prompt; reading the status is
    read-only. From a second terminal, in the repository root, run:
 
    ```sh
@@ -979,7 +1053,8 @@ exact last provider request, the final output, summed usage, the tool-call
 sequence, fetches and problems. `trace R<n>` renders a run as a summary (kind,
 outcome, range, model, mode, what it created, usage, cost, tool counts,
 problems); `full` adds each tool round and cut previews of the raw request and
-response. `/trace runs [n]` lists the session's last n runs.
+response. The menu's Current session > Runs lists the session's last n runs, with a
+count input (the `/trace runs [n]` subcommand was retired in 24b).
 
 ## Footer status item
 

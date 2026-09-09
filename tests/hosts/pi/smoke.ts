@@ -32,7 +32,21 @@ try {
   assert.equal(facts.length, 1);
   assert.equal(facts[0]!.text, "用 pnpm，不要 npm");
   assert.ok(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryNoted(e.id)));
-  console.log(`Pi smoke passed on Node ${process.versions.node}: one native noting run and one fact committed.`);
+  // 24b: the shipped command surface, through the same entry (the package smoke runs the installed one).
+  const trace = (args: string) => h.commands.get("trace").handler(args, h.ctx);
+  await trace("off");
+  assert.ok(h.memory.status(1).includes("Disabled (explicit choice)"), "/trace off disables this session at once");
+  assert.equal(h.statuses.get("trace-memory"), "🧠 <dim>○ off</dim>", "the off footer is the compact line (the fake host's theme marks the role)");
+  await trace("on");
+  assert.ok(h.memory.status(1).includes("Enabled (explicit choice)"), "/trace on re-enables it without a reload");
+  await trace("stop");                       // one retained form, headless
+  assert.ok(h.notices.at(-1)!.startsWith("Trace Memory:"), "/trace stop is answered");
+  await trace("project smoke-project");      // and a second one, with its argument
+  assert.ok(h.notices.at(-1)!.includes("project: smoke-project (mark)"), "/trace project declares the project");
+  await trace("enable");                     // retired: the usage, and no change
+  assert.ok(h.notices.at(-1)!.includes("is not a command form") && h.notices.at(-1)!.includes("/trace on"), "a retired subcommand prints the usage");
+  assert.ok(h.memory.status(1).includes("Enabled (explicit choice)"), "and changes nothing");
+  console.log(`Pi smoke passed on Node ${process.versions.node}: one native noting run, one fact committed, /trace on|off and the retained forms.`);
 } finally {
   await h.dispose();
 }
@@ -54,7 +68,7 @@ const importOf = async (turns: number) => {
     long.persist({ role: "toolResult", toolCallId: "shared-call", toolName: "bash", content: [{ type: "text", text: `result ${t} ${payload}` }], isError: false, timestamp: t });
   }
   const started = performance.now();
-  await long.commands.get("trace").handler("enable", long.ctx);
+  await long.commands.get("trace").handler("on", long.ctx);
   return { long, turns, ms: performance.now() - started };
 };
 const small = await importOf(200), large = await importOf(500);

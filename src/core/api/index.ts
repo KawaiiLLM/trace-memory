@@ -247,6 +247,14 @@ export interface TraceMemory {
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
   forceTasks(): void;
   readonly config: TraceMemoryConfig;
+  /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
+   * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
+   * this frozen configuration — so exactly the two mode booleans may be replaced here
+   * (`noting.forkModeDefault`, `consolidation.subagentModeDefault`), validated like the load path
+   * (aliases mapped, removed keys refused, booleans required). Any other section or key is refused:
+   * this is not a second configuration source and it reloads nothing. A task already admitted keeps
+   * the mode frozen with it, because admission captured that value before this call. */
+  configure(modes: ConfigOverride): void;
   close(): void;
   appendEntry(input: SourceInput): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
@@ -494,6 +502,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     store, executorId, resultText, cancelTasks, taskEligibility,
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
+    configure: (modes) => {
+      // The load path's own rules first: legacy spellings map onto canonical ones, a removed key and
+      // an alias conflict fail by name (canonicalConfig), and only then the two reconfigurable keys.
+      const requested = canonicalConfig(modes ?? {});
+      if (!requested || typeof requested !== "object" || Array.isArray(requested)) throw new Error("Invalid configuration: expected an object");
+      const reconfigurable: Record<string, string> = { noting: "forkModeDefault", consolidation: "subagentModeDefault" };
+      for (const [section, values] of Object.entries(requested)) {
+        if (!Object.hasOwn(reconfigurable, section)) throw new Error(`Unknown setting ${section}`);
+        if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error(`Invalid ${section}: expected an object`);
+        for (const key of Object.keys(values)) if (key !== reconfigurable[section]) throw new Error(`Setting ${section}.${key} is not reconfigurable at runtime`);
+      }
+      const next = validateConfig({ render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation } });
+      // One object identity throughout, so every existing reader sees the new default at its next
+      // admission; nothing else of the frozen configuration moves.
+      cfg.noting.forkModeDefault = next.noting.forkModeDefault;
+      cfg.consolidation.subagentModeDefault = next.consolidation.subagentModeDefault;
+    },
     close: () => {
       if (store.closed) return;
       try { cancelTasks(true); store.releaseExecutor(executorId); }

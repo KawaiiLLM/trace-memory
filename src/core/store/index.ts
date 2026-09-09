@@ -635,7 +635,7 @@ export class Store {
     });
   }
   requireEnabled(sessionId: number): void {
-    if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace enable to enable memory.");
+    if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
   }
 
   /** 19c: record one eligible fork cache miss for this session. The UPDATE is guarded by IS NULL, so

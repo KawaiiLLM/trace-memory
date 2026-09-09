@@ -39,7 +39,7 @@ test("19c 2026-09-08/09: two consecutive zero-cache fork responses downgrade the
     const suppression = f.h.memory.store.forkSuppression(1)!;
     expect(Number.isFinite(Date.parse(suppression.at))).toBe(true);
     expect(suppression.runId).toBe(run.id); // the audit names the run that detected it
-    await command(f.h, "status");
+    await command(f.h, "");
     expect(f.h.notices.at(-1)).toContain(`Fork: suppressed since ${suppression.at} (cache miss on R${run.id}); Retry fork in the /trace menu`);
   } finally { await f.dispose(); }
 }, 20000);
@@ -199,13 +199,13 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
     // A reopen and a settings refresh both go through restore(); neither may clear the suppression.
     await h.emit("session_start");
     expect(h.memory.store.forkSuppression(1)).toEqual({ at: "2026-09-08T00:00:00.000Z", runId: 1 });
-    await command(h, "status");
+    await command(h, "");
     expect(h.notices.at(-1)).toContain("Fork: suppressed since 2026-09-08T00:00:00.000Z (cache miss on R1); Retry fork in the /trace menu");
     const runs = h.memory.store.listRuns(1).length;
     h.ctx.hasUI = true;
     h.answers.push("Current session", "Retry fork");
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Disable", "Retry fork"]); // only while downgraded
+    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark", "Retry fork"]); // 24b: Retry fork only while downgraded
     expect(h.memory.store.forkSuppression(1)).toBeNull();
     expect(h.notices.at(-1)).toContain("fork retry enabled for this session");
     expect(h.memory.store.listRuns(1)).toHaveLength(runs); // the reset launches no extraction
@@ -213,11 +213,13 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
     // Gone from the menu once used, and a later eligible miss may start a new episode and warn again.
     h.answers.push("Current session", undefined);
     await command(h, "");
-    expect(h.dialogs.at(-1)!.options).toEqual(["Disable"]);
+    expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]);
     expect(h.memory.store.suppressFork(1)).toBe(true);
-    // No dedicated reset subcommand was registered: the word is only in the menu.
+    // No dedicated reset subcommand was registered: the word is only in the menu, and an unknown
+    // command form prints the usage (24b) instead of acting.
     await command(h, "retry fork");
-    expect(h.notices.at(-1)).toContain("Fork: suppressed since");
+    expect(h.notices.at(-1)).toContain("is not a command form");
+    expect(h.memory.store.forkSuppression(1)).not.toBeNull();
     expect([...h.commands.keys()]).toEqual(["trace"]);
   } finally { await h.dispose(); }
 });

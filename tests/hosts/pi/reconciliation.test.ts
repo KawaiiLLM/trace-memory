@@ -41,7 +41,7 @@ test("22b: a tool result finds its call without rereading the entries before it"
       await h.emit("session_start");
       persistTurns(h, turns);
       counter.reset();
-      await command(h, "enable");
+      await command(h, "on");
       const store = h.memory.store;
       return { h, reads: counter.reads(), entries: store.listSourceEntries(1).length,
         calls: store.listTurns(1).flatMap(t => store.listToolCalls(t.id)) };
@@ -64,7 +64,7 @@ test("22b: an ordinary boundary costs what is new, not what the session already 
     h.setHeaderTimestamp("2000-01-01T00:00:00Z");
     await h.emit("session_start");
     persistTurns(h, 30);
-    await command(h, "enable");
+    await command(h, "on");
     noteAll(h);
     const exchange = async () => {
       h.persist({ role: "user", content: "one short follow-up", timestamp: 1 });
@@ -105,7 +105,7 @@ test("22b: tree navigation and a foreign lineage rebuild the reconciled ancestry
   h.setHeaderTimestamp("2000-01-01T00:00:00Z");
   await h.emit("session_start");
   persistTurns(h, 2);
-  await command(h, "enable");
+  await command(h, "on");
   const common = [...h.entries]; // the ancestry as it stands after two Turns
   persistTurns(h, 1, 2);
   await h.emit("agent_end");

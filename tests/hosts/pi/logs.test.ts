@@ -95,26 +95,28 @@ test("24c: an explicit runsDir keeps 19a's precedence and its per-parent layout"
   } finally { await f.dispose(); rmSync(custom, { recursive: true, force: true }); }
 }, 20000);
 
-test("24c: the read-only settings view names the new default, and discloses an explicit runsDir that leaves Pi's scanned tree", async () => {
+test("24c/24b: the Settings entry names where new worker logs go, and discloses a runsDir that leaves Pi's scanned tree", async () => {
   const outside = join(tmpdir(), "trace-memory-outside");
+  // 24b supersedes the read-only settings view; this disclosure moved to the header of the Settings
+  // entry, which is where a user now reads global facts about this installation.
   const shown = async (config: Record<string, unknown>) => {
     const h = host(config);
     try {
       await h.emit("session_start");
       h.ctx.hasUI = true;
-      h.answers.push("Settings (Global, read-only)");
+      h.answers.push("Settings", undefined); // opening it and cancelling: a display, no write
       await command(h, "");
-      return h.notices.at(-1)!;
+      return { title: h.dialogs.at(-1)!.title, dir: h.dir };
     } finally { await h.dispose(); }
   };
-  // Default: the 24c destination, named as a default, with nothing to disclose.
+  // Default: the 24c destination, with nothing to disclose.
   const byDefault = await shown({});
-  expect(byDefault).toContain('runsDir: "<Pi agent directory>/sessions/trace-memory" (Default)');
-  expect(byDefault).not.toContain("outside Pi's scanned sessions tree");
-  // Explicit: the value and its source are still shown (19a precedence), plus the disclosure.
+  expect(byDefault.title).toContain(`Worker logs: ${join(byDefault.dir, "agent", "sessions", "trace-memory")}`);
+  expect(byDefault.title).not.toContain("outside Pi's scanned sessions tree");
+  // Explicit: 19a's precedence and `<runsDir>/<parent Pi session id>/` layout, plus the disclosure.
   const explicit = await shown({ runsDir: outside });
-  expect(explicit).toContain(`runsDir: ${JSON.stringify(outside)} (Environment)`);
-  expect(explicit).toContain("worker logs go to <runsDir>/<parent Pi session id>/, outside Pi's scanned sessions tree");
+  expect(explicit.title).toContain(`Worker logs: ${join(outside, "pi-test")}`);
+  expect(explicit.title).toContain("outside Pi's scanned sessions tree");
   // An explicit runsDir that IS the sessions root still lands one level down, so it is inside the
   // scanned tree and nothing is disclosed. Its own agent directory is only known once the host
   // exists, so this one is supplied through the global settings file the host reloads at start.
@@ -125,10 +127,10 @@ test("24c: the read-only settings view names the new default, and discloses an e
     writeFileSync(settingsPath, JSON.stringify({ ...JSON.parse(readFileSync(settingsPath, "utf8")), "trace-memory": { runsDir: root } }));
     await h.emit("session_start");
     h.ctx.hasUI = true;
-    h.answers.push("Settings (Global, read-only)");
+    h.answers.push("Settings", undefined);
     await command(h, "");
-    expect(h.notices.at(-1)).toContain(`runsDir: ${JSON.stringify(root)} (Global)`);
-    expect(h.notices.at(-1)).not.toContain("outside Pi's scanned sessions tree");
+    expect(h.dialogs.at(-1)!.title).toContain(`Worker logs: ${join(root, "pi-test")}`);
+    expect(h.dialogs.at(-1)!.title).not.toContain("outside Pi's scanned sessions tree");
   } finally { await h.dispose(); }
 });
 
