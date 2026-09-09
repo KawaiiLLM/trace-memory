@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { buildContextEntries, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
 import type { ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { TraceMemory, toolRejected } from "../../../src/core/api/index.ts";
@@ -12,7 +12,8 @@ export const usage = { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, reasoni
 export const reply = (output: string): Reply => ({ role: "assistant", content: [{ type: "text", text: output }], api: "openai-completions", provider: "fake", model: "test", stopReason: "stop", timestamp: 1, usage });
 /** 19a: a real Pi SessionManager backing the fake context, so native fork work has a real file. */
 export type NativeSource = () => { getSessionId(): string; getSessionFile(): string | undefined; getLeafId(): string | null;
-  getBranch(): unknown[]; getEntries(): unknown[]; appendCustomEntry(customType: string, data?: unknown): string } | undefined;
+  getBranch(): unknown[]; getEntries(): unknown[]; getEntry(id: string): unknown; buildContextEntries(): unknown[];
+  appendCustomEntry(customType: string, data?: unknown): string } | undefined;
 /** The scripted-reply seam (19c cutover). The request-copy runner is gone: every task this fake host
  * admits runs in a real Pi child `AgentSession` built by `hosts/pi/native.ts`, so the only place a
  * test can script a reply is the wire. `provider(fn)` keeps its old signature — it is handed the
@@ -188,7 +189,14 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     sessionManager: { getHeader: () => ({ timestamp: headerTimestamp }), getSessionId: () => native()?.getSessionId() ?? "pi-test",
       getSessionFile: () => native()?.getSessionFile(),
       getLeafId: () => native() ? native()!.getLeafId() : entries.at(-1)?.id ?? null,
-      getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries },
+      getBranch: () => native()?.getBranch() ?? entries, getEntries: () => native()?.getEntries() ?? allEntries,
+      getEntry: (id: string) => native() ? native()!.getEntry(id) : allEntries.find(e => e.id === id),
+      // 26c0: the carriers are read off Pi's own compaction-aware view, so the fake host answers it
+      // with Pi's own exported function (`session-manager.ts:418-453`: the selected ancestry, or
+      // `[latestCompaction, ...entries from firstKeptEntryId, ...entries after]`) over the entries
+      // and leaf it holds — never a second implementation of that rule.
+      buildContextEntries: () => native()?.buildContextEntries()
+        ?? buildContextEntries(allEntries as SessionEntry[], entries.at(-1)?.id ?? null) },
     modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "fake-key", headers: { "x-test": "header" }, env: {}, baseUrl: "https://fake.invalid" }),
       find: (p: string, id: string) => p === "fake" ? { ...model, id, reasoning: reasoning(id) } : undefined,
       // 24b: the models a settings edit may choose from. Pi's registry answers `getAvailable` with
@@ -239,17 +247,33 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   try { process.chdir(dir); (options.extension ?? extension)(pi); } finally { process.chdir(originalCwd); if (previous === undefined) delete process.env.TRACE_MEMORY_CONFIG; else process.env.TRACE_MEMORY_CONFIG = previous; }
   // The observer reads what the extension wrote, so it registers the same result-text extractor (23).
   const memory = TraceMemory(dbPath, async () => { throw new Error("observer cannot call a model"); }, {}, piResultText);
-  const persist = (message: unknown, id = `e${allEntries.length}`) => {
-    const entry = { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "message", message: structuredClone(message) };
+  const persist = (message: any, id = `e${allEntries.length}`) => {
+    // 26c0: Pi persists a `role: "custom"` message — the shape a `before_agent_start` handler's
+    // returned message is given (`agent-session.ts:1286-1293`) — as a `custom_message` entry through
+    // `appendCustomMessageEntry(customType, content, display, details)` (`agent-session.ts:674-684`,
+    // `session-manager.ts:1172-1192`), so its `details` are a real on-disk field. Every other role
+    // becomes an ordinary message entry.
+    const entry = message?.role === "custom"
+      ? { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "custom_message",
+          customType: message.customType, content: message.content ?? [], display: message.display, details: structuredClone(message.details) }
+      : { id, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(), type: "message", message: structuredClone(message) };
     if (native()) return entry; // the real Pi session already persisted this message
     entries.push(entry); allEntries.push(entry); return entry;
   };
+  // 26c0: what the last `session_before_compact` handler asked Pi to write. Pi passes a hook result's
+  // `compaction.details` straight into `appendCompaction(summary, firstKeptEntryId, tokensBefore,
+  // details, fromExtension, usage)` (`agent-session.ts:2025`, automatic path `:2350`) with
+  // `fromExtension = true`, and the entry keeps both (`session-manager.ts:1098-1120`). One hook
+  // result belongs to one appended entry, so `compaction()` consumes it.
+  let hookCompaction: { details?: unknown } | undefined;
   /** 20c: a successfully persisted native compaction entry on the selected ancestry — the only thing
    * that establishes the post-compaction boundary, and the entry Pi appends only after a compaction
    * succeeded. `sibling` writes it outside the selected ancestry, where it must establish nothing. */
   const compaction = (summary = "native summary", options: { sibling?: boolean } = {}) => {
+    const hook = hookCompaction; hookCompaction = undefined;
     const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(),
-      type: "compaction", summary, firstKeptEntryId: entries.at(-1)?.id ?? "", tokensBefore: 0 };
+      type: "compaction", summary, firstKeptEntryId: entries.at(-1)?.id ?? "", tokensBefore: 0,
+      ...(hook ? { details: structuredClone(hook.details), fromHook: true } : {}) };
     if (!options.sibling) entries.push(entry);
     allEntries.push(entry); return entry;
   };
@@ -267,6 +291,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     if (name === "session_shutdown") shuttingDown = true;
     const result = await hooks.get(name)?.({ type: name, ...event }, ctx);
     if (name === "message_end") persist(event.message);
+    if (name === "session_before_compact") hookCompaction = result?.compaction;
     return result;
   };
   // A worker is a real child AgentSession now, so waiting is wall-clock, not a fixed number of
@@ -305,6 +330,10 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     const result = await emit("before_agent_start", { prompt, systemPrompt: "host" });
     await emit("message_start", { message: { role: "user", content: prompt, timestamp: 1 } });
     await emit("message_end", { message: { role: "user", content: prompt, timestamp: 1 } });
+    // 26c0: Pi builds the turn's messages as the user message followed by every message a
+    // `before_agent_start` handler returned, each as `role: "custom"` (`agent-session.ts:1286-1293`),
+    // and each is persisted at its own `message_end` (`:674-684`). That is where the receipt lands.
+    if (result?.message) await emit("message_end", { message: { role: "custom", ...result.message, content: result.message.content ?? [], timestamp: 1 } });
     return result;
   };
   const answer = async (value = "好的。") => { await emit("message_end", { message: reply(value) }); await emit("agent_end"); };

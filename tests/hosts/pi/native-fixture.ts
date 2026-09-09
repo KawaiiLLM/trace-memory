@@ -80,7 +80,16 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     /** One real parent turn, then the extension hooks the foreground would have fired. `capture`
      * off omits `before_provider_request`, the hook that supplies the fork's parent body. */
     async turn(prompt = "用 pnpm，不要 npm", options: { capture?: boolean } = {}) {
-      await this.h.emit("before_agent_start", { prompt });
+      const started = await this.h.emit("before_agent_start", { prompt });
+      // 26c0: the parent runs with `noExtensions`, so the write Pi would make for a handler's
+      // returned message is made here, through Pi's own API. `agent-session.ts:1286-1293` turns the
+      // returned message into a `role: "custom"` message and `:674-684` persists it with
+      // `appendCustomMessageEntry(customType, content, display, details)`; `sendCustomMessage` is the
+      // public door to the same two writes (`:1483-1526`) — session state and session file together,
+      // which is what keeps the parent's request and the file the child forks from in step. Pi
+      // appends it just after the user message of the turn; here it is just before, which puts it on
+      // the same ancestry and inside the same `buildContextEntries()` result.
+      if (started?.message) await session.sendCustomMessage(started.message);
       const at = sent.length;
       await session.prompt(prompt);
       const captured = sent[at]!;
