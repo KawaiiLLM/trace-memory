@@ -808,22 +808,31 @@ test("2026-09-07: R<n> shows the rejection reason of a manual write instead of c
 
 // 17b, 2026-09-08: "noting.batchTokens defaults to 50,000 compressed-view tokens". Superseded by
 // ticket 20 on 2026-09-08: the Noting trigger and the batch ceiling are both 10,000 normal-view
-// tokens, and that ceiling is the one effective Raw ceiling compact shares.
-test("20b 2026-09-08: 17b's 50,000-token Noting batch is superseded by a 10,000-token ceiling shared with compact", async () => {
+// tokens. Ticket 20 also made that ceiling compact's inner Raw cap, and ticket 25 amendment 3
+// (2026-09-09, 25c) supersedes that second half: a foreground backlog is not a Noter batch, so
+// compact measures pending Raw against the shared episodic envelope alone. The 10,000 ceiling itself
+// stands, for the phase it was always about.
+test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is 10,000 and compact no longer shares it", async () => {
   expect(DEFAULT_CONFIG.noting.batchTokens).toBe(10_000);
   expect(DEFAULT_CONFIG.noting.triggerTokens).toBe(10_000);
   const { s, t } = session();
   const big = (id: string) => memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
     role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
   big("a"); big("b"); big("c");
-  // compact measures the same Raw against the same ceiling instead of a second knob of its own: these
-  // primary views are over it, so 20c's compact escalates rather than keeping them; raising that one
-  // ceiling (there is no second) puts the same Raw back inside tier 1.
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
-  memory.config.noting.batchTokens = 100_000; memory.config.render.episodicBlockTokens = 200_000;
+  // About 12,000 view tokens: over `noting.batchTokens`, inside `render.episodicBlockTokens`. Before
+  // 25c this escalated on the inner cap; now tier 1 keeps every entry whole, and the Noter's ceiling
+  // is not a knob compact reads at all — moving it changes nothing here.
+  expect(tokens(memory.pendingEntries(s.id, "main", t.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n")))
+    .toBeGreaterThan(DEFAULT_CONFIG.noting.batchTokens);
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
+  memory.config.noting.batchTokens = 50;
   expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
   memory.config.noting.batchTokens = DEFAULT_CONFIG.noting.batchTokens;
+  // The one budget compact still answers to is the envelope: below the same Raw, tier 1 misses it.
+  memory.config.render.episodicBlockTokens = 5_000;
+  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
   memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  // Noting is unchanged: its batch still stops at 10,000 and leaves the rest pending.
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const views = calls[0]!.material.entries.map(e => e.view);
   expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
@@ -843,9 +852,10 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
   const sources = memory.store.listSourceEntries(s.id).length;
   const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
   expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
-  // Over the shared Raw ceiling: the lossier secondary views, still deterministic local work.
+  // Over the shared episodic envelope (25c: the one cap compact answers to): the lossier secondary
+  // views, still deterministic local work.
   for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
-    role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
+    role: "assistant", text: `${id} ` + "word ".repeat(8000), raw: "", calls: [] });
   expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
   // Over the enclosing budget even then: the one route to a model, and it is Pi's, not core's.
   memory.config.render.episodicBlockTokens = 10;
@@ -903,8 +913,10 @@ test("23 2026-09-09: 17a's 1,000-token per-call default becomes 300 with 1,000 a
 // tier-2 profile. The three-tier escalation and the native tier are unchanged.
 test("23 2026-09-09: 20c's separate compact-only renderer is superseded; tier 2 is the one renderer under the tier-2 profile", () => {
   const { s, t } = session();
+  // 25c raised what tier 1 holds to the whole episodic envelope, so the backlog that escalates is
+  // twice the one this ruling was first written against; the renderer it escalates to is unchanged.
   for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
-    role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
+    role: "assistant", text: `${id} ` + "word ".repeat(8000), raw: "", calls: [] });
   const result = memory.compact(s.id, "main", t.id);
   expect(result.tier).toBe("secondary");
   const text = compacted(result);

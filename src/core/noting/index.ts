@@ -176,9 +176,11 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   const raw = entries.map(view);
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
-  // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
-  // — and the titles, the range and the historical facts against the episodic budget. 25a: no
-  // knowledge candidates are passed, because neither Noter mode emits a knowledge block.
+  // against this phase's own batch ceiling — `noting.batchTokens` — and the titles, the range and the
+  // historical facts against the episodic budget. 25c stopped compact from applying that ceiling to a
+  // foreground backlog, which changes nothing here: a Noter batch is still capped by it, and the
+  // reservation is still what keeps this phase's two allowances independent. 25a: no knowledge
+  // candidates are passed, because neither Noter mode emits a knowledge block.
   const budgeted = budgetMaterial({ current: raw.map((r) => r.content).join(BLOCK),
     framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, factTurns, history,
     caps: { episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });

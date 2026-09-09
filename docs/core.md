@@ -277,16 +277,25 @@ charged once, to the block that emits it:
 | Component | Budget | Default |
 | --- | --- | ---: |
 | knowledge block, its category tags and its omission receipts (Consolidator, injection, compact) | `render.knowledgeBlockTokens` | 10,000 |
-| selected current material — entry or fact views with their own source labels, omission markers and joining separators | `noting.batchTokens` (Raw, shared with compact) / `consolidation.batchTokens` (pending facts) | 10,000 |
+| Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter and compact: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
+| compact's pending Raw, inside that same envelope and with no inner cap of its own (25c) | `render.episodicBlockTokens` | 20,000 |
 | Consolidator: its titles, range line, mandatory review cues and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 The current material and the mandatory cues are reserved first; historical facts then fill whatever
-episodic space is left, in the existing freshness order. Raw consumes at most its own ceiling, not a
-guaranteed allocation, and Consolidation has no automatic Raw block and no history block at all — its
-selected pending facts and their required framing share the current-material allowance. Outer framing
-is never charged against the Noter's inner Raw ceiling, so an otherwise valid 10,000-token entry stays
-batchable.
+episodic space is left, in the existing freshness order. A Noter batch consumes at most its own
+ceiling, not a guaranteed allocation, and Consolidation has no automatic Raw block and no history
+block at all — its selected pending facts and their required framing share the current-material
+allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
+10,000-token entry stays batchable.
+
+Ticket 25 amendment 3 (25c) removed compaction's inner Raw cap: a foreground backlog is not a Noter
+batch, so `noting.batchTokens` no longer bounds it and the shared 20,000-token envelope is the only
+budget it answers to. Pending Raw and its framing are reserved out of that envelope first, historical
+facts take what is left — none of it when Raw needs the space, all of it when nothing is pending — and
+the knowledge cap stays independent of both. `budgetMaterial` expresses this by letting a consumer
+omit `caps.current` altogether, the way a consumer already omits knowledge candidates or historical
+facts it does not emit; the Noter and the Consolidator still pass theirs and are unaffected.
 
 The Noter's two allowances are independent, and the reservation is what makes them so: its historical
 facts are capped at `render.episodicBlockTokens − noting.batchTokens` (10,000 at the defaults), so the
@@ -505,13 +514,18 @@ pending entry on the path and returns a tier, not a string (ticket 20c):
 
 | Tier | Condition | Result |
 | --- | --- | --- |
-| `{tier: "primary", text}` | the pending entries' normal shared views fit `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | knowledge, `<episodic>` with recently selected session facts in chronological Turn groups, then those views |
-| `{tier: "secondary", text}` | the tier-1 views miss a cap but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and both budgets |
+| `{tier: "primary", text}` | the pending entries' normal shared views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with recently selected session facts in chronological Turn groups, then those views |
+| `{tier: "secondary", text}` | the tier-1 views miss that envelope but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and the profile |
 | `{tier: "native", reason}` | not even those fit, or an entry's minima exceed the tier-2 `E` | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
 
-Compact measures Raw against the same effective ceiling as Noting (`noting.batchTokens`), never a
-second knob of its own, and both tiers are rechecked under the same `budgetMaterial` accounting as
-normal material. No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
+Since 25c compact measures Raw against the shared episodic envelope alone — `noting.batchTokens` is
+the Noter's batch ceiling and compact does not read it — and both tiers are rechecked under the same
+`budgetMaterial` accounting as normal material. A backlog above 10,000 and below 20,000 tokens
+therefore stays in tier 1 instead of escalating, and the reason a delegation gives names the envelope
+or the tier-2 entry budget, the only two caps left to miss. Tier changes re-render one frozen
+membership: they never select a smaller pending set, advance extraction progress or touch delivery and
+injection state, and a native delegation builds no custom summary at all.
+No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
 no tier calls a provider or consumes a delivery, and core contains no summarizer — reaching a model
 is the host's native fallback alone. Tier 2 is `renderEntry` under the tier-2 profile
 (`render.secondaryToolCallTokens`, `render.secondaryEntryTokens`; ticket 23 superseded 20c's separate

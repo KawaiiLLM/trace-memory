@@ -42,6 +42,12 @@ and 2,000. Extraction was quiet (`noting.triggerTokens` 10⁹) so the pending Ra
 No Trace Memory run was recorded by any compaction (`Spend: 0 noting, 0 consolidation` after all
 four), and no progress moved: the plugin's tiers call no model, and tier 3 is Pi's call.
 
+Record as observed; the knob moved afterwards. Ticket 25 amendment 3 (25c, 2026-09-09) removed the
+inner `noting.batchTokens` cap on compaction's pending Raw, so a rerun drives the tiers with
+`render.episodicBlockTokens` instead, and no delegation reason says "the raw ceiling" any more — the
+two caps a reason can name are the episodic envelope and the tier-2 entry budget. The tiers, the
+views, the notices and the fallback behaviour recorded above are otherwise unchanged.
+
 Post-compaction admission, in a second process resuming tm-live3 with `--continue` and extraction
 on (`noting.triggerTokens` 100, `noting.batchTokens` 10,000, `consolidation.batchTokens` 150):
 
