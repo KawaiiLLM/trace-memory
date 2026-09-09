@@ -27,7 +27,7 @@
 // and it comes from the same frozen task as the full text.
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, ENTRY_VIEW_VERSION, type EntryProfile } from "./index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, ENTRY_VIEW_VERSION, type EntryProfile, type FactTurns } from "./index.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -41,7 +41,7 @@ export interface TaskRange { from: string; to: string }
 export interface SharedMaterial {
   /** Active knowledge within the knowledge budget, in category order. */
   knowledge: KnowledgeGroup[];
-  /** Historical facts, newest first, within the episodic budget. */
+  /** Historical facts selected by freshness, displayed in chronological Turn groups, within budget. */
   facts?: string[];
   /** Compressed Raw entries, oldest first, each with the source identity of its own view. */
   entries?: { id: number; view: string }[];
@@ -63,11 +63,11 @@ export interface NotingMaterial extends SharedMaterial {
 /** The frozen task material of one Consolidation run. Task-specific parts: the pending facts (as
  * addresses and as lines) and the negated-evidence review cues. No field is a composed message. */
 export interface ConsolidationMaterial extends SharedMaterial {
-  /** Already-consolidated project facts, newest first, within the episodic budget. */
+  /** Already-consolidated project facts selected by freshness, displayed in chronological Turn groups. */
   facts: string[];
   /** The facts to integrate, as addresses: an inherited context already carries their lines. */
   factAddresses: string[];
-  /** The same facts, rendered with their relations, in range order. */
+  /** The same selected facts, rendered with relations in chronological Turn groups. */
   rangeFacts: string[];
   /** Visible knowledge whose supports a range fact negates, with both facts: review cues only. */
   reminders: string[];
@@ -82,8 +82,8 @@ export interface MaterialText {
   inherited: string;
 }
 
-export const FACTS_TITLE = "Recent facts (newest first):";
-export const CONSOLIDATED_TITLE = "Already-consolidated facts (newest first):";
+export const FACTS_TITLE = "Recent facts (by Turn):";
+export const CONSOLIDATED_TITLE = "Already-consolidated facts (by Turn):";
 export const RAW_TITLE = "Raw:";
 /** Compaction tier 2 (20c) under ticket 23's one renderer: the block title replaces `RAW_TITLE` —
  * never joins it — and names the view version and the profile that produced these views, because a
@@ -126,6 +126,7 @@ export interface MaterialBudget {
   /** Historical facts in the existing freshness order, and how one renders. */
   facts: Fact[];
   factLine: (fact: Fact) => string;
+  factTurns: FactTurns;
   caps: { knowledge: number; episodic: number; current: number };
   /** What the current material is called in a receipt: Raw entries, or a Consolidation's range facts. */
   label?: "raw" | "range";
@@ -152,8 +153,8 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   // `history` caps the optional historical facts below what the episodic budget would allow: a phase
   // negotiating a smaller model window trims this optional material before it drops selected evidence.
   const room = () => Math.min(input.history ?? Infinity, input.caps.episodic - reserved());
-  let filled = budgetFacts(input.facts, input.factLine, room());
-  if (filled.receipts.length) filled = budgetFacts(input.facts, input.factLine, room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])));
+  let filled = budgetFacts(input.facts, input.factLine, room(), input.factTurns);
+  if (filled.receipts.length) filled = budgetFacts(input.facts, input.factLine, room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])), input.factTurns);
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);

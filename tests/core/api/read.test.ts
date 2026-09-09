@@ -121,10 +121,10 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   expect(compacted(memory.compact(s.id))).not.toContain("abandoned raw");
   const n = noting(s.id, selected.id, fixture.interpretation);
   const full = compacted(memory.compact(s.id, "main", selected.id));
-  expect(full.indexOf(`[F${n.facts[0]!.id}]`)).toBeLessThan(full.indexOf("[F1]"));
+  expect(full.indexOf("[F1]")).toBeLessThan(full.indexOf(`[F${n.facts[0]!.id}]`)); // chronological presentation
   // 20b charges the block titles and the joining separators too, so the same "one fact fits, the
   // older one does not" budget is a little larger than 17a's bare fact-line arithmetic.
-  memory.config.render.episodicBlockTokens = 100;
+  memory.config.render.episodicBlockTokens = 100 + tokens(`[T${selected.id}] ${selected.startedAt} (selected facts)\n`);
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();
@@ -151,7 +151,7 @@ test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts
   expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual(pending.map(e => e.id));
   // Historical facts fill only what the selected material and the framing left, and the honest
   // omission receipt for the rest sits outside the block, as every other receipt does.
-  memory.config.render.episodicBlockTokens = 105; // room for the selected Raw, the framing and one fact line (23c: the smaller view fitted both at 120)
+  memory.config.render.episodicBlockTokens = 105 + tokens(`[T${t.id}] ${t.startedAt} (selected facts)\n`); // one fact plus its Turn heading
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
   expect(limited).toContain("omitted 1 older facts; expand: F1");

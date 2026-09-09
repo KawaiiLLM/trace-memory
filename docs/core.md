@@ -227,6 +227,29 @@ Titles and separators are constants in that module (`FACTS_TITLE`, `RAW_TITLE`, 
 still appends the receipts. Nothing here knows a host message type, and no host file lays out these
 blocks (pinned by a source check in `tests/core/api/boundary.test.ts`).
 
+## Fact groups
+
+Newly injected fact lists share `renderFactGroups`: Noter history, Consolidator history and current
+facts, delivery (`<noted>`), compaction, branch carry, and the facts in review reminders/feedback.
+Groups use the owning Turn's start time in ascending chronological order, with Turn id as a tie-break;
+within a group, facts use ascending F ids. Unknown Turn times remain explicit and sort last by id.
+A group heading looks like `[T42] 2026-09-09T10:30:00Z (selected facts)`: it identifies a selected
+subset, never claims the entire Turn was supplied or processed.
+
+Selection and display are separate. Historical facts are selected newest-first by source time and id
+before grouping; this also corrects the Consolidator history query that previously returned oldest
+ids despite its freshness label. Current Consolidation facts still select the oldest F-id prefix,
+one whole fact at a time, and may split a Turn across batches. Its range, write eligibility and
+progress retain that selected membership, even if chronological display puts another F id first.
+
+Every fact retains its verbatim single-fact rendering, including relations, quote and all source
+addresses. A fact citing several Turns appears once under its owning Turn, not once per citation.
+The renderer reads Turn timestamps from a metadata projection rather than loading conversation
+bodies. All group headings and separators are charged to the same historical/current material
+budgets as their facts; the Consolidation trigger uses that same grouped current-fact view. Individual
+`trace F…` and search results keep their existing rendering, and already-persisted injections are not
+rewritten merely to change their layout.
+
 ## Material budgets (20b)
 
 `budgetMaterial` in the same module is the one budgeting of that shared material: every consumer
@@ -421,7 +444,7 @@ pending entry on the path and returns a tier, not a string (ticket 20c):
 
 | Tier | Condition | Result |
 | --- | --- | --- |
-| `{tier: "primary", text}` | the pending entries' normal shared views fit `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | knowledge, `<episodic>` with session facts newest-first, then those views |
+| `{tier: "primary", text}` | the pending entries' normal shared views fit `noting.batchTokens` and the framing fits `render.episodicBlockTokens` | knowledge, `<episodic>` with recently selected session facts in chronological Turn groups, then those views |
 | `{tier: "secondary", text}` | the tier-1 views miss a cap but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and both budgets |
 | `{tier: "native", reason}` | not even those fit, or an entry's minima exceed the tier-2 `E` | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
 

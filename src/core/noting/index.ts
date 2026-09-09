@@ -5,7 +5,7 @@ import type { Store, RunInput } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor } from "../render/index.ts";
+import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
@@ -108,6 +108,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   const knowledge = store.listCurrentKnowledge(store.knowledgePath(session.id, input.branch, input.headTurnId)); // entry-aware (review 2026-09-08)
   const facts = store.listSessionFacts(session.id);
+  const factTurns = store.factTurnTimes(facts);
   // The same fact renders the same line for the whole freeze, and one Turn's tool calls are the same
   // rows on every candidate: both are read and rendered once here rather than inside the loop.
   const lines = new Map<number, string>();
@@ -134,7 +135,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, history);
+    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -162,7 +163,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
 /** The material of one candidate batch. The entry views and the fact lines are supplied by the
  * freeze, which renders each of them once for the whole negotiation (22d): re-freezing a smaller
  * batch changes which of them are used, never what any one of them says. */
-function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, history = Infinity) {
+function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity) {
   const { sessionId, entries, turns, knowledge, facts } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -172,7 +173,7 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   // against the Raw ceiling — `noting.batchTokens`, the one effective ceiling Noting and compact share
   // — the titles and the range against the episodic budget, and the knowledge block against its own.
   const budgeted = budgetMaterial({ knowledge, current: raw.map((r) => r.content).join(BLOCK),
-    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, history,
+    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, factTurns, history,
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;

@@ -1132,6 +1132,19 @@ not. Another connection's commits therefore appear at the next refresh.
 `/trace` prints the session's breakdown by run kind. Tree switching contributes
 no extraction usage to Pi totals.
 
+## Fact presentation
+
+All newly composed fact injections use the same chronological Turn groups: Noter history,
+Consolidator history/current facts and review cues, `<noted>` deliveries, compaction, and branch
+carry. A heading such as `[T42] 2026-09-09T10:30:00Z (selected facts)` is followed by facts in
+ascending F-id order. Multi-Turn citations remain intact on a single fact under its owning Turn.
+
+Grouping happens after priority selection: recent historical facts still get the available space
+first, while pending Consolidation facts retain oldest-F-id-first selection and exact progress.
+A batch may contain only part of a Turn. The group headings count toward the existing budgets and
+the grouped pending-fact view is also what the Consolidation trigger measures. Explicit single-fact
+reads and search listings are unchanged. See [Fact groups](core.md#fact-groups) for the core contract.
+
 ## Known limits
 
 - No heartbeat or process-liveness discovery exists. A crash does not mark a session

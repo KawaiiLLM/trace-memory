@@ -5,7 +5,7 @@ import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderKnowledge, renderFact, tokens, charge } from "../render/index.ts";
+import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
 import { budgetMaterial, consolidationText, consolidationIncrement, CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
@@ -89,17 +89,19 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   const knowledge = store.listCurrentKnowledge(path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
+  const byId = new Map(facts.map(f => [f.id, f]));
+  const factTurns = store.factTurnTimes(facts);
   // Ticket 20 "Consolidation": the oldest-first whole-fact prefix whose rendered lines — the same
   // representation, relations and joining separator the trigger and the run itself count — fit
   // `consolidation.batchTokens`. Arrival order is the store's; path eligibility is already applied.
   // "Oversized fact": a fact has no primary-entry-style size bound, so an oldest one that cannot fit
   // alone stays pending with a capacity problem. It is never clipped, skipped for a smaller later
   // fact, or marked consolidated without being presented.
-  const rangeFacts: Fact[] = [], selected: string[] = [];
+  const rangeFacts: Fact[] = [];
   for (const fact of applicable) {
-    const line = lines.get(fact.id) ?? renderFact(fact, store.listFactRelations(fact.id));
-    if (tokens([...selected, line].join("\n")) > config.consolidation.batchTokens) break;
-    rangeFacts.push(fact); selected.push(line);
+    const candidate = renderFactGroups([...rangeFacts, fact], f => lines.get(f.id)!, factTurns);
+    if (tokens(candidate.join("\n")) > config.consolidation.batchTokens) break;
+    rangeFacts.push(fact);
   }
   if (applicable.length && !rangeFacts.length) throw new Error("Consolidation capacity: oldest fact exceeds consolidation.batchTokens; left pending");
   // The negated-evidence cues are mandatory material and grow with the selected facts, so they are
@@ -109,12 +111,16 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     for (const item of knowledge) for (const fact of batch) {
       for (const edge of relations.get(fact.id)!) {
         if (edge.fromFact !== fact.id || edge.kind !== "negate" || !item.revision.supports.includes(edge.toFact)) continue;
-        if (!lines.has(edge.toFact)) {
-          const cited = store.getFact(edge.toFact)!;
+        let cited = byId.get(edge.toFact);
+        if (!cited) {
+          cited = store.getFact(edge.toFact)!;
+          byId.set(cited.id, cited);
           lines.set(cited.id, renderFact(cited, store.listFactRelations(cited.id)));
+          if (!factTurns.has(cited.turnId)) for (const [id, time] of store.factTurnTimes([cited])) factTurns.set(id, time);
         }
         reminders.push([renderKnowledge(item), `Recorded negation strength: ${edge.strength}`,
-          "Cited fact:", lines.get(edge.toFact)!, "Negating fact:", lines.get(fact.id)!].join("\n"));
+          `Cited fact: F${cited.id}; Negating fact: F${fact.id}`,
+          ...renderFactGroups([cited, fact], f => lines.get(f.id)!, factTurns)].join("\n"));
       }
     }
     return reminders;
@@ -127,7 +133,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // eligibility re-freeze together on every step. An oldest fact that cannot fit alone stays pending.
   let history = Infinity; // the historical-fact allowance under negotiation; Infinity = the episodic budget decides
   while (rangeFacts.length) {
-    const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts,
+    const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
       context: context.filter((f) => !rangeFacts.some((r) => r.id === f.id)), knowledge, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
     const prepared = consolidationMaterial(frozen, config, history);
@@ -143,7 +149,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     rangeFacts.pop(); history = Infinity;
   }
   if (applicable.length) throw new Error("Consolidation capacity: oldest fact with its mandatory cues cannot fit the episodic budget or the model context; left pending");
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context, knowledge, lines, reminders: [] as string[],
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, context, knowledge, lines, factTurns, reminders: [] as string[],
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
 }
@@ -153,16 +159,17 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * block — the titles, the range and the mandatory negation cues are charged to the episodic budget,
  * and the already-consolidated facts fill what is left of it. Core lays out both representations
  * (ruling 08:53); the host only decides which native message carries the text. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; context: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; reminders: string[] }, config: TraceMemoryConfig, history = Infinity) {
-  const { rangeFacts, context, knowledge, lines, reminders } = frozen;
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; context: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig, history = Infinity) {
+  const { rangeFacts, context, knowledge, lines, factTurns, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
-  const budgeted = budgetMaterial({ knowledge, current: rangeFacts.map((f) => lines.get(f.id)!).join("\n"),
+  const grouped = renderFactGroups(rangeFacts, f => lines.get(f.id)!, factTurns);
+  const budgeted = budgetMaterial({ knowledge, current: grouped.join("\n"),
     framing: [CONSOLIDATED_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    facts: context, factLine: (f) => lines.get(f.id)!, history,
+    facts: context, factLine: (f) => lines.get(f.id)!, factTurns, history,
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
-    rangeFacts: rangeFacts.map((f) => lines.get(f.id)!),
+    rangeFacts: grouped,
     knowledge: budgeted.knowledge.filter((g) => g.text),
     facts: budgeted.facts,
     reminders,
@@ -187,7 +194,7 @@ const candidates = (output: MemoryBatch) => output.operations.flatMap((op, i) =>
 
 export async function runConsolidation(store: Store, frozen: ReturnType<typeof freezeConsolidation>, runAgent: RunAgent,
   config: TraceMemoryConfig, bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review: import("./memory.ts").MemoryReview) => ReturnType<typeof bindTools>): Promise<ConsolidateResult> {
-  const { sessionId, branch, rangeFacts, knowledge, lines, model, mode, threshold } = frozen;
+  const { sessionId, branch, rangeFacts, knowledge, lines, factTurns, model, mode, threshold } = frozen;
   if (!rangeFacts.length || !frozen.prepared) return { outcome: "empty" };
   // The material was rendered and budgeted when the task was frozen (consolidationMaterial), so the
   // batch that runs is exactly the batch whose size was checked.
@@ -209,10 +216,14 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
     .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
   const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderKnowledge(knowledge.find((e) => label(e) === p.knowledge)!)}`);
-  const closer = knowledge.filter(({ revision }) => revision.category === "open" || revision.category === "goal").flatMap((knowledge) =>
-    rangeFacts.map((fact) => ({ fact, score: similarity(knowledge.revision.text, fact.text) }))
-      .filter((p) => p.score >= threshold).sort((a, b) => b.score - a.score)
-      .map((p) => `${renderKnowledge(knowledge)}\nJaccard ${p.score}\n${lines.get(p.fact.id)!}`));
+  const closer = knowledge.filter(({ revision }) => revision.category === "open" || revision.category === "goal").flatMap((knowledge) => {
+    const matches = rangeFacts.map(fact => ({ fact, score: similarity(knowledge.revision.text, fact.text) }))
+      .filter(p => p.score >= threshold);
+    if (!matches.length) return [];
+    const scores = new Map(matches.map(p => [p.fact.id, p.score]));
+    return [[renderKnowledge(knowledge), ...renderFactGroups(matches.map(p => p.fact),
+      f => `Jaccard ${scores.get(f.id)}\n${lines.get(f.id)!}`, factTurns)].join("\n")];
+  });
   const feedback = ["System-generated review guidance; not a human ruling or adoption evidence.",
     "NEAR:", nearText.join("\n\n") || "none", "CLOSER:", closer.join("\n\n") || "none"].join("\n\n") + "\n" + checklist;
     return { text: feedback, near };

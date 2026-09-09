@@ -48,7 +48,7 @@ test("20a 2026-09-08: the Noter's fresh order is knowledge, historical facts, ra
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text.fresh).toBe([knowledgeBlock, "Recent facts (newest first):", memory.trace("F1"),
+  expect(input.text.fresh).toBe([knowledgeBlock, "Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
     `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, "Raw:", raw].join("\n\n"));
 });
 
@@ -68,8 +68,8 @@ test("20a 2026-09-08: the Consolidator's fresh order is knowledge, already-conso
   await first;
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const input = calls[1]! as ConsolidationAgentInput;
-  expect(input.text.fresh).toBe([knowledgeBlock, "Already-consolidated facts (newest first):", memory.trace("F1"),
-    "Range: F2..F2", "Range facts:", memory.trace("F2"),
+  expect(input.text.fresh).toBe([knowledgeBlock, "Already-consolidated facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
+    "Range: F2..F2", "Range facts:", `[T1] ${time} (selected facts)\n${memory.trace("F2")}`,
     "Negated-evidence reminder (review cues only; no status derived):", "none"].join("\n\n"));
 });
 
@@ -87,7 +87,7 @@ test("20a 2026-09-08: the main agent's initial injection is knowledge and receip
   const { s, t } = seeded();
   expect(memory.inject(s.id)).toBe(knowledgeBlock); // knowledge-only: no facts, no Raw, no range
   expect(compacted(memory.compact(s.id, "main", t.id))).toBe([knowledgeBlock,
-    `<episodic>\nRecent facts (newest first):\n\n${memory.trace("F1")}\n\nRaw:\n\n${views(s.id, t.id)}\n</episodic>`].join("\n\n"));
+    `<episodic>\nRecent facts (by Turn):\n\n[T1] ${time} (selected facts)\n${memory.trace("F1")}\n\nRaw:\n\n${views(s.id, t.id)}\n</episodic>`].join("\n\n"));
 });
 
 test("20a 2026-09-08 scenario 2: two Noter tasks with the same knowledge and different Raw and ranges are byte-identical through the knowledge block", async () => {
@@ -103,7 +103,7 @@ test("20a 2026-09-08 scenario 2: two Noter tasks with the same knowledge and dif
   expect(later!.range).not.toEqual(first!.range);
   expect(later!.material.entries).not.toEqual(first!.material.entries);
   // Facts precede the range; the range precedes the Raw of this batch.
-  const order = ["Recent facts (newest first):", `Range: `, "Raw:"].map(part => later!.text.fresh.indexOf(part));
+  const order = ["Recent facts (by Turn):", `Range: `, "Raw:"].map(part => later!.text.fresh.indexOf(part));
   expect(order).toEqual([...order].sort((a, b) => a - b));
   expect(order[0]).toBeGreaterThan(knowledgeBlock.length - 1);
   // Nothing task-specific is inside the leading block.
@@ -141,9 +141,11 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   const view = "[Source entry id: T1#user]\n" + "word ".repeat(40);
   const line = "[F9] 2026-09-08T00:00:00Z [observation/user] " + "word ".repeat(20) + "\n  source: T1#user";
   const range = { from: "S1/T1", to: "S1/T2" }, framing = [FACTS_TITLE, RAW_TITLE];
-  const facts = [{ id: 9 } as Fact];
+  const facts = [{ id: 9, turnId: 1 } as Fact];
+  const factTurns = new Map([[1, time]]);
+  const groupedLine = `[T1] ${time} (selected facts)\n${line}`;
   const budget = (caps: { episodic: number; current?: number }) => budgetMaterial({ knowledge: [], current: view,
-    framing, range, facts, factLine: () => line, caps: { knowledge: 1_000, current: caps.current ?? 1_000, episodic: caps.episodic } });
+    framing, range, facts, factLine: () => line, factTurns, caps: { knowledge: 1_000, current: caps.current ?? 1_000, episodic: caps.episodic } });
   // The inner ceiling counts the current material with its own source label: exactly at it is silent,
   // one token below it is a receipt, never a cut view.
   expect(budget({ episodic: 5_000, current: tokens(view) }).receipts).toEqual([]);
@@ -154,15 +156,15 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   // report its omission is reserved as well.
   const mandatory = tokens(view) + charge([...framing, `Range: ${range.from}..${range.to}`]);
   const smallest = [...Array(600).keys()].find(episodic => budget({ episodic }).facts.length === 1)!;
-  expect(smallest).toBe(mandatory + charge([line])); // exactly at the budget, the fact is kept
-  expect(budget({ episodic: smallest }).facts).toEqual([line]);
+  expect(smallest).toBe(mandatory + charge([groupedLine])); // exactly at the budget, the fact is kept
+  expect(budget({ episodic: smallest }).facts).toEqual([groupedLine]);
   expect(budget({ episodic: smallest }).receipts).toEqual([]);
   expect(budget({ episodic: smallest - 1 }).facts).toEqual([]); // one token under, it is omitted
   expect(budget({ episodic: smallest - 1 }).receipts).toContain("omitted 1 older facts; expand: F9");
   // Whatever the budget, everything emitted fits inside it — the retained facts and the receipts that
   // report the omitted ones. Only mandatory evidence may exceed it, and then it is receipted.
   const three = (episodic: number) => budgetMaterial({ knowledge: [], current: view, framing, range,
-    facts: [9, 10, 11].map(id => ({ id }) as Fact), factLine: () => line, caps: { knowledge: 1_000, current: 1_000, episodic } });
+    facts: [9, 10, 11].map(id => ({ id, turnId: 1 }) as Fact), factLine: () => line, factTurns, caps: { knowledge: 1_000, current: 1_000, episodic } });
   for (let episodic = mandatory; episodic < mandatory + 4 * tokens(line); episodic++) {
     const budgeted = three(episodic);
     const emitted = mandatory + charge(budgeted.facts) + charge(budgeted.receipts);
@@ -174,8 +176,8 @@ test("20b 2026-09-08 scenario 3: exactly-at fits and one over does not, with lab
   expect(tight.facts).toEqual([]);
   expect(tight.receipts[0]).toMatch(/^raw overage: \d+ tokens; all unrecorded raw kept$/);
   // A large omitted list stays a bounded receipt rather than an enumeration that defeats the cap.
-  const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 1 }) as Fact);
-  const bounded = budgetMaterial({ knowledge: [], current: view, framing, range, facts: many, factLine: () => line,
+  const many = Array.from({ length: 200 }, (_, i) => ({ id: i + 1, turnId: 1 }) as Fact);
+  const bounded = budgetMaterial({ knowledge: [], current: view, framing, range, facts: many, factLine: () => line, factTurns,
     caps: { knowledge: 1_000, current: 1_000, episodic: mandatory + 60 } });
   expect(bounded.receipts).toEqual(["omitted 200 older facts; expand: F1, F2, F3, F4, F5, F6, F7, F8 and 192 more up to F200"]);
   expect(tokens(bounded.receipts.join("\n"))).toBeLessThan(60);

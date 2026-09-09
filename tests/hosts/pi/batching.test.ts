@@ -249,7 +249,7 @@ test("17b 2026-09-08: native payload overhead is capacity-checked before sending
     // The overhead is real now (19c): core prices the material it froze, while the body the child
     // actually sends also carries the domain system prompt and the four tool schemas. This window
     // admits the material and cannot hold the body.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 6000, maxTokens: 500 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 6200, maxTokens: 500 };
     await h.prompt("word ".repeat(500)); await h.answer("word ".repeat(500));
     await h.emit("agent_settled"); await h.drain();
     expect(h.requests).toEqual([]);

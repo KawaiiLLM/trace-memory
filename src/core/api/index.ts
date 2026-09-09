@@ -6,7 +6,7 @@ export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
-import { finish, renderFact, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
+import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
 export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
@@ -423,13 +423,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     return false;
   };
+  const consolidationDue = (target: TaskTarget): boolean => {
+    const facts = store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+    return tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n")) >= cfg.consolidation.triggerTokens;
+  };
   const taskEligibility = (phase: Phase, target: TaskTarget, mode: "fork" | "subagent") => {
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
     const due = phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
-      : tokens(store.consolidationBatch(target.sessionId, target.branch, target.headTurnId)
-        .map(f => renderFact(f, store.listFactRelations(f.id))).join("\n")) >= cfg.consolidation.triggerTokens;
+      : consolidationDue(target);
     const paused = mode === "fork" && store.listPendingDeliveries(target.sessionId, target.branch)
       .some(p => phase === "consolidation" || store.getRun(p.runId)?.kind === "noting");
     return { due, paused };

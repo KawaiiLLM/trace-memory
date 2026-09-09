@@ -123,7 +123,7 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
   const range = { from: "S1/T1", to: "S1/T1" };
   for (let padding = 9000; padding < 9800; padding++) {
     const current = "[Source entry id: T1#user]\nHello" + " word".repeat(padding);
-    const b = budgetMaterial({ knowledge: [], facts, factLine: line, current, framing: [FACTS_TITLE, RAW_TITLE], range, caps: { knowledge: 10000, episodic: 20000, current: 10000 } });
+    const b = budgetMaterial({ knowledge: [], facts, factLine: line, factTurns: new Map([[1, "2026-09-08"]]), current, framing: [FACTS_TITLE, RAW_TITLE], range, caps: { knowledge: 10000, episodic: 20000, current: 10000 } });
     const text = notingText({ knowledge: b.knowledge, facts: b.facts, entries: [{ id: 1, view: current }], receipts: b.receipts, head: null, sources: [] }, range);
     if (!b.over.episodic) expect(tokens(text)).toBeLessThanOrEqual(20000);
   }

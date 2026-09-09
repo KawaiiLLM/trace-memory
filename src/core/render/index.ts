@@ -680,17 +680,51 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     receipts: receipts(kept) };
 }
 
-/** Historical facts fill whatever episodic space the selected current material and the mandatory cues
- * left over (ticket 20 "Shared episodic space"), in the existing freshness order, whole lines only. */
-export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaining: number) {
-  let used = 0, dropped = 0;
-  const recent: string[] = [];
+/** Turn start times for the facts being displayed, read once without loading Turn bodies. */
+export type FactTurns = ReadonlyMap<number, string>;
+const factGroupHeader = (turnId: number, turns: FactTurns): string => {
+  const time = turns.get(turnId);
+  if (time === undefined) throw new Error(`missing Turn T${turnId} for fact rendering`);
+  return `[T${turnId}] ${time} (selected facts)`;
+};
+
+/** One representation for injected facts: chronological Turn groups, then ascending fact ids.
+ * Group by the owning Turn, not each citation: a multi-Turn fact appears once with all sources.
+ * Each returned item is still one complete fact; the first in a group carries its heading so callers
+ * can keep counting facts and charging the strings they actually send. No complete-Turn claim. */
+export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => string, turns: FactTurns): string[] {
+  const groups = new Map<number, Fact[]>();
+  for (const fact of facts) {
+    const group = groups.get(fact.turnId);
+    if (group) group.push(fact); else groups.set(fact.turnId, [fact]);
+  }
+  const ordered = [...groups].map(([id, group]) => ({ id, group, header: factGroupHeader(id, turns), time: Date.parse(turns.get(id)!) }));
+  // Native times are ISO timestamps; legacy/unknown times stay explicit and sort last, by Turn id.
+  ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
+  return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
+    .map((fact, index) => `${index === 0 ? `${header}\n` : ""}${line(fact)}`));
+}
+
+/** Selection follows the caller's history priority, not display order. Charge each group heading
+ * once as well as every whole fact; only then reorder the selected subset for presentation. */
+export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaining: number, turns: FactTurns) {
+  let used = 0;
+  const selected: Fact[] = [], seen = new Set<number>(), lines = new Map<number, string>();
   for (const fact of facts) {
     const text = line(fact);
-    if (dropped || used + tokens(text) + 1 > remaining) { dropped++; continue; }
-    recent.push(text); used += tokens(text) + 1;
+    const heading = seen.has(fact.turnId) ? 0 : tokens(`${factGroupHeader(fact.turnId, turns)}\n`);
+    const cost = tokens(text) + 1 + heading;
+    if (used + cost > remaining) break;
+    selected.push(fact); lines.set(fact.id, text); seen.add(fact.turnId); used += cost;
   }
-  return { recent, receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(-dropped).map((f) => `F${f.id}`))}`] : [] };
+  let recent = renderFactGroups(selected, fact => lines.get(fact.id)!, turns);
+  // Verify the actual grouped strings too: framing is never free, nor may a different joined
+  // representation rely solely on an independently summed estimate. Trim only the priority tail.
+  while (selected.length && charge(recent) > remaining) {
+    selected.pop(); recent = renderFactGroups(selected, fact => lines.get(fact.id)!, turns);
+  }
+  const dropped = facts.length - selected.length;
+  return { recent, receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `F${f.id}`))}`] : [] };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.

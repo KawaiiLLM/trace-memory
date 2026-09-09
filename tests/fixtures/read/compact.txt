@@ -6,8 +6,9 @@
 </knowledge>
 
 <episodic>
-Recent facts (newest first):
+Recent facts (by Turn):
 
+[T1] 2026-09-06T00:00:00Z (selected facts)
 [F1] 2026-09-06T00:00:00Z [decision/user] 地形层和高度层需要一起读。
   source: T1#user
 

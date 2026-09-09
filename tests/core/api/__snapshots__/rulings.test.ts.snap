@@ -4,8 +4,10 @@ exports[`16b: branch carry fixture uses evidence ancestry, includes commits and 
 "<branch_carry>
 this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.
 Facts:
+[T1] 2026-09-06T00:00:00Z (selected facts)
 [F1] 2026-09-06T00:00:00Z [decision/user] main
   source: T1#user
+[T2] 2026-09-06T00:00:00Z (selected facts)
 [F2] 2026-09-06T00:00:00Z [decision/user] C
   source: T2#user
 Commits (by evidence):

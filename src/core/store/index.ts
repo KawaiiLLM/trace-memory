@@ -819,6 +819,14 @@ export class Store {
     return this.db.prepare("SELECT * FROM tool_calls WHERE turn_id = ? ORDER BY ordinal").all(turnId).map(toToolCall);
   }
 
+  /** Display metadata only: grouping facts must not reread their Turns' Raw bodies per fact. */
+  factTurnTimes(facts: readonly Pick<Fact, "turnId">[]): Map<number, string> {
+    const ids = [...new Set(facts.map(f => f.turnId))];
+    if (!ids.length) return new Map();
+    return new Map((this.db.prepare("SELECT id, started_at FROM turns WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(ids)) as { id: number; started_at: string }[]).map(row => [row.id, row.started_at]));
+  }
+
   listSessionFacts(sessionId: number): Fact[] {
     return this.db.prepare(
       "SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ? ORDER BY f.source_time DESC, f.id DESC",
@@ -1512,7 +1520,7 @@ export class Store {
   }
   listConsolidatedProjectFacts(projectId: number): Fact[] {
     return this.db.prepare(`SELECT DISTINCT f.* FROM facts f JOIN consolidated_facts i ON i.fact_id = f.id
-      JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.id`).all(projectId).map(toFact);
+      JOIN turns t ON t.id = f.turn_id JOIN sessions s ON s.id = t.session_id WHERE s.project_id = ? ORDER BY f.source_time DESC, f.id DESC`).all(projectId).map(toFact);
   }
 
   appendSourceEntry(input: SourceInput): SourceEntry {

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import type { FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
-import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderEntry, rawResultText, xmlBlock, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -79,6 +79,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // Both read one mutable annotation of an otherwise immutable record. A caller that froze it at
   // query time (22c) supplies it; everyone else reads it now, exactly as before.
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
+  const factGroups = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id), store.factTurnTimes(facts));
   const knowledgeLine = (value: KnowledgeWithRevision, marks: readonly KnowledgeMark[] = store.listKnowledgeMarks(value.knowledge.id)) =>
     renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id));
   // The knowledge part of the shared material contract (20a): the same parts, budgeted the same way,
@@ -180,7 +181,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
       return store.deliver(sessionId, branch, (facts, commits) => [
-        facts.length ? xmlBlock("noted", facts.map((f) => factLine(f.id)).join("\n")) : "",
+        facts.length ? xmlBlock("noted", factGroups(facts).join("\n")) : "",
         commits.length ? xmlBlock("consolidated", commits.map((r) => knowledgeLine({ knowledge: store.getKnowledge(r.knowledgeId)!, revision: r })).join("\n")) : "",
       ].filter(Boolean).join("\n\n"));
     },
@@ -199,13 +200,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
       const knowledge = store.listVisibleKnowledge(sessionId, session(sessionId).projectId, path.headTurnId, branch);
       const facts = store.listSessionFacts(sessionId);
+      const factTurns = store.factTurnTimes(facts);
       const caps = { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens };
       // 4. Recheck the whole block: one accounting for both tiers. Identities, labels, retained tool
       //    names, excerpts and omission markers are charged exactly as normal material is — the inner
       //    ceiling for the joined views, the enclosing episodic budget for the framing around them.
       const build = (views: { content: string; receipts: string[] }[], title: string) => {
         const budgeted = budgetMaterial({ knowledge, knowledgeLine, current: views.map((v) => v.content).join(BLOCK),
-          framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), caps });
+          framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), factTurns, caps });
         return { over: budgeted.over, text: compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
           entries: pending.map((entry, i) => ({ id: entry.id, view: views[i]!.content })),
           receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title) };
@@ -258,7 +260,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
-        "Facts:", ...facts.map(f => factLine(f.id)), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
+        "Facts:", ...factGroups(facts), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
         "Pending raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
       // Escape payload markup so injected content cannot close or nest the carry boundary.
       return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
 import memories from "../../fixtures/noting/facts.json";
+import { renderFactGroups } from "../../../src/core/render/index.ts";
+import type { Fact } from "../../../src/core/model/index.ts";
 
 type ConsolidationAgentInput = CoreInput & { round: "candidate" | "final"; feedback?: string; request?: any; response?: RunAgentResult };
 let directory: string, memory: ReturnType<typeof TraceMemory>, sessionId: number, projectId: number;
@@ -509,9 +511,9 @@ test("19b 2026-09-08: Consolidation material carries the exact fact list, the fa
 
 /** The rendered representation of the applicable unconsolidated facts: the same `renderFact` lines,
  * with their relations and their joining separator, that the trigger and the selection both count. */
+const grouped = (facts: Fact[]) => renderFactGroups(facts, f => memory.trace(`F${f.id}`), memory.store.factTurnTimes(facts));
 const applicableTokens = (branch = "main") =>
-  tokens(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)
-    .map(f => memory.trace(`F${f.id}`)).join("\n"));
+  tokens(grouped(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)).join("\n"));
 const due = (branch = "main") => memory.taskEligibility("consolidation",
   { sessionId, branch, headTurnId: memory.store.knowledgePath(sessionId, branch).headTurnId! }, "subagent").due;
 
@@ -531,8 +533,8 @@ test("20b 2026-09-08 scenario 6: Consolidation is due on rendered fact tokens, e
   watermark(short[0]!); knowledge([short[0]!], { text: "word ".repeat(400) });
   expect(applicableTokens()).toBeLessThan(rendered);
   // The batch takes the oldest-first whole-fact prefix that fits its own ceiling, in arrival order.
-  const lines = memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined).map(f => memory.trace(`F${f.id}`));
-  const cap = tokens(lines.slice(0, 3).join("\n"));
+  const pending = memory.store.consolidationBatch(sessionId, "main", memory.store.knowledgePath(sessionId, "main").headTurnId ?? undefined);
+  const cap = tokens(grouped(pending.slice(0, 3)).join("\n"));
   memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: cap } });
   queue(empty, empty);
   const result = await consolidation();
@@ -547,7 +549,7 @@ test("20b 2026-09-08 scenario 6: Consolidation is due on rendered fact tokens, e
  * watermark over the range label, no cross-branch leakage, nothing advanced by a failed batch. */
 test("20b 2026-09-08 scenario 7: successive token-bounded batches advance exactly their selected fact ids, and a failed batch advances nothing", async () => {
   const first = fact(memories.base), second = fact(memories.observation), third = fact(memories.interpretation);
-  const lines = [first, second, third].map(id => memory.trace(`F${id}`));
+  const lines = [first, second, third].map(id => grouped([memory.store.getFact(id)!]).join("\n"));
   // A ceiling that holds any one of these fact lines but never two: one whole fact per batch.
   memory.close(); open({ consolidation: { triggerTokens: 1, batchTokens: Math.max(...lines.map(line => tokens(line))) } });
   // A failed first batch advances nothing at all.

@@ -164,7 +164,8 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     expect(tokens(entries.map(e => e.raw).join("\n\n"))).toBeGreaterThan(20000);
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBeLessThan(20000);
     const block = compacted(h.memory.compact(1, "main", 1));
-    expect(block.split("Recent facts (newest first):\n\n")[1]!.split("\n\nRaw:")[0]).toBe("[F1] " + h.memory.store.getTurn(1)!.startedAt + " [observation/user] A useful fact\n  source: T1#user");
+    const grouped = `[T1] ${h.memory.store.getTurn(1)!.startedAt} (selected facts)\n${h.memory.trace("F1")}`;
+    expect(block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped);
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
       sent = (raw as NotingAgentInput).text.fresh;
@@ -172,7 +173,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     });
     try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
     finally { noting.close(); }
-    expect(sent.split("Recent facts (newest first):\n\n")[1]!.split("\n\nRange: ")[0]).toBe(h.memory.trace("F1"));
+    expect(sent.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRange: ")[0]).toBe(grouped);
   } finally { await h.dispose(); }
 });
 

@@ -281,12 +281,12 @@ test("20b 2026-09-08 scenario 4: no knowledge category bypasses the cap, constra
   expect(tokens(knowledgeBlock(material)) + tokens(receipts.join("\n"))).toBeLessThanOrEqual(cap);
 });
 
-test("recent facts are ordered by timestamp freshness rather than insertion id", async () => {
+test("selected historical facts display by Turn time rather than insertion id", async () => {
   const first = turn();
   const later = memory.store.appendTurn({ sessionId, parentTurnId: first.id, kind: "turn", assistantText: "later", startedAt: "2026-08-16 03:00" });
   script.push(async () => success([batch(later.id), batch(first.id)])); await noting(later.id);
   const second = turn(later.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.text.fresh.indexOf("[F1]")).toBeLessThan(calls[1]!.text.fresh.indexOf("[F2]"));
+  expect(calls[1]!.text.fresh.indexOf("[F2]")).toBeLessThan(calls[1]!.text.fresh.indexOf("[F1]"));
 });
 
 test("reopening the database preserves the run, facts, watermark and delivery", async () => {
