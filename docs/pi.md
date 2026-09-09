@@ -71,11 +71,27 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   (`native runner: …`) together with the rejected gate result under `verification.native`. If
   even that child cannot be constructed, the run fails with the reason and the queue stays
   pending for the next permitted trigger.
-- `runsDir` (19a) defaults to `<dbPath's directory>/runs`. Native worker logs are written to
-  `<runsDir>/<parent Pi session id>/<timestamp>_<child id>.jsonl`, outside Pi's own sessions
-  directory, so `/resume` never lists them. Each run record stores the absolute path as
-  `nativeLog` inside its response JSON. Retention is a documented v1 limit: nothing prunes
-  that directory.
+- `runsDir` (19a) **defaults to `<resolved Pi agent directory>/sessions/trace-memory` (24c)** —
+  ordinarily `~/.pi/agent/sessions/trace-memory/`, or under `PI_CODING_AGENT_DIR` when that is set.
+  A new fork or subagent log is a *direct* child of it, named with Pi's own
+  `<timestamp>_<child id>.jsonl`, with no per-parent subdirectory. **This supersedes ticket 19's
+  ruling 19:5** ("native worker logs live next to the database … not Pi's session directory"), whose
+  default was `<dbPath's directory>/runs/<parent Pi session id>/`. The reason is external
+  accounting: the file-based daily-cost readers scan the sessions root plus exactly one directory
+  level, so a worker log anywhere else is invisible to them and a second level would hide it again.
+  The tradeoff, accepted deliberately, is that worker sessions now appear in Pi's all-session
+  browser under `trace-memory`. There is no hiding framework and no discovery-driven import:
+  worker resource/extension discovery stays disabled and nothing imports a directory.
+- An explicit `runsDir` keeps 19a's precedence and 19a's layout,
+  `<runsDir>/<parent Pi session id>/<timestamp>_<child id>.jsonl`. Unless it *is* Pi's sessions
+  root, that layout puts the logs outside the tree those readers scan, and the read-only settings
+  view says so next to the value. Each run record still stores the absolute path as `nativeLog`
+  inside its response JSON; a directory or persistence failure fails the run rather than recording a
+  success naming a file that does not exist.
+- Changing the default moved nothing. Logs written under an earlier default stay where they are —
+  never moved, copied, symlinked, deleted or rewritten — and their run records keep naming them.
+  Logs outside the scanned tree are not retroactively part of anyone's daily total. Retention is
+  still a documented v1 limit: nothing prunes either directory.
 - `consolidation.subagentModeDefault` defaults to `true`. Set it to `false` for fork
   consolidation: the candidate round appends the consolidation prompt and input to the
   captured prefix, the final round appends the candidate reply (in the
@@ -650,8 +666,8 @@ The child is built to reproduce the parent's request bytes through the SDK's own
 The same `runNative` serves `mode: "subagent"` with four differences and no second runtime:
 
 - The manager is `SessionManager.create(cwd, runsDir)` — Pi's own new-session constructor, in the
-  runs directory, with no parent file and therefore no inherited history. Its `getSessionFile()`
-  is the run's `nativeLog`.
+  runs directory (24c: `<agent dir>/sessions/trace-memory` by default), with no parent file and
+  therefore no inherited history. Its `getSessionFile()` is the run's `nativeLog`.
 - The system prompt is core's domain prompt (through the same inline `before_agent_start`
   extension), and only the four memory tools core bound for the run are registered at all: there
   is no parent body whose tool list has to be matched.
@@ -1003,7 +1019,8 @@ kind. Tree switching contributes no extraction usage to Pi totals.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
 - On `anthropic-messages` the gate passes only with the ruled `cache_control` normalization
-  (see The runner). Nothing prunes `runsDir`.
+  (see The runner). Nothing prunes `runsDir`, and since 24c its default sits inside Pi's own
+  sessions tree, so worker conversations are listed by Pi's all-session browser.
 - A fork inherits the parent's persisted ancestry, so a capture older than the newest entries
   is not a correctness problem any more: the child's context holds them and the gate compares
   only the prefix. The request-copy runner's "captured prefix does not contain the selected

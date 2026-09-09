@@ -25,7 +25,8 @@ try {
   assert.equal(runs[0]!.outcome, "success");
   assert.deepEqual(JSON.parse(runs[0]!.request!), h.requests.at(-1));
   const response = JSON.parse(runs[0]!.response!);
-  assert.ok(response.nativeLog?.includes("/runs/"), "the run links the native child log"); // it really ran natively
+  // 24c: the default worker log is a direct child of `<agent dir>/sessions/trace-memory`.
+  assert.equal(response.nativeLog && join(response.nativeLog, ".."), join(process.env.PI_CODING_AGENT_DIR!, "sessions", "trace-memory"), "the run links the native child log under Pi's sessions tree");
   assert.ok(existsSync(response.nativeLog), "the child wrote its own session file");
   const facts = h.memory.store.listSessionFacts(1);
   assert.equal(facts.length, 1);
