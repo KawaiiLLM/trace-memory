@@ -85,15 +85,16 @@ test("25a 2026-09-09: the Consolidator's fresh order is knowledge, range, the pe
   expect(input.text.fresh).not.toContain(memory.trace("F1"));
 });
 
-test("20a 2026-09-08 for ruling 08:53: the Consolidator's inherited increment is the range, the exact fact list and the review cues alone", async () => {
+test("20a for ruling 08:53, as 25b left it: the Consolidator prepares its fresh text alone, no inherited increment", async () => {
   const { s, first } = consolidated();
   await first;
   await memory.consolidate({ sessionId: s.id, branch: "main" });
-  // 25b: this phase runs one mode, and core still prepares both representations of its material.
+  // 25b: this phase runs one mode, so core prepares one representation; the fresh text carries the range facts.
   const input = calls[1]! as ConsolidationAgentInput;
-  expect(input.text.inherited).toBe("Range: F2..F2\n\nFacts to integrate: F2\n\nNegated-evidence reminder (review cues only; no status derived):\nnone");
-  expect(input.text.inherited).not.toContain("Range facts:");
-  expect(input.text.inherited).not.toContain("<knowledge>");
+  expect(input.text.inherited).toBeUndefined();
+  expect(input.text.fresh).toContain("Range: F2..F2");
+  expect(input.text.fresh).toContain("Range facts:");
+  expect(input.material.factAddresses).toEqual(["F2"]); // the exact membership stays available to the host
 });
 
 test("20a 2026-09-08: the main agent's initial injection is knowledge and receipts only, and compact is knowledge, historical facts, pending Raw, receipts", async () => {
@@ -385,7 +386,7 @@ test("25a 2026-09-09: a fork freeze prices the complete subagent material, not o
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const bare = calls[0]! as NotingAgentInput;
   const fixed = tokens(bare.prompt) + tokens(JSON.stringify(bare.tools));
-  const forkPrice = tokens(bare.prompt) + tokens(bare.text.inherited);
+  const forkPrice = tokens(bare.prompt) + tokens(bare.text.inherited!);
   const subagentPrice = fixed + tokens(bare.text.fresh);
   expect(forkPrice).toBeLessThan(subagentPrice); // the increment alone is the cheaper representation
   memory.appendEntry({ sessionId: s.id, nativeLineage: "fixture", nativeId: "second", turnId: t.id, role: "assistant", text: "another entry", raw: "", calls: [] });

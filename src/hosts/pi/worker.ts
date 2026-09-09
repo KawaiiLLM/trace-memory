@@ -80,6 +80,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         // the captured payload, the parent file and its leaf — was decided before this run started
         // and arrives as one refusal reason.
         if ("refused" in binding.fork) throw new NotForkable(binding.fork.refused);
+        if (task.text.inherited === undefined) throw new NotForkable("this phase prepares no inherited-context material");
         const native = await runNative({ ...common, mode: "fork", parentFile: binding.fork.parentFile,
           parentSessionId: binding.fork.parentSessionId, checkpoint: binding.fork.checkpoint, captured: binding.fork.captured,
           task: `${task.prompt}\n\n${task.text.inherited}`, onCache: binding.onCache });

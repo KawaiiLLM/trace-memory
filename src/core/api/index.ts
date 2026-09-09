@@ -12,7 +12,7 @@ export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, 
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
-export { notingText, notingIncrement, consolidationText, consolidationIncrement, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
+export { notingText, notingIncrement, consolidationText, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, MaterialText, TaskRange } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";

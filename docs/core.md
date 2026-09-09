@@ -221,13 +221,13 @@ corrected it):
 modes, and the Consolidator's already-consolidated history block. Both consumers reach that material
 by explicit read instead, and knowledge a fork already inherited from the foreground is untouched.
 
-Both workers also get the inherited-context increment from that same frozen task (`notingIncrement`,
-`consolidationIncrement`; user ruling 2026-09-06 08:53): the instruction, the range, and then the
-head reply and source index, or the exact fact list and the review cues. It is what the inherited
-conversation does not already carry, never a second copy of the knowledge, facts and Raw — and, since
-25a, never a fact index or a Raw view either. Both representations are prepared for every run as
-`input.text.fresh` and `input.text.inherited`, so the execution mode cannot change the writable
-evidence range.
+The Noter also gets the inherited-context increment from that same frozen task (`notingIncrement`;
+user ruling 2026-09-06 08:53): the instruction, the range, and then the head reply and source index.
+It is what the inherited conversation does not already carry, never a second copy of the knowledge,
+facts and Raw — and, since 25a, never a fact index or a Raw view either. A Noting run has both
+representations prepared as `input.text.fresh` and `input.text.inherited`, so the execution mode
+cannot change the writable evidence range. Consolidation runs as a subagent alone (25b), so its task
+carries `fresh` only and `inherited` is absent; the former `consolidationIncrement` is gone.
 
 The leading knowledge block is `renderKnowledgeBlock`, the same `<knowledge>` block the three
 consumers that carry one use; nothing task-specific may enter it — no range, no entry id of the new batch, no

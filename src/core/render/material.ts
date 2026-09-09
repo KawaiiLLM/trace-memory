@@ -86,8 +86,9 @@ export interface ConsolidationMaterial extends SharedMaterial {
 export interface MaterialText {
   /** Fresh context: the whole ruled order, receipts last. */
   fresh: string;
-  /** Inherited context: only what that conversation does not already carry (ruling 08:53). */
-  inherited: string;
+  /** Inherited context: only what that conversation does not already carry (ruling 08:53). Noting
+   * only — Consolidation runs as a subagent alone (25b) and prepares no increment. */
+  inherited?: string;
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
@@ -100,7 +101,6 @@ export const secondaryRawTitle = (profile: EntryProfile): string =>
   `Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget ${profile.toolCallTokens} tokens, entry budget ${profile.entryTokens} tokens):`;
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
-export const INTEGRATE_TITLE = "Facts to integrate:";
 export const REMINDER_TITLE = "Negated-evidence reminder (review cues only; no status derived):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
 export const BLOCK = "\n\n";
@@ -229,9 +229,3 @@ export const consolidationText = (material: ConsolidationMaterial, range: TaskRa
   finish({ content: block([...leading(material),
     rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n"),
     REMINDER_TITLE, material.reminders.join(BLOCK) || "none"]), receipts: material.receipts });
-
-/** Consolidator, inherited context: the range, the exact fact list and the review cues (ruling
- * 08:53). The fact lines and the active knowledge are already in that conversation. */
-export const consolidationIncrement = (material: ConsolidationMaterial, range: TaskRange): string =>
-  block([rangeLine(range), `${INTEGRATE_TITLE} ${material.factAddresses.join(", ")}`,
-    `${REMINDER_TITLE}\n${material.reminders.join(BLOCK) || "none"}`]);

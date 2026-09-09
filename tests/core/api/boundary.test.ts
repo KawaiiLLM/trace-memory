@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FACTS_TITLE, INTEGRATE_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
+import { FACTS_TITLE, RANGE_FACTS_TITLE, REMINDER_TITLE, SOURCES_TITLE } from "../../../src/core/render/material.ts";
 import { sourceSeededMemory, renderEntry, toolDefinitions, tokens, ENTRY_VIEW_VERSION,
   compacted, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 
@@ -51,7 +51,7 @@ function assertNoProviderMessage(input: NotingAgentInput | ConsolidationAgentInp
     expect(key in record).toBe(false);
   expect(Array.isArray(record.input)).toBe(false); // no provider message array under any name
   expect(typeof input.text.fresh).toBe("string");
-  expect(typeof input.text.inherited).toBe("string");
+  expect(["string", "undefined"]).toContain(typeof input.text.inherited); // Noting prepares both; Consolidation only fresh (25b)
   // The parts stay parts: core's assembled blocks live in `text`, never smuggled into a material field.
   const parts = Object.values(input.material).flat().filter((part): part is string => typeof part === "string");
   for (const part of parts) {
@@ -255,7 +255,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
 });
 
 test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review blocks", () => {
-  const titles = [FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, INTEGRATE_TITLE, REMINDER_TITLE,
+  const titles = [FACTS_TITLE, RANGE_FACTS_TITLE, SOURCES_TITLE, REMINDER_TITLE,
     "<knowledge>", "Range: ${"];
   const directory = new URL("../../../src/hosts/", import.meta.url);
   const files: URL[] = [];

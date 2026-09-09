@@ -150,7 +150,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // composed. Popping the newest entry re-freezes the material, the write eligibility and the audit
     // membership together, so the reduced task and its progress range can never disagree.
     const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited);
+    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited!)  /* Noting always prepares the increment */;
     // Capacity is priced by the mode that will actually run (review 2026-09-08): a requested fork the
     // host resolves to subagent sends fresh material, not the inherited increment.
     const priced = Math.max(subagentTokens, (input.effectiveMode ?? mode) === "fork" ? forkTokens : 0);

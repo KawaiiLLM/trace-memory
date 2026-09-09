@@ -8,7 +8,7 @@ import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentCon
 import { renderKnowledge, renderFact, renderFactGroups, tokens, type FactTurns } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
-import { budgetMaterial, consolidationText, consolidationIncrement, RANGE_FACTS_TITLE, REMINDER_TITLE,
+import { budgetMaterial, consolidationText, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
@@ -178,7 +178,7 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
     reminders,
     receipts: budgeted.receipts,
   };
-  const text: MaterialText = { fresh: consolidationText(material, range), inherited: consolidationIncrement(material, range) };
+  const text: MaterialText = { fresh: consolidationText(material, range) }; // one mode, one representation (25b)
   return { range, material, text, over: budgeted.over };
 }
 
