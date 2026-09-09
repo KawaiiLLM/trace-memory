@@ -201,7 +201,9 @@ complete subagent material (22d).
 
 Noting context is two independent allowances (25a): the selected raw within `noting.batchTokens`,
 and the historical facts within what remains of `render.episodicBlockTokens` once that Raw ceiling is
-reserved — 10,000 each at the defaults. The reservation is what makes them independent: an
+reserved — 10,000 each at the defaults. Those historical facts are the facts **applicable on the
+selected path** (26 amendment 2), from the freeze's own path snapshot: a sibling branch's fact is
+never this Noter's history. The reservation is what makes them independent: an
 under-budget Raw batch never enlarges the fact slice, and unused fact space never enlarges the batch.
 Facts are selected by descending timestamp, then id. Raw is never dropped or clipped: a selected
 batch whose mandatory material (its views, the framing) cannot fit the episodic budget or the host's
@@ -536,9 +538,14 @@ pending entry on the path and returns a tier, not a string (ticket 20c):
 
 | Tier | Condition | Result |
 | --- | --- | --- |
-| `{tier: "primary", text}` | the pending entries' normal shared views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with recently selected session facts in chronological Turn groups, then those views |
+| `{tier: "primary", text}` | the pending entries' normal shared views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with the recent facts applicable on the selected path in chronological Turn groups, then those views |
 | `{tier: "secondary", text}` | the tier-1 views miss that envelope but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and the profile |
 | `{tier: "native", reason}` | not even those fit, or an entry's minima exceed the tier-2 `E` | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
+
+Both tiers' historical facts are the facts **applicable on the selected path** (26 amendment 2), in
+`listSessionFacts`' freshness order: a sibling branch's fact is not history here, and it is not an
+omission for budget either — it was never a candidate. One path snapshot answers that membership for
+the whole operation, the knowledge block included.
 
 Since 25c compact measures Raw against the shared episodic envelope alone — `noting.batchTokens` is
 the Noter's batch ceiling and compact does not read it — and both tiers are rechecked under the same
