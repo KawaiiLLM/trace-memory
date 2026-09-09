@@ -9,7 +9,7 @@ src/core/ is host-agnostic: it must not import any host SDK.
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
 - prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
-Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file.
+Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file. One result field is not recorded at all: `refused` (27c), by which a host says it would not run the frozen task in the mode it was admitted for and will admit it once more itself — core records no run for that attempt and returns the value to the caller unread, with `outcome: "dropped"`.
 
 **Core builds no provider message or body; core owns the domain text (ticket 19b, revised by the
 user's ruling of 2026-09-08 in ticket 20).** `runAgent` receives structured task material and core's
@@ -127,9 +127,11 @@ can supply is never evidence permission — the frozen range bounds what may be 
 model can see. If the oldest entry alone does not fit, core raises a capacity problem (opening with
 `NOTING_CAPACITY`) and advances nothing. The host may answer that problem by admitting the same task
 once more without an inherited prefix — the Pi host does, on its subagent model (27b) — which is an
-ordinary second `noting(...)` call, freezing its own material: core neither loops nor retries, and
-the only thing it carries for that host is the opaque `fallbackReason` it hands back with the frozen
-task, beside `thinkingLevel`.
+ordinary second `noting(...)` call, freezing its own material: core neither loops nor retries. The
+same is true of a task the host refuses *after* admission (`refused`, 27c): the re-admission is one
+more ordinary call, bounded to the frozen batch by the existing `boundary` if the host wants the same
+entries. All core carries for either is opaque and unread — `fallbackReason` and `forkAttempt`,
+handed back with the frozen task beside `thinkingLevel`.
 
 ## Rendering decisions
 

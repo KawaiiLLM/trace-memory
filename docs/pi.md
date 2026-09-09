@@ -72,18 +72,18 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - Core settings use dotted names: every `render.*`, `noting.*`, and `consolidation.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
 - `noting.forkModeDefault` defaults to `true`. Set it to `false` for subagent
-  notings. Fork notings always use the session model, including when a launched fork falls back to a
-  fresh child; `notingModel` applies when subagent mode is explicitly configured, and (27b) when a
-  fork is re-admitted for capacity before anything is sent, because that admission prices and charges
-  the model it names.
+  notings. A noting that really runs as a fork uses the session model, because that is the context it
+  inherits. **27c: every other noting uses `notingModel`** — explicit subagent mode, and a requested
+  fork that does not run as one for any reason at all, which is admitted as a subagent on that model
+  and priced by that model's own capacity (see "Per-task fork fallback" below).
 - `nativeRunner` (19a) is **gone** (19c). The native runner is the only runner, so the key
   selects nothing; like any other unrecognized key it is rejected at load with
   `Unknown setting nativeRunner`, which is 18a's rule for configuration that does not exist.
   When a fork cannot be prepared, or its first body fails prefix verification before anything
-  is sent, the task runs in a fresh native child instead and the run records `fallbackReason`
+  is sent, the task is admitted once more as a subagent (27c) and that run records `fallbackReason`
   (`native runner: …`) together with the rejected gate result under `verification.native`. If
-  even that child cannot be constructed, the run fails with the reason and the queue stays
-  pending for the next permitted trigger.
+  the second admission cannot fit the batch either, its own refusal is what is reported and the
+  queue stays pending for the next permitted trigger.
 - `runsDir` (19a) **defaults to `<resolved Pi agent directory>/sessions/trace-memory` (24c)** —
   ordinarily `~/.pi/agent/sessions/trace-memory/`, or under `PI_CODING_AGENT_DIR` when that is set.
   A new fork or subagent log is a *direct* child of it, named with Pi's own
@@ -513,11 +513,14 @@ as a fresh subagent child for the whole batch, because a fork would inherit a co
 entries are no longer in. The check is made from `sessionManager.getBranch()` at admission
 and again at the actual launch, so a task prepared before the compaction but held for a
 slot, a claim or native readiness is caught too; nothing is cached, so reopening and tree
-navigation give the same answer. A fork already running against its own frozen context is
-never restarted, replayed or cancelled for this. It is a per-task evidence-readiness
-decision, not the cache-miss latch: the requested/configured mode is preserved in the run
-record, the actual `subagent` mode and a `pre-compaction evidence: …` fallback reason are
-recorded, and enrollment, configuration and fork suppression are untouched. A batch whose
+navigation give the same answer. **27c: the admission that refuses the fork also selects the
+model** — `notingModel` and its capacity, before the batch is frozen — and the launch's own
+recheck sends the task back for one re-admission on that same model. A fork already running
+against its own frozen context is never restarted, replayed or cancelled for this. It is a
+per-task evidence-readiness decision, not the cache-miss latch: the requested/configured mode
+is preserved in the run record, the actual `subagent` mode, the model that ran and a
+`pre-compaction evidence: …` fallback reason are recorded, and enrollment, configuration and
+fork suppression are untouched. A batch whose
 entries all follow the boundary uses the normal configured mode.
 
 ## Manual catchup and stop (18b)
@@ -716,12 +719,12 @@ OpenAI maps `cached_tokens` (verified in nested `dist/api/anthropic-messages.js:
 `openai-completions.js:1180`, and `openai-responses-shared.js:441`). `response.usage`
 preserves the full SDK usage.
 
-A rejected first body throws inside `onPayload`, before anything is sent: nothing is billed,
-the same run continues in a fresh native child with the full fresh-context material, and it
-records `mode: subagent`, `requestedMode: fork`, `response.fallbackReason` and the rejected
-gate result (both hashes and the differing path) under `verification.native`. Missing or
-unsupported captures have a reason but no fabricated comparison or hashes. Notification happens
-once per Pi session. A later round mismatch fails that round with no fallback; the record
+A rejected first body throws inside `onPayload`, before anything is sent: nothing is billed, and
+the task is admitted once more as a subagent (27c) with the full fresh-context material on the
+configured Noter model. That run records `mode: subagent`, `requestedMode: fork`,
+`response.fallbackReason` and the rejected gate result (both hashes and the differing path) under
+`verification.native`. Missing or unsupported captures have a reason but no fabricated comparison
+or hashes. Notification happens once per Pi session. A later round mismatch fails that round with no fallback; the record
 retains the last request actually sent and the failed comparison, and a prior committed batch
 stays committed. Provider failures after a passed comparison stay fork failures, with one
 exception, which is 27b's post-attempt fallback below: a rejection pi-ai's own `isContextOverflow`
@@ -827,51 +830,67 @@ The same `runNative` serves `mode: "subagent"` with four differences and no seco
 - The child keeps its own `agent.sessionId`; the parent's request identity is a fork-only
   decision.
 
-A fork that cannot be prepared records `requestedMode: "fork"`, run `mode: "subagent"` and
-`fallbackReason: "native runner: <reason>"`, warns once per Pi session, and continues on the
-fresh child without a second billable attempt (nothing had been sent). If that child cannot be
-constructed either, the run fails with both reasons; nothing is committed and nothing advances.
+**Per-task fork fallback: one path (27c; 27b before it; parent 27 "Per-task fork fallback",
+amendments 1, 4, 5 and 6).** One rule covers every reason a requested fork does not run as one:
 
-**Per-task fork fallback (27b; parent 27 "Per-task fork fallback", amendments 1, 4, 5 and 6).**
-Two more ways a Noter fork continues as a fresh child, each at most once per task:
+> the task runs as a **subagent on the configured Noter model** (`notingModel`, the `session`
+> preference included), priced by **that model's** capacity (`contextWindow − 10,000`), with fresh
+> material, and the run audit records the requested mode `fork`, the effective mode `subagent`, the
+> reason (`fallbackReason`) and the model that actually ran.
 
-- **Before sending, at admission.** The freeze prices the batch for the mode that will run, so a
-  fork whose inherited context plus instructions cannot fit the allowance is refused there, and a
-  session Pi reports no context measure for has no fork base at all. Instead of leaving feasible
-  work pending, the host admits the task **once more** — still requesting `fork`, so the audit
-  keeps what was configured, but with the configured Noter model (`notingModel`, the `session`
-  preference included), that model's own capacity, and the batch re-frozen with fresh material
-  under the ordinary exact selection. The evidence path and a manual catchup's frozen boundary
-  travel with it. The reason is frozen on that second admission (`TaskOptions.fallbackReason`,
-  opaque to core) and reaches the launch as this task's fork refusal, so it never consults the
-  live state again — which is also the one-transition guard: a task carrying a reason cannot be
-  rerouted a second time. If the fresh admission cannot fit either, that refusal is what is
-  reported and the evidence stays pending.
-- **After a real attempt.** A provider rejection that pi-ai's own `isContextOverflow` classifies as
-  a context overflow of this model's window — called with the child's terminal assistant message,
-  never a pattern list or an error string of ours — in a run whose core commit state shows no
-  business submission (`note` or `memory` returned a non-rejection receipt; a tool name or a
-  display string is never read as one) and that was not cancelled, runs once more as a fresh child
-  on the **same frozen evidence**. `fallbackReason: "context overflow: <the provider's own words>
-  (fork attempt log: <the fork child's own JSONL>)"`. Authentication, network and rate-limit
-  rejections are not capacity failures and end the run as themselves; so does any failure after a
-  commit, a cancellation, a stop, a shutdown, a lost claim and a disabled enrollment (all of which
-  reach the run as an aborted signal). The fresh child is a subagent already, so nothing falls back
-  again: its own failure is the run's failure, never hidden by the warning.
+The reasons, and where each is decided:
 
-Both are warnings, not errors: neither sets the cache-miss latch, changes a setting, a default mode
-or a persisted mode, and a later task may request fork again. One run record covers both attempts —
-the requested mode, the effective mode, the reason, the model actually charged, the fork attempt's
-own usage added to the fresh child's and its log named in the reason. A rejected request reports the
-SDK's placeholder zeros, which stay unknown: never a paid successful generation, never a zero.
+- **At admission, from this host's live state.** The cache-miss latch, and ticket 20's
+  pre-compaction evidence. Nothing is frozen yet, so this admission simply selects `notingModel`
+  and its capacity: no second admission, and the reason is frozen with the task
+  (`TaskOptions.fallbackReason`, opaque to core) as the run's `fallbackReason`.
+- **At admission, from the freeze (27b).** A fork whose inherited context plus instructions cannot
+  fit the allowance, and a session Pi reports no context measure for (no fork base at all). Instead
+  of leaving feasible work pending, the host admits the task **once more** with the model, the
+  capacity and the fresh material above, under the ordinary exact selection.
+- **After admission, at the launch.** Every condition `forkLaunch` rechecks against the live state
+  for the task it is about to run — the latch, pre-compaction evidence, a branch changed since
+  admission, a missing or foreign capture, a session model changed since the capture, an
+  unpersisted parent, no persisted leaf — and the native gate's rejection of the child's first body
+  (`native runner: <reason>`, with the rejected comparison under `verification.native`). Nothing
+  was sent. `runWorker` returns the refusal rather than rerunning the frozen task itself, and the
+  host admits it once more.
+- **After a real attempt (27b).** A provider rejection that pi-ai's own `isContextOverflow`
+  classifies as a context overflow of this model's window — called with the child's terminal
+  assistant message, never a pattern list or an error string of ours — in a run whose core commit
+  state shows no business submission (`note` or `memory` returned a non-rejection receipt; a tool
+  name or a display string is never read as one) and that was not cancelled.
+  `fallbackReason: "context overflow: <the provider's own words> (fork attempt log: <the fork
+  child's own JSONL>)"`. Authentication, network and rate-limit rejections are not capacity failures
+  and end the run as themselves; so does any failure after a commit, a cancellation, a stop, a
+  shutdown, a lost claim and a disabled enrollment (all of which reach the run as an aborted signal).
+
+**One transition per task, structurally.** A re-admitted task carries its reason, and a task
+carrying one is not offered a fork at all, so it cannot be refused one — its own failure is the
+run's failure, never hidden by the warning. A task that already ran keeps its frozen evidence
+membership across the re-admission through 18b's task boundary (`maxEntryId` = the frozen batch's
+last entry id), so evidence that arrived while the attempt was in flight waits for the next batch.
+If the re-admission cannot fit the batch either, that refusal is what is reported and the evidence
+stays pending.
+
+**One run record per task.** No run is recorded for a refused attempt: core hands the refusal back
+to the host unread (`RunAgentResult.refused`, `outcome: "dropped"`), and what the attempt produced
+— its usage, its retries and its gate result — travels into the re-admission
+(`TaskOptions.forkAttempt`) and is recorded there, beside the fork child's log named in the reason.
+A rejected request reports the SDK's placeholder zeros, which stay unknown: never a paid successful
+generation, never a zero.
+
+Every one of these is a warning, not an error: none sets the cache-miss latch, changes a setting, a
+default mode or a persisted mode, and a later task may request fork again. One warning per Pi
+session names the reason.
 
 `agent.onPayload` is wrapped (the extension runner's own handler is still called): the first
 body is checked against the captured parent request with `verifyForkRequest`, appended messages
 being everything past the captured message count. Later rounds are checked the same way against
 the previous round. A rejected first body throws inside `onPayload`, **before** the request
-leaves, so the task continues in a fresh native child with `fallbackReason: native runner: …`
-and the rejected result under `verification.native` (both hashes and the differing path).
-Nothing is billed twice.
+leaves, so the task is admitted once more as a subagent (27c) with
+`fallbackReason: native runner: …` and the rejected result under `verification.native` (both hashes
+and the differing path). Nothing is billed twice.
 
 **Gate result (19a).** With the production Noter and Consolidator prompts and the production
 tool definitions, driven through the real installed pi-ai adapter:

@@ -2,9 +2,9 @@
 // task and a binding of values, and nothing else. These cases call it with no ExtensionContext and
 // no host at all — the fixture only supplies an agent directory, a model and the stubbed wire — so
 // they fail if the adapter ever reaches back into the host's session state. The mid-flight mutation
-// below states the other half of the contract — the binding is read once, at launch — which is a
-// structural property: the only place the adapter calls the runner twice (a fork that falls back)
-// has no interleaving point, so nothing observable distinguishes it from the live reads it replaced.
+// below states the other half of the contract — the binding is read once, at launch. 27c: the
+// adapter never calls the runner twice any more; a fork it cannot run comes back to the host as a
+// refusal, and the host admits the task once more (tests/hosts/pi/fallback.test.ts).
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
@@ -15,7 +15,7 @@ import type { NotingAgentInput, ToolDefinition } from "../../../src/core/api/ind
 const note = (): ToolDefinition => ({ name: "note", description: "Record facts.", parameters: { type: "object", properties: {} }, execute: () => "committed" });
 /** One frozen core task, as the façade prepares it. */
 const task = (mode: "fork" | "subagent"): NotingAgentInput => ({
-  kind: "noting", mode, model: "fake/test", sessionId: 1, branch: "main",
+  kind: "noting", mode, model: "fake/test", sessionId: 1, branch: "main", entryIds: [7, 8],
   prompt: "You are the Noter.", text: { fresh: "note what happened", inherited: "the increment" },
   reportRequest: () => {}, reportProgress: () => {},
 } as unknown as NotingAgentInput);
@@ -30,7 +30,7 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
     const checked: (number | undefined)[] = [], reported: unknown[] = [];
     const binding: WorkerBinding = { model: f.model as never, checkCapacity: contextTokens => { checked.push(contextTokens); },
       tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {}, onFallback: () => {} };
+      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} };
     const frozen = { ...task("subagent"), reportRequest: (body: unknown) => { reported.push(body); } };
     const run = runWorker(frozen, binding);
     await vi.waitFor(() => expect(sent.length).toBe(1));
@@ -53,18 +53,34 @@ test("finding 4: a run is bound to the values it was handed, and a host change a
   } finally { await f.dispose(); }
 });
 
-test("finding 4: the host's fork refusal arrives as a value, and the run continues as a fresh child with that reason", async () => {
+test("27c: the host's fork refusal arrives as a value, and the run comes back to the host as a refusal", async () => {
   const f = await fixture();
   try {
     f.script(async () => say("Done."));
-    const fallbacks: string[] = [];
+    const before = f.sent.length;
     const result = await runWorker(task("fork"), { model: f.model as never, checkCapacity: () => {},
       tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
       fork: { refused: "No current-branch provider payload captured" },
-      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {}, onFallback: reason => fallbacks.push(reason) });
+      onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
+    // 27c: the adapter runs the task in the mode it was admitted for, and no other. The refusal names
+    // the reason for the audit and the frozen batch the host must re-admit on; nothing was sent, so it
+    // carries no usage and no gate result, and no fresh child ran here on the frozen model.
+    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { maxEntryId: 8 } });
+    expect(f.sent.length).toBe(before);
+  } finally { await f.dispose(); }
+});
+
+test("27c: a task admitted with a reason runs fresh and records it — the launch is not offered a fork", async () => {
+  const f = await fixture();
+  try {
+    f.script(async () => say("Done."));
+    const result = await runWorker({ ...task("fork"), fallbackReason: "pre-compaction evidence: 2 selected entries precede the persisted compaction e5" } as NotingAgentInput,
+      { model: f.model as never, checkCapacity: () => {},
+        tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
+        onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
     expect(result.outcome).toBe("success");
     expect(result.mode).toBe("subagent");
-    expect(result.fallbackReason).toBe("native runner: No current-branch provider payload captured");
-    expect(fallbacks).toEqual(["native runner: No current-branch provider payload captured"]);
+    expect(result.refused).toBeUndefined();
+    expect(result.fallbackReason).toBe("pre-compaction evidence: 2 selected entries precede the persisted compaction e5");
   } finally { await f.dispose(); }
 });

@@ -63,7 +63,10 @@ export interface EntryAudit {
   viewBudgets: { toolCallTokens: number; entryTokens: number };
 }
 export type NotingResult =
-  | { outcome: "dropped" | "empty" }
+  | { outcome: "empty" }
+  /** 27c: `refused` is the host's own refusal value, returned unread when the host declined to run
+   * this task in the mode it was admitted for and admits it once more itself. No run was recorded. */
+  | { outcome: "dropped"; refused?: unknown }
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
       /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
@@ -261,6 +264,11 @@ export async function runNoting(
   finally { binding.close(); }
   // A direct facade close may dispose before the provider settles; never access that store.
   if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
+  // 27c: the host would not run this frozen task in the mode it was admitted for (its fork was
+  // refused at the launch, by the host's gate or by the provider's context limit) and admits it once
+  // more itself. Nothing was committed, so no run is recorded for an attempt that becomes part of the
+  // next one: the refusal — with what the attempt spent — goes back to the host unread.
+  if (result.refused !== undefined) return { outcome: "dropped", refused: result.refused };
   // 26a: the run ended normally, committed nothing and had nothing rejected. That is incomplete, not
   // an implicit empty submission: the attempt and its usage are recorded under the existing `failure`
   // outcome and no entry is marked processed. A provider failure or a cancellation keeps its own.

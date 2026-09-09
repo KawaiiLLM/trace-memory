@@ -223,6 +223,13 @@ export interface RunAgentResult {
   audit?: { available: false; reason: string };
   verification?: unknown;
   fallbackReason?: string;
+  /** 27c (parent 27 "Per-task fork fallback"): the host would not run this frozen task in the mode it
+   * was admitted for — a fork its launch, its gate or the provider's context limit refused — and it
+   * admits the task once more itself, on the model that will run it. Nothing was committed and no run
+   * is recorded for this attempt: the value is opaque to core, which returns it to the caller with
+   * `outcome: "dropped"` so what the attempt produced is charged to the run the re-admission makes,
+   * and one task keeps one run record. */
+  refused?: unknown;
   /** Absolute path of the host's native worker log for this run, when the host writes one (19a). */
   nativeLog?: string;
   /** Transient provider errors retried by the host before this reply, in order. */
@@ -257,6 +264,10 @@ export interface TaskOptions {
    * `effectiveMode` prices and runs the fresh child. Opaque to core, like `thinkingLevel`: core hands
    * it back with the frozen task and it becomes the run's `fallbackReason`. */
   fallbackReason?: string;
+  /** 27c: the refusal of this task's previous attempt, handed back by the host on the re-admission so
+   * the run that does happen keeps what that attempt produced — its usage, its retries and its gate
+   * result. Opaque to core, like `fallbackReason`: carried to the frozen task and never read. */
+  forkAttempt?: unknown;
 }
 export interface AgentControl {
   signal?: AbortSignal;
@@ -269,6 +280,9 @@ export interface AgentControl {
   /** 27b: the reason frozen at admission (`TaskOptions.fallbackReason`), returned to the host with
    * the frozen task so this run launches no fork whatever the host's live state says now. */
   fallbackReason?: string;
+  /** 27c: the previous attempt's refusal (`TaskOptions.forkAttempt`), returned with the frozen task
+   * so this run's record keeps what that attempt produced. */
+  forkAttempt?: unknown;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -535,7 +549,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason,
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | undefined;
