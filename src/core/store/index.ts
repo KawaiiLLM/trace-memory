@@ -913,6 +913,14 @@ export class Store {
     return row ? toFact(row) : null;
   }
 
+  /** 25d "Range semantics": the facts that exist in an inclusive id interval, ascending. One indexed
+   * query over the rows that are there, never a walk of the numeric span: `F1-F1000000000` costs what
+   * its existing facts cost, and an interval over a gap answers with an empty list rather than with a
+   * missing-record diagnostic per integer. */
+  listFactIdsInRange(from: number, to: number): number[] {
+    return (this.db.prepare("SELECT id FROM facts WHERE id BETWEEN ? AND ? ORDER BY id").all(from, to) as { id: number }[]).map(row => row.id);
+  }
+
   /**
    * Commit one noting run: the run record and its facts (with relations) as one transaction.
    * A relation target is either "F<id>" (an existing fact) or "$n" (the n-th fact of this

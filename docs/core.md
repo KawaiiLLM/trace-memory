@@ -322,6 +322,38 @@ and negation-walk addresses reject options; malformed addresses and missing
 knowledge/facts/commits raise descriptive errors. Session addresses, comma lists,
 and listing cursors are supported.
 
+## Batch trace: comma lists and fact intervals (ticket 25d)
+
+One `address` string may carry several addresses, comma separated: `F81,F90,F95`.
+Kinds may be mixed (`K1@57,T12,F81`), components are read in the order asked, and
+repeats are kept — nothing is deduplicated. `F81-F90` is the inclusive fact-id
+interval: a hyphen, so `..` keeps its single meaning (`F81..` walks later strong
+negations, `K1@57..K1@61` diffs two commits, `K1..` shows the commit tree). It
+combines with the rest as `F81-F90,F95`.
+
+An interval reads the facts that **exist** in the numeric range, in ascending id
+order: one indexed range query selects the existing ids and each of them is
+rendered as the full record `F<n>` prints, so `F1-F1000000000` costs what its facts
+cost rather than what its span suggests, and nothing is allocated per integer.
+A range with no facts prints `F81-F90: no facts exist in this range`; an
+individual `F81` keeps its own missing-record error. Endpoints are positive safe
+integers without leading zeros in ascending order, a one-element interval
+(`F81-F81`) included; a reversed, unsafe, zero-padded or non-fact pair of that
+shape (`F90-F81`, `T1-T9`) is rejected by name. Every component of an expression is
+parsed before the read begins, so a refused expression leaves no continuation
+state behind. Interval grammar is recognized only for address-shaped components
+(an uppercase letter and digits on both sides), so a hyphenated project name such
+as `trace-memory` still resolves as a project.
+
+A batch is one read: its components are rendered at query time, in request order,
+and `cap`/`cursor` page that one line stream — no child cursor is nested inside a
+page and no remainder of an address is dropped. Because the whole batch exists
+before the first page returns, the annotations 22c freezes for a search (a fact's
+relations, a commit's marks, a Turn's occurrences and Raw profile) cannot move
+under a later page either. A read through a run's tools is recorded and audited as
+the expression the model wrote, and the knowledge components of a mixed expression
+still update that run's knowledge read base.
+
 The trace fixture in `tests/fixtures/trace.json` is cut from simulation v7m's
 `knowledge.json` (knowledge 2, both revisions) and `facts.jsonl` (facts 2, 8, 35, 81).
 Only required records/fields are copied. Category and strength enums are mapped
@@ -487,8 +519,10 @@ any of them between two pages adds no hit, drops none and moves no label, and no
 is held between pages: no open transaction, no reserved connection.
 
 `trace` additionally accepts session addresses, exact project names, comma lists,
-and `{ cap?, cursor? }`. Projects list global/project knowledge and project facts;
-sessions list turns. Listing caps count output lines, default 100. Tool input is
+fact intervals (`F81-F90`, see **Batch trace** above) and `{ cap?, cursor? }`.
+Projects list global/project knowledge and project facts;
+sessions list turns. Listing caps count output lines, default 100 — the unit is
+lines, not facts and not tokens. Tool input is
 `trace({address, tool?, full?, cursor?, cap?})` or
 `search({query, layer?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
 Display options are parameters, never address flags. The per-output cap flag is

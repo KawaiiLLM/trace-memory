@@ -204,7 +204,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   objects, with façade descriptions and schema objects. Pi execution fields are
   non-enumerable so provider serialization includes only the shared metadata. `trace({address,
   tool, full, cursor, cap})` and `search({query, layer, cursor, cap})` read session-visible
-  evidence without visibility restrictions; `note({facts})` writes facts and `memory({operations, skipped})` writes
+  evidence without visibility restrictions; one `address` may carry a comma list
+  (`F81,F90,F95`, kinds mixable, request order and repeats kept) and inclusive fact-id
+  intervals (`F81-F90`, combinable as `F81-F90,F95`), while `cap` counts output lines; `note({facts})` writes facts and `memory({operations, skipped})` writes
   knowledge; every knowledge operation carries its own `supports` evidence and a
   `reason` commit message, and create/update/merge also carry the revision's complete
   `topics` label set, whose schema core owns. Main-agent executions call `tools(context)` with kind `manual` and

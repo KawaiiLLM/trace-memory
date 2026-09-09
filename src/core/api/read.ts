@@ -89,11 +89,41 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return { knowledge: active.groups, receipts: active.receipts };
   };
   const knowledge = (id: number, headTurnId?: number | null, branch?: string) => knowledgeFor(session(id).projectId, id, headTurnId, branch);
+  /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
+   * The hyphen is the whole interval grammar, so `..` keeps its single meaning (`F81..` walks later
+   * strong negations, `K1@57..K1@61` diffs two commits). Endpoints are positive safe integers without
+   * leading zeros, in ascending order, a one-element interval included; a reversed, unsafe, zero-padded
+   * or non-fact pair of that shape is rejected here by name — every component is parsed before the read
+   * begins, so no continuation state exists when an expression is refused. Anything that is not
+   * address-shaped (a project name like `trace-memory`) is not an interval and still resolves as before. */
+  const factInterval = (target: string): { from: number; to: number } | null => {
+    const match = /^([A-Z])(\d+)-([A-Z])(\d+)$/.exec(target);
+    if (!match) return null;
+    const [left, from, right, to] = match.slice(1) as [string, string, string, string];
+    const reject = (reason: string): never => { throw new Error(`invalid trace interval ${target}: ${reason}`); };
+    if (left !== "F" || right !== "F") reject("only fact-id intervals exist, as F81-F90");
+    if (!/^[1-9]\d*$/.test(from) || !/^[1-9]\d*$/.test(to)) reject("endpoints are positive integers without leading zeros");
+    const [first, last] = [Number(from), Number(to)];
+    if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last)) reject("endpoints are safe integers");
+    if (first > last) reject("endpoints ascend, as F81-F90");
+    return { from: first, to: last };
+  };
   const trace = (address: string, options: ListingOptions = {}): string => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     const targets = address.split(",").map((a) => a.trim());
-    if (targets.length > 1) return page(targets.flatMap((a) => trace(a, { ...options, cap: Number.MAX_SAFE_INTEGER }).split("\n")), options);
+    const intervals = targets.map(factInterval);
+    // A comma list and an interval are the same read: every component is rendered in request order, at
+    // query time, and `page` hands the caller one cap's worth of the lines with a cursor for the rest.
+    // Rendering here is also what freezes an interval's relations — like the rest of the batch, its
+    // lines exist before the first page is returned, so a relation written between two pages cannot
+    // reach an established one (22c's snapshot rule, met by having nothing left to read).
+    if (targets.length > 1 || intervals.some(Boolean)) return page(targets.flatMap((target, index) => {
+      const range = intervals[index];
+      if (!range) return trace(target, { ...options, cap: Number.MAX_SAFE_INTEGER }).split("\n");
+      const ids = store.listFactIdsInRange(range.from, range.to);
+      return ids.length ? ids.flatMap((id) => factLine(id).split("\n")) : [`${target}: no facts exist in this range`];
+    }), options);
     const s = /^S([1-9]\d*)$/.exec(address);
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
     let project = store.findProjectByName(address);
