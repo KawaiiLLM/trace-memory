@@ -43,9 +43,9 @@ function settings(cwd: string, agentDir = agentDirectory()) {
   return { global: read(join(agentDir, "settings.json")), project: read(join(cwd, ".pi", "settings.json")) };
 }
 // Host settings that are not core config sections. `runsDir` places the native worker logs
-// (default: dbPath's directory/runs). 19c deleted `nativeRunner`: the native runner is the only
-// runner, so the key no longer selects anything and 18a's unknown-key rule rejects it like any
-// other misspelling instead of silently accepting a setting that does nothing.
+// (default since 24c: `<Pi agent directory>/sessions/trace-memory`). 19c deleted `nativeRunner`:
+// the native runner is the only runner, so the key no longer selects anything and 18a's unknown-key
+// rule rejects it like any other misspelling instead of silently accepting a setting that does nothing.
 const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir"];
 function configuration(cwd: string, environment = process.env.TRACE_MEMORY_CONFIG, agentDir = agentDirectory()) {
   const files = settings(cwd, agentDir);
@@ -107,9 +107,24 @@ export default function (pi: ExtensionAPI) {
   let { flat, core, sources, layers } = configuration(process.cwd());
   const dbPath = String(flat.dbPath ?? join(homedir(), ".trace-memory", "trace.db")).replace(/^~\//, `${homedir()}/`);
   if (dbPath !== ":memory:") mkdirSync(dirname(resolve(dbPath)), { recursive: true });
-  // Ruling 19:5 — native worker logs live next to the database, never in Pi's own sessions
-  // directory (which /resume scans) and never in the project tree. Retention is a v1 limit.
-  const runsDirectory = (piId: string) => join(resolve(String(flat.runsDir ?? join(dirname(resolve(dbPath === ":memory:" ? join(homedir(), ".trace-memory", "trace.db") : dbPath)), "runs")).replace(/^~\//, `${homedir()}/`)), piId);
+  // 24c supersedes ruling 19:5's default destination (`<dbPath's directory>/runs/<parent id>/`).
+  // With no explicit `runsDir`, a new worker log is a DIRECT child of `<agent dir>/sessions/
+  // trace-memory` — one level under Pi's own sessions root, with no per-parent subdirectory —
+  // because the external daily-cost reader scans the sessions root plus exactly one directory
+  // level, and a second level would hide the file from it. The tradeoff, documented in docs/pi.md,
+  // is that worker sessions become visible in Pi's all-session browser under `trace-memory`.
+  // Old logs are not moved, copied or rewritten, and no historical `nativeLog` is rewritten:
+  // this changes where the NEXT log is written and nothing else. Retention is still a v1 limit.
+  const sessionsRoot = join(agentDir, "sessions");
+  // An explicit `runsDir` keeps 19a's precedence and its `<runsDir>/<parent Pi session id>/` layout.
+  // Read from `flat` on every call, as before: `restore` reloads the settings layers on each
+  // session start, so a directory decided once at construction would go stale.
+  const configuredRunsDir = () => flat.runsDir === undefined ? undefined : resolve(String(flat.runsDir).replace(/^~\//, `${homedir()}/`));
+  const runsDirectory = (piId: string) => { const configured = configuredRunsDir(); return configured === undefined ? join(sessionsRoot, "trace-memory") : join(configured, piId); };
+  // Disclosure for the read-only settings view: with the per-parent level an explicit directory
+  // puts its logs two levels down unless it IS the sessions root, so file-based daily statistics
+  // do not see them.
+  const runsOutsideScan = () => { const configured = configuredRunsDir(); return configured !== undefined && configured !== sessionsRoot; };
   let ctx: ExtensionContext;
   let closed = false;
   type Capture = { payload: Body; model: string; provider: string; branch: string };
@@ -957,11 +972,14 @@ export default function (pi: ExtensionAPI) {
       stopCatchup();
     } else if (selected === "Settings (Global, read-only)") {
       const defaults = { dbPath: "~/.trace-memory/trace.db", notingModel: "session", consolidationModel: "session",
-        runsDir: "<dbPath directory>/runs",
+        runsDir: "<Pi agent directory>/sessions/trace-memory",
         ...Object.fromEntries(Object.entries(DEFAULT_CONFIG).flatMap(([s, values]) => Object.entries(values).map(([k, v]) => [`${s}.${k}`, v]))) };
       ctx.ui.notify("Settings — Global, read-only (project and environment overrides apply)\n" + Object.entries(defaults).map(([key, fallback]) => {
         const masked = Object.entries(layers).filter(([layer, values]) => layer !== sources[key] && Object.hasOwn(values, key)).map(([layer, values]) => `${layer}=${JSON.stringify(values[key])} masked`);
-        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}`;
+        // 24c: an explicit runsDir keeps its own layout, and is disclosed when that layout puts the
+        // logs outside the sessions tree file-based daily statistics scan.
+        const note = key === "runsDir" && runsOutsideScan() ? `; worker logs go to <runsDir>/<parent Pi session id>/, outside Pi's scanned sessions tree` : "";
+        return `${key}: ${JSON.stringify(flat[key] ?? fallback)} (${sources[key] ?? "Default"})${masked.length ? `; ${masked.join("; ")}` : ""}${note}`;
       }).join("\n"), "info");
     } else if (selected === "Runs") {
       const count = await ctx.ui.input("Runs: number to show", "10");

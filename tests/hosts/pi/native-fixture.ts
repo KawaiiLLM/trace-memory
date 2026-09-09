@@ -38,7 +38,12 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
   // the child the adapter builds.
   const h = host({ "noting.triggerTokens": 20, ...config }, { native: () => manager as never, fetch: false });
-  const agentDir = join(h.dir, "agent"), sessionsDir = join(h.dir, "sessions");
+  // 24c: the parent lives where real Pi puts a foreground session — one directory level under the
+  // agent's own sessions root — so the worker logs the host writes are its siblings, exactly as they
+  // are in production, and an external reader of that root sees the same tree a user would have.
+  const agentDir = join(h.dir, "agent"), sessionsRoot = join(agentDir, "sessions"), sessionsDir = join(sessionsRoot, "parent");
+  /** The 24c default worker-log directory for this fixture's agent root. */
+  const runsDir = join(sessionsRoot, "trace-memory");
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
   const model = modelRuntime.getModel(provider, "test")!;
   (h.ctx as { model: unknown }).model = model;
@@ -54,7 +59,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   const { session: parent } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
     sessionManager: manager, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
   const original = { id: manager.getSessionId(), file: manager.getSessionFile()! };
-  return { h, parent, model, agentDir, sessionsDir, sent, original,
+  return { h, parent, model, agentDir, sessionsRoot, sessionsDir, runsDir, sent, original,
     manager: () => manager!,
     script: (fn: (body: Body, index: number) => Response | Promise<Response>) => { respond = fn; },
     /** One real parent turn, then the extension hooks the foreground would have fired. `capture`
@@ -72,7 +77,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     /** The same child the host builds, for the checks that need it without the host's scheduling. */
     task(captured: Body, overrides: Partial<NativeForkTask> = {}): NativeForkTask {
       return { mode: "fork", parentFile: manager!.getSessionFile()!, parentSessionId: manager!.getSessionId(),
-        checkpoint: manager!.getLeafId()!, runsDir: join(h.dir, "runs", manager!.getSessionId()), cwd: h.dir, agentDir,
+        checkpoint: manager!.getLeafId()!, runsDir, cwd: h.dir, agentDir,
         model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };
     },
