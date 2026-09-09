@@ -21,12 +21,20 @@ export class NotForkable extends Error {
   constructor(message: string, verification?: Verification) { super(message); this.verification = verification; }
 }
 
+/** Pi's own thinking levels — `ThinkingLevel` in `@earendil-works/pi-agent-core`, which the
+ * coding-agent package this adapter depends on does not re-export. */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
 interface NativeCommon {
   runsDir: string;
   cwd: string;
   agentDir: string;
   /** Already resolved by the host (notingModel/consolidationModel or the session model). */
   model: { provider: string; id: string; api: string; [key: string]: unknown };
+  /** 26b: the foreground level the host froze with this task at admission, passed to Pi's own session
+   * constructor so neither a per-model preference nor the global default decides the worker's level.
+   * Pi clamps it to what this model supports. Absent leaves Pi's own resolution in charge. */
+  thinkingLevel?: ThinkingLevel;
   /** The adapter-composed user prompt for this run (hosts/pi/compose.ts). */
   task: string;
   tools: ToolDefinition[];
@@ -76,6 +84,8 @@ export interface NativeResult {
   retries: { attempt: number; error: string }[];
   /** Absolute path of the child's own JSONL under the runs directory. */
   nativeLog?: string;
+  /** 26b: the level this child was asked to run at and the level Pi's clamp left it at. */
+  thinking: { requested?: ThinkingLevel; effective: ThinkingLevel };
   /** A whitelisted memory tool returned a non-rejection receipt in this run. */
   committed: boolean;
   /** Observed tool-call order, including rejected non-whitelisted calls. */
@@ -259,9 +269,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [{ name: "trace-memory-worker", hidden: true, factory: (pi: ExtensionAPI) => { pi.on("before_agent_start", () => ({ systemPrompt: system })); } }] });
   await resourceLoader.reload();
+  // 26b: the frozen level is Pi's own `thinkingLevel` option, which takes precedence over the entry a
+  // forked ancestry carries, the per-model preference and the global default, and is clamped by Pi to
+  // the levels this model supports. The effective level is read back from the session Pi built.
   const { session } = await createAgentSession({ cwd: task.cwd, agentDir: task.agentDir, model: task.model as never,
-    settingsManager, resourceLoader, sessionManager: manager,
+    settingsManager, resourceLoader, sessionManager: manager, thinkingLevel: task.thinkingLevel,
     noTools: "all", tools: definitions.map(d => d.name), customTools: definitions });
+  const thinking = { ...(task.thinkingLevel ? { requested: task.thinkingLevel } : {}), effective: session.thinkingLevel };
 
   // --- Run the child.
   const verification: Verification | undefined = task.mode !== "fork" ? undefined
@@ -376,6 +390,6 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
   const outcome = aborted ? "cancelled" as const : failed ? "failure" as const : "success" as const;
   const output = outcome === "success" ? text(terminal!)
     : failure ?? `${terminal?.stopReason ?? "no terminal assistant response"}${terminal?.errorMessage ? `: ${terminal.errorMessage}` : ""}${terminal && text(terminal) ? ` (partial output: ${text(terminal).slice(0, 200)})` : ""}`;
-  return { outcome, output, usage, request, verification, retries, committed, calls,
+  return { outcome, output, usage, request, verification, retries, committed, calls, thinking,
     ...(nativeLog ? { nativeLog } : {}) };
 }

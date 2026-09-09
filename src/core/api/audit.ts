@@ -29,6 +29,7 @@ export function recordAttempt(run: RunInput, result: RunAgentResult, requestedMo
     ...(result.audit !== undefined ? { audit: result.audit } : {}),
     ...(result.verification !== undefined ? { verification: result.verification } : {}),
     ...(result.nativeLog !== undefined ? { nativeLog: result.nativeLog } : {}),
+    ...(result.thinking !== undefined ? { thinking: result.thinking } : {}),
     ...(result.fallbackReason !== undefined ? { fallbackReason: result.fallbackReason } : {}),
     ...(result.retries?.length ? { retries: result.retries } : {}) });
 }

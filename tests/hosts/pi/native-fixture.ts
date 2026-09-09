@@ -7,7 +7,7 @@ import { expect, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { toolDefinitions } from "../../../src/core/api/index.ts";
-import type { NativeForkTask } from "../../../src/hosts/pi/native.ts";
+import type { NativeForkTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 
 export type Body = Record<string, any>;
 export const sse = (events: unknown[]) => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join("") + "data: [DONE]\n\n",
@@ -26,7 +26,9 @@ export const toolResults = (body: Body) => (body.messages ?? []).filter((m: Body
 export const noteBatch = { facts: [{ category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: ["T1#user"] }] };
 export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
 
-export async function fixture(config: Record<string, unknown> = {}, provider = "fake") {
+/** `model`/`thinkingLevel`: the parent session's model and the level it is created at (26b). The
+ * default model declares no reasoning support, so Pi clamps every level on it to `off`. */
+export async function fixture(config: Record<string, unknown> = {}, provider = "fake", parent: { model?: string; thinkingLevel?: ThinkingLevel } = {}) {
   const sent: Body[] = [];
   let respond: (body: Body, index: number) => Response | Promise<Response> = () => say("Done.");
   // Requests this fixture is still answering. A case that holds a reply open holds one here, and
@@ -49,7 +51,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   /** The 24c default worker-log directory for this fixture's agent root. */
   const runsDir = join(sessionsRoot, "trace-memory");
   const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
-  const model = modelRuntime.getModel(provider, "test")!;
+  const model = modelRuntime.getModel(provider, parent.model ?? "test")!;
   (h.ctx as { model: unknown }).model = model;
   const settingsManager = SettingsManager.create(h.dir, agentDir);
   const resourceLoader = new DefaultResourceLoader({ cwd: h.dir, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
@@ -60,10 +62,10 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   const tools = [{ name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
     ...toolDefinitions].map(definition => ({ ...definition, label: definition.name,
     async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; } }));
-  const { session: parent } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
-    sessionManager: manager, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
+  const { session } = await createAgentSession({ cwd: h.dir, agentDir, model, modelRuntime, settingsManager, resourceLoader,
+    sessionManager: manager, thinkingLevel: parent.thinkingLevel, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
   const original = { id: manager.getSessionId(), file: manager.getSessionFile()! };
-  return { h, parent, model, agentDir, sessionsRoot, sessionsDir, runsDir, sent, original,
+  return { h, parent: session, model, agentDir, sessionsRoot, sessionsDir, runsDir, sent, original,
     manager: () => manager!,
     script: (fn: (body: Body, index: number) => Response | Promise<Response>) => { respond = fn; },
     /** One real parent turn, then the extension hooks the foreground would have fired. `capture`
@@ -71,7 +73,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     async turn(prompt = "用 pnpm，不要 npm", options: { capture?: boolean } = {}) {
       await this.h.emit("before_agent_start", { prompt });
       const at = sent.length;
-      await parent.prompt(prompt);
+      await session.prompt(prompt);
       const captured = sent[at]!;
       if (options.capture !== false) await this.h.emit("before_provider_request", { payload: captured });
       await this.h.emit("agent_settled");
@@ -85,7 +87,7 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
         model: model as never, captured, task: "Range: S1/T1..S1/T1\n\nnote what happened", tools: [], maxToolRounds: 0,
         onRequest: () => {}, onProgress: () => {}, ...overrides };
     },
-    async dispose() { parent.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
+    async dispose() { session.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
   };
 }
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>

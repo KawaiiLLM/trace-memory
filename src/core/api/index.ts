@@ -226,6 +226,10 @@ export interface RunAgentResult {
   nativeLog?: string;
   /** Transient provider errors retried by the host before this reply, in order. */
   retries?: { attempt: number; error: string }[];
+  /** 26b: the thinking level this run asked for — the level frozen at admission — and the level the
+   * host's runtime actually ran at after clamping it to the worker model. Recorded side by side in
+   * the run audit, so a clamp is visible instead of silent. */
+  thinking?: { requested?: string; effective: string };
 
 }
 
@@ -239,10 +243,17 @@ export interface TaskOptions {
    * (a requested fork resolved to subagent by the host's cache-miss latch). Admission's delivery
    * pause follows it; the requested mode is still recorded (review 2026-09-08). */
   effectiveMode?: "fork" | "subagent";
+  /** 26b: the runtime thinking level the host froze for this task at admission, beside its model.
+   * Opaque to core, which only hands it back with the frozen task; the host's runtime resolves and
+   * clamps it. Absent when the host has no such notion. */
+  thinkingLevel?: string;
 }
 export interface AgentControl {
   signal?: AbortSignal;
   reportProgress?: (progress: Partial<RunAgentResult>) => void;
+  /** 26b: the level frozen at admission (`TaskOptions.thinkingLevel`), returned to the host with the
+   * frozen task so a level changed while the run is in flight cannot reach it. */
+  thinkingLevel?: string;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -509,7 +520,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal,
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | undefined;
