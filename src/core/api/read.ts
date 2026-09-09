@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import type { FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
-import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderEntry, rawResultText, xmlBlock, type ResultExtractor } from "../render/index.ts";
+import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderEntry, rawResultText, xmlBlock, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -11,7 +11,7 @@ import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, F
  * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
-export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[] }
+export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** Ticket 20 "Compaction escalation" (20c): what compact can produce for one frozen read snapshot.
@@ -36,7 +36,7 @@ export type CompactResult = { tier: "primary" | "secondary"; text: string } | { 
  * the mutable state its line would otherwise read from the database then. Everything else a hit
  * prints — the fact and commit records, the path, the labels the commit graph decided — is immutable
  * or already frozen by the query, so these three annotations are the whole remainder. */
-interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[] }
+interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile }
 
 export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string,
   resultText: ResultExtractor = rawResultText) {
@@ -286,14 +286,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
         const entries = store.listSourceEntryIdsOf(ids("T", record));
         return rest.map(address => address.startsWith("F") ? { address, relations: relations.get(record(address))! }
-          : address.startsWith("T") ? { address, entryIds: entries.get(record(address))! }
+          // The entry-view profile is frozen with the identities (review 2026-09-09): a configuration
+          // refresh between two pages changes no excerpt a query already established.
+          : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } }
           : { address, marks: marks.get(commitOf(address))! });
       };
       const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
         const frozen: FrozenHit | undefined = typeof item === "string" ? undefined : item;
         const address = frozen?.address ?? item as string;
         if (address.startsWith("F")) return factLine(Number(address.slice(1)), frozen?.relations);
-        if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds });
+        if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds, profile: frozen.profile });
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
         const hit = graph!.revisions.find(r => r.id === commit)!;

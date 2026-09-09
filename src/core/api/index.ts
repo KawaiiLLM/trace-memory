@@ -398,7 +398,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const occurrences = display.entryIds
       ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
       : store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch);
-    return finish(renderTrace(turn, occurrences, cfg.render, options, options.full ? rawResultText : resultText));
+    return finish(renderTrace(turn, occurrences, display.profile ?? cfg.render, options, options.full ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, trace, resultText);

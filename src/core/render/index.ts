@@ -262,7 +262,18 @@ function items(input: string): Item[] {
     return typeof value === "string" ? { name, text: value, json: false, quoted: true }
       : { name, text: JSON.stringify(value) ?? "null", json: true, quoted: false };
   });
+  // A payload that is valid JSON but not an object (review 2026-09-09): a root string is cut on its
+  // raw code points and re-encoded like any string value; an array, number, boolean or null is its
+  // compact JSON text with escape-safe cut units. Only text that is not JSON at all is raw.
+  const root = parsed(input);
+  if (root !== undefined) return typeof root === "string" ? [{ name: "", text: root, json: false, quoted: true }]
+    : [{ name: "", text: JSON.stringify(root) ?? "null", json: true, quoted: false }];
   return input ? [{ name: "", text: input, json: false, quoted: false }] : [];
+}
+/** The stored payload parsed as JSON, or undefined when it is not JSON (an empty payload included). */
+function parsed(text: string): unknown {
+  if (!text) return undefined;
+  try { return JSON.parse(text); } catch { return undefined; }
 }
 const argumentsWhole = (label: string, list: Item[]): string =>
   `${label}(${list.map((item) => encode(item, item.text)).join(", ")})`;
@@ -452,6 +463,14 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
 export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryProfile, options: TurnOptions = {},
   resultText: ResultExtractor = rawResultText): Rendered {
   const part = options.part;
+  // A compaction Turn's stored summary has no source entry — it is deliberately not Raw evidence —
+  // yet it is what the Turn holds, so it is readable here as the same text line every entry view
+  // emits (review 2026-09-09). Only a compaction Turn: an ordinary Turn's text is its entries, and a
+  // paged read that froze those entries must not pick up a reply completed after its query.
+  const carried = entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#assistant`));
+  const stored: SourceEntry[] = turn.kind === "compaction" && turn.assistantText !== null && !carried
+    ? [{ id: 0, sessionId: turn.sessionId, turnId: turn.id, nativeLineage: "", nativeId: "", role: "assistant", text: turn.assistantText, raw: "", calls: [] }] : [];
+  entries = [...entries, ...stored];
   // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
   if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
   const choose = (address: string): PartChoice => {
