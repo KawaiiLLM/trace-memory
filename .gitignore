@@ -3,3 +3,4 @@ node_modules/
 *.db-journal
 .DS_Store
 .impeccable/
+/.scratch/v1/
