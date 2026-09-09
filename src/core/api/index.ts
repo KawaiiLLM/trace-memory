@@ -384,11 +384,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // rendered by the entry renderer under the tier-1 profile — 22c's Turn-scoped read is what it
     // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's
     // occurrences out of it.
-    if (!options.full) return finish(renderTrace(turn, store.listSourceEntries(turn.sessionId, turn.id, display.branch), cfg.render, options, resultText));
+    // 22c: `entryIds` is a paged read's own frozen occurrence membership for this Turn, supplied
+    // instead of a branch; without it the branch selects, exactly as 23b left it.
+    const occurrencesOf = (branch?: string) => display.entryIds
+      ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
+      : store.listSourceEntries(turn.sessionId, turn.id, branch);
+    if (!options.full) return finish(renderTrace(turn, occurrencesOf(display.branch), cfg.render, options, resultText));
     // 22c: this Turn's native result occurrences, obtained once and reused across its tool ordinals
     // instead of loading the whole session per call. Every call is still described from them — the
     // unselected ones by their own character counts — so metadata and omission receipts are unchanged.
-    const occurrences = store.listSourceEntries(turn.sessionId, turn.id).filter(e => e.role === "toolResult");
+    const occurrences = occurrencesOf().filter(e => e.role === "toolResult");
     const originals = calls.map(call => {
       const results = occurrences.flatMap(e => e.calls.filter(c => c.ordinal === call.ordinal).map(c => ({ entry: e, call: c })));
       return results.length < 2 ? call : { ...call, status: "multiple results", result: results.map(({ entry: e, call: c }) =>
