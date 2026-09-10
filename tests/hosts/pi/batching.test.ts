@@ -229,9 +229,10 @@ test("17b 2026-09-08: capture after compaction does not claim the persisted orig
     expect(h.conversations[0]!.messages[0]!.content).toContain("old pending evidence");
     const run = h.memory.store.listRuns(1)[0]!;
     expect(run.mode).toBe("subagent");
-    // 27c: the pending evidence precedes the persisted compaction, so this admission is the one that
-    // refuses the fork — and the reason it names is the run's, on the model that ran it.
-    expect(JSON.parse(run.response!).fallbackReason).toContain("pre-compaction evidence:");
+    // 27c/29c: the compaction kept no earlier entry, so the pending evidence is in no representation
+    // the inherited context holds; this admission is the one that refuses the fork — and the reason it
+    // names is the run's, on the model that ran it.
+    expect(JSON.parse(run.response!).fallbackReason).toContain("Raw availability: entry 1 ");
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual([]);
   } finally { await h.dispose(); }
 });

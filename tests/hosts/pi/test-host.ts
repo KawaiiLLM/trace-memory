@@ -269,11 +269,14 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   /** 20c: a successfully persisted native compaction entry on the selected ancestry — the only thing
    * that establishes the post-compaction boundary, and the entry Pi appends only after a compaction
    * succeeded. `sibling` writes it outside the selected ancestry, where it must establish nothing. */
-  const compaction = (summary = "native summary", options: { sibling?: boolean } = {}) => {
+  const compaction = (summary = "native summary", options: { sibling?: boolean; details?: unknown } = {}) => {
     const hook = hookCompaction; hookCompaction = undefined;
+    // 29c: `details` states the persisted payload directly, for a row that wants one exact carrier —
+    // a tier-2 supply, ids with no supplied entry at all, a partial one — without driving a real
+    // budget to produce it. A real hook result still arrives through `hookCompaction` above.
+    const carried = options.details !== undefined ? { details: options.details } : hook ? { details: structuredClone(hook.details), fromHook: true } : {};
     const entry = { id: `e${allEntries.length}`, parentId: entries.at(-1)?.id ?? null, timestamp: new Date().toISOString(),
-      type: "compaction", summary, firstKeptEntryId: entries.at(-1)?.id ?? "", tokensBefore: 0,
-      ...(hook ? { details: structuredClone(hook.details), fromHook: true } : {}) };
+      type: "compaction", summary, firstKeptEntryId: entries.at(-1)?.id ?? "", tokensBefore: 0, ...carried };
     if (!options.sibling) entries.push(entry);
     allEntries.push(entry); return entry;
   };

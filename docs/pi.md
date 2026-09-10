@@ -509,24 +509,70 @@ prepared before the fallback confirms no injection. The tier used
 and its reason go to a `ui.notify` info line and to a `Compaction:` line in the status text
 (the menu's Current session, or headless bare `/trace`).
 
-**Post-compaction worker mode.** A compaction entry that Pi persisted on the target's
-selected ancestry — whatever produced its summary — is the boundary. A request to compact,
-a failed or cancelled attempt and a compaction on a sibling path establish nothing, by
-construction: Pi writes the entry only on success, and only on the path it happened on.
-After such a boundary, a Noter whose frozen entry set contains any entry preceding it runs
-as a fresh subagent child for the whole batch, because a fork would inherit a context those
-entries are no longer in. The check is made from `sessionManager.getBranch()` at admission
-and again at the actual launch, so a task prepared before the compaction but held for a
-slot, a claim or native readiness is caught too; nothing is cached, so reopening and tree
-navigation give the same answer. **27c: the admission that refuses the fork also selects the
-model** — `notingModel` and its capacity, before the batch is frozen — and the launch's own
-recheck sends the task back for one re-admission on that same model. A fork already running
-against its own frozen context is never restarted, replayed or cancelled for this. It is a
-per-task evidence-readiness decision, not the cache-miss latch: the requested/configured mode
-is preserved in the run record, the actual `subagent` mode, the model that ran and a
-`pre-compaction evidence: …` fallback reason are recorded, and enrollment, configuration and
-fork suppression are untouched. A batch whose
-entries all follow the boundary uses the normal configured mode.
+**Post-compaction worker mode (rule replaced in 29c).** Ticket 20 refused a fork whenever a
+selected entry preceded the last persisted compaction on the ancestry. That was a position
+test standing in for the real question, and it refused forks a compaction had not actually
+cost anything: an entry Pi retained past the boundary, and one whose primary view a custom
+compaction of ours carried, are both still there to extract from. The rule is now Raw
+availability, below; a persisted compaction matters only through what it removed from the
+context this host builds.
+
+## Noter fork eligibility by Raw availability (29c)
+
+A requested Noter fork runs as a fork **exactly when every entry of its target is available
+in the inherited context in a representation it may extract from**:
+
+```text
+available Raw = native ids the visible view marks "source"  (Pi retained the entry)
+              ∪ native ids it marks "tier1"                 (a carrier supplied its primary view)
+fork allowed  ⇔ every entry of the target ∈ available Raw
+```
+
+That set is 29a's `VisibleView.raw` unchanged, so what does **not** count needs no rule of its
+own: a tier-2 compact view, a summary with no carrier behind it (a compaction Pi wrote itself),
+an id that appears only in rendered prose, and an absent tool result are simply not in `raw`.
+An incomplete tool-call group stays where it already was — `forkable()` rejects the checkpoint
+in the native gate and defers the launch through `checkpointReadiness` — and 29c adds nothing
+there.
+
+**The target is the batch this task would freeze**, not everything still pending: the pending
+set the task's boundary admits (18b's `maxEntryId`, 27d's exact `entryIds`), cut to the oldest
+prefix that fits `noting.batchTokens`. The host asks core for it (`memory.notingBatch(target,
+boundary)`), which runs the very selection `freezeNoting` runs, so admission and the freeze can
+never disagree about which entries the task is about. Rendering that batch costs what a freeze
+costs, so it is asked for only once the whole pending set — a superset of the batch — is known
+to be missing something; when nothing pending is missing, neither is the batch.
+
+**The decision is made at admission, before the freeze**, and again at the actual launch against
+the exact frozen entry set, so a task admitted before a compaction but held for a slot, a claim
+or native readiness is caught too. Nothing is cached beyond 29a's per-context memo, so reopening
+and tree navigation give the same answer.
+
+One unavailable entry sends the **whole** target down the existing fallback (27c): the task runs
+as a subagent on the configured Noter model, priced by that model's capacity, with fresh material
+and its exact membership. The invisible entry is never skipped to manufacture a forkable batch.
+The reason names the first unavailable entry and becomes the run's `fallbackReason`:
+
+```text
+Raw availability: entry 7 (T3, native 9e89d8e6) of this batch is not in the inherited context:
+Pi retained no source for it and no compaction carrier supplied its primary view
+```
+
+**An unknown view is not availability.** A selected context holding no conversation entry of ours
+establishes nothing about what a fork would inherit, so it is refused the same way ticket 27a
+refuses an unknown context measure — `Raw availability: the selected context holds no conversation
+entry of ours, …` — rather than being read as "nothing is missing".
+
+**The head reply needs no exception.** It is the one entry `buildContextEntries()` holds that a
+fork's captured request stops before, which is why 29b's increment always restates it — but it is
+also not a member of the target while it is the head reply: Noting's target ends before the head
+Turn's own reply. Once the head moves on and a later task does select it, the view marks it a
+retained `source` like any other entry. So a target whose only non-inherited entry is the head
+reply forks, and the view is the right authority as it stands.
+
+Untouched by this rule: the cache-miss latch, checkpoint readiness, `forkable()`, prefix
+verification and capacity. Visibility is necessary, not proof that a prefix check or provider
+caching will succeed.
 
 ## Visible material carriers (29a)
 
@@ -888,8 +934,8 @@ amendments 1, 4, 5 and 6).** One rule covers every reason a requested fork does 
 
 The reasons, and where each is decided:
 
-- **At admission, from this host's live state.** The cache-miss latch, and ticket 20's
-  pre-compaction evidence. Nothing is frozen yet, so this admission simply selects `notingModel`
+- **At admission, from this host's live state.** The cache-miss latch, and 29c's Raw
+  availability. Nothing is frozen yet, so this admission simply selects `notingModel`
   and its capacity: no second admission, and the reason is frozen with the task
   (`TaskOptions.fallbackReason`, opaque to core) as the run's `fallbackReason`.
 - **At admission, from the freeze (27b).** A fork whose inherited context plus instructions cannot
@@ -897,7 +943,7 @@ The reasons, and where each is decided:
   of leaving feasible work pending, the host admits the task **once more** with the model, the
   capacity and the fresh material above, under the ordinary exact selection.
 - **After admission, at the launch.** Every condition `forkLaunch` rechecks against the live state
-  for the task it is about to run — the latch, pre-compaction evidence, a branch changed since
+  for the task it is about to run — the latch, Raw availability, a branch changed since
   admission, a missing or foreign capture, a session model changed since the capture, an
   unpersisted parent, no persisted leaf — and the native gate's rejection of the child's first body
   (`native runner: <reason>`, with the rejected comparison under `verification.native`). Nothing
