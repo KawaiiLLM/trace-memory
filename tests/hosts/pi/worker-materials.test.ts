@@ -3,7 +3,8 @@
 // is one a provider would have received: a real parent session, a real native child, the production
 // prompt and the production tool definitions.
 import { expect, test, vi } from "vitest";
-import { call, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+// Pin fork for inherited-material cases; the fresh-material case explicitly overrides it.
+import { call, forkFixture as fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;

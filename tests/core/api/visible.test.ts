@@ -11,7 +11,7 @@ const supplied = (over: Partial<SuppliedMaterial> = {}): SuppliedMaterial =>
   ({ entries: [], factIds: [], knowledgeCommitIds: [], ...over });
 /** Our injected message: a `custom_message` entry with the carrier on its `details`. */
 const injected = (id: string, over: Partial<Carrier> = {}): ContextEntry =>
-  ({ id, type: "custom_message", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
+  ({ id, type: "custom_message", customType: "trace-memory", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
 /** A custom compaction: the same carrier, on the compaction entry Pi appended for it. */
 const compacted = (id: string, over: Partial<Carrier> = {}): ContextEntry =>
   ({ id, type: "compaction", details: { traceMemory: { ...binding, supplied: supplied(), ...over } } });
@@ -52,7 +52,7 @@ test("29a case 7 (opaque fallback): a native summary proves nothing, and entries
   const unmarked = compacted("c2", { supplied: supplied({ entries: [{ id: 5, nativeId: "e9" } as never], factIds: [4] }) });
   const view = visibleView([native, message("e1"), unmarked, message("e7")], binding);
   expect(view.raw.get("e9")).toBeUndefined(); // no representation stated: nothing to extract from
-  expect([...view.factIds]).toEqual([4]); // …but the complete fact bodies that block did carry are
+  expect([...view.factIds]).toEqual([]); // malformed entries invalidate the entire carrier atomically
   expect([...view.raw.keys()].sort()).toEqual(["e1", "e7"]); // retained entries either side still count
 });
 
@@ -89,4 +89,65 @@ test("29a: a malformed or legacy carrier fails closed rather than being reverse-
   expect(view.factIds.size).toBe(0);
   expect(view.knowledgeCommitIds.size).toBe(0);
   expect(view.raw.size).toBe(0);
+});
+
+
+test.each([
+  null, [], "carrier", {},
+  { ...binding, supplied: null },
+  { ...binding, supplied: { entries: {}, factIds: [1], knowledgeCommitIds: [2] } },
+  { ...binding, supplied: { entries: [], factIds: "12", knowledgeCommitIds: [2] } },
+  { ...binding, supplied: { entries: [], factIds: [1], knowledgeCommitIds: null } },
+  ...[null, 1, {}, { nativeId: "target", view: "bounded" },
+    { id: 1, nativeId: "", view: "bounded" }, { id: 1, nativeId: 7, view: "bounded" },
+    { id: 1, nativeId: "target", view: "other" }, { id: 1, nativeId: "target", tier: 3 },
+    { id: 1, nativeId: "target", view: "bounded", tier: 1 },
+    ...[0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1].map(id => ({ id, nativeId: "target", view: "bounded" }))]
+    .map(item => ({ ...binding, generation: 9, supplied: supplied({ entries: [item as never], factIds: [1], knowledgeCommitIds: [2] }) })),
+  ...[NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "9", null].map(generation =>
+    ({ ...binding, generation, supplied: supplied({ factIds: [1], knowledgeCommitIds: [2] }) })),
+  ...[0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1", null].flatMap(id => [
+    { ...binding, supplied: supplied({ factIds: [id as never], knowledgeCommitIds: [2] }) },
+    { ...binding, supplied: supplied({ factIds: [1], knowledgeCommitIds: [id as never] }) },
+    { ...binding, session: id, supplied: supplied({ factIds: [1] }) },
+  ]).filter(value => value.session !== null),
+  ...[null, "", 1].flatMap(value => [
+    { ...binding, pi: value, supplied: supplied({ factIds: [1] }) },
+    { ...binding, db: value, supplied: supplied({ factIds: [1] }) },
+  ]),
+])("malformed persisted carrier %#: reject atomically without throwing", payload => {
+  const view = visibleView([{ ...injected("bad"), details: { traceMemory: payload } }], binding);
+  expect(view).toEqual({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 });
+});
+
+test.each(["custom", "branch_summary", "model_change", "message", "custom_message"])("foreign container %s donates no plugin coverage", type => {
+  const view = visibleView([{ ...injected("raw", { generation: 8, supplied: supplied({ factIds: [1], knowledgeCommitIds: [2] }) }),
+    type, customType: "other-extension" }], binding);
+  expect([...view.factIds]).toEqual([]);
+  expect([...view.knowledgeCommitIds]).toEqual([]);
+  expect(view.suppliedGeneration).toBe(0);
+  expect(view.injection).toBe(false);
+  expect([...view.raw]).toEqual(type === "message" ? [["raw", "source"]] : []);
+});
+
+test("valid empty injection completes its generation, but a compaction cannot serve a command", () => {
+  expect(visibleView([injected("empty", { generation: 0 })], binding).injection).toBe(true);
+  expect(visibleView([injected("empty", { generation: 7 })], binding).suppliedGeneration).toBe(7);
+  expect(visibleView([compacted("invalid", { generation: 7, supplied: supplied({ factIds: [1] }) })], binding).factIds.size).toBe(0);
+});
+
+
+test("carrier validation inspects every item before donating any identity", () => {
+  const invalid = injected("mixed", { generation: 9, supplied: supplied({
+    entries: [{ id: 1, nativeId: "valid", view: "bounded" }, null as never], factIds: [1], knowledgeCommitIds: [2] }) });
+  const sparse = injected("sparse", { supplied: supplied({ factIds: new Array(2) }) });
+  expect(visibleView([null as never, invalid, sparse], binding)).toEqual(visibleView([], binding));
+});
+
+test("a cloned Pi session inherits legitimate material, not the originating session's command completion", () => {
+  const cloned = injected("cloned", { generation: 8, supplied: supplied({ knowledgeCommitIds: [1] }) });
+  const view = visibleView([cloned], { ...binding, pi: "new-pi-session" });
+  expect([...view.knowledgeCommitIds]).toEqual([1]);
+  expect(view.injection).toBe(true);
+  expect(view.suppliedGeneration).toBe(0);
 });

@@ -4,6 +4,8 @@
 // silently get wrong — that a generation is completed by the persistence of its own message.
 import { expect, test } from "vitest";
 import { host } from "./test-host.ts";
+import { fixture } from "./native-fixture.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { budgetKnowledge } from "../../../src/core/render/index.ts";
 import { finish, knowledgeBlock } from "../../../src/core/api/index.ts";
 
@@ -252,4 +254,61 @@ test("31 completion is persistence: a turn that aborts before the entry is saved
     expect(next.content).not.toContain("项目用 vitest。");
     expect(carrierOf(next).generation).toBe(2);
   } finally { await h.dispose(); }
+});
+
+
+test.each(["on", "project tree-project"])("31 pending %s survives tree selection and reopen without importing sibling visibility", async line => {
+  const { h, fact: f } = await seeded();
+  try {
+    const selected = [...h.entries];
+    create(h, f, "project", "New knowledge after the initial block.");
+    await command(h, line);
+    h.entries.splice(0, h.entries.length, ...selected);
+    await h.emit("session_tree");
+    // Reopening the same persisted session must not erase the pending command either.
+    await h.emit("session_start");
+    const handed = await h.emit("before_agent_start", { prompt: "not saved", systemPrompt: "host" });
+    expect(carrierOf(handed.message).generation).toBe(1);
+    h.entries.splice(0, h.entries.length, ...selected);
+    await h.emit("session_tree");
+    const persisted = (await h.prompt("saved"))?.message;
+    expect(persisted.content).toContain("New knowledge after the initial block.");
+    expect(carrierOf(persisted).generation).toBe(1);
+    // The persisted sibling message consumes intent, not visibility. Rewinding does not create a
+    // new command, nor does its invisible content leak into the selected path's view.
+    h.entries.splice(0, h.entries.length, ...selected);
+    await h.emit("session_tree");
+    expect((await h.prompt("no new command"))?.message).toBeUndefined();
+    await command(h, "on");
+    const next = (await h.prompt("new command"))?.message;
+    expect(carrierOf(next).generation).toBe(2);
+    expect(next.content).toContain("New knowledge after the initial block.");
+  } finally { await h.dispose(); }
+});
+
+
+test("31 native session: command survives branch rewind and only its persisted carrier completes it", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9 });
+  try {
+    await f.turn();
+    const support = fact(f.h, "Native support");
+    create(f.h, support, "project", "Native initial knowledge");
+    await f.turn("initial injection");
+    const selected = f.manager().getLeafId()!;
+    create(f.h, support, "project", "Native pending supplement");
+    await command(f.h, "on");
+    f.manager().branch(selected);
+    await f.h.emit("session_tree");
+    const handed = await f.h.emit("before_agent_start", { prompt: "pending" });
+    expect(handed.message.content).toContain("Native pending supplement");
+    expect(carrierOf(handed.message).generation).toBe(1);
+    const message = handed.message;
+    const persisted = f.manager().appendCustomMessageEntry(message.customType, message.content, message.display, message.details);
+    const reopened = SessionManager.open(f.manager().getSessionFile()!);
+    expect(reopened.getEntry(persisted)).toMatchObject({ type: "custom_message",
+      details: { traceMemory: { generation: 1, supplied: { knowledgeCommitIds: [2] } } } });
+    f.manager().branch(selected);
+    await f.h.emit("session_tree");
+    expect((await f.h.emit("before_agent_start", { prompt: "already completed" }))?.message).toBeUndefined();
+  } finally { await f.dispose(); }
 });

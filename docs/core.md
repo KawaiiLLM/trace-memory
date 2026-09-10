@@ -109,7 +109,9 @@ The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
 Each phase's config chooses its fork/subagent mode (29e: `noting.forkModeDefault`,
-`consolidation.forkModeDefault`); provider prefix verification
+`consolidation.forkModeDefault`), both defaulting to `false` (subagent) only when no explicit
+configuration is supplied. Explicit `true`, the legacy `noting.branchModeDefault` alias and a task's
+own `mode: "fork"` remain supported; provider prefix verification
 remains the host's responsibility, as is the choice of runner behind a mode. Since 19c the Pi
 host has one runner: fork work runs in a native Pi child forked from the session file, and
 every subagent task — explicit, fallback or borrowed — in a fresh native child. Core sees the
@@ -138,13 +140,15 @@ same is true of a task the host refuses *after* admission (`refused`, 27c): the 
 more ordinary call, bounded to the frozen batch by `boundary.entryIds` — exact membership, 27d — if
 the host wants the same entries. Most of what core carries for either is opaque and unread —
 `fallbackReason` and `forkAttempt`, handed back with the frozen task beside `thinkingLevel`.
-`cancellation` is not: it is core's own generation, frozen at admission, handed to the run and
+`cancellation` is not: it is core's own generation, exposed for host preflight, frozen at admission, handed to the run and
 compared when the host admits the task again (27d, parent 27 line 83), so a task cancelled while its
 attempt was in flight is dropped with `reason: "cancelled before fallback"` instead of launching a
 fallback. 27d also made each attempt its own run record: a refusal whose result carries a `request`
 really sent one, so core finalizes that attempt (`fork`/`failure`, its own usage, retries, request
 and `nativeLog`) and returns its id as `NotingResult.runId`; a refusal with no request recorded
-nothing, and the run the re-admission makes charges only itself.
+nothing, and the run the re-admission makes charges only itself. Before releasing a refused attempt,
+core atomically verifies its original claim token, executor and expiry. A lost claim drops the
+continuation; only still-owned work authorizes the release and fresh admission.
 
 ## Rendering decisions
 
@@ -183,7 +187,8 @@ token cap.
 `renderEntry` is the one view, under one profile of three independent budgets (ticket 30,
 superseding 23c's single `B` split in half): a tool-call part is worth at most `C`
 (`render.toolInputTokens`), a tool-result part at most `R` (`render.toolResultTokens`) and one
-entry at most `E` (`render.entryTokens`), including all labels and omission markers. Room one
+entry at most `E` (`render.entryTokens`), including all labels, omission markers and separators.
+Each following part owns its leading newline inside its own cap as well as `E`. Room one
 side leaves unused never enlarges the other. Natural language receives only the entry limit.
 When the parts together exceed `E`, result payloads give way first, then call arguments, then
 natural text; parts of equal priority share the reduction through the same per-part allocator. Huge lines and JSON values keep character-level head/tail
@@ -649,13 +654,15 @@ is membership, not a budget omission. One path snapshot answers that membership 
 operation, the knowledge block included.
 
 Ticket 30 removed the second, tighter rendering that used to stand between a custom replacement and
-the fallback: an overflowing required Raw set delegates to native compaction exactly as the old third
-tier did. Nothing here selects a smaller pending set, advances extraction progress or touches
+the fallback: an overflowing required Raw set requests host recovery or native delegation, never a
+smaller rendering profile. Nothing here selects a smaller pending set, advances extraction progress or touches
 injection state, and a native delegation builds no custom summary at all.
 Compaction never hides a selected entry to fit, falsifies an omission count or relaxes a cap;
-it calls no provider, and core contains no summarizer — reaching a model
-is the host's native fallback alone. The views it emits are `renderEntry` under the configured
-profile, the same bytes Noter input, the token counters and `trace` use, and no view or summary
+the core allocator calls no provider and contains no summarizer. Host-managed bounded recovery may
+run model-backed Noting or Consolidation before either a custom replacement or native fallback.
+
+The views it emits are `renderEntry` under the configured profile, the same bytes Noter input,
+the token counters and `trace` use, and no view or summary
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
@@ -731,13 +738,18 @@ yields `raw` (native entry id → `source` for a retained conversation entry, `v
 carrier supplied a bounded view of — 30: a legacy `tier: 1` or `tier: 2` carrier counts as that
 same view, and a retained view is never compared with the current profile to demand a richer
 replacement), `factIds` and `knowledgeCommitIds`. It is pure, reads no
-database and imports no host SDK type — it reads only `{id, type, details}`. An
+database and imports no host SDK type — it reads only `{id, type, customType, details}`. An
 id that appears only in text, a free-form summary and a compaction without our
 `details.traceMemory` contribute nothing; entries retained past such a compaction still count;
 a carrier from another database or another memory session contributes nothing, and one written
 before the memory session id existed is matched through its host session id. Applicability is a
 separate authority and is never folded in: a new fact or commit changes what is applicable
-without changing this view. The carrier format itself is host-side (see `docs/pi.md`).
+without changing this view. Only our identified custom messages and structured compactions can
+carry plugin coverage. Runtime parsing validates the complete arrays, safe integer identities,
+source representation, binding and generation; any malformed field rejects the entire carrier
+without donating visibility or completion. Valid empty injections and legacy tier markers remain
+readable. Command generations belong to the originating Pi session, even when a fork legitimately
+inherits material bound to the same memory session. The carrier format itself is host-side (see `docs/pi.md`).
 
 ## Branch summary read (ticket 07)
 
@@ -783,8 +795,11 @@ usage; closed tools and rejection handlers prevent late store access.
 `TaskOptions.signal?: AbortSignal` is the per-task counterpart of the executor-wide
 `cancelTasks`, and the only cancellation entry point ticket 28 needed. `execute` links the
 signal to the controller that task already owns: an abort closes that task's tool binding —
-so a commit still in flight is fenced by the existing rule, not by a new one — and aborts
-that task's run, and it reaches no other task, no other claim and no admission. A signal
+so a commit still in flight is fenced by the existing rule, not by a new one — immediately
+releases that task's claim through the Store's token-and-executor-matched release, and aborts
+that task's run. Release does not wait for the runner to settle; a replacement claim and
+unrelated claims survive both the abort and the old task's finalization. Already committed
+progress keeps its success. A signal
 already aborted when the task is admitted cancels it before its first request. The listener
 is removed when the task settles, so an operation that ends normally leaves nothing attached
 to its signal. Its one caller today is the Pi host's compaction recovery, which passes Pi's

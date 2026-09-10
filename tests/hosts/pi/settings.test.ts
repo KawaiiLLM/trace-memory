@@ -31,7 +31,7 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   await command(h, "");
 };
 
-test("29e: the menu offers a Consolidator mode defaulting to subagent, and the ordinary slot launches each phase in its own configured mode", async () => {
+test("both modes default to subagent in Settings and ordinary execution; saving fork changes only that phase", async () => {
   const h = setup({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
   // A fork has no system prompt of its own — it inherits the parent's — so the phase of a forked
   // child is told from the task text this host appended, not from the Consolidator instructions.
@@ -52,15 +52,18 @@ test("29e: the menu offers a Consolidator mode defaulting to subagent, and the o
     "Consolidator mode: subagent (Default)",
     "Consolidator model: follow foreground (Default)", "Consolidator thinking: inherit (Default)"]);
   h.ctx.hasUI = false;
-  // The two phases do not share a mode: the Noter forks by default, the Consolidator does not.
+  expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Noter"))).toEqual([
+    "Noter mode: subagent (Default)", "Noter model: follow foreground (Default)", "Noter thinking: inherit (Default)"]);
+  // Neither mode was configured: both ordinary slots must request subagent, not fall back to it.
   await h.turn();
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
   const modes = (kind: string) => h.memory.store.listRuns(1).filter(r => r.kind === kind)
     .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
-  expect(modes("noting")).toEqual([["fork", "subagent"]]);       // requested fork; this fake parent has no file to fork, the documented fallback
+  expect(modes("noting")).toEqual([["subagent", "subagent"]]);
+  expect(h.memory.store.listRuns(1).every(r => JSON.parse(r.response!).fallbackReason === undefined)).toBe(true);
   expect(modes("consolidation")).toEqual([["subagent", "subagent"]]); // never asked for anything else, and ran as itself
   // 29e: saving the restored preference reaches tasks admitted afterwards without a reload, and the
-  // slot then asks this phase to fork too — into the same documented fallback the Noter takes in this
+  // slot then asks only this phase to fork — into the documented fallback in this
   // fake session, which captures no provider payload to fork from. (A Consolidation fork that really
   // runs, and the fallback path it shares with Noting, are pinned on the native fixture:
   // native.test.ts "19a/29e" and fallback.test.ts's 29e cases.)
@@ -71,14 +74,14 @@ test("29e: the menu offers a Consolidator mode defaulting to subagent, and the o
   await h.turn();
   await h.answer("tick again"); await h.emit("agent_settled"); await h.drain();
   expect(modes("consolidation")).toEqual([["subagent", "subagent"], ["fork", "subagent"]]);
-  expect(modes("noting").at(-1)).toEqual(["fork", "subagent"]);
+  expect(modes("noting").at(-1)).toEqual(["subagent", "subagent"]);
 });
 
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
   await h.emit("session_start");
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "subagent");
   expect(h.notices.at(-1)).toContain(`saved noting.forkModeDefault = false (subagent) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("applies to memory tasks admitted from now on; running tasks keep the mode and model they started with");
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
@@ -111,10 +114,10 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   const h = setup();
   seed(h, { "render.entryTokens": 222 });
   await h.emit("session_start");
-  // Noting is in fork mode by default, so its line says a fork keeps inheriting the foreground level.
-  await edit(h, "Noter thinking: inherit (Default); fork mode inherits the foreground thinking level", "high");
+  // The default is fresh execution: the saved thinking preference applies directly.
+  await edit(h, "Noter thinking: inherit (Default)", "high");
   expect(h.dialogs.at(-1)!.options).toEqual(thinkingChoices);
-  expect(h.dialogs.at(-1)!.title).toContain("Noting is configured for fork mode, whose child keeps inheriting the foreground level");
+  expect(h.dialogs.at(-1)!.title).not.toContain("fork");
   expect(h.notices.at(-1)).toContain(`saved notingThinking = "high" (high) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("running tasks keep the thinking level they were frozen with");
   // Consolidation is configured for subagent mode here, so its level always applies and its line
@@ -126,9 +129,9 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   expect(file["trace-memory"]).toEqual({ "render.entryTokens": 222, notingThinking: "high", consolidationThinking: "minimal" });
   h.answers.push("Settings", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
-    "Noter mode: fork (Default)",
-    "Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test",
-    "Noter thinking: high (Global); fork mode inherits the foreground thinking level",
+    "Noter mode: subagent (Default)",
+    "Noter model: follow foreground (Default)",
+    "Noter thinking: high (Global)",
     "Consolidator mode: subagent (Default)",
     "Consolidator model: follow foreground (Default)",
     "Consolidator thinking: minimal (Global)",
@@ -184,22 +187,22 @@ test("24b: a saved mode reaches the next admitted task without a reload, and a t
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
   await h.turn();
-  expect(requestedModes(h)).toEqual(["fork"]); // the default the load froze
+  expect(requestedModes(h)).toEqual(["subagent"]); // the default the load froze
   // The edit, mid-session and with no reload of the extension.
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "fork");
   h.ctx.hasUI = false;
   await h.turn();
-  expect(requestedModes(h)).toEqual(["fork", "subagent"]); // admitted after the edit
+  expect(requestedModes(h)).toEqual(["subagent", "fork"]); // admitted after the edit
   // A run already in flight keeps the mode frozen with it: hold the reply, switch back, release.
   let release: ((value: unknown) => void) | undefined;
   h.provider(async () => new Promise(resolve => { release = resolve; }) as never, { ignoreAbort: false });
   await h.prompt(); await h.answer("holding"); await h.emit("agent_settled"); await h.drain();
   expect(h.statuses.get("trace-memory")).toContain("<accent>"); // the third task is running, held at the wire
-  await edit(h, "Noter mode: subagent (Global)", "fork");
+  await edit(h, "Noter mode: fork (Global)", "subagent");
   h.ctx.hasUI = false;
   release?.(emptyNoteReply()); // 26a: the held run completes its batch with the explicit empty submission
   await h.drain();
-  expect(requestedModes(h)).toEqual(["fork", "subagent", "subagent"]); // the running one kept its own
+  expect(requestedModes(h)).toEqual(["subagent", "fork", "fork"]); // the running one kept its own
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("success");
 });
 
@@ -207,7 +210,7 @@ test("24b: a saved model is used by the next subagent run, and selecting a model
   const h = setup({ "noting.triggerTokens": 20 });
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "subagent");
   // Chosen while the phase is in subagent mode: the model is the one a subagent run uses.
   await edit(h, "Noter model: follow foreground (Default)", "fake/test-mini");
   expect(globalFile(h)["trace-memory"]).toEqual({ "noting.forkModeDefault": false, notingModel: "fake/test-mini" });
@@ -250,27 +253,27 @@ test("24b: cancelled, invalid, unavailable and failed edits leave the file and t
   await h.emit("session_start");
   const before = readFileSync(globalPath(h), "utf8");
   // Cancelling the value selection.
-  await edit(h, "Noter mode: fork (Default)", undefined);
+  await edit(h, "Noter mode: subagent (Default)", undefined);
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   // A model the registry does not know: refused without calling anything.
-  await edit(h, "Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test", "ghost/model");
+  await edit(h, "Noter model: follow foreground (Default)", "ghost/model");
   expect(h.notices.at(-1)).toContain("ghost/model is not an available provider/model in Pi's registry");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   // A malformed settings file is reported, never overwritten.
   writeFileSync(globalPath(h), "{ not json");
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "fork");
   expect(h.notices.at(-1)).toContain("Noter mode unchanged — Error: Invalid settings.json");
   expect(readFileSync(globalPath(h), "utf8")).toBe("{ not json");
   // A `trace-memory` section that is not an object is the same kind of refusal.
   writeFileSync(globalPath(h), JSON.stringify({ "trace-memory": [1, 2] }));
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "fork");
   expect(h.notices.at(-1)).toContain("Invalid trace-memory Global: expected an object");
   expect(globalFile(h)).toEqual({ "trace-memory": [1, 2] });
   // A write that cannot happen at all reports the failure instead of a false success.
   writeFileSync(globalPath(h), before);
   chmodSync(join(h.dir, "agent"), 0o500);
   try {
-    await edit(h, "Noter mode: fork (Default)", "subagent");
+    await edit(h, "Noter mode: subagent (Default)", "fork");
     expect(h.notices.at(-1)).toContain("Noter mode unchanged —");
     expect(readFileSync(globalPath(h), "utf8")).toBe(before);
   } finally { chmodSync(join(h.dir, "agent"), 0o700); }
@@ -298,7 +301,7 @@ test("24b: editing a setting starts no worker and does not clear the cache-miss 
   await h.turn();
   h.memory.store.suppressFork(1, "2026-09-09T00:00:00.000Z");
   const runs = h.memory.store.listRuns(1).length;
-  await edit(h, "Noter mode: fork (Default)", "subagent");
+  await edit(h, "Noter mode: subagent (Default)", "fork");
   await edit(h, "Consolidator model: follow foreground (Default)", "fake/test-mini");
   expect(h.memory.store.forkSuppression(1)).toMatchObject({ at: "2026-09-09T00:00:00.000Z" });
   expect(h.memory.store.listRuns(1)).toHaveLength(runs);

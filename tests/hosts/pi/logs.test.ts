@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { call, fixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
+import { call, fixture, forkFixture, noteBatch, say, settled, toolResults, worker } from "./native-fixture.ts";
 import { host } from "./test-host.ts";
 
 const notingRun = (body: Record<string, any>) =>
@@ -21,7 +21,7 @@ const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }
 // ------------------------------------------------------------------ checkbox 1: the log location
 
 test("24c: with no runsDir configured a fork's log is a direct child of sessions/trace-memory, keeping its linkage, history and usage", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(notingRun);
     await f.turn();
@@ -194,7 +194,7 @@ const reader: { sumProviderSpend(dir: string, provider: string, sinceMs: number)
 
 test.skipIf(!reader)("24c: the external daily reader charges every new worker response once, never an inherited one, and drops entries outside its window", async () => {
   const { sumProviderSpend, entryCost } = reader!;
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     // $1 per token on both sides: every scripted reply below reports 10 input and 2 output tokens,
     // so each billable response is worth exactly $12 and the arithmetic is checkable by hand.

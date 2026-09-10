@@ -46,7 +46,7 @@ export interface TraceMemoryConfig {
     episodicBlockTokens: number;
   };
   noting: {
-    /** Inherited-context execution by default (ticket 19: fork, formerly branch). */
+    /** Select inherited-context execution (fork, formerly branch); false defaults to a subagent. */
     forkModeDefault: boolean;
     batchTokens: number;
     triggerTokens: number;
@@ -90,7 +90,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     episodicBlockTokens: 20_000,
   },
   noting: {
-    forkModeDefault: true,
+    forkModeDefault: false,
     batchTokens: 10_000,
     triggerTokens: 10_000,
     maxToolRounds: 0,
@@ -365,6 +365,8 @@ export interface TraceMemory {
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
   cancelTasks(stopping?: boolean): void;
+  /** Freeze before host preflight: even an unsent refusal belongs to this admission generation. */
+  readonly cancellation: number;
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
   forceTasks(): void;
   readonly config: TraceMemoryConfig;
@@ -633,12 +635,19 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     tasks.add(task);
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
     // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
-    // first, so a commit in flight is fenced, then abort the run. `task.close` is read at abort time,
+    // first, release only this task's ownership token immediately (even if its runner is slow to
+    // settle), then abort the run. Token matching preserves replacement and unrelated claims;
+    // finalization may safely release the old token again. `task.close` is read at abort time,
     // never captured, so the binding this closes is whichever one `bind` installed. The listener is
     // removed with the task below: a compaction that ends without cancelling leaves nothing attached
     // to its signal.
     const external = input.signal;
-    const onExternalAbort = () => { task.close(); controller.abort(external!.reason); };
+    const onExternalAbort = () => {
+      task.close();
+      try { if (!store.closed) store.releaseClaim(claim!); }
+      catch { /* Finalization retries the same token and reports any remaining release failure. */ }
+      finally { controller.abort(external!.reason); }
+    };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
@@ -661,7 +670,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     } finally {
       external?.removeEventListener("abort", onExternalAbort);
       task.close(); tasks.delete(task);
-      try { if (!store.closed) store.releaseClaim(claim); }
+      const originalClaim = claim as TaskClaim; // assigned by the successful admission transaction
+      try { if (!store.closed) store.transaction(() => {
+        const current = store.getClaim(originalClaim.sessionId, originalClaim.phase);
+        const owned = current && current.token === originalClaim.token && current.executorId === originalClaim.executorId
+          && !current.reserved && current.expiresAt > Date.now();
+        // Only a still-owned attempt may authorize the release/re-admission handoff. Once lost,
+        // exact pending membership alone cannot revive it, even if a successor released its claim.
+        if (result?.outcome === "dropped" && result.refused && !owned)
+          result = { outcome: "dropped", reason: "task claim lost before fallback", ...(result.runId === undefined ? {} : { runId: result.runId }) };
+        store.releaseClaim(originalClaim);
+      }); }
       catch (error) {
         // 27d: a dropped result may now carry the `runId` of a refused attempt's own record, so the
         // variants that own a `problems` list are selected by outcome rather than by that key.
@@ -673,6 +692,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
   return {
     store, executorId, resultText, cancelTasks, taskEligibility,
+    get cancellation() { return cancellation; },
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,
     configure: (settings) => {

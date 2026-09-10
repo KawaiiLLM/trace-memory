@@ -383,3 +383,24 @@ test("23c: `full` and the budgeted path agree on the bytes when nothing has to y
     expect(renderEntryWhole(source, extract, sealed).content).toBe(renderEntry(source, roomy, extract, sealed).content);
   }
 });
+
+
+test.each([1, 3])("30 call separators are inside the exact C=100 boundary (%i calls)", count => {
+  const source = entry("assistant", "x", Array.from({ length: count }, (_, i) =>
+    call(i + 1, "bash", { input: JSON.stringify({ command: "a".repeat(610) }) })));
+  const whole = renderEntryWhole(source).content;
+  const first = whole.slice(whole.indexOf("\n[T7#t1]"), count === 1 ? undefined : whole.indexOf("\n[T7#t2]"));
+  expect(tokens(first.slice(1))).toBe(100);
+  expect(tokens(first)).toBe(101); // the original off-by-one, measured by the shared estimator
+  const bounded = view(source, profile(2000, 100, 100));
+  const parts = bounded.match(/\n\[T7#t\d+\][^\n]*/g)!;
+  expect(parts).toHaveLength(count);
+  for (const part of parts) {
+    expect(tokens(part)).toBeLessThanOrEqual(100);
+    expect(part).toContain("truncated");
+    const halves = part.slice(part.indexOf("command=") + 8, -1).split(/\[\.\.\. \d+ characters truncated\]/);
+    for (const half of halves.filter(Boolean)) expect(() => JSON.parse(half)).not.toThrow();
+  }
+  expect(tokens(bounded)).toBeLessThanOrEqual(2000);
+  expect(renderEntryWhole(source).content).toBe(whole);
+});

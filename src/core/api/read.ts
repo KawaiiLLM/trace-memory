@@ -73,20 +73,23 @@ type TraceUnit = { fact: number; relations?: FactRelation[] } | { text: string }
  * read as current knowledge. Ticket 31 made this shared: the Consolidator's material and the main
  * agent's knowledge block are one selection, and neither may explain a stale commit differently.
  * The full revision read happens only when there is a stale commit to explain. */
-export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>): string[] {
+export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
+  path: KnowledgePath | null, projectId?: number): string[] {
   const currentCommits = new Set(current.map(k => k.revision.id));
   const stale = [...visible].filter(id => !currentCommits.has(id));
   if (!stale.length) return [];
-  const byCommit = new Map(store.listKnowledgeRevisions().map(r => [r.id, r]));
+  const graph = store.commitGraph(path, projectId);
+  const byCommit = new Map(graph.revisions.map(r => [r.id, r]));
   return stale.flatMap(id => {
     const revision = byCommit.get(id);
     if (!revision) return []; // another database's id cannot reach here (the carrier binding), and an unknown one explains nothing
-    const now = current.find(k => k.knowledge.id === revision.knowledgeId);
-    if (now) return [`K${revision.knowledgeId}@${id} is superseded by K${revision.knowledgeId}@${now.revision.id} above`];
-    const successor = store.commitChildren(revision).at(-1);
-    return [`K${revision.knowledgeId}@${id} is ${successor?.op === "archive" ? "archived"
-      : successor?.op === "merge" ? `merged into K${successor.knowledgeId}@${successor.id}`
-      : "no longer current on this path"}`];
+    const descendants = graph.descendants(id);
+    const successors = graph.current.filter(r => r.id !== id && descendants.has(r.id));
+    const label = `K${revision.knowledgeId}@${id} is `;
+    if (!successors.length) return [label + "no longer current on this path"];
+    return successors.map(successor => label + (successor.op === "archive" ? "archived"
+      : successor.op === "merge" || successor.knowledgeId !== revision.knowledgeId ? `merged into K${successor.knowledgeId}@${successor.id}`
+      : `superseded by K${successor.knowledgeId}@${successor.id} above`));
   });
 }
 
@@ -186,7 +189,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // lines annotate a block; they never become one on their own, or a re-enable with nothing new
     // would keep restating what a superseded commit became (31 "What repeats and what does not").
     if (!delta.length) return { text: "", knowledgeCommitIds: [] };
-    const notes = knowledgeStatusNotes(store, current, visible.knowledgeCommitIds);
+    const path = id === undefined ? null : typeof target === "object" && "sessionId" in target
+      ? target : store.knowledgePath(id);
+    const notes = knowledgeStatusNotes(store, current, visible.knowledgeCommitIds, path,
+      id === undefined && typeof target === "object" && "projectId" in target ? target.projectId : undefined);
     // This consumer emits no current material and no episodic block at all (20a: knowledge, then
     // receipts), so its only ceiling is the knowledge cap and the episodic envelope is unbounded.
     const budgeted = budgetMaterial({ knowledge: delta, knowledgeLine, knowledgeNotes: notes,

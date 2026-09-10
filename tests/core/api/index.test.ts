@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, seedSourceEntry, sourceSeededMemory, type TraceMemory as TraceMemoryHandle } from "../../source-fixture.ts";
-import { TraceMemory as coreTraceMemory } from "../../../src/core/api/index.ts";
+import { TraceMemory as coreTraceMemory, validateConfig, type ConfigOverride } from "../../../src/core/api/index.ts";
 
 let dir: string;
 let dbPath: string;
@@ -27,6 +27,23 @@ afterEach(() => {
 test("opens a store at the given path and applies default config", () => {
   expect(memory.store).toBeDefined();
   expect(memory.config).toEqual(DEFAULT_CONFIG);
+  expect(DEFAULT_CONFIG.noting.forkModeDefault).toBe(false);
+  expect(DEFAULT_CONFIG.consolidation.forkModeDefault).toBe(false);
+});
+
+test.each([
+  [{}, false, false],
+  [{ noting: { forkModeDefault: true } }, true, false],
+  [{ consolidation: { forkModeDefault: true } }, false, true],
+  [{ noting: { branchModeDefault: true } }, true, false],
+  [{ noting: { forkModeDefault: false }, consolidation: { forkModeDefault: true } }, false, true],
+] satisfies [ConfigOverride, boolean, boolean][])("mode defaults apply only to omitted configuration (%j)", (override, noting, consolidation) => {
+  const before = structuredClone(override);
+  const config = validateConfig(override);
+  expect(config.noting.forkModeDefault).toBe(noting);
+  expect(config.consolidation.forkModeDefault).toBe(consolidation);
+  expect(config.noting).not.toHaveProperty("branchModeDefault");
+  expect(override).toEqual(before);
 });
 
 test("a partial config overrides only the sections given, keeping the rest default", () => {

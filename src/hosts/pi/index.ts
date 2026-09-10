@@ -198,10 +198,10 @@ export default function (pi: ExtensionAPI) {
     session.notified = true;
   };
   /** Ticket 31 "One-shot knowledge supplement": `supplementGeneration` is the counter every successful
-   * `on` and `project` command advances, `supplementServed` the generation this host completed with no
-   * message because the delta was empty. A generation whose block *was* injected is completed by that
-   * message's persisted carrier instead (29a's view reads it back), so only the empty case is state
-   * here. Both are optional: a state file written before this ticket loads with no generation open. */
+   * `on` and `project` command advances, `supplementServed` the generation confirmed complete by an
+   * empty delta or a persisted message. These are session intent, restored from the latest session
+   * state and persisted carriers, not from the selected ancestry's source/head snapshot. Material
+   * visibility remains path-local. Both are optional for state written before this ticket. */
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; project?: string; supplementGeneration?: number; supplementServed?: number };
   let state: State;
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
@@ -255,7 +255,7 @@ export default function (pi: ExtensionAPI) {
    * frozen boundary beside the promise, because 28b's recovery has to tell a task it may reuse
    * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
    * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
-  type Slot = { target: TaskTarget; boundary?: TaskBoundary; done?: Promise<unknown> };
+  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   const slots = new Map<"noting" | "consolidation", Slot>();
   /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
    * over `TaskBoundary` rather than by a serialization whose key order would decide it. An ordinary
@@ -378,8 +378,8 @@ export default function (pi: ExtensionAPI) {
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01, as ticket 29e left it: each phase configures its own mode — Noting defaults to fork,
-  // Consolidation to subagent — and this is the ordinary automatic path only. Borrowed closed-session
+  // Each phase configures its own mode, defaulting to subagent when no override is supplied.
+  // This is the ordinary automatic path only. Borrowed closed-session
   // work and manual catchup ask for a subagent explicitly at their own call sites, and ticket 28's
   // recovery workers will do the same. Fork mode always runs on the session model, subagent mode on
   // the configured one.
@@ -426,11 +426,13 @@ export default function (pi: ExtensionAPI) {
       try { cost = memory.spend(state.sessionId).cost; } catch { /* the same rule for the amount */ }
     }
     const value = (count?: number) => count === undefined ? "?" : String(count);
-    context.ui.setStatus(tag, `🧠 ${indicator} notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
+    const text = `notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
       ` memory: ${value(counts?.unconsolidated)}->${value(counts?.knowledge)} cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}` +
       // 26a: the one state this line adds — this session's automatic Noting paused by two consecutive
       // incomplete runs. Nothing else about the pause is inferable from the counts, which do not move.
-      (state?.sessionId && notingPaused(state.sessionId) ? " noting: paused" : ""));
+      (state?.sessionId && notingPaused(state.sessionId) ? " noting: paused" : "");
+    // Routine counts stay quiet; only the indicator uses an activity or warning colour.
+    context.ui.setStatus(tag, `🧠 ${indicator} ${paint("dim", text)}`);
   };
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
@@ -446,7 +448,9 @@ export default function (pi: ExtensionAPI) {
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
       options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
       ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
-    if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
+    if (closed || !enabled() || options.signal?.aborted
+        || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
+      return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
     // material. The foreground level is read once here, as a value — every later round of this run
     // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to
@@ -463,8 +467,12 @@ export default function (pi: ExtensionAPI) {
     // 27d repair 3 (parent 27 line 96): a re-admitted task reuses the pair its refusal carried and
     // reads neither the foreground level nor the preference again — this is the same task's admission
     // continuing, and repricing fresh material is not permission to reread a frozen policy choice.
-    // (The subagent MODEL is still selected by `modelName(kind)` below: that is its first selection.)
+    // The fresh model preference is frozen here too, before any asynchronous refusal.
     const carried = options.forkAttempt;
+    const generation = carried?.cancellation ?? memory.cancellation;
+    const configuredModel = carried?.subagentModel ?? modelName(kind);
+    const fallbackModel = configuredModel === "session" && context.model
+      ? `${context.model.provider}/${context.model.id}` : configuredModel;
     const configuredThinking = flat[`${kind}Thinking`];
     const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
     const subagentThinking = carried ? carried.subagentThinkingLevel
@@ -476,7 +484,7 @@ export default function (pi: ExtensionAPI) {
     // run audit keeps what was configured; `fallbackReason` is what makes it run fresh, and it is the
     // run's recorded reason. A task carrying one is never refused a fork again (the launch below is
     // not even offered one), which is the structural one-transition guard.
-    const asSubagent = (reason: string) => { notifyFallback(kind, reason); return { ...selected, model: modelName(kind), fallbackReason: reason }; };
+    const asSubagent = (reason: string) => { notifyFallback(kind, reason); return { ...selected, model: fallbackModel, fallbackReason: reason }; };
     // The refusals this host knows before anything is frozen — the cache-miss latch, 29c's Raw
     // availability — are applied here, where the model and the capacity are still open:
     // one admission, no second freeze. A re-admitted task carries its own reason and re-resolves none.
@@ -523,10 +531,12 @@ export default function (pi: ExtensionAPI) {
     // 27d repair 4: the warning is said only if this admission launched something. A task cancelled
     // between the refusal and here drops before it freezes anything, and a cancelled user is owed no
     // notice; every other ending, its own failure included, warns exactly as before.
-    const reroute = (refused: ForkRefusal) => {
+    const reroute = (refusal: ForkRefusal) => {
+      const refused: ForkRefusal = { thinkingLevel: inheritedThinking, subagentThinkingLevel: subagentThinking,
+        cancellation: generation, ...refusal, subagentModel: fallbackModel };
       const reason = refused.runId === undefined ? refused.reason : `${refused.reason} (fork attempt recorded as R${refused.runId})`;
       const warn = () => notifyFallback(kind, refused.reason);
-      return attemptPhase(context, kind, target, { ...selected, model: modelName(kind), fallbackReason: reason },
+      return attemptPhase(context, kind, target, { ...selected, model: fallbackModel, fallbackReason: reason },
         { ...options, ...(refused.boundary ? { boundary: refused.boundary } : {}), forkAttempt: refused })
         .then(result => { if ((result as { reason?: string }).reason !== CANCELLED_BEFORE_FALLBACK) warn(); return result; },
           error => { warn(); throw error; });
@@ -622,6 +632,13 @@ export default function (pi: ExtensionAPI) {
     // Branch history restores position only; the database and latest provisional choice own intent.
     const latest = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath && d.piId === piId).at(-1);
+    // Command intent is session-wide, unlike the selected path's source/head snapshot. Reuse the
+    // latest durable state; never roll a pending command back when selecting an earlier ancestor.
+    state.supplementGeneration = latest?.supplementGeneration;
+    state.supplementServed = latest?.supplementServed;
+    const completed = visibleView(ctx.sessionManager.getEntries().filter(e => e.type === "custom_message"),
+      { db: dbPath, session: state.sessionId ?? latest?.sessionId ?? null, pi: piId }).suppliedGeneration;
+    state.supplementServed = Math.max(state.supplementServed ?? 0, completed);
     if (!state.sessionId && latest?.sessionId) {
       state.sessionId = latest.sessionId;
       state.originPiId = latest.originPiId;
@@ -1009,6 +1026,7 @@ export default function (pi: ExtensionAPI) {
         // that ended in Waiting is resumed by a slot release or the next ordinary opportunity, never by
         // this line: re-driving a wait immediately is a loop without a wait (review 2026-09-08).
         if (!waited) driveCatchup(); });
+    slot.result = promise.catch(() => undefined);
     slot.done = settled;
     pending.delete(promise); pending.add(settled);
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
@@ -1065,7 +1083,7 @@ export default function (pi: ExtensionAPI) {
    * The listener is removed on both exits, so a compaction that ends normally leaves nothing on its
    * signal. */
   const untilSettled = (work: Promise<unknown> | undefined, signal?: AbortSignal) => {
-    if (!work) return Promise.resolve();
+    if (!work || signal?.aborted) return Promise.resolve();
     const quiet = work.then(() => {}, () => {});
     if (!signal) return quiet;
     return new Promise<void>(resolve => {
@@ -1081,24 +1099,34 @@ export default function (pi: ExtensionAPI) {
    * target claim and every commit fence are the existing ones: this adds no scheduler, no queue and
    * no dialog.
    *
-   * Three ways it can end, each one use of the phase (28 amendment 2): a compatible task was already
-   * running and its completion IS this phase's progress; the slot held unrelated work, which is
-   * waited out as capacity but neither counted as progress nor cancelled; or this operation launched
-   * and awaited its own task. */
+   * Reuse and actual admission consume one use. A capacity-only wait consumes none. After one
+   * capacity wait, inspect the new occupant once: reuse compatible work, but do not queue behind
+   * another unrelated owner or turn recovery into a drain. */
   const recoverPhase = async (context: ExtensionContext, kind: "noting" | "consolidation", target: TaskTarget,
-      boundary: TaskBoundary, signal?: AbortSignal): Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined> => {
+      boundary: TaskBoundary, valid: () => boolean, signal?: AbortSignal): Promise<{ used: boolean; result?: NotingResult | ConsolidateResult | { outcome: string } }> => {
     const phase = PHASE_LABEL[kind];
-    const occupied = slots.get(kind);
+    let occupied = slots.get(kind);
+    if (occupied && !sameTask(occupied, target, boundary)) {
+      context.ui.notify(`Trace Memory: compaction is waiting for the occupied ${phase} slot.`, "info");
+      await untilSettled(occupied.done, signal);
+      if (!valid() || signal?.aborted) return { used: false };
+      occupied = slots.get(kind);
+      if (occupied && !sameTask(occupied, target, boundary)) return { used: false };
+    }
     if (occupied) {
-      const reuse = sameTask(occupied, target, boundary);
       // 28 item 7: the awaited phase is named through the existing notify, beside the footer's own
       // running indicator, which already paints the phase. No second dialog is opened.
-      context.ui.notify(`Trace Memory: compaction is waiting for ${reuse ? `the running ${phase} task on this target` : `the occupied ${phase} slot`}.`, "info");
+      context.ui.notify(`Trace Memory: compaction is waiting for the running ${phase} task on this target.`, "info");
       await untilSettled(occupied.done, signal);
-      if (reuse || signal?.aborted) return undefined; // a reused task's commits are read back by the reallocation
-      if (slots.has(kind)) return undefined; // another operation took the freed slot; this attempt does not queue for it
+      if (!valid() || signal?.aborted) return { used: false };
+      const result = await occupied.result;
+      return { used: !!result && "runId" in result, result };
     }
-    if (signal?.aborted) return undefined;
+    if (!valid() || signal?.aborted) return { used: false };
+    const remaining = kind === "noting"
+      ? memory.pendingEntries(target.sessionId, target.branch, target.headTurnId).some(e => boundary.maxEntryId === undefined || e.id <= boundary.maxEntryId)
+      : memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).some(f => !boundary.allowedFactIds || boundary.allowedFactIds.includes(f.id));
+    if (!remaining) return { used: false };
     const slot: Slot = { target, boundary };
     slots.set(kind, slot); activity.running.set(kind, 1); showSpend(context);
     context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : "facts"}.`, "info");
@@ -1109,9 +1137,11 @@ export default function (pi: ExtensionAPI) {
       error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; })
       .finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
         if (catchup) driveCatchup(); }); // 18b: this slot release is a resumption event like any other
+    slot.result = settled;
     slot.done = settled;
     pending.delete(promise); pending.add(settled);
-    return await settled;
+    const result = await settled;
+    return { used: !!result && "runId" in result, result };
   };
   // Ticket 20 "Compaction escalation", as 30 and 28a/28b left it. Core renders its own frozen read
   // snapshot and allocates over three windows; this handler binds the outcome and, when a REQUIRED
@@ -1138,8 +1168,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, context) => {
     ensure(context); if (!enabled()) return; flush();
     const signal = (event as { signal?: AbortSignal }).signal;
+    const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head };
+    const valid = () => !closed && enabled() && state.sessionId === initial.sessionId
+      && state.branch === initial.branch && state.head === initial.head;
     const allocate = (): ReturnType<typeof memory.compact> => {
       try {
+        if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed during recovery" };
         if (state.sessionId) return memory.compact(state.sessionId, state.branch, state.head, retainedNativeIds(context, KEPT_AFTER_CUSTOM_COMPACTION));
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
@@ -1159,8 +1193,8 @@ export default function (pi: ExtensionAPI) {
       // allocated in order, so the ceiling is the frozen set minus whatever gets noted, and never more.
       const maxEntryId = frozen.length ? Math.max(...frozen.map(e => e.id)) : undefined;
       // The Consolidation allowance: the initially applicable pending facts, plus the facts this
-      // operation's own Noting commits (28 "Recovery sequence" step 5). A task this operation merely
-      // reused belongs to another operation, so its facts are not claimed into this allowance.
+      // exact launched or compatible reused Noting task commits (28 "Recovery sequence" step 5).
+      // Slot results preserve task identity; unrelated completed work never contributes facts here.
       const factIds = new Set(memory.store.consolidationBatch(path.sessionId, path.branch, path.headTurnId).map(f => f.id));
       const used = { noting: false, consolidation: false };
       for (let round = 0; round < 2; round++) {
@@ -1169,13 +1203,16 @@ export default function (pi: ExtensionAPI) {
         const wanted = (["noting", "consolidation"] as const).filter(kind => !used[kind]
           && (kind === "noting" ? over.raw && maxEntryId !== undefined : over.facts && factIds.size > 0));
         if (!wanted.length) break; // the allowed tasks are exhausted: the delegation below is the outcome
-        const results = await Promise.all(wanted.map(kind => {
-          used[kind] = true; recovered.push(PHASE_LABEL[kind]);
-          return recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : { allowedFactIds: [...factIds] }, signal);
-        }));
-        if (signal?.aborted) break;
-        for (const settled of results) for (const fact of (settled as { facts?: { id: number }[] } | undefined)?.facts ?? []) factIds.add(fact.id);
+        const results = await Promise.all(wanted.map(async kind => ({ kind,
+          ...await recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : { allowedFactIds: [...factIds] }, valid, signal),
+        })));
+        if (signal?.aborted || !valid()) break;
+        for (const settled of results) {
+          if (settled.used) { used[settled.kind] = true; recovered.push(PHASE_LABEL[settled.kind]); }
+          for (const fact of (settled.result as { facts?: { id: number }[] } | undefined)?.facts ?? []) factIds.add(fact.id);
+        }
         result = allocate(); // re-read committed progress on the frozen path; nothing is subtracted merely because a task ran
+        if (!results.some(settled => settled.used)) break; // capacity is not a recovery use or a retry trigger
       }
     }
     // 28 "Failure and persistence": user cancellation cancels this operation's own work — the signal
@@ -1185,6 +1222,8 @@ export default function (pi: ExtensionAPI) {
       context.ui.notify("Trace Memory: compaction was cancelled; its recovery work was cancelled with it and no native compaction was started.", "info");
       return { cancel: true };
     }
+    if (closed) return { cancel: true };
+    if (!enabled()) return; // /trace off supplies no override, including after a held recovery
     // A tree switch during recovery abandons the path this replacement was prepared for. The attempt
     // is never retargeted: it delegates, and a late result of the old path publishes nothing here.
     if (path && (state.sessionId !== path.sessionId || state.branch !== path.branch || state.head !== path.headTurnId))

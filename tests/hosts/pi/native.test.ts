@@ -5,11 +5,11 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
 import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
 import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
-import { broken, call, fixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
+import { broken, call, fixture, forkFixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
 // ---------------------------------------------------------------- checkbox 1: the gate
 test("19a 2026-09-08: the native child's first request passes prefix verification against the captured parent request", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn();
@@ -39,7 +39,7 @@ test("19a 2026-09-08: the native child's first request passes prefix verificatio
 });
 
 test("19a ruling 2026-09-08: the anthropic-messages child passes the gate with cache_control stripped from both sides and nothing else", async () => {
-  const f = await fixture({}, "fakeanthropic");
+  const f = await forkFixture({}, "fakeanthropic");
   const anthropic = (events: Body[]) => new Response(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
   const reply = (text: string) => anthropic([
     { type: "message_start", message: { id: "m", type: "message", role: "assistant", model: "test", content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } },
@@ -147,7 +147,7 @@ test("19a 2026-09-08: a Noting write commits through native tool execution", asy
 });
 
 test("19a 2026-09-08: a source entry outside the frozen range is rejected although the child copied it", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.")
       : call("t1", "note", { facts: [{ ...noteBatch.facts[0], source: ["T9#user"] }] }));
@@ -199,7 +199,7 @@ test("19a/29e (case 16): Consolidation's two submissions and its review round ru
 
 // ------------------------- checkbox 4: copied custom state, tool whitelist, sequential execution
 test("19a 2026-09-08: copied plugin custom state activates no extension and starts no worker", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn();
@@ -236,7 +236,7 @@ test("19a 2026-09-08: only the memory tools execute; other copied tools are reje
 
 // ------------------------------------------------------- checkbox 5: usage, checkbox 6: cache
 test("19a 2026-09-08: usage counts the child's new responses only, including a failed attempt", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     let attempt = 0;
     f.script(body => !worker(body) ? say("好的。", usage(777, 555))
@@ -267,7 +267,7 @@ test("19a 2026-09-08: a cancelled child without reported usage records unknown, 
 });
 
 test("19a 2026-09-08: each child response's reported cache read is recorded as an observation", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.", usage(30, 4, 0))
       : call("t1", "note", noteBatch, usage(20, 3, 12)));
@@ -312,7 +312,7 @@ test("19b 2026-09-08: an explicit subagent task runs in a fresh native child wit
 });
 
 test("19b 2026-09-08: an unforkable branch task falls back to the native subagent and records requested and actual mode", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn("用 pnpm，不要 npm", { capture: false }); // no captured parent body: the fork cannot be prepared
@@ -401,7 +401,7 @@ test("19c 2026-09-08: cancelling one native child disposes only that child; a si
 }, 20000);
 
 test("19c 2026-09-08: /trace stop cancels the running child after its commit and starts no fresh extraction", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   let release: () => void = () => {};
   try {
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -431,7 +431,7 @@ test("19c 2026-09-08: /trace stop cancels the running child after its commit and
 
 // ------------------------------------------------- 19c cutover: one runner, Pi's own settings
 test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared runs in a fresh native child, not a hand-built request", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn("用 pnpm，不要 npm", { capture: false }); // no capture: the fork cannot be prepared
@@ -455,7 +455,7 @@ test("19c 2026-09-08: no legacy loop remains: a fork that cannot be prepared run
 });
 
 test("19c 2026-09-08: every fork round is verified against the previous request and the run stores the last request sent", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。")
       : toolResults(body) === 0 ? call("t1", "trace", { address: "T1" })
@@ -499,7 +499,7 @@ test("19c 2026-09-08: the child's retry policy is Pi's own, read from settings.j
 }, 20000);
 
 test("19c 2026-09-08: a session model change after the capture refuses the fork instead of reusing a stale body", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : say("Nothing to note."));
     await f.turn(); // the first task forks against its own capture
@@ -610,7 +610,7 @@ test("review 2026-09-08: a failed response's partial tool call never spends a to
 // 21a 2026-09-08: the tool schema is part of the parent body the fork gate compares, so the schema
 // change is re-verified here against a real child request rather than assumed (ticket 21a acceptance).
 test("21a 2026-09-08: the memory schema the child re-registers requires reason, offers no because, and still passes the gate", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn();

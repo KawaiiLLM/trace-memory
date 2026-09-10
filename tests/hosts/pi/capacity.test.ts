@@ -13,7 +13,7 @@ import { expect, test } from "vitest";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 import { tokens } from "../../../src/core/api/index.ts";
 import { host, reply, usage } from "./test-host.ts";
-import { fixture, say, submitted, usage as wireUsage, worker, call, noteBatch, settled, type Body } from "./native-fixture.ts";
+import { forkFixture, say, submitted, usage as wireUsage, worker, call, noteBatch, settled, type Body } from "./native-fixture.ts";
 
 /** Base64-looking payload data of a given length: a deterministic pseudo-random run over the base64
  * alphabet, so the withdrawn text estimator prices it as it priced the live failure's images (about
@@ -103,7 +103,7 @@ test("27a 2026-09-10: a fork's inherited prefix is Pi's context measure, and ima
   const captured = (chars: number) => ({ model: "test", messages: [{ role: "user", content: [{ type: "text", text: "look" },
     ...[0, 1].map(() => ({ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(chars)}` } }))] }] });
   const admission = async (payload: unknown) => {
-    const h = host({ "noting.triggerTokens": 20 }); // fork is the default mode
+    const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20 });
     try {
       await h.emit("session_start");
       // 40,000 inherited tokens: with the Noter instructions they exceed the 50,000 - 10,000 allowance.
@@ -126,7 +126,7 @@ test("27a 2026-09-10: a fork's inherited prefix is Pi's context measure, and ima
 });
 
 test("27a 2026-09-10: a 300,000-token parent measure with a small increment forks under a 500,000-token window that the withdrawn whole-body estimate refused", async () => {
-  const f = await fixture({ contextWindow: 500_000 });
+  const f = await forkFixture({ contextWindow: 500_000 });
   try {
     // The parent's reply reports a 300,000-token prompt, and its history carries two images. Pi's
     // measure is that reply's own usage plus the estimate of what follows it; the base64 never
@@ -157,7 +157,7 @@ test("27a 2026-09-10: a 300,000-token parent measure with a small increment fork
 }, 60000);
 
 test("27a 2026-09-10: the fork measure is read once at admission, and a later foreground change does not move it", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     let reads = 0;
     // The first read is the admission's; every later one reports a context no window could hold, so a
@@ -174,7 +174,7 @@ test("27a 2026-09-10: the fork measure is read once at admission, and a later fo
 }, 30000);
 
 test("27b 2026-09-10: an unknown context measure is not a fork base — the task is re-admitted once as a subagent, with that model's capacity", async () => {
-  const h = host({ "noting.triggerTokens": 20 }); // fork is the default mode
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20 });
   try {
     await h.emit("session_start");
     // What Pi reports right after a compaction, before a valid reply has answered on the new prefix.
@@ -201,7 +201,10 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
     // No latch, no persisted mode change: the next task requests fork again.
     expect(h.memory.store.forkSuppression(1)).toBeNull();
-    expect(h.memory.config.noting.forkModeDefault).toBe(true);
+    // Read the executor's preference, not the separate observer facade's defaults.
+    h.ctx.hasUI = true;
+    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
   } finally { await h.dispose(); }
 });
 

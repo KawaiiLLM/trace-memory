@@ -129,8 +129,7 @@ export const preferences: Preference[] = [
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
 // Each phase stores "runs in fork mode": one preference reads that boolean without inventing a second
-// spelling of the same choice. 29e: the two defaults differ (Noter fork, Consolidator subagent), so
-// the default comes from that phase's own section rather than from Noting's.
+// spelling of the same choice. Both phases default to subagent; each reads its own config section.
 export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
   : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : DEFAULT_CONFIG[p.phase!].forkModeDefault;

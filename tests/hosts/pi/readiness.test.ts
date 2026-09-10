@@ -1,7 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { checkpointReadiness } from "../../../src/hosts/pi/native.ts";
-import { call, fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
+// The native cases exercise fork checkpoint readiness; the ordinary host case runs fresh.
+import { call, forkFixture as fixture, noteBatch, say, submitted, toolResults, worker, type Body } from "./native-fixture.ts";
 
 // 19c "Entry readiness and fallback": the scheduling thresholds keep their own authority (17b), and a
 // due task launches only when its chosen native checkpoint is persisted, reopenable and free of an

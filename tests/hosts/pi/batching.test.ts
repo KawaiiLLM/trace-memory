@@ -181,7 +181,7 @@ test("20b 2026-09-08 scenario 17: the new token settings validate and layer, and
 test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls back with the newly completed %s evidence", async role => {
   // 20b: the batch ceiling is 10,000, so the material is scaled to one batch that still holds the
   // whole frozen set; the trigger is scaled with it. What is pinned here is the fallback, not a size.
-  const h = host({ "noting.triggerTokens": 1000 });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 1000 });
   try {
     await h.turn();
     await h.emit("before_provider_request", { payload: { model: "test", messages: [{ role: "user", content: "old prefix" }] } });
@@ -233,7 +233,7 @@ test("17b 2026-09-08: an oldest entry blocked by the batch budget stays pending"
 });
 
 test("17b 2026-09-08: capture after compaction does not claim the persisted original prefix", async () => {
-  const h = host({ "noting.triggerTokens": 2500 }); // 20b: one 10,000-token batch still holds all of it
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 2500 }); // 20b: one 10,000-token batch still holds all of it
   try {
     await h.prompt("old pending evidence " + "word ".repeat(2000)); await h.answer("old reply");
     const compact = (await h.emit("session_before_compact", { preparation: { tokensBefore: 9000 } })).compaction.summary;

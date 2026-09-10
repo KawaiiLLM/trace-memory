@@ -2,8 +2,8 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
-its exposed store. Notings use verified fork mode by default; consolidations use a subagent by
-default and may be configured to fork (29e). Each reconciled eligible entry completion checks both extraction queues.
+its exposed store. Both Noting and Consolidation use subagents by default and may be configured
+to use verified fork mode. Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
@@ -46,7 +46,7 @@ For example, either settings file can contain:
 ```json
 {
   "trace-memory": {
-    "noting.forkModeDefault": true,
+    "noting.forkModeDefault": false,
     "consolidation.forkModeDefault": false,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
@@ -78,8 +78,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   either way, so on a forking Noter the value reaches only the fallback child.
 - Core settings use dotted names: every `render.*`, `noting.*`, and `consolidation.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
-- `noting.forkModeDefault` defaults to `true`. Set it to `false` for subagent
-  notings. A noting that really runs as a fork uses the session model, because that is the context it
+- `noting.forkModeDefault` defaults to `false` (subagent). Set it to `true` for fork
+  notings. Defaults apply only when no explicit override is supplied; existing `true` settings,
+  including the accepted legacy `noting.branchModeDefault` alias, keep selecting fork. A noting that really runs as a fork uses the session model, because that is the context it
   inherits. **27c: every other noting uses `notingModel`** — explicit subagent mode, and a requested
   fork that does not run as one for any reason at all, which is admitted as a subagent on that model
   and priced by that model's own capacity (see "Per-task fork fallback" below).
@@ -167,7 +168,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
   Trigger (b) is a generation counter in the host's persisted state, advanced by every successful
   `on` command and every successful `project` command — each time they run, with no "did the state
-  actually change" test. A tree switch, an ordinary prompt and a background commit advance nothing;
+  actually change" test. Command intent is session-wide: restore reads the latest session state and
+  persisted completion carriers across the session, while material visibility still comes only from
+  the selected context. Rewinding or reopening cannot erase an unserved command or reopen a completed
+  one; the independent initial condition can still apply. A tree switch, an ordinary prompt and a background commit advance nothing;
   `off` advances nothing and closes nothing, so with memory off a prompt injects nothing and the
   generation stays open. Several commands before one prompt collapse: the final state is what that
   prompt is served from. Completion is the **persistence of that generation's own message**: the
@@ -455,7 +459,7 @@ foreground value exactly when that phase is configured for fork.
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
-| Noter mode | fork / subagent | `noting.forkModeDefault` | fork |
+| Noter mode | fork / subagent | `noting.forkModeDefault` | subagent |
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
 | Consolidator mode | fork / subagent | `consolidation.forkModeDefault` | subagent |
@@ -584,15 +588,18 @@ batch is ever built to avoid the fallback. The Noting boundary is the frozen ent
 (`maxEntryId`) rather than exact membership, because exact membership is whole-or-nothing
 against `noting.batchTokens` and would refuse every batch an overflowing Raw window produces;
 ids are allocated in order, so the ceiling is the frozen set minus whatever gets noted. The
-Consolidation allowance is the frozen pending facts plus the facts this operation's own Noting
-committed.
+Consolidation allowance is the frozen pending facts plus the facts committed by the exact
+Noting task this operation launched or compatibly reused; unrelated task outputs never join it.
 
 **Slots, claims and reuse.** The executor's one slot per phase is unchanged, but its entry now
 carries the task's target and frozen boundary beside its promise. A compatible task — same
 target, same frozen boundary — is awaited instead of duplicated and counts as that phase's one
 use (28 amendment 2), because its commits are exactly what the reallocation reads. An occupied
 slot holding anything else is waited out as capacity: not counted as progress, not cancelled,
-and its claim is never taken. A foreign claim on the target refuses this task at admission as
+and its claim is never taken. After that capacity wait, the new occupant is checked once: a
+compatible task is reused; another unrelated owner ends this recovery opportunity without
+spending the phase allowance or reporting recovery. There is no repeated capacity queue.
+A foreign claim on the target refuses this task at admission as
 it refuses any other. The awaited phase is named through the existing `ui.notify` lines and the
 footer's own running indicator; there is no second dialog and no wait loop.
 
@@ -607,7 +614,9 @@ a capacity failure. Committed progress — an explicit empty Noting commit inclu
 survives. A worker failure keeps its run audit and delegates only once the other task is
 terminal, which awaiting both settles by construction. If the selected path moved while
 recovery ran, the attempt is not retargeted: it delegates, and nothing prepared for the old
-path is published into the new one.
+path is published into the new one. Enrollment is checked again before reallocation and
+publication: `/trace off` during recovery supplies no plugin override, never an empty custom
+replacement.
 
 All three of Pi's automatic triggers reach this sequence — after `agent_end`
 (`agent-session.js:1634`), before prompt submission (`:891`) and between tool rounds (`:274`),
@@ -615,8 +624,9 @@ all through `_runAutoCompaction` — and so does `/compact`. Ordinary triggers, 
 switching, borrowed work and manual catchup are untouched; outside this handler a compaction
 still starts no worker.
 
-The native delegation is the one place where compaction reaches a model, and the call is Pi's:
-the adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
+The core allocator is model-free; the host's bounded recovery may call memory models before
+either custom publication or native delegation. On native delegation, the adapter declines
+the custom replacement and Pi's own summarizer runs, succeeds, fails or
 is cancelled under its own outcome handling. The adapter manufactures no summary, appends
 no oversized block to Pi's result and starts no extraction flush; an unused custom summary
 prepared before the fallback confirms no injection. What was used
@@ -1114,12 +1124,17 @@ stay unknown: never a paid successful generation, never a zero.
 `subagentThinkingLevel` frozen at the first admission are reused by the re-admission, which reads
 neither `pi.getThinkingLevel()` nor the phase's `…Thinking` preference again — repricing fresh
 material is not permission to reread a frozen policy choice (parent 27 line 96; 26d's freeze rule).
-The subagent *model* is still selected by the configured preference at re-admission: that is its
-first selection, not a reread. Core keeps a cancellation generation that `cancelTasks()` advances
-whether or not it is stopping; admission freezes it with the task and the refusal carries it, so a
+Under ticket 29's policy freeze, the configured subagent model is also selected at first admission,
+including the concrete model for `session`. Core exposes its cancellation generation, which
+`cancelTasks()` advances whether or not it is stopping. The host freezes it before preflight, so even
+an unknown-measure or freeze-capacity refusal carries both levels and the cancellation fence. A
 re-admission that arrives after a `/trace stop`, a shutdown or a disabled enrollment is dropped
 with `reason: "cancelled before fallback"` — it launches nothing and warns nothing (parent 27
-line 83).
+line 83). Before releasing a refused attempt's claim, core checks the original token, executor and
+expiry in the same Store transaction. Lost ownership suppresses continuation even if another
+executor already released its replacement and the exact target is still pending. A still-owned
+claim may be released for the authorized fallback; that release is not mistaken for ownership loss.
+Sent attempts retain their own run records and usage in either case.
 
 Every one of these is a warning, not an error: none sets the cache-miss latch, changes a setting, a
 default mode or a persisted mode, and a later task may request fork again. One warning per Pi

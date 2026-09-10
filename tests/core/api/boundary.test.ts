@@ -3,7 +3,7 @@
 // host-neutral domain text as well: it builds no provider message or body, and the host receives
 // structured material plus prepared text and reports what it can and cannot audit. Every test here
 // names the ruling it pins.
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,6 +39,136 @@ function session() {
 const turn = (sessionId: number, parentTurnId: number | null, user: string, assistant: string) =>
   memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: user, assistantText: assistant, startedAt: time });
 const fact = (source: string) => ({ category: "observation", actor: "user", text: `Observed at ${source}`, source: [source] });
+
+test.each([
+  ["noting", false], ["consolidation", false], ["noting", true], ["consolidation", true],
+] as const)("external abort selectively releases delayed %s claims (replaced before abort: %s)", async (phase, replaced) => {
+  const own = session(), other = session();
+  const ownTurn = turn(own, null, "own evidence", "reply");
+  const otherTurn = turn(other, null, "other evidence", "reply");
+  for (const [id, t] of [[own, ownTurn], [other, otherTurn]] as const)
+    memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
+      .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+  let releaseOwn = () => {}, releaseOther = () => {};
+  const ownGate = new Promise<void>(resolve => { releaseOwn = resolve; });
+  const otherGate = new Promise<void>(resolve => { releaseOther = resolve; });
+  const late: string[] = [];
+  runAgent = async input => {
+    await (input.sessionId === own ? ownGate : otherGate);
+    if (input.sessionId === own) late.push(...input.tools.map(tool => tool.execute({})));
+    return { outcome: "cancelled", output: "delayed runner settled", request: { fake: true } };
+  };
+  const target = { sessionId: own, branch: "main", headTurnId: ownTurn.id, mode: "subagent" as const };
+  const controller = new AbortController();
+  const run = phase === "noting" ? memory.noting : memory.consolidate;
+  const cancelled = run({ ...target, signal: controller.signal });
+  const untouched = run({ ...target, sessionId: other, headTurnId: otherTurn.id });
+  const oldClaim = memory.store.getClaim(own, phase)!;
+  const otherClaim = memory.store.getClaim(other, phase)!;
+  const otherPhase = phase === "noting" ? "consolidation" : "noting";
+  const phaseClaim = memory.store.acquireClaim(target, otherPhase, memory.executorId)!;
+  expect(oldClaim).toBeTruthy();
+  expect(otherClaim).toBeTruthy();
+  try {
+    // A takeover before the abort must survive the listener as well as the stale finalizer.
+    if (replaced) memory.store.releaseClaim(oldClaim);
+    const taken = replaced ? memory.store.acquireClaim(target, phase, memory.executorId)! : null;
+    controller.abort();
+    // Neither runner has settled; release-on-finalization would fail this assertion.
+    expect(memory.store.getClaim(own, phase)).toEqual(taken);
+    expect(memory.store.getClaim(own, otherPhase)).toEqual(phaseClaim);
+    expect(memory.store.getClaim(other, phase)).toEqual(otherClaim);
+    const replacement = taken ?? memory.store.acquireClaim(target, phase, memory.executorId)!;
+    expect(replacement.token).not.toBe(oldClaim.token);
+    releaseOwn();
+    expect((await cancelled).outcome).not.toBe("success");
+    expect(late).toEqual(Array(4).fill("rejected: run has finished"));
+    // The stale task's finally must not release a new task, even under the same executor id.
+    expect(memory.store.getClaim(own, phase)).toEqual(replacement);
+    expect(memory.store.getClaim(own, otherPhase)).toEqual(phaseClaim);
+    expect(memory.store.getClaim(other, phase)).toEqual(otherClaim);
+    memory.store.releaseClaim(replacement);
+    memory.store.releaseClaim(phaseClaim);
+  } finally { releaseOwn(); releaseOther(); await Promise.all([cancelled, untouched]); }
+});
+
+test.each([
+  ["noting", false, false], ["consolidation", false, false],
+  ["noting", true, false], ["consolidation", true, false],
+  ["noting", false, true], ["consolidation", false, true],
+  ["noting", true, true], ["consolidation", true, true],
+] as const)("external abort retries %s claim release (persistent failure: %s, already aborted: %s)", async (phase, persistent, alreadyAborted) => {
+  const id = session(), t = turn(id, null, "evidence", "reply");
+  if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+  let settle = () => {};
+  const held = new Promise<void>(resolve => { settle = resolve; });
+  runAgent = async () => {
+    await held;
+    return { outcome: "cancelled", output: "runner cancelled", request: { fake: true } };
+  };
+  const releaseClaim = memory.store.releaseClaim.bind(memory.store);
+  const release = vi.spyOn(memory.store, "releaseClaim");
+  if (persistent) release.mockImplementation(() => { throw new Error("release unavailable"); });
+  else release.mockImplementationOnce(() => { throw new Error("release unavailable"); });
+  const controller = new AbortController();
+  if (alreadyAborted) controller.abort();
+  const target = { sessionId: id, branch: "main", headTurnId: t.id, mode: "subagent" as const, signal: controller.signal };
+  const attempt = phase === "noting" ? memory.noting(target) : memory.consolidate(target);
+  try {
+    if (!alreadyAborted) {
+      expect(() => controller.abort()).not.toThrow();
+      expect(calls[0]!.signal!.aborted).toBe(true);
+      expect(calls[0]!.signal!.reason).toBe(controller.signal.reason);
+      expect(calls[0]!.tools.map(tool => tool.execute({}))).toEqual(Array(4).fill("rejected: run has finished"));
+    } else expect(calls).toEqual([]);
+    expect(release).toHaveBeenCalledTimes(1);
+    const claim = memory.store.getClaim(id, phase)!;
+    expect(claim).toBeTruthy(); // Immediate release failed; finalization has not run yet.
+    settle();
+    const result = await attempt;
+    expect(result.outcome).toBe("cancelled");
+    expect(release).toHaveBeenCalledTimes(2);
+    expect(release.mock.calls).toEqual([[claim], [claim]]);
+    if (result.outcome !== "cancelled") throw new Error("expected cancellation");
+    expect(result.problems?.filter(problem => problem.startsWith("claim release failed:")))
+      .toEqual(persistent ? ["claim release failed: Error: release unavailable"] : []);
+    expect(memory.store.getClaim(id, phase)).toEqual(persistent ? claim : null);
+    if (persistent) releaseClaim(claim);
+  } finally { settle(); release.mockRestore(); await attempt; }
+});
+
+test.each(["noting", "consolidation"] as const)("external abort after a %s commit preserves success", async phase => {
+  const id = session(), t = turn(id, null, "evidence", "reply");
+  if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+  let release = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  runAgent = async input => {
+    if (input.kind === "noting") expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).toContain("committed");
+    else {
+      const tool = input.tools.find(tool => tool.name === "memory")!;
+      const batch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+      input.reviewFeedback(tool.execute(batch));
+      input.reportRequest({ round: 2 });
+      expect(tool.execute(batch)).toContain("committed");
+    }
+    await held;
+    return { outcome: "cancelled", output: "aborted after commit", request: { fake: true } };
+  };
+  const controller = new AbortController();
+  const target = { sessionId: id, branch: "main", headTurnId: t.id, mode: "subagent" as const, signal: controller.signal };
+  const attempt = phase === "noting" ? memory.noting(target) : memory.consolidate(target);
+  try {
+    expect(memory.store.listRuns(id).filter(run => run.kind === phase)).toHaveLength(1); // tool commit precedes runner completion
+    controller.abort();
+    expect(memory.store.getClaim(id, phase)).toBeNull();
+    release();
+    const result = await attempt;
+    expect(result.outcome).toBe("success");
+    expect(memory.store.listRuns(id).find(run => run.kind === phase)!.outcome).toBe("success");
+  } finally { release(); await attempt; }
+});
 
 // --------------------------------------------------- structured material and text, no provider body
 
@@ -376,4 +506,38 @@ test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later pro
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
   expect(memory.store.sourcePath(sessionId, "main", t.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
   expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual([]);
+});
+
+
+test.each((["noting", "consolidation"] as const).flatMap(phase =>
+  (["expired", "replaced", "released"] as const).map(loss => ({ phase, loss }))))(
+  "29 $phase fallback cannot revive its original $loss claim", async ({ phase, loss }) => {
+  const id = session(), t = turn(id, null, "ownership evidence", "reply");
+  if (phase === "consolidation") memory.tools({ kind: "manual", sessionId: id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] });
+  const peer = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "" }));
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  try {
+    runAgent = async input => {
+      const original = memory.store.getClaim(id, phase)!;
+      clock.mockReturnValue(original.expiresAt + 1);
+      if (loss !== "expired") {
+        const replacement = peer.store.acquireClaim({ sessionId: id, branch: "main", headTurnId: t.id }, phase, peer.executorId)!;
+        expect(replacement.token).not.toBe(original.token);
+        if (loss === "released") expect(peer.store.releaseClaim(replacement)).toBe(true);
+      }
+      return { outcome: "failure", output: "context overflow", request: { sent: true },
+        refused: { reason: "context overflow", cancellation: input.cancellation,
+          boundary: phase === "noting" ? { exactEntryIds: (input as NotingAgentInput).entryIds }
+            : { exactFactIds: (input as ConsolidationAgentInput).range.facts.map(f => f.id) } } };
+    };
+    const result = await (phase === "noting" ? memory.noting : memory.consolidate)({ sessionId: id, branch: "main", headTurnId: t.id, mode: "fork" });
+    expect(result).toMatchObject({ outcome: "dropped", reason: "task claim lost before fallback" });
+    expect(result).not.toHaveProperty("refused");
+    expect(memory.store.listRuns(id).filter(run => run.mode === "fork")).toHaveLength(1);
+    if (loss === "replaced") expect(memory.store.getClaim(id, phase)?.executorId).toBe(peer.executorId);
+    else expect(memory.store.getClaim(id, phase)).toBeNull();
+    expect(phase === "noting" ? memory.pendingEntries(id, "main", t.id).length : memory.store.consolidationBatch(id, "main", t.id).length).toBeGreaterThan(0);
+  } finally { clock.mockRestore(); peer.close(); }
 });

@@ -1,3 +1,4 @@
+import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
 // from. Names identify the ruling and its conversation date.
@@ -367,7 +368,7 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   const head = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn",
     userPrompt: "Check it", assistantText: "Final-only finding: " + "result ".repeat(10) + "verified.", startedAt: time });
   memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id,
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", head.id) });
   const input = calls[0]!;
   expect(input.mode).toBe("fork");
@@ -384,7 +385,7 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
   const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id,
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
   expect(calls[0]!.material.head).toBe(null);
   expect(calls[0]!.material.sources).toEqual([`T2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`]);
@@ -1028,7 +1029,7 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
   // ceilings and the target limits keep their values, and no entry-count cap joins them — the whole
   // Noting section is still these four keys.
-  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: true, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
+  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: false, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
   expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
 });
 
@@ -1230,11 +1231,13 @@ test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's
   // A saved global preference must reach tasks admitted afterwards without a reload. Admission reads
   // its mode from the configuration frozen at construction, so exactly those two booleans may move —
   // 29e restored Consolidation's, which 25b had retired; every other key is still refused below.
+  expect(memory.config.noting.forkModeDefault).toBe(false);
+  memory.configure({ noting: { forkModeDefault: true } });
   expect(memory.config.noting.forkModeDefault).toBe(true);
   memory.configure({ noting: { forkModeDefault: false } });
   expect(memory.config.noting.forkModeDefault).toBe(false);
   expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
-  // 29e: the same one key of the other phase, whose default is the opposite one.
+  // The other phase exposes the same key and also defaults to subagent.
   expect(memory.config.consolidation.forkModeDefault).toBe(false);
   memory.configure({ consolidation: { forkModeDefault: true } });
   expect(memory.config.consolidation.forkModeDefault).toBe(true);
@@ -1339,7 +1342,7 @@ test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its 
 
 test("19c 2026-09-08: new work records the canonical fork spelling, in the task input and in the run record", async () => {
   const { s, t } = session();
-  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success"); // configuration default
+  expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success"); // explicit task override
   expect(calls.at(-1)!.mode).toBe("fork");
   expect(memory.store.listRuns(s.id).at(-1)!.mode).toBe("fork");
   expect(memory.store.listRuns(s.id).some(r => r.mode === "branch")).toBe(false);
@@ -1371,7 +1374,7 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
     expect((await after.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
     expect(after.trace(`R${legacy}`)).toContain("legacy request-copy execution");
     expect(after.store.getRun(legacy)!.mode).toBe("branch");
-    expect(after.store.listRuns(s.id).map(r => r.mode)).toEqual(["branch", "fork"]);
+    expect(after.store.listRuns(s.id).map(r => r.mode)).toEqual(["branch", "subagent"]);
   } finally { after.close(); }
 });
 
@@ -1884,4 +1887,32 @@ test("29e (27d repair 4, case 20): a Consolidation task cancelled between refusa
   // after it carries the current generation and runs.
   expect((await memory.consolidate({ ...target, mode: "subagent" })).outcome).toBe("success");
   expect(generations).toHaveLength(2);
+});
+
+
+test("29/31 stale status follows the selected path, not a later sibling merge", () => {
+  const { root, c, d, content } = commitPaths();
+  expect(c.write([{ op: "archive", id: "K1@1", reason: "Withdraw this path's rule.", supports: [c.fact] }]).committed[0].commit).toBe(2);
+  expect(d.write([{ op: "create", topics: [], reason: "Separate survivor.", ...content(d.fact, "Survivor") }]).committed[0].commit).toBe(3);
+  expect(d.write([{ op: "merge", topics: [], id: "K2@3", absorb: ["K1@1"], reason: "Merge on D only.", ...content(d.fact, "Merged rule") }]).committed[0].commit).toBe(4);
+  const status = (path: typeof root) => knowledgeStatusNotes(memory.store, memory.store.listCurrentKnowledge(path), [1], path);
+  expect(status(c)).toEqual(["K1@1 is archived"]);
+  expect(status(d)).toEqual(["K1@1 is merged into K2@4"]);
+  expect(status(root)).toEqual([]); // the predecessor is still current at the common ancestor
+});
+
+test("29/31 archived divergent tip is not superseded by the surviving same-K sibling", () => {
+  const { c, d, peer, edit } = commitPaths();
+  edit(c, "C version"); edit(d, "D version");
+  expect(c.write([{ op: "archive", id: "K1@2", reason: "Withdraw C only.", supports: [c.fact] }]).committed[0].commit).toBe(4);
+  const selected = peer();
+  const current = memory.store.listCurrentKnowledge(selected);
+  expect(current.map(k => k.revision.id)).toEqual([3]);
+  expect(knowledgeStatusNotes(memory.store, current, [2], selected)).toEqual(["K1@2 is archived"]);
+  expect(knowledgeStatusNotes(memory.store, current, [1], selected)).toEqual([
+    "K1@1 is superseded by K1@3 above", "K1@1 is archived",
+  ]); // both applicable descendants, never an arbitrary global winner
+  const seen = { raw: new Map<string, "source" | "view">(), factIds: new Set<number>(),
+    knowledgeCommitIds: new Set([2]), injection: true, suppliedGeneration: 0 };
+  expect(memory.injection(selected, seen).text).toContain("K1@2 is archived");
 });

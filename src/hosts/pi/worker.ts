@@ -52,6 +52,8 @@ export interface ForkRefusal {
    * again — repricing fresh material is not permission to reread a frozen policy choice. */
   thinkingLevel?: string;
   subagentThinkingLevel?: string;
+  /** Configured fresh model selected at the first host admission, not after an async refusal. */
+  subagentModel?: string;
   /** 27d repair 4 (parent 27 line 83): core's cancellation generation, frozen at this task's
    * admission. A re-admission whose carried generation is older than core's current one is dropped. */
   cancellation?: number;

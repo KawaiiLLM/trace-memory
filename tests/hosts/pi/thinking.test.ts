@@ -11,7 +11,7 @@ import { expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact, consolidationReply } from "./test-host.ts";
-import { call, fixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, fixture, forkFixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
@@ -44,7 +44,7 @@ function closedTail(memory: ReturnType<typeof TraceMemory>) {
 
 test("26b: a fork worker runs at the frozen foreground level; neither the global default nor the worker model's preference overrides it", async () => {
   // Global default `medium`, a `low` preference for this very model, foreground `high`.
-  const f = await fixture({ defaultThinkingLevel: "medium", modelThinkingLevels: { "fake/test-thinking": "low" } },
+  const f = await forkFixture({ defaultThinkingLevel: "medium", modelThinkingLevels: { "fake/test-thinking": "low" } },
     "fake", { model: "test-thinking", thinkingLevel: "high" });
   try {
     f.h.setThinkingLevel("high");
@@ -96,10 +96,10 @@ test("26b: a worker model that does not support the level runs at Pi's clamped l
 });
 
 test("26b: every launch path freezes the same level — both phases, automatic work, a fork fallback, borrowed closed-session work and manual catchup", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
   try {
     h.setThinkingLevel("high");
-    await h.turn(); // allocates the session; fork mode is the Noter's default here
+    await h.turn(); // allocates the session; this case explicitly configures fork mode
     const tail = closedTail(h.memory);
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
@@ -125,7 +125,7 @@ test("26b: every launch path freezes the same level — both phases, automatic w
 });
 
 test("26b: a level that makes the inherited request differ is refused by the existing gate and falls back at the frozen level", async () => {
-  const f = await fixture({ defaultThinkingLevel: "medium" }, "fake", { model: "test-thinking", thinkingLevel: "high" });
+  const f = await forkFixture({ defaultThinkingLevel: "medium" }, "fake", { model: "test-thinking", thinkingLevel: "high" });
   try {
     f.h.setThinkingLevel("low"); // deliberately not the level the captured parent request was sent at
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
@@ -163,7 +163,7 @@ test("26b: borrowed work inherits the executor's level, not the level any histor
 
 test("26d ruling 2026-09-10: the configured level is for subagent execution only — a fork keeps inheriting the foreground level, and the gate stays green", async () => {
   // `notingThinking: high` while the foreground — and the captured parent request — are at `medium`.
-  const f = await fixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "medium" });
+  const f = await forkFixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "medium" });
   try {
     f.h.setThinkingLevel("medium");
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
@@ -184,7 +184,7 @@ test("26d: the same fork task, refused by the gate, runs its fresh child at the 
   // 26b's gate case with a preference on top: the foreground is `low` against a parent captured at
   // `high`, so the inherited body differs and the existing gate refuses it — and the fallback child
   // is a fresh child, which is what `notingThinking` configures.
-  const f = await fixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "high" });
+  const f = await forkFixture({ notingThinking: "high" }, "fake", { model: "test-thinking", thinkingLevel: "high" });
   try {
     f.h.setThinkingLevel("low");
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.") : call("t1", "note", noteBatch));
@@ -230,9 +230,9 @@ test("26d: every subagent path takes its phase's configured level — explicit s
 });
 
 test("26d: a fork task that falls back runs at the configured level, clamped by Pi to what the worker model supports", async () => {
-  // Fork is the Noter's default here and this fake foreground has no session file to fork from, so
+  // This case explicitly selects fork; the fake foreground has no session file to fork from, so
   // the documented fallback runs — on the session model, which declares no reasoning support.
-  const h = host({ "noting.triggerTokens": 20, notingThinking: "high" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingThinking: "high" });
   try {
     h.setThinkingLevel("minimal");
     h.provider(async conversation => notingFact(conversation));
@@ -289,7 +289,7 @@ test("27/26d: the levels frozen at admission survive fallback", async () => {
   // the task. Before 27d both fresh requests and the audit said `low`.
   // The preference under edit has to be the Global layer the menu writes, so this fixture's
   // environment layer carries neither the model nor the level.
-  const f = await fixture({}, "fake", { model: "test-thinking", thinkingLevel: "high" });
+  const f = await forkFixture({}, "fake", { model: "test-thinking", thinkingLevel: "high" });
   try {
     const file = join(f.h.dir, "agent", "settings.json");
     writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")),

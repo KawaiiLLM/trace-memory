@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 import { expect, test, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
-import { fixture, say, call, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
+// This suite explicitly requests forks to exercise their refusal and re-admission paths.
+import { forkFixture as fixture, say, call, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
@@ -52,7 +53,7 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
   // cannot fit its 40,000-token allowance. `notingModel` names a different model, whose own capacity
   // (the fixture's 200,000-token window) prices the second admission — and which the audit must name,
   // because it is the model that was charged.
-  const h = host({ "noting.triggerTokens": 20, notingModel: "fake/test-mini" }); // fork is the default mode
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     h.ctx.model = { ...h.ctx.model!, contextWindow: 50_000 };
@@ -79,7 +80,10 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.nativeId)).toEqual(["e2"]);
     // No latch, no configuration change.
     expect(h.memory.store.forkSuppression(1)).toBeNull();
-    expect(h.memory.config.noting.forkModeDefault).toBe(true);
+    // Settings belongs to the executor; `h.memory` is only an independent database observer.
+    h.ctx.hasUI = true;
+    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
     expect(JSON.parse(readFileSync(`${h.dir}/agent/settings.json`, "utf8")).compaction).toBeUndefined();
   } finally { await h.dispose(); }
 });
@@ -361,7 +365,7 @@ test.each([
   // `notingModel` is a model the foreground is not on, so the run record's model is the whole point:
   // before 27c only the requested mode decided it, and an effective-subagent task was frozen on — and
   // charged to — the foreground model at the foreground's own capacity.
-  const h = host({ "noting.triggerTokens": 20, notingModel: "fake/test-mini" }); // fork is the default mode
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     // A first turn too small to be due: it allocates the memory session the arrangement below needs.
@@ -381,7 +385,9 @@ test.each([
     expect(String(response.fallbackReason)).toContain(reason);
     expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
     expect(h.conversations[0]!.systemPrompt).toContain("Noting (fact extraction)"); // fresh material
-    expect(h.memory.config.noting.forkModeDefault).toBe(true); // no persisted mode change
+    h.ctx.hasUI = true;
+    h.answers.push("Settings", undefined); await h.commands.get("trace")!.handler("", h.ctx);
+    expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)"); // no executor mode change
   } finally { await h.dispose(); }
 });
 
@@ -594,7 +600,7 @@ test.each([
       h.compaction("most of it", { details: carrier(h, older.slice(0, -1).map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const }))) }),
     (older: Older) => older.at(-1)!],
 ])("29: a Noter forks only when its whole target is available in the inherited context (%s)", async (_label, arrange, expected) => {
-  const h = host({ "noting.triggerTokens": 100, notingModel: "fake/test-mini" }); // fork is the default mode
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 100, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     // Two turns too small to be due: they lay down the entries a compaction can drop, and the memory
@@ -648,7 +654,7 @@ test.each([
 });
 
 test("29: a Noter forks only when its whole target is available in the inherited context (an unknown view, and an incomplete tool group)", async () => {
-  const h = host({ "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     await h.prompt("hi"); await h.answer("ok"); await h.emit("agent_settled"); await h.drain();

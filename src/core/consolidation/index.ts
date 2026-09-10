@@ -142,7 +142,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // carries only what is current, so nothing in it would contradict the inherited text. One line per
   // stale commit says what happened to it. Computed once for the freeze: the batch does not affect it.
   // 31 made this the shared rule: the main agent's knowledge block explains a stale commit the same way.
-  const knowledgeNotes = knowledgeStatusNotes(store, knowledge, initial.visible.knowledgeCommitIds);
+  const knowledgeNotes = knowledgeStatusNotes(store, knowledge, initial.visible.knowledgeCommitIds, path);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
   const byId = new Map(facts.map(f => [f.id, f]));

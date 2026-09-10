@@ -3,7 +3,8 @@
 // both halves of that boundary — a reopen of the memory session clears the count and nothing else,
 // and ordinary tree navigation inside the same session is not a reopen.
 import { expect, test, vi } from "vitest";
-import { call, fixture, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
+// These reopen regressions explicitly select fork execution to produce cache misses.
+import { call, forkFixture as fixture, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
 
 const big = () => usage(32000, 5, 0); // 32,000 input tokens, nothing read from cache: an eligible miss
 const small = () => usage(10, 2, 0); // below every documented minimum: neither a miss nor a hit

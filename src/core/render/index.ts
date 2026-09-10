@@ -422,13 +422,16 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
   const isResult = entry.role === "toolResult";
   // A sealed part is rendered at its floor whatever the allocation would allow: an unselected call
   // keeps its label line and its omission marker even when its payload would have fitted.
-  const parts = sources.map((source) => {
+  const parts = sources.map((source, index) => {
     const part = source.part();
-    return source.choice === "floor" ? { ...part, render: () => part.floor } : part;
+    // Each following part owns its leading separator, inside C/R as well as the whole-entry E.
+    const separator = index ? "\n" : "";
+    const floor = separator + part.floor, whole = separator + part.whole;
+    return { floor, whole, minimum: tokens(floor), render: (cap: number) => source.choice === "floor" ? floor
+      : separator + part.render(Math.max(0, cap - tokens(separator))) };
   });
   const toolCap = isResult ? profile.toolResultTokens : profile.toolInputTokens;
-  const caps = sources.map((source, index) => source.ordinal === null ? profile.entryTokens
-    : source.choice === "floor" ? parts[index]!.minimum : toolCap);
+  const caps = sources.map(source => source.ordinal === null ? profile.entryTokens : toolCap);
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
   // Verified before returning, with the entry against `E` below: no tool part exceeds its own cap.
   for (const [index, part] of parts.entries()) if (ordinals[index] !== null && part.minimum > caps[index]!) throw capacity();
@@ -439,11 +442,11 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
   const cap = profile.entryTokens;
   const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap];
   const build = (room: readonly number[]) => parts.map((part, index) => part.render(Math.min(caps[index]!, room[stage(index)]!)));
-  let rendered = build(rooms), content = rendered.join("\n");
+  let rendered = build(rooms), content = rendered.join("");
   for (let level = 0; level < rooms.length && tokens(content) > cap; level++) {
-    rooms[level] = fit((room) => build(rooms.map((value, index) => index === level ? room : value)).join("\n"), rooms[level]!, cap);
+    rooms[level] = fit((room) => build(rooms.map((value, index) => index === level ? room : value)).join(""), rooms[level]!, cap);
     rendered = build(rooms);
-    content = rendered.join("\n");
+    content = rendered.join("");
   }
   if (tokens(content) > cap) throw capacity();
   return { content, receipts: [],

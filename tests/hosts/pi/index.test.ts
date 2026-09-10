@@ -791,7 +791,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   h.provider(async c => notingFact(c));
   await h.turn();
   // 24a: idle; nothing left to note, one applicable fact, that fact still to consolidate, no knowledge yet.
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> notes: 0->1 memory: 1->0 cost: \$\d+\.\d{2}$/);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 1->0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
   expect(spend.runs).toEqual({ noting: 1, consolidation: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);

@@ -5,7 +5,8 @@
 //
 // and the off footer is the compact `🧠 ○ off`. These cases pin what each number means on a
 // synthetic branch, that work stays pending until its business commit, that the indicator is Pi
-// theme roles in the ruled precedence, and — 22a's own contract, kept — that a refresh costs a
+// theme roles in the ruled precedence while the routine text stays dim, and — 22a's own contract,
+// kept — that a refresh costs a
 // status refresh: no Raw payload, one path membership, no run audit body, no model request.
 import { afterEach, expect, test } from "vitest";
 import { host as createHost, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
@@ -27,7 +28,7 @@ const raw = (h: Host) => h.statuses.get("trace-memory") ?? "";
  * as text — so an unknown `?` is distinguishable from a counted `0`. */
 const footer = (h: Host) => {
   const status = raw(h);
-  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? notes: (\S+)->(\S+) memory: (\S+)->(\S+) cost: \$(\S+)$/.exec(status);
+  const parsed = /^🧠 (?:<(\w+)>)?([●○])(?:<\/\w+>)? (?:<dim>)?notes: (\S+)->(\S+) memory: (\S+)->(\S+) cost: \$(\S+?)(?:<\/dim>)?$/.exec(status);
   if (!parsed) throw new Error(`unreadable footer: ${status}`);
   return { status, role: parsed[1], glyph: parsed[2]!, entries: parsed[3]!, facts: parsed[4]!,
     unconsolidated: parsed[5]!, knowledge: parsed[6]!, cost: parsed[7]! };
@@ -67,11 +68,11 @@ test("24a: notes is entries-to-note over applicable facts, memory is facts-to-co
   const h = host(quiet);
   await h.turn(); // one Turn, two source entries, nothing noted and nothing extracted
   expect(footer(h)).toMatchObject({ ...enumerated(h), glyph: "○", role: "dim" });
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: 2->0 memory: 0->0 cost: $0.00");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->0 memory: 0->0 cost: $0.00</dim>");
 
   const written = facts(h, 3);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: 2->3 memory: 3->0 cost: $0.00"); // committed facts are immediately eligible
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0 cost: $0.00</dim>"); // committed facts are immediately eligible
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // Knowledge cites a fact; citing is not consolidating, so the left number does not move.
@@ -80,7 +81,7 @@ test("24a: notes is entries-to-note over applicable facts, memory is facts-to-co
       category: "constraint", scope: "session", supports: [`F${written[0]!.id}`] }], skipped: [] });
   expect(knowledge).not.toContain("rejected:");
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: 2->3 memory: 3->1 cost: $0.00");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1 cost: $0.00</dim>");
 
   // A Consolidation commit takes two of the three facts; a Noting commit takes both entries.
   const taken = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: time },
@@ -90,7 +91,7 @@ test("24a: notes is entries-to-note over applicable facts, memory is facts-to-co
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: 0->3 memory: 1->1 cost: $0.00");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->1 cost: $0.00</dim>");
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // Cost is the session's cumulative run spend: work another executor performed for this session
@@ -111,18 +112,20 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   const admitted = footer(h);
   expect(admitted).toMatchObject({ glyph: "●", role: "accent", entries: "2", facts: "0" }); // admitted, not done
+  expect(admitted.status).toMatch(/^🧠 <accent>●<\/accent> <dim>notes: .*<\/dim>$/);
   expect(admitted).toMatchObject(enumerated(h));
 
   release(notingFact(h.conversations[0]!)); await h.drain();
   // The business commit is what moves both queues: the entries are noted and the fact is now pending
   // for Consolidation. Noting decreasing one queue while increasing the other is the ordinary case.
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: 0->1 memory: 1->0 cost: $0.00");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->1 memory: 1->0 cost: $0.00</dim>");
 
   // A run that fails before its commit advances nothing at all.
   h.provider(async () => { throw new Error("offline"); });
   await h.turn(); await h.answer("next completed source"); await h.drain();
   const failed = footer(h);
   expect(failed.role).toBe("error");
+  expect(failed.status).toMatch(/^🧠 <error>●<\/error> <dim>notes: .*<\/dim>$/);
   expect(failed).toMatchObject(enumerated(h));
   expect(Number(failed.entries)).toBeGreaterThan(0); // the new turn's entries stayed pending
   expect(failed.facts).toBe("1");
@@ -136,6 +139,7 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   await h.turn(); await h.drain();
   const after = footer(h);
   expect(after.role).toBe("warning"); // committed with problems
+  expect(after.status).toMatch(/^🧠 <warning>●<\/warning> <dim>notes: .*<\/dim>$/);
   expect(Number(after.entries)).toBeLessThan(pendingBefore);
   expect(Number(after.facts)).toBeGreaterThan(1);
   expect(after).toMatchObject(enumerated(h));
@@ -249,7 +253,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   h.setHeaderTimestamp("2099-01-01T00:00:00.000Z");
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
-  expect(raw(h)).toBe("🧠 <dim>○</dim> notes: ?->? memory: ?->? cost: $?");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->? cost: $?</dim>");
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("no memory identity allocated");
   expect(h.notices.at(-1)).not.toContain("Pending:");

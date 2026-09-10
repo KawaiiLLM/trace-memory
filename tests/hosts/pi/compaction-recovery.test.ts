@@ -346,6 +346,102 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
   } finally { await h.dispose(); }
 });
 
+test.each([false, true])("a catchup slot acquired during the capacity wait is reused, with cancellable wait: %s", async cancel => {
+  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1e9,
+    "noting.batchTokens": 2400, ...windows(1, 1000, 1) });
+  let releaseFirst = () => {}, releaseRest = () => {};
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const rest = new Promise<void>(resolve => { releaseRest = resolve; });
+  let calls = 0, finished = false;
+  const controller = new AbortController();
+  try {
+    h.provider(async () => {
+      await (++calls === 1 ? first : rest);
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "note", name: "note", arguments: { facts: [] } }] };
+    });
+    await turns(h, 3);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    await h.commands.get("trace").handler("catchup", h.ctx);
+    const attempt = compact(h, controller.signal).then(result => { finished = true; return result; });
+    await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the occupied Noting slot"))).toBe(true));
+    releaseFirst();
+    await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the running Noting task"))).toBe(true));
+    expect(finished).toBe(false); // the capacity release alone is not a recovery use
+    expect(h.notices.some(n => n.includes("after recovery: Noting"))).toBe(false);
+    if (cancel) {
+      controller.abort();
+      expect(await attempt).toEqual({ cancel: true });
+      expect(h.notices.some(n => n.includes("compaction used"))).toBe(false);
+      releaseRest();
+      await h.drain();
+      expect(runs(h, "noting").every(run => run.outcome === "success")).toBe(true);
+    } else {
+      releaseRest();
+      await attempt;
+      expect(h.notices.some(n => n.includes("after recovery: Noting"))).toBe(true);
+      expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
+    }
+  } finally { releaseFirst(); releaseRest(); await h.dispose(); }
+});
+
+test("a second unrelated slot owner ends the capacity wait without false recovery status", async () => {
+  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1e9,
+    "noting.batchTokens": 2400, ...windows(1, 1000, 1) });
+  let releaseFirst = () => {}, releaseRest = () => {};
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const rest = new Promise<void>(resolve => { releaseRest = resolve; });
+  let calls = 0;
+  try {
+    h.provider(async () => {
+      await (++calls === 1 ? first : rest);
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "note", name: "note", arguments: { facts: [] } }] };
+    });
+    await turns(h, 2);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    await h.commands.get("trace").handler("catchup", h.ctx); // freezes an older target
+    await turns(h, 1, "LATER");
+    const attempt = compact(h);
+    await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the occupied Noting slot"))).toBe(true));
+    releaseFirst();
+    expect(await attempt).toBeUndefined(); // do not queue behind another unrelated task
+    expect(h.notices.some(n => n.includes("after recovery:"))).toBe(false);
+    expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
+    expect(h.notices.some(n => n.includes("compaction used native delegation"))).toBe(true);
+  } finally { releaseFirst(); releaseRest(); await h.dispose(); }
+});
+
+test("a compatible reused Noter's exact output enters the unused Consolidation allowance", async () => {
+  const h = host({ ...quiet, ...windows(1, 1, 200) });
+  let releaseNoting = () => {}, releaseConsolidation = () => {};
+  const notingGate = new Promise<void>(resolve => { releaseNoting = resolve; });
+  const consolidationGate = new Promise<void>(resolve => { releaseConsolidation = resolve; });
+  let finished = false;
+  try {
+    await turns(h, 1);
+    h.provider(async conversation => {
+      if (isNoting(conversation)) {
+        await notingGate;
+        return notes(conversation, "a long extracted fact " + "word ".repeat(300));
+      }
+      await consolidationGate;
+      return consolidates(h, conversation);
+    });
+    await h.commands.get("trace").handler("catchup", h.ctx);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    const attempt = compact(h).then(result => { finished = true; return result; });
+    await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the running Noting task"))).toBe(true));
+    releaseNoting();
+    await vi.waitFor(() => expect(h.notices.some(n => n.includes("compaction is running Consolidation")
+      || n.includes("compaction is waiting for the running Consolidation"))).toBe(true));
+    expect(finished).toBe(false); // native fallback cannot race past the remaining opportunity
+    releaseConsolidation();
+    expect((await attempt).compaction.summary).toBeTruthy();
+    expect(runs(h, "noting")).toHaveLength(1);
+    expect(runs(h, "consolidation")).toHaveLength(1);
+    expect(h.notices.some(n => n.includes("after recovery: Noting, Consolidation"))).toBe(true);
+  } finally { releaseNoting(); releaseConsolidation(); await h.dispose(); }
+});
+
 test("28b acceptance 10: a tree switch during recovery publishes nothing into the newly selected path", async () => {
   const h = host({ ...quiet, ...windows(1, 1_000, 1) });
   try {

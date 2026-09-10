@@ -1,7 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { host, reply } from "./test-host.ts";
 import { cacheMinimum, cacheObservation, runNative } from "../../../src/hosts/pi/native.ts";
-import { broken, call, fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
+// Cache observations require an explicitly requested fork, not the product's subagent default.
+import { broken, call, forkFixture as fixture, memoryBatch, noteBatch, say, settled, toolResults, usage, worker } from "./native-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 
 // 19c cache-miss latch (ticket 19 gate 3 and "Cache-miss fallback"), under the user rulings of
@@ -66,7 +67,10 @@ test("19c 2026-09-08: while the latch is set a requested fork is admitted as a s
     expect(misses(f.h)).toHaveLength(2); // and a subagent run observes nothing
     expect(f.h.memory.store.forkSuppression(1)!.at).toBe(at);
     // Global configuration and unrelated sessions are untouched.
-    expect(f.h.memory.config.noting.forkModeDefault).toBe(true);
+    // `h.memory` is a separate observer facade; Settings reads the actual executor configuration.
+    f.h.ctx.hasUI = true;
+    f.h.answers.push("Settings", undefined); await command(f.h, "");
+    expect(f.h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Environment)");
     const other = f.h.memory.store.createSession({ host: "pi:other", startedAt: at, firstReplyAt: at, projectId: 1 });
     expect(f.h.memory.store.forkSuppression(other.id)).toBeNull();
   } finally { await f.dispose(); }

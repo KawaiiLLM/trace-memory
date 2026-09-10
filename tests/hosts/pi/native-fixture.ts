@@ -168,5 +168,10 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
     async dispose() { session.dispose(); await h.dispose(); vi.unstubAllGlobals(); },
   };
 }
+/** Opt-in fixture for fork-specific gates, cache observations and fallback regressions.
+ * The general `fixture` above follows the product default; overrides here still take precedence. */
+export const forkFixture = (config: Record<string, unknown> = {}, provider = "fake", parent: { model?: string; thinkingLevel?: ThinkingLevel } = {}) =>
+  fixture({ "noting.forkModeDefault": true, ...config }, provider, parent);
+
 export const settled = async (f: Awaited<ReturnType<typeof fixture>>, kind: "noting" | "consolidation" = "noting") =>
   await vi.waitFor(() => { const run = f.h.memory.store.listRuns(1).find(r => r.kind === kind); expect(run?.response).toBeTruthy(); return run!; }, { timeout: 5000 });

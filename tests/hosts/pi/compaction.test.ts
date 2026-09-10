@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
-import { call, fixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
+import { call, forkFixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 
 // Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
 // the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);
@@ -56,7 +56,7 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
   // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
   // running over it).
-  const h = host({ ...eager, "noting.batchTokens": 300, "render.knowledgeBlockTokens": 200, "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
+  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "render.knowledgeBlockTokens": 200, "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
@@ -123,7 +123,7 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
 });
 
 test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction that keeps none of the selected entries sends the Noter to subagent with a recorded reason; a sibling path's does not", async () => {
-  const h = host(eager); // noting.forkModeDefault stays on: fork is the requested mode throughout
+  const h = host({ ...eager, "noting.forkModeDefault": true }); // explicitly request fork throughout
   try {
     failing(h);
     await h.prompt(long("HEAD")); await h.answer(); await h.emit("agent_settled"); await h.drain();
@@ -156,7 +156,7 @@ test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction 
 });
 
 test("20c 2026-09-08 scenario 14: a task whose entries the compacted context still holds keeps the configured mode, and the requested/actual audit is unchanged", async () => {
-  const h = host(eager);
+  const h = host({ ...eager, "noting.forkModeDefault": true });
   try {
     h.compaction(); // the boundary is already in the ancestry; every entry below is post-compaction
     failing(h);
@@ -172,7 +172,7 @@ test("20c 2026-09-08 scenario 14: a task whose entries the compacted context sti
 });
 
 test("20c 2026-09-08 scenario 13/14 (native): a real persisted compaction downgrades the next Noter, while the fork already running keeps its own frozen context", async () => {
-  const f = await fixture();
+  const f = await forkFixture();
   try {
     let release!: (value: Response) => void;
     const held = new Promise<Response>(resolve => { release = resolve; });
