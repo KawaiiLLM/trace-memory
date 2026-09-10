@@ -951,6 +951,11 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   // An explicitly configured `E` is honoured as written: nothing is halved, ignored or rewritten.
   const explicit = open({ entryTokens: 10_000 });
   try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
+  // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
+  // ceilings and the target limits keep their values, and no entry-count cap joins them — the whole
+  // Noting section is still these four keys.
+  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: true, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
+  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
 });
 
 // 20c, 2026-09-08: compaction's second tier was a separate compact-only renderer with its own version
