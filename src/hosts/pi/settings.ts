@@ -115,31 +115,34 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 // ---- 24b: the preferences the Settings view offers, and how each one reads ----------------------
 // Global preferences: the existing mode/model keys plus the closed-session borrowing scope.
 // No advanced editor or second scheduling mechanism. Ticket 25 amendment 2 withdrew 24b's
-// Consolidator-mode entry: that phase has no mode to choose, so three preferences remain here.
+// Consolidator-mode entry; 29e restores it on the same select-and-write path, so each phase now shows
+// the same three lines.
 // 26d added each phase's thinking level beside its model, on the same select-and-write path.
-export type Preference = { name: string; key: string } & ({ phase: "noting"; kind: "mode" } | { phase: "noting" | "consolidation"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
+export type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
   { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
   { name: "Noter thinking", key: "notingThinking", phase: "noting", kind: "thinking" },
+  { name: "Consolidator mode", key: "consolidation.forkModeDefault", phase: "consolidation", kind: "mode" },
   { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
   { name: "Consolidator thinking", key: "consolidationThinking", phase: "consolidation", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
-// Noting stores "runs in fork mode": one preference reads that boolean without inventing a second
-// spelling of the same choice.
+// Each phase stores "runs in fork mode": one preference reads that boolean without inventing a second
+// spelling of the same choice. 29e: the two defaults differ (Noter fork, Consolidator subagent), so
+// the default comes from that phase's own section rather than from Noting's.
 export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
-  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : DEFAULT_CONFIG.noting.forkModeDefault;
+  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : DEFAULT_CONFIG[p.phase!].forkModeDefault;
 export const preferenceValue = (flat: FlatConfig, p: Preference) => flat[p.key] ?? preferenceDefault(p);
 export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
   : raw === "session" ? "follow foreground" : String(raw);
-/** The mode this phase is configured to request. Consolidation has one (25b). For Noting, cache
- * suppression, capacity/readiness fallback and post-compaction mode still decide what actually runs
- * (`effectiveMode`); a fallback does not grant a different model-selection policy, so the display
- * follows the configured mode. */
-export const configuredMode = (flat: FlatConfig, phase: "noting" | "consolidation") => phase === "consolidation" ? "subagent"
-  : modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode")!) as boolean);
+/** The mode this phase is configured to request (29e: both phases have one again). Cache
+ * suppression, capacity/readiness fallback and — for Noting — Raw availability still decide what
+ * actually runs (`effectiveMode`); a fallback does not grant a different model-selection policy, so
+ * the display follows the configured mode. */
+export const configuredMode = (flat: FlatConfig, phase: "noting" | "consolidation") =>
+  modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode" && p.phase === phase)!) as boolean);
 /** One Settings line: the effective value, its layer, the layers it masks, and — for a model whose
  * phase is configured to fork — the foreground model that fork would inherit instead. */
 export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sources" | "layers">, foregroundModel: string) => {

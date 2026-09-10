@@ -67,7 +67,7 @@ test("27c: the host's fork refusal arrives as a value, and the run comes back to
     // carries no gate result, and no fresh child ran here on the frozen model.
     // 27d: the batch is the exact entry ids, never an upper bound; the refusal carries no usage and
     // no retries at all, because an attempt that spent something is its own run record.
-    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { entryIds: [7, 8] } });
+    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { exactEntryIds: [7, 8] } });
     expect(result.request).toBeNull(); // which is how core tells an attempt from a refusal that never left
     expect(f.sent.length).toBe(before);
   } finally { await f.dispose(); }

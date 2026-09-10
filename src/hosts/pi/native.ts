@@ -266,9 +266,13 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       let content: string;
       try { content = bound.execute(raw); }
       catch (error) { content = `rejected: ${String(error)}`; }
-      // A rejection receipt is not a commit.
-      if (!toolRejected(tool.name, content)) committed ||= tool.name === "note" || tool.name === "memory";
       const review = task.feedback?.(content);
+      // A rejection receipt is not a commit — and (29e, parent 29 "Preserve two submissions") neither
+      // is a Consolidation candidate accepted for review: core answers that first valid batch with the
+      // review guidance below and writes nothing. Reading `committed` off the receipt shape is what
+      // keeps a candidate-then-overflow re-admissible while a commit-then-overflow stays this run's
+      // own failure (`overflowFallback` in worker.ts).
+      if (!toolRejected(tool.name, content) && !review) committed ||= tool.name === "note" || tool.name === "memory";
       // Consolidation's review round: a native user message, queued as steering so the child
       // reads it before its next model call. The two-submission protocol stays in core.
       if (review) pending.push(session.sendUserMessage(review, { deliverAs: "steer" }));

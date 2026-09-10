@@ -1,13 +1,13 @@
-// Ticket 24b "Global settings", as ticket 25 amendment 2 and ticket 26d left it: each phase's mode,
-// model and thinking level plus the borrowing scope, on the existing canonical keys — the
-// Consolidator-mode entry was withdrawn with the mode it chose (25b) — written into the
+// Ticket 24b "Global settings", as tickets 26d and 29e left it: each phase's mode, model and thinking
+// level plus the borrowing scope, on the existing canonical keys — the Consolidator-mode entry 25b
+// withdrew is back, because the mode it chooses is back — written into the
 // resolved agent settings file by a re-read-and-merge write, and applied to tasks admitted afterwards
 // through the façade's `configure` (amendment 2) and the host's own model selection. No new key, no
 // second configuration source, no reload, no credential and no model call to validate a selection.
 import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { consolidationReply, emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
+import { emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
 import { thinkingChoices } from "../../../src/hosts/pi/settings.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
@@ -31,22 +31,47 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   await command(h, "");
 };
 
-test("25 amendment 2 2026-09-09: the menu offers no Consolidator mode, and the ordinary slot launches that phase as a subagent while the Noter forks", async () => {
+test("29e: the menu offers a Consolidator mode defaulting to subagent, and the ordinary slot launches each phase in its own configured mode", async () => {
   const h = setup({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
-  h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationReply() : notingFact(c));
+  // A fork has no system prompt of its own — it inherits the parent's — so the phase of a forked
+  // child is told from the task text this host appended, not from the Consolidator instructions.
+  // The skipped facts are read out of the batch this run was actually given: this case runs two
+  // Consolidation batches, and a `skipped` entry naming a fact outside the range is rejected.
+  const consolidate = (c: { messages: { content: unknown }[] }) => {
+    const facts = [...c.messages.map(m => String(m.content)).join("\n").matchAll(/\[F(\d+)\]/g)].map(m => `F${m[1]}`);
+    return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "memory-1", name: "memory",
+      arguments: { operations: [], skipped: [...new Set(facts)].map(fact => ({ fact, because: "Not durable." })) } }] };
+  };
+  h.provider(async c => c.systemPrompt?.includes("### Second-round user message")
+    || /Range: F\d+/.test(c.messages.map(m => String(m.content)).join("\n")) ? consolidate(c) : notingFact(c));
   await h.emit("session_start");
   h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, ""); // opened and cancelled: the list itself is the assertion
   expect(h.dialogs.at(-1)!.options!.filter(line => line.startsWith("Consolidator"))).toEqual([
-    "Consolidator model: follow foreground (Default)", "Consolidator thinking: inherit (Default)"]); // 26d: a level, never a mode
+    // 29e restored the entry 25b withdrew, beside the Noter's, with this phase's own default.
+    "Consolidator mode: subagent (Default)",
+    "Consolidator model: follow foreground (Default)", "Consolidator thinking: inherit (Default)"]);
   h.ctx.hasUI = false;
-  // The two phases do not share a mode: the Noter forks by default, the Consolidator cannot.
+  // The two phases do not share a mode: the Noter forks by default, the Consolidator does not.
   await h.turn();
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
   const modes = (kind: string) => h.memory.store.listRuns(1).filter(r => r.kind === kind)
     .map(r => [JSON.parse(r.response!).requestedMode, r.mode]);
   expect(modes("noting")).toEqual([["fork", "subagent"]]);       // requested fork; this fake parent has no file to fork, the documented fallback
   expect(modes("consolidation")).toEqual([["subagent", "subagent"]]); // never asked for anything else, and ran as itself
+  // 29e: saving the restored preference reaches tasks admitted afterwards without a reload, and the
+  // slot then asks this phase to fork too — into the same documented fallback the Noter takes in this
+  // fake session, which captures no provider payload to fork from. (A Consolidation fork that really
+  // runs, and the fallback path it shares with Noting, are pinned on the native fixture:
+  // native.test.ts "19a/29e" and fallback.test.ts's 29e cases.)
+  await edit(h, "Consolidator mode: subagent (Default)", "fork");
+  expect(h.notices.at(-1)).toContain(`saved consolidation.forkModeDefault = true (fork) in ${globalPath(h)}`);
+  expect(globalFile(h)["trace-memory"]["consolidation.forkModeDefault"]).toBe(true);
+  h.ctx.hasUI = false;
+  await h.turn();
+  await h.answer("tick again"); await h.emit("agent_settled"); await h.drain();
+  expect(modes("consolidation")).toEqual([["subagent", "subagent"], ["fork", "subagent"]]);
+  expect(modes("noting").at(-1)).toEqual(["fork", "subagent"]);
 });
 
 test("24b: each control writes only its canonical key, and every other setting in the file survives", async () => {
@@ -67,13 +92,14 @@ test("24b: each control writes only its canonical key, and every other setting i
     notingModel: "fake/test-mini",
     consolidationModel: "fake/test",
   });
-  // The values read back exactly as the menu shows them, from the Global layer. 25 amendment 2: three
-  // preferences and the borrowing scope; the Consolidator's mode is not one of them any more.
+  // The values read back exactly as the menu shows them, from the Global layer. 29e: each phase's
+  // mode, model and thinking level plus the borrowing scope.
   h.answers.push("Settings", undefined); await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual([
     "Noter mode: subagent (Global)",
     "Noter model: fake/test-mini (Global)",
     "Noter thinking: inherit (Default)",
+    "Consolidator mode: subagent (Default)",
     "Consolidator model: fake/test (Global)",
     "Consolidator thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
@@ -91,7 +117,8 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
   expect(h.dialogs.at(-1)!.title).toContain("Noting is configured for fork mode, whose child keeps inheriting the foreground level");
   expect(h.notices.at(-1)).toContain(`saved notingThinking = "high" (high) in ${globalPath(h)}`);
   expect(h.notices.at(-1)).toContain("running tasks keep the thinking level they were frozen with");
-  // Consolidation has no mode to disclose: it is always a subagent, so its level always applies.
+  // Consolidation is configured for subagent mode here, so its level always applies and its line
+  // discloses no inheriting mode (29e: it would, were the restored preference set to fork).
   await edit(h, "Consolidator thinking: inherit (Default)", "minimal");
   expect(h.dialogs.at(-1)!.title).not.toContain("fork");
   const file = globalFile(h);
@@ -102,6 +129,7 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
     "Noter mode: fork (Default)",
     "Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test",
     "Noter thinking: high (Global); fork mode inherits the foreground thinking level",
+    "Consolidator mode: subagent (Default)",
     "Consolidator model: follow foreground (Default)",
     "Consolidator thinking: minimal (Global)",
     "Closed-session scope: project (Default)",

@@ -2,8 +2,8 @@
 
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
-its exposed store. Notings use verified fork mode by default; consolidation has one mode
-and always runs as a subagent. Each reconciled eligible entry completion checks both extraction queues.
+its exposed store. Notings use verified fork mode by default; consolidations use a subagent by
+default and may be configured to fork (29e). Each reconciled eligible entry completion checks both extraction queues.
 Compaction, shutdown and tree navigation launch neither phase.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
@@ -47,6 +47,7 @@ For example, either settings file can contain:
 {
   "trace-memory": {
     "noting.forkModeDefault": true,
+    "consolidation.forkModeDefault": false,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
@@ -76,6 +77,13 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   inherits. **27c: every other noting uses `notingModel`** — explicit subagent mode, and a requested
   fork that does not run as one for any reason at all, which is admitted as a subagent on that model
   and priced by that model's own capacity (see "Per-task fork fallback" below).
+- `consolidation.forkModeDefault` (**29e**, superseding 25b) is the same option for the other phase,
+  and defaults to **`false`**: the choice is restored, the existing default is not switched. Set it
+  to `true` to consolidate in a fork of the foreground. Everything the Noter's mode implies applies
+  unchanged — the session model for a fork, `consolidationModel` for every other consolidation, the
+  same capacity rule, the same one re-admission, the same audit. The one phase difference is
+  evidence: 29c's Raw-availability rule is the Noter's alone, because the Consolidator processes
+  facts and its material carries the complete body of every selected fact the child cannot see (29b).
 - `nativeRunner` (19a) is **gone** (19c). The native runner is the only runner, so the key
   selects nothing; like any other unrecognized key it is rejected at load with
   `Unknown setting nativeRunner`, which is 18a's rule for configuration that does not exist.
@@ -105,10 +113,13 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   never moved, copied, symlinked, deleted or rewritten — and their run records keep naming them.
   Logs outside the scanned tree are not retroactively part of anyone's daily total. Retention is
   still a documented v1 limit: nothing prunes either directory.
-- **Consolidation always runs as a subagent** (ticket 25 amendment 2). Every launch path — the
-  ordinary slot, borrowed closed-session work and manual catchup — runs a fresh native child on the
-  Consolidator model, and both of its rounds happen there. `consolidation.subagentModeDefault` is
-  **removed**: see the removed settings below. Tree navigation launches no extraction.
+- **Consolidation runs as a subagent unless `consolidation.forkModeDefault` is set** (ticket 29e,
+  superseding 25 amendment 2). The ordinary slot follows that preference; borrowed closed-session
+  work and manual catchup stay fresh-context whatever it says, and ticket 28's recovery workers stay
+  subagents too. Both submissions of a run happen in the one child the task was admitted for, fork or
+  fresh: the review guidance is a native user message in either mode. `consolidation.subagentModeDefault`
+  — the retired *inverse* key — stays **removed**: see the removed settings below. Tree navigation
+  launches no extraction.
 
 The peer dependency supplies Pi SDK types. Verification uses the installed
 `@earendil-works/pi-coding-agent` 0.85.1. Tests use Vitest on Node; the standalone
@@ -196,13 +207,14 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
   token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
-- `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2, superseding 24b's
-  Consolidator-mode preference). The phase has one execution mode, so a saved value — `true` as much
-  as `false` — fails the load with `Removed setting consolidation.subagentModeDefault: Consolidation
-  always runs as a subagent; delete the key`. Nothing is normalized behind the setting and no
-  settings file is rewritten; an explicit API request for Consolidation `mode: "fork"` is refused
-  with the same sentence. Runs recorded in fork mode before the change keep that mode and read back
-  as themselves in Runs and `trace R<n>`.
+- `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2; still removed under 29e,
+  which restored the choice under `consolidation.forkModeDefault`). It stays a removed setting rather
+  than becoming an alias because it is the **inverse** boolean: reading a saved `true` as fork mode
+  would silently switch the meaning of the value. A saved value of either polarity fails the load with
+  `Removed setting consolidation.subagentModeDefault: use consolidation.forkModeDefault (the inverse
+  boolean: true means fork)`. Nothing is normalized behind the setting and no settings file is
+  rewritten. Runs recorded in fork mode before 25b keep that mode and read back as themselves in Runs
+  and `trace R<n>`.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
@@ -400,17 +412,18 @@ immediately, so stop can be invoked while it runs.
 **Ticket 18a's read-only settings menu is superseded.** The menu no longer lists every
 effective key with its source; it edits these preferences.
 
-**24b's fourth entry, the Consolidator mode, is superseded by ticket 25 amendment 2** and withdrawn:
-that phase has one execution mode, so three preferences and the borrowing scope remained, and
-ticket 26d added each phase's thinking level beside its model. The
-Consolidator *model* preference stays, and — because the phase never inherits a foreground context —
-its line never discloses an inherited model.
+**24b's fourth entry, the Consolidator mode, was withdrawn by ticket 25 amendment 2 and is restored
+by ticket 29e**, on the same select-and-write path as the Noter's: each phase now shows the same
+three lines, and ticket 26d's thinking level sits beside each model. The defaults differ — Noter
+fork, Consolidator subagent — and a Consolidator model or thinking line discloses an inherited
+foreground value exactly when that phase is configured for fork.
 
 | Preference | Choices | Key | Default |
 |---|---|---|---|
 | Noter mode | fork / subagent | `noting.forkModeDefault` | fork |
 | Noter model | Follow foreground / an available `provider/model-id` | `notingModel` | `session` |
 | Noter thinking | inherit / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` | `notingThinking` | `inherit` |
+| Consolidator mode | fork / subagent | `consolidation.forkModeDefault` | subagent |
 | Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
 | Consolidator thinking | inherit / one of Pi's levels | `consolidationThinking` | `inherit` |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
@@ -452,9 +465,9 @@ edit look effective; the notice names the layer that keeps winning.
 
 A saved preference applies to memory tasks admitted afterwards **in this instance**,
 without a reload: the settings layers are re-read exactly as a session start reads
-them, the host's model selection follows them, and core's `noting.forkModeDefault` and
-`closedSessionScope` are replaced through the façade's `configure`; other core keys —
-including a `consolidation` section — are refused there. A task already running keeps its admission scope, mode, model,
+them, the host's model selection follows them, and core's two `forkModeDefault` booleans and
+`closedSessionScope` are replaced through the façade's `configure` (29e); every other core key is
+refused there. A task already running keeps its admission scope, mode, model,
 evidence and budgets. Setting scope to `off` does not cancel it; use Stop to end
 running work. Another Pi process sees the new
 global default through its own settings load; there is no cross-process watcher.
@@ -896,7 +909,8 @@ The child is built to reproduce the parent's request bytes through the SDK's own
   foreground level otherwise. A **fork run keeps inheriting the foreground level**, because its
   request prefix must still match the captured parent request; **every fresh child takes the
   subagent level** — explicit subagent mode, a fork fallback, borrowed closed-session work and
-  `/trace catchup` alike. Consolidation always runs as a subagent, so its preference always applies.
+  `/trace catchup` alike. A Consolidation fork inherits the foreground level like any other fork, so
+  its configured level reaches a fork task only through that task's fallback child (29e).
   The frozen level wins over the level a forked ancestry carries, over the per-model preference and
   over the global default, and Pi's own clamp normalizes a level the worker model does not support.
   Borrowed work uses the active executor's levels, never a historical target session's. Both values
@@ -927,15 +941,16 @@ The same `runNative` serves `mode: "subagent"` with four differences and no seco
 **Per-task fork fallback: one path (27c; 27b before it; parent 27 "Per-task fork fallback",
 amendments 1, 4, 5 and 6).** One rule covers every reason a requested fork does not run as one:
 
-> the task runs as a **subagent on the configured Noter model** (`notingModel`, the `session`
+> the task runs as a **subagent on that phase's configured model** (`notingModel` /
+> `consolidationModel` (29e), the `session`
 > preference included), priced by **that model's** capacity (`contextWindow − 10,000`), with fresh
 > material, and the run audit records the requested mode `fork`, the effective mode `subagent`, the
 > reason (`fallbackReason`) and the model that actually ran.
 
 The reasons, and where each is decided:
 
-- **At admission, from this host's live state.** The cache-miss latch, and 29c's Raw
-  availability. Nothing is frozen yet, so this admission simply selects `notingModel`
+- **At admission, from this host's live state.** The cache-miss latch, and — for a Noter only —
+  29c's Raw availability. Nothing is frozen yet, so this admission simply selects the phase's model
   and its capacity: no second admission, and the reason is frozen with the task
   (`TaskOptions.fallbackReason`, opaque to core) as the run's `fallbackReason`.
 - **At admission, from the freeze (27b).** A fork whose inherited context plus instructions cannot
@@ -962,13 +977,22 @@ The reasons, and where each is decided:
 **One transition per task, structurally.** A re-admitted task carries its reason, and a task
 carrying one is not offered a fork at all, so it cannot be refused one — its own failure is the
 run's failure, never hidden by the warning. A task that already ran keeps its frozen evidence
-membership across the re-admission through the task boundary — **27d: `entryIds`, the frozen
-batch's exact ids, never `maxEntryId`'s upper bound** (parent 27 amendment 6). The freeze takes
-those entries whole: it trims optional history if that is what makes them fit, never pops one, and
-leaves the whole batch pending under the existing `NOTING_CAPACITY` diagnostic when the fallback
-model cannot hold it. A member that is no longer pending was completed by another executor under
-its own claim, and drops this task with the `NOTING_MEMBERSHIP` reason instead of re-processing the
-rest. Evidence that arrived while the attempt was in flight waits for the next batch either way.
+membership across the re-admission through the task boundary — **27d/29e: `exactEntryIds` and
+`exactFactIds`, the frozen batch's exact ids, never `maxEntryId`'s upper bound or a manual catchup's
+larger `allowedFactIds` set** (parent 27 amendment 6; the two meanings are separated by name since
+29e). The freeze takes those members whole: it trims optional material if that is what makes them
+fit — the Noter's history, the Consolidator's knowledge block — never pops one, and leaves the whole
+batch pending under the existing `NOTING_CAPACITY` / `CONSOLIDATION_CAPACITY` diagnostic when the
+fallback model cannot hold it. A member that is no longer pending was completed by another executor
+under its own claim, and drops this task with the `NOTING_MEMBERSHIP` / `CONSOLIDATION_MEMBERSHIP`
+reason instead of re-processing the rest. Evidence that arrived while the attempt was in flight
+waits for the next batch either way.
+
+**Consolidation takes this path unchanged (29e).** A Consolidation fork's candidate is not a
+business commit, so an overflow after it is re-admitted like any other: the fresh child restarts
+candidate and review on the same frozen fact target, and it cannot inherit an approval to skip the
+review. An overflow after the final commit is that run's own failure and starts no second
+execution.
 
 **One run record per attempt** (user ruling 2026-09-10; it supersedes 27c's "one run record for
 both attempts", which was ticket text and never a ruling). An attempt that **sent a provider

@@ -38,10 +38,12 @@ type RunVerification = Partial<NativeVerification> & { rounds: NativeVerificatio
 export interface ForkRefusal {
   /** The run's recorded `fallbackReason` and the text of the one warning. */
   reason: string;
-  /** Noting's frozen batch, so the re-admission selects the same entries: 18b's task boundary, the
-   * mechanism a manual catchup already freezes its target with. 27d (parent 27 amendment 6): the
-   * exact ids, never an upper bound — an upper bound prevents additions but permits a smaller batch. */
-  boundary?: { entryIds?: number[] };
+  /** The frozen batch, so the re-admission selects the same evidence: 18b's task boundary, the
+   * mechanism a manual catchup already freezes its target with. 27d (parent 27 amendment 6) and 29e:
+   * the exact ids of this phase's own members — Noting's entries, Consolidation's facts — never an
+   * upper bound and never a manual catchup's larger allowable set, both of which prevent additions
+   * but permit a smaller batch. */
+  boundary?: { exactEntryIds?: number[]; exactFactIds?: number[] };
   /** The rejected gate result of a refusal that sent nothing, which the re-admitted run records
    * (a refused attempt that did send one records its own gate result on its own run). */
   verification?: RunVerification;
@@ -151,7 +153,8 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       // way: nothing was committed and the evidence stays pending.
       const refused = (reason: string, attempt: Partial<RunAgentResult> = {}, gate?: RunVerification): RunAgentResult =>
         ({ outcome: "failure", output: reason, request, ...attempt,
-          refused: { reason, ...(task.kind === "noting" ? { boundary: { entryIds: [...task.entryIds] } } : {}),
+          refused: { reason, boundary: task.kind === "noting" ? { exactEntryIds: [...task.entryIds] }
+              : { exactFactIds: task.range.facts.map(fact => fact.id) },
             ...(task.thinkingLevel !== undefined ? { thinkingLevel: task.thinkingLevel } : {}),
             ...(task.subagentThinkingLevel !== undefined ? { subagentThinkingLevel: task.subagentThinkingLevel } : {}),
             ...(task.cancellation !== undefined ? { cancellation: task.cancellation } : {}),

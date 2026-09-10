@@ -5,10 +5,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
+import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 
 let directory: string;
@@ -1030,7 +1031,7 @@ test("18b 2026-09-08: a frozen manual boundary excludes entries and facts added 
   const frozenFacts = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[2]!.execute({ facts: [
     { category: "observation", actor: "user", text: "Later fact", source: [`T${t.id}#user`] } ] });
-  const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { factIds: frozenFacts } });
+  const cresult = await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozenFacts } });
   expect(cresult.outcome).toBe("success");
   if (cresult.outcome === "success") expect(cresult.range.facts.map(f => f.id)).toEqual(frozenFacts);
   expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(1); // the later fact stays outside the frozen target
@@ -1056,14 +1057,20 @@ test("19c 2026-09-08: both execution-mode spellings with different values fail t
   expect(load).toThrow(/Conflicting settings/);
 });
 
-test("24 amendment 2 2026-09-09, as 25 amendment 2 left it: configure replaces the one execution-mode default, validated like the load path, and nothing else", async () => {
+test("24 amendment 2 2026-09-09, as 29e left it: configure replaces each phase's execution-mode default, validated like the load path, and nothing else", async () => {
   // A saved global preference must reach tasks admitted afterwards without a reload. Admission reads
-  // its mode from the configuration frozen at construction, so exactly that boolean may move —
-  // Consolidation's was retired with the mode it chose (25b), and is refused below like any other key.
+  // its mode from the configuration frozen at construction, so exactly those two booleans may move —
+  // 29e restored Consolidation's, which 25b had retired; every other key is still refused below.
   expect(memory.config.noting.forkModeDefault).toBe(true);
   memory.configure({ noting: { forkModeDefault: false } });
   expect(memory.config.noting.forkModeDefault).toBe(false);
   expect(memory.config.noting.batchTokens).toBe(DEFAULT_CONFIG.noting.batchTokens); // nothing else moved
+  // 29e: the same one key of the other phase, whose default is the opposite one.
+  expect(memory.config.consolidation.forkModeDefault).toBe(false);
+  memory.configure({ consolidation: { forkModeDefault: true } });
+  expect(memory.config.consolidation.forkModeDefault).toBe(true);
+  expect(memory.config.consolidation.batchTokens).toBe(DEFAULT_CONFIG.consolidation.batchTokens);
+  memory.configure({ consolidation: { forkModeDefault: false } });
   // A task admitted after the call runs in the new mode; the run record keeps what it was launched with.
   const { s, t } = session();
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
@@ -1078,20 +1085,22 @@ test("24 amendment 2 2026-09-09, as 25 amendment 2 left it: configure replaces t
   expect(() => memory.configure({ noting: { batchTokens: 5 } })).toThrow("noting.batchTokens is not reconfigurable at runtime");
   expect(() => memory.configure({ render: { entryTokens: 5 } })).toThrow("Unknown setting render");
   expect(() => memory.configure({ consolidation: { triggerUnconsolidatedFacts: 5 } as never })).toThrow("Removed setting");
-  expect(() => memory.configure({ consolidation: { nearThreshold: 0.5 } })).toThrow("Unknown setting consolidation");
+  expect(() => memory.configure({ consolidation: { forkModeDefault: 1 as unknown as boolean } })).toThrow("Invalid consolidation.forkModeDefault");
+  expect(() => memory.configure({ consolidation: { nearThreshold: 0.5 } })).toThrow("consolidation.nearThreshold is not reconfigurable at runtime");
   expect(memory.config.noting.forkModeDefault).toBe(true);
   expect(memory.config.consolidation.nearThreshold).toBe(DEFAULT_CONFIG.consolidation.nearThreshold);
   expect(memory.config.render.entryTokens).toBe(DEFAULT_CONFIG.render.entryTokens);
 });
 
-// ---- 25 amendment 2 2026-09-09: Consolidation has one execution mode ----
+// ---- 25 amendment 2 2026-09-09, as 29e superseded it: Consolidation has two execution modes again ----
 
-test("25 amendment 2 2026-09-09: the retired Consolidation mode preference is refused by name at load, in every configuration space", () => {
-  // The mode is gone, so the key that chose it is a removed setting, not an alias: a saved value —
-  // `true`, which asked for what happens anyway, as much as `false` — fails the load naming the key
-  // and the only remedy there is. Nothing is normalized and no file is rewritten.
-  expect(REMOVED_SETTINGS["consolidation.subagentModeDefault"]).toBe(CONSOLIDATION_SUBAGENT_ONLY);
-  const message = `Removed setting consolidation.subagentModeDefault: ${CONSOLIDATION_SUBAGENT_ONLY}`;
+test("25b/29e: the retired inverse Consolidation mode key is refused by name at load, in every configuration space", () => {
+  // 25b removed the key; 29e restored the choice under `consolidation.forkModeDefault`. The old key
+  // stays a removed setting rather than becoming an alias, because it is the INVERSE boolean: reading
+  // a saved `true` as fork mode would switch the meaning of the value. A saved value of either
+  // polarity fails the load naming the key and the one remedy. No file is rewritten.
+  expect(REMOVED_SETTINGS["consolidation.subagentModeDefault"]).toBe("use consolidation.forkModeDefault (the inverse boolean: true means fork)");
+  const message = `Removed setting consolidation.subagentModeDefault: ${REMOVED_SETTINGS["consolidation.subagentModeDefault"]}`;
   for (const saved of [true, false]) {
     const load = () => sourceSeededMemory(join(directory, `saved-${saved}.sqlite`), async () => ok([]), { consolidation: { subagentModeDefault: saved } as never });
     expect(load).toThrow(message);
@@ -1100,27 +1109,48 @@ test("25 amendment 2 2026-09-09: the retired Consolidation mode preference is re
     expect(() => memory.configure({ consolidation: { subagentModeDefault: saved } as never })).toThrow(message);
   }
   expect(Object.hasOwn(DEFAULT_CONFIG.consolidation, "subagentModeDefault")).toBe(false); // and the menu that builds itself from the defaults shows it nowhere
+  expect(DEFAULT_CONFIG.consolidation.forkModeDefault).toBe(false); // the restored key keeps this phase's existing default
 });
 
-test("25 amendment 2 2026-09-09: an explicit Consolidation fork request is refused with the same sentence, and the default run is a subagent with normal attribution", async () => {
+test("29: Consolidation may fork; borrowed work, manual catchup and recovery workers stay subagent", async () => {
   const { s, t } = session();
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
-    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
-  const pending = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
-  // Refused, not quietly run as a subagent: the caller learns the mode no longer exists.
-  await expect(memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }))
-    .rejects.toThrow(`Invalid consolidation mode fork: ${CONSOLIDATION_SUBAGENT_ONLY}`);
-  expect(memory.store.listRuns(s.id).filter(r => r.kind === "consolidation")).toEqual([]); // no run, no claim, no progress
-  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual(pending);
-  // The same for the mode a host reports it will actually run in.
-  await expect(memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, effectiveMode: "fork" }))
-    .rejects.toThrow(CONSOLIDATION_SUBAGENT_ONLY);
-  // The request that says nothing gets the one mode, recorded as itself on the task and on the run.
+  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
+  note("Keep pnpm");
+  // 29e (parent 29 "Restore Consolidator fork without weakening review", superseding 25b): the mode
+  // exists again, so an explicit request runs — neither refused by name nor normalized behind the
+  // caller. The run record keeps it, as it always kept Noting's.
+  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("fork");
+  const forked = memory.store.listRuns(s.id).at(-1)!;
+  expect([forked.kind, forked.mode]).toEqual(["consolidation", "fork"]);
+  // The default is unchanged: a request that says nothing gets a subagent, because
+  // `consolidation.forkModeDefault` is false. 29e restored the option, not a new default.
+  note("Keep vitest");
   expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
   expect(calls.at(-1)!.mode).toBe("subagent");
-  const run = memory.store.listRuns(s.id).at(-1)!;
-  expect([run.kind, run.mode, run.model]).toEqual(["consolidation", "subagent", "session"]);
-  expect(JSON.parse(run.response!).requestedMode).toBe("subagent");
+  expect(JSON.parse(memory.store.listRuns(s.id).at(-1)!.response!).requestedMode).toBe("subagent");
+  // With the preference on, the same silent request forks.
+  memory.configure({ consolidation: { forkModeDefault: true } });
+  note("Keep sqlite");
+  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("fork");
+  // Borrowed closed-session work stays fresh-context whatever the preference says, exactly as
+  // Noting's does: the façade replaces the mode of a borrowed task at its admission.
+  const tail = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: memory.store.getSession(s.id)!.projectId });
+  const tailTurn = memory.store.appendTurn({ sessionId: tail.id, kind: "turn", userPrompt: "closed tail", assistantText: "ok", startedAt: time });
+  memory.tools({ kind: "manual", sessionId: tail.id, branch: "main", currentTurnId: tailTurn.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep esbuild", source: [`T${tailTurn.id}#user`] }] });
+  memory.store.closeSession(tail.id);
+  expect((await memory.consolidate({ sessionId: tail.id, branch: "main", headTurnId: tailTurn.id, borrowed: true, executorSessionId: s.id })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("subagent");
+  // A manual catchup asks for a subagent explicitly, beside the allowable fact set it froze (18b), and
+  // ticket 28's recovery workers will reach this line the same way: the requested mode is what runs,
+  // so the restored preference turns neither of them into a fork.
+  note("Keep node:sqlite");
+  const frozen = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  expect((await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", boundary: { allowedFactIds: frozen } })).outcome).toBe("success");
+  expect(calls.at(-1)!.mode).toBe("subagent");
 });
 
 test("25 amendment 2 2026-09-09: a stored fork-mode Consolidation run keeps its recorded mode and is never rewritten", async () => {
@@ -1436,19 +1466,19 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   // What the batch really costs, priced the way the freeze prices it: instructions, tool definitions
   // and the prepared fresh text. The oldest entry's own price is the allowance that fits one, not two.
   const instructions = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
-  const priced = (entryIds: number[]) => {
-    const frozen = freezeNoting(memory.store, { ...target, boundary: { entryIds } }, memory.config);
+  const priced = (exactEntryIds: number[]) => {
+    const frozen = freezeNoting(memory.store, { ...target, boundary: { exactEntryIds } }, memory.config);
     return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text);
   };
   const capacity = { inputTokens: priced([e1.id]), prefixTokens: 0 };
   expect(priced([e1.id, e2.id])).toBeGreaterThan(capacity.inputTokens);
-  await expect(memory.noting({ ...target, boundary: { entryIds: [e1.id, e2.id] }, capacity }))
+  await expect(memory.noting({ ...target, boundary: { exactEntryIds: [e1.id, e2.id] }, capacity }))
     .rejects.toThrow(api.NOTING_CAPACITY);
   expect(calls).toEqual([]); // nothing ran on a smaller batch
   expect(memory.pendingEntries(s.id, "main", t2.id).map(e => e.id)).toEqual([e1.id, e2.id]);
 
   // With room, the same boundary runs on exactly those entries, and the audit says so.
-  const ran = await memory.noting({ ...target, boundary: { entryIds: [e1.id, e2.id] } });
+  const ran = await memory.noting({ ...target, boundary: { exactEntryIds: [e1.id, e2.id] } });
   expect(ran.outcome).toBe("success");
   expect(calls[0]!.entryIds).toEqual([e1.id, e2.id]);
   expect(calls[0]!.entryAudit.entries.map(e => e.id)).toEqual([e1.id, e2.id]);
@@ -1459,7 +1489,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   const e3 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u3", turnId: t3.id, role: "user", text: "third evidence", raw: "third evidence", calls: [] });
   memory.selectEntries(s.id, "main", [e1.id, e2.id, e3.id]);
   const before = calls.length;
-  const dropped = await memory.noting({ ...target, headTurnId: t3.id, boundary: { entryIds: [e2.id, e3.id] } }) as { outcome: string; reason?: string };
+  const dropped = await memory.noting({ ...target, headTurnId: t3.id, boundary: { exactEntryIds: [e2.id, e3.id] } }) as { outcome: string; reason?: string };
   expect(dropped.outcome).toBe("dropped");
   expect(dropped.reason).toContain(api.NOTING_MEMBERSHIP);
   expect(dropped.reason).toContain(`entries ${e2.id} of the frozen batch`);
@@ -1544,5 +1574,86 @@ test("27: cancellation between refusal and re-admission launches no fallback", a
   // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
   // after it carries the current generation and runs.
   expect((await memory.noting({ ...target, mode: "subagent" })).outcome).toBe("success");
+  expect(generations).toHaveLength(2);
+});
+
+// ---- 29e: Consolidation's exact fact target and its cancellation fence (parent 29 cases 19 and 20)
+
+test("29e (parent 27 amendment 6, case 19): a Consolidation fork's exact fact target survives fallback or the task stays pending", async () => {
+  // The twin of "27 amendment 6" above, for the phase 29e restored the mode to. The frozen batch is
+  // taken whole or not at all: a fallback window that holds only its oldest fact leaves the batch
+  // pending rather than consolidating a subset and marking the rest processed.
+  const { s, t } = session();
+  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
+  note("The first durable claim of this batch");
+  note("The second durable claim of this batch");
+  const [f1, f2] = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
+  // What the batch really costs, priced the way the freeze prices a fresh child: instructions, tool
+  // definitions and the prepared text. The oldest fact's own price is the allowance that fits one.
+  const instructions = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  const priced = (exactFactIds: number[]) => {
+    const frozen = freezeConsolidation(memory.store, { ...target, boundary: { exactFactIds } }, memory.config);
+    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text);
+  };
+  const capacity = { inputTokens: priced([f1!]), prefixTokens: 0 };
+  expect(priced([f1!, f2!])).toBeGreaterThan(capacity.inputTokens);
+  await expect(memory.consolidate({ ...target, boundary: { exactFactIds: [f1!, f2!] }, capacity }))
+    .rejects.toThrow(api.CONSOLIDATION_CAPACITY);
+  expect(calls).toEqual([]); // nothing ran on a smaller batch
+  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual([f1, f2]);
+
+  // With room, the same boundary runs on exactly those facts, and the range says so.
+  const ran = await memory.consolidate({ ...target, boundary: { exactFactIds: [f1!, f2!] } });
+  expect(ran.outcome).toBe("success");
+  if (ran.outcome === "success") expect(ran.range.facts.map(f => f.id)).toEqual([f1, f2]);
+
+  // A member another executor already consolidated drops the task with its reason, and re-processes
+  // nothing: the claim fence a fresh freeze would otherwise walk straight past.
+  note("The third durable claim of this batch");
+  const f3 = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  expect(f3).toEqual([f3[0]]); // f1 and f2 are consolidated now
+  const before = calls.length;
+  const dropped = await memory.consolidate({ ...target, boundary: { exactFactIds: [f2!, f3[0]!] } }) as { outcome: string; reason?: string };
+  expect(dropped.outcome).toBe("dropped");
+  expect(dropped.reason).toContain(api.CONSOLIDATION_MEMBERSHIP);
+  expect(dropped.reason).toContain(`facts F${f2} of the frozen batch`);
+  expect(calls).toHaveLength(before); // no model call, and no run
+  expect(memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id)).toEqual(f3);
+});
+
+test("29e (27d repair 4, case 20): a Consolidation task cancelled between refusal and re-admission launches no fallback", async () => {
+  // Parent 27 line 83, for the restored phase: the refused attempt carries the generation it was
+  // admitted under, `cancelTasks()` advances it, and the re-admission drops without launching.
+  const { s, t } = session();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  memory.close();
+  const generations: unknown[] = [];
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as { cancellation?: number };
+    generations.push(input.cancellation);
+    if (generations.length === 1) return { outcome: "failure", output: "context overflow", request: null, refused: { reason: "context overflow" } };
+    return ok([]); // a run that submits nothing succeeds with zero knowledge and advances the range
+  });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const first = await memory.consolidate({ ...target, mode: "fork" }) as { outcome: string; refused?: unknown };
+  expect(first.outcome).toBe("dropped");
+  const runs = () => memory.store.listRuns(s.id).filter(r => r.kind === "consolidation"); // the manual `note` above has its own record
+  expect(runs()).toEqual([]); // this refusal sent nothing, so it recorded nothing
+  const frozen = generations[0] as number;
+
+  memory.cancelTasks(); // /trace stop, between the refusal and the re-admission
+  const dropped = await memory.consolidate({ ...target, mode: "fork", effectiveMode: "subagent",
+    fallbackReason: "context overflow", forkAttempt: first.refused, cancellation: frozen });
+  expect(dropped).toEqual({ outcome: "dropped", reason: api.CANCELLED_BEFORE_FALLBACK });
+  expect(generations).toHaveLength(1); // no fresh request
+  expect(runs()).toEqual([]);
+  expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0); // the facts stay pending
+
+  // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
+  // after it carries the current generation and runs.
+  expect((await memory.consolidate({ ...target, mode: "subagent" })).outcome).toBe("success");
   expect(generations).toHaveLength(2);
 });

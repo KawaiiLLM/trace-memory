@@ -108,7 +108,8 @@ retain `[target, strength]`, with `$n` restricted to earlier facts in the batch.
 The v1 schema changes in place. No production-data migration, legacy coverage
 translation or compatibility shim is provided.
 
-The noting config chooses fork/subagent mode; provider prefix verification
+Each phase's config chooses its fork/subagent mode (29e: `noting.forkModeDefault`,
+`consolidation.forkModeDefault`); provider prefix verification
 remains the host's responsibility, as is the choice of runner behind a mode. Since 19c the Pi
 host has one runner: fork work runs in a native Pi child forked from the session file, and
 every subagent task — explicit, fallback or borrowed — in a fresh native child. Core sees the
@@ -483,8 +484,24 @@ allowance of the material it frames, never to a second budget. **There is no alr
 history block and no automatic Raw block**; both are reached by explicit `trace`. All range facts are
 retained: a batch whose facts and mandatory cues cannot fit that allowance is reduced oldest-first and
 re-frozen, and one that cannot fit its smallest admissible unit stays pending with the capacity
-diagnostic. Feedback is unbudgeted so every matching visible knowledge and both relation strengths
-remain available.
+diagnostic (`CONSOLIDATION_CAPACITY`). Since 29e the optional knowledge block goes first: it is
+dropped whole — with one receipt line saying so, charged inside the text the freeze prices — before
+any selected fact is given up, the twin of the Noter's history trim. It is dropped whole rather than
+by a lowered cap because a cap small enough to matter is also too small for the block's own omission
+receipt, which `budgetKnowledge` refuses outright. Feedback is unbudgeted so every matching visible
+knowledge and both relation strengths remain available.
+
+**Two execution modes (29e, superseding 25b).** `mode` is the request's own or
+`consolidation.forkModeDefault` (default `false`), exactly as Noting reads `noting.forkModeDefault`;
+`effectiveMode` still decides what the material and the price are built for. A fork is priced as its
+inherited measure plus the instructions plus the text it newly supplies (29b), and its preflight
+floor is that same price. There is no Raw prerequisite for this phase: its selected pending facts are
+present either in the inherited context or in the complete fact block the builder injects (29b case
+14), and inherited unrelated Raw grants no citation authority. A refused fork comes back to the host
+as `{ outcome: "dropped", refused }`, with the `runId` of the attempt's own record when it sent a
+request — the same 27c/27d contract Noting has. A candidate accepted for review is not a business
+commit, so that refusal is reachable after one; the re-admitted run restarts candidate and review on
+the same frozen fact target.
 
 The host receives one `ConsolidationAgentInput` with frozen `input`, the four bound
 `tools`, and `reportRequest`. It executes tool calls and extends the same conversation
@@ -726,18 +743,19 @@ usage; closed tools and rejection handlers prevent late store access.
 ## Manual catchup boundary (18b)
 
 `TaskOptions` (shared by `NotingInput` and `ConsolidateInput`) gains an optional
-`boundary: { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }`.
+`boundary: { maxEntryId?: number; allowedFactIds?: number[]; exactEntryIds?: number[]; exactFactIds?: number[] }`.
 Absent, selection is the ordinary unbounded pending set; nothing about existing
-automatic callers changes. When present, `freezeNoting` filters `pendingEntries`
+automatic callers changes. **29e names the two meanings apart.** The *allowable* set is a manual
+catchup's snapshot, which a drain takes in bounded batches: `freezeNoting` filters `pendingEntries`
 to ids no later than `maxEntryId` before its usual batch-token loop, and
-`freezeConsolidation` filters `consolidationBatch` to exactly `factIds` before
+`freezeConsolidation` filters `consolidationBatch` to `allowedFactIds` (27d's `factIds`) before
 building its range; both reuse the same store readers rather than adding a second
-selection query. `entryIds` (27d, parent 27 amendment 6) is Noting's *exact*
-membership form, the same shape `factIds` already is, and it is what a fork
-fallback re-admits on: the freeze selects exactly those pending entries, trims
-optional history to fit them, never pops one, raises `NOTING_CAPACITY` when they
-do not fit whole, and raises `NOTING_MEMBERSHIP` — which `execute` turns into
-`{ outcome: "dropped", reason }` — when one of them is no longer pending, because
+selection query. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
+(27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
+members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge
+block — never pops one, raises `NOTING_CAPACITY` / `CONSOLIDATION_CAPACITY` when they
+do not fit whole, and raises `NOTING_MEMBERSHIP` / `CONSOLIDATION_MEMBERSHIP` — which `execute`
+turns into `{ outcome: "dropped", reason }` — when one of them is no longer pending, because
 another executor's claim already completed it.
 `execute`'s pre-freeze emptiness check applies the identical filter so a target
 that is empty within its frozen boundary reports `"empty"` without acquiring a

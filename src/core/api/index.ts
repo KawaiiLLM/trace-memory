@@ -25,7 +25,8 @@ export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, Entry
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
-import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
+import { freezeConsolidation, runConsolidation, CONSOLIDATION_MEMBERSHIP, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
+export { CONSOLIDATION_CAPACITY, CONSOLIDATION_MEMBERSHIP } from "../consolidation/index.ts";
 export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationMaterial, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
 
 
@@ -53,6 +54,10 @@ export interface TraceMemoryConfig {
     maxToolRounds: number;
   };
   consolidation: {
+    /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
+     * boolean the Noter has, for the phase that lost its mode preference in 25b. Default `false`:
+     * the option is restored, the existing default is not switched. */
+    forkModeDefault: boolean;
     /** Ticket 20: rendered tokens of applicable unconsolidated facts that make a run due. */
     triggerTokens: number;
     /** Ticket 20: the most rendered fact tokens one batch may select. */
@@ -79,6 +84,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     maxToolRounds: 0,
   },
   consolidation: {
+    forkModeDefault: false,
     triggerTokens: 5_000,
     batchTokens: 10_000,
     nearThreshold: 0.28,
@@ -101,12 +107,6 @@ export type ConfigOverride = {
  * nested `ConfigOverride` (the façade) resolve the alias through the same two functions below. */
 export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branchModeDefault": "noting.forkModeDefault" };
 
-/** Ticket 25 amendment 2: Consolidation has exactly one execution mode, so the preference that used
- * to choose one is removed rather than reinterpreted. This one sentence is the whole remedy, and the
- * explicit request guard in `execute` states it too: a caller who asks for the retired mode — in a
- * settings file or in a task — deletes the key instead of being silently normalized. */
-export const CONSOLIDATION_SUBAGENT_ONLY = "Consolidation always runs as a subagent; delete the key";
-
 /** Settings a ruling removed, and the remedy for each (ticket 20 "Configuration"). A removed key is
  * not an alias: an old fact count is never reinterpreted as tokens, so any layer supplying one fails
  * the load naming the key and what to do about it. The same two functions below enforce it for the
@@ -115,9 +115,11 @@ export const CONSOLIDATION_SUBAGENT_ONLY = "Consolidation always runs as a subag
  * ("use …"); a setting whose choice no longer exists says so instead. */
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
-  // Ticket 25b: the fork preference of a phase that only ever runs as a subagent now. Historical
-  // fork-mode runs keep their recorded mode; no file is rewritten and no request is normalized.
-  "consolidation.subagentModeDefault": CONSOLIDATION_SUBAGENT_ONLY,
+  // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
+  // shares. It stays a removed setting rather than becoming an alias, because it is the INVERSE
+  // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value
+  // silently. No file is rewritten and no request is normalized.
+  "consolidation.subagentModeDefault": "use consolidation.forkModeDefault (the inverse boolean: true means fork)",
   // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
   // were never effective on any Pi run; the uniform entry rule and `render.toolCallTokens` replace them.
   "render.stdoutHeadTokens": "use render.toolCallTokens (one budget for the whole tool call)",
@@ -250,15 +252,16 @@ export interface RunAgentResult {
  * warns nothing, because the user who cancelled asked for no further work, not for a notice. */
 export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
 
-/** A frozen target: `maxEntryId` bounds Noting to entries allocated no later than a manual catchup's
- * freeze instant; `factIds` bounds Consolidation to the frozen pending-plus-produced fact set.
+/** A frozen target, in two meanings the field names now separate (29e, parent 29 "Capacity, fallback
+ * and audit"). The *allowable* set is a manual catchup's snapshot: `maxEntryId` bounds Noting to
+ * entries allocated no later than its freeze instant, `allowedFactIds` bounds Consolidation to the
+ * pending-plus-produced fact set it froze. Both permit a smaller batch — that is what a drain does.
  * Absent, selection is the ordinary unbounded pending set (18b).
  *
- * 27d (parent 27 amendment 6): `entryIds` is Noting's *exact membership* form — the same shape
- * `factIds` already is — and it is what a fork fallback re-admits on. An upper bound prevents later
- * arrivals from joining but permits a smaller batch, which is a membership change after execution
- * started; under `entryIds` the freeze takes exactly those entries or the task stays pending. */
-export interface TaskBoundary { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }
+ * The *exact* target is what a fork fallback re-admits on: `exactEntryIds` (27d, parent 27
+ * amendment 6) and `exactFactIds` (29e). Under either, the freeze takes exactly those members or the
+ * task stays pending — a smaller batch would be a membership change made after execution started. */
+export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[]; allowedFactIds?: number[]; exactFactIds?: number[] }
 export interface TaskOptions {
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
@@ -332,9 +335,8 @@ export interface TraceMemory {
   readonly config: TraceMemoryConfig;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
-   * this configuration. Only `noting.forkModeDefault` and `closedSessionScope` may be replaced here
-   * (25b retired Consolidation's mode preference, so a `consolidation` section is refused),
-   * validated like the load path. Other keys are refused: this is not a second configuration source
+   * this configuration. Only each phase's `forkModeDefault` and `closedSessionScope` may be replaced
+   * here (29e restored Consolidation's, which 25b had retired), validated like the load path. Other keys are refused: this is not a second configuration source
    * and reloads nothing. Admitted tasks retain their frozen mode and borrowing scope. */
   configure(settings: ConfigOverride): void;
   close(): void;
@@ -532,10 +534,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       : consolidationDue(target) };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
-    // 25 amendment 2: an explicit request for the retired Consolidation mode is refused by name, with
-    // the sentence the removed setting carries. Nothing is normalized to subagent behind the caller.
-    if (phase === "consolidation" && (input.mode === "fork" || input.effectiveMode === "fork"))
-      throw new Error(`Invalid consolidation mode fork: ${CONSOLIDATION_SUBAGENT_ONLY}`);
+    // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
+    // refused here by name. What stays subagent stays subagent where it is decided — borrowed work
+    // and manual catchup request it explicitly, and ticket 28's recovery workers will too.
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
     // 27d repair 4 (parent 27 line 83): "User cancellation, stop, shutdown, claim loss or disabled
     // enrollment must not launch fallback work." A task cancelled between its refusal and this
@@ -559,13 +560,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
       // do not turn "empty within the target" into "dropped", nor expand what a batch may take.
-      // 27d: `entryIds` is read here exactly as `factIds` already is — none of the frozen members
+      // 27d/29e: the exact forms are read here exactly as the allowable ones are — none of the frozen members
       // still pending is "empty within the target"; a partial survivor is the drop `freezeNoting`
       // diagnoses below, never a silently smaller batch.
       empty = !boundary ? !pendingNow.length
-        : phase === "noting" ? !pendingNow.some(e => (!boundary.entryIds || boundary.entryIds.includes((e as { id: number }).id))
+        : phase === "noting" ? !pendingNow.some(e => (!boundary.exactEntryIds || boundary.exactEntryIds.includes((e as { id: number }).id))
             && (boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId))
-        : !pendingNow.some(f => !boundary.factIds || boundary.factIds.includes((f as { id: number }).id));
+        : !pendingNow.some(f => (!boundary.exactFactIds || boundary.exactFactIds.includes((f as { id: number }).id))
+            && (!boundary.allowedFactIds || boundary.allowedFactIds.includes((f as { id: number }).id)));
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
@@ -580,7 +582,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
       // processed is not an admission failure and not work to retry — the claim that completed it
       // has already been honoured, so this task simply drops, carrying the diagnostic that says so.
-      if (error instanceof Error && error.message.startsWith(NOTING_MEMBERSHIP)) return { outcome: "dropped", reason: error.message };
+      if (error instanceof Error && (error.message.startsWith(NOTING_MEMBERSHIP) || error.message.startsWith(CONSOLIDATION_MEMBERSHIP))) return { outcome: "dropped", reason: error.message };
       throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
     }
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
@@ -627,7 +629,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Reuse load validation, then restrict edits to the Noter mode and the borrowing scope.
       const requested = canonicalConfig(settings ?? {});
       if (!requested || typeof requested !== "object" || Array.isArray(requested)) throw new Error("Invalid configuration: expected an object");
-      const reconfigurable: Record<string, string> = { noting: "forkModeDefault" };
+      const reconfigurable: Record<string, string> = { noting: "forkModeDefault", consolidation: "forkModeDefault" };
       for (const [section, values] of Object.entries(requested)) {
         if (section === "closedSessionScope") continue;
         if (!Object.hasOwn(reconfigurable, section)) throw new Error(`Unknown setting ${section}`);
@@ -636,12 +638,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
-        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: cfg.consolidation,
+        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation },
       });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.
       cfg.closedSessionScope = next.closedSessionScope;
       cfg.noting.forkModeDefault = next.noting.forkModeDefault;
+      cfg.consolidation.forkModeDefault = next.consolidation.forkModeDefault;
     },
     close: () => {
       if (store.closed) return;

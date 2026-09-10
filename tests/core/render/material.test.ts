@@ -576,3 +576,38 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
   expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
 });
+
+/** Case 14. The Consolidator's processing target is the whole pending prefix, whether or not the
+ * child can already read a fact; what is newly supplied is only the bodies it cannot. A fact address
+ * is not a fact body, so the missing ones are injected whole, and this phase still receives no
+ * automatic Raw block and no already-consolidated history block (25a). */
+test("29e 2026-09-10 (case 14): a Consolidation fork's target is the union; only the missing fact bodies are injected", () => {
+  const { s, t } = seeded();
+  const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
+  note("ALPHA the inherited claim");
+  note("BETA the missing claim");
+  const pending = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
+  expect(pending).toHaveLength(3); // `seeded`'s F1 (committed knowledge does not consolidate it) and the two above
+  const frozen = freezeConsolidation(memory.store, { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
+    visible: { raw: new Map(), factIds: new Set(pending.slice(0, 2)), knowledgeCommitIds: new Set(), injection: false } }, memory.config);
+  const prepared = frozen.prepared!;
+  // The exact target is the union: both facts are integrated and both are addressed.
+  expect(frozen.rangeFacts.map(f => f.id)).toEqual(pending);
+  expect(prepared.material.factAddresses).toEqual(pending.map(id => `F${id}`));
+  expect([prepared.range.from, prepared.range.to]).toEqual([`F${pending[0]}`, `F${pending.at(-1)}`]);
+  // Only the missing one is a body, and it is the complete one — an address is not evidence.
+  expect(prepared.supplied.factIds).toEqual([pending[2]!]);
+  expect(prepared.text).toContain("BETA the missing claim");
+  expect(prepared.text).not.toContain("ALPHA the inherited claim");
+  // No automatic Raw, and no already-consolidated history block: F1 is neither supplied nor rendered.
+  expect(prepared.supplied.entries).toEqual([]);
+  expect(prepared.text).not.toContain(RAW_TITLE);
+  expect(prepared.text).not.toContain(FACTS_TITLE);
+  expect(prepared.text).not.toContain("Use pnpm");
+  // A fresh child of the same freeze receives both bodies: the subtraction is the view's, not the task's.
+  const fresh = freezeConsolidation(memory.store, { sessionId: s.id, branch: "main", mode: "subagent" }, memory.config);
+  expect(fresh.rangeFacts.map(f => f.id)).toEqual(pending);
+  expect(fresh.prepared!.supplied.factIds).toEqual(pending);
+  expect(fresh.prepared!.text).toContain("ALPHA the inherited claim");
+});

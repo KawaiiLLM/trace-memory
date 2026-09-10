@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -319,6 +319,9 @@ export default function (pi: ExtensionAPI) {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
+    // 29e (parent 29 "Phase-specific evidence"): the Raw rule below is the Noter's alone. Consolidation
+    // processes facts, and its own material carries the complete body of every selected fact the child
+    // cannot already see (29b), so inherited Raw is neither a prerequisite nor extra citation authority.
     if (task?.kind !== "noting") return;
     const view = visible(binding());
     if (!view.raw.size) return rawUnavailable([]);
@@ -336,11 +339,13 @@ export default function (pi: ExtensionAPI) {
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
-  // Ruling 17:01, as ticket 25 amendment 2 left it: only Noting configures a mode, and it defaults to
-  // fork; Consolidation always runs as a subagent, on the ordinary path as on the borrowed and the
-  // manual-catchup ones. Fork mode always runs on the session model, subagent mode on the configured one.
+  // Ruling 17:01, as ticket 29e left it: each phase configures its own mode — Noting defaults to fork,
+  // Consolidation to subagent — and this is the ordinary automatic path only. Borrowed closed-session
+  // work and manual catchup ask for a subagent explicitly at their own call sites, and ticket 28's
+  // recovery workers will do the same. Fork mode always runs on the session model, subagent mode on
+  // the configured one.
   const launch = (kind: "noting" | "consolidation") => {
-    const fork = kind === "noting" && memory.config.noting.forkModeDefault;
+    const fork = memory.config[kind].forkModeDefault;
     return { mode: fork ? "fork" as const : "subagent" as const, model: fork ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
@@ -400,7 +405,7 @@ export default function (pi: ExtensionAPI) {
   // The return type is written out because 27b/27c's re-admission re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }; forkAttempt?: ForkRefusal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
       ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -508,16 +513,20 @@ export default function (pi: ExtensionAPI) {
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
       ...(carried ? { forkAttempt: carried, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
-    if (kind === "consolidation") return memory.consolidate(common);
     // 26a: this is where the host learns a Noting outcome, on every admission path it has.
-    const admitted = memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
+    const admitted = kind === "consolidation" ? memory.consolidate(common)
+      : memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
     if (effective !== "fork") return admitted;
     // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
     // refused it. The same evidence under a fresh child's own price often fits, so that one refusal
     // is re-admitted instead of leaving feasible work pending. Only this refusal: any other admission
     // failure (a `noting.batchTokens` overflow, a store error) is reported as itself, and if the
     // subagent admission refuses the batch too, that refusal is what the caller reports.
-    return admitted.catch(error => error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY)
+    // 29e: the same two re-admissions for a Consolidation fork, told apart by that phase's own
+    // capacity string. Nothing else about the path differs, which is the point of restoring the mode
+    // rather than giving this phase a second fallback mechanism.
+    return admitted.catch(error => error instanceof Error && error.cause === "task admission"
+      && error.message.startsWith(kind === "noting" ? NOTING_CAPACITY : CONSOLIDATION_CAPACITY)
       ? reroute({ reason: error.message.replace(/; left pending$/, "") }) : Promise.reject(error))
       // 27c: the launch, the gate or the provider refused this fork after the task was frozen. Core
       // handed the refusal back unread, so the one re-admission happens here — on the frozen batch's
@@ -908,7 +917,8 @@ export default function (pi: ExtensionAPI) {
     }
     c.waitingPhase = undefined; c.runningPhase = phase;
     slots.add(phase); activity.running.set(phase, 1); showSpend(context);
-    const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : { factIds: [...c.factIds] };
+    // 29e: the *allowable* set, never the exact one — a drain takes it in bounded batches (18b).
+    const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : { allowedFactIds: [...c.factIds] };
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
     pending.add(promise);
     let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
@@ -1127,7 +1137,8 @@ export default function (pi: ExtensionAPI) {
     // The merged, validated layers decide: a project or environment override still wins, and core is
     // told the value that is actually effective — never the global one an override masks.
     const effective = validateConfig(core);
-    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault } });
+    memory.configure({ closedSessionScope: effective.closedSessionScope, noting: { forkModeDefault: effective.noting.forkModeDefault },
+      consolidation: { forkModeDefault: effective.consolidation.forkModeDefault } });
   };
   const saveGlobal = (p: Preference, value: string | boolean) => {
     let replaced: string | undefined;
