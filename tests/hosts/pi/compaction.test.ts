@@ -49,14 +49,14 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
 });
 
 test("20c 2026-09-08 scenario 11: the host returns no custom replacement when compact delegates, and an attempt that never persists establishes no boundary", async () => {
-  // Many tiny entries: their bounded views together exceed the episodic envelope, and 30 left no
+  // Many tiny entries: their bounded views together exceed the compaction envelope, and 30 left no
   // second, tighter rendering to try — the delegation is what represents them.
-  // 25c: that envelope is the only budget compact measures against, so this session is built by
-  // lowering `render.episodicBlockTokens` rather than the Noter's batch ceiling, which compact no
-  // longer reads. Each entry alone still fits a batch, so a Noter can run afterwards (review
+  // 28a: that envelope is the sum of the three windows, and lending between them means all three have
+  // to be small for the required Raw to miss it; the Noter's batch ceiling is not a budget compact
+  // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
   // running over it).
-  const h = host({ ...eager, "noting.batchTokens": 300, "render.episodicBlockTokens": 200 });
+  const h = host({ ...eager, "noting.batchTokens": 300, "render.knowledgeBlockTokens": 200, "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }

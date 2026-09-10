@@ -29,6 +29,23 @@ beforeEach(() => {
 });
 afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
+/** 28a "Lending": the three compaction windows are one envelope with free lending between them, so a
+ * test that wants a tight compaction budget shrinks all three; one key alone leaves the other two's
+ * unused allowance as spare. The knowledge window keeps room for its own omission receipt, which is a
+ * capacity floor of its own (20b). */
+const compactionWindows = (knowledge: number, facts: number, raw: number) => {
+  memory.config.render.knowledgeBlockTokens = knowledge;
+  memory.config.compaction.factsTokens = facts;
+  memory.config.compaction.rawTokens = raw;
+};
+const defaultWindows = () => compactionWindows(DEFAULT_CONFIG.render.knowledgeBlockTokens,
+  DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens);
+/** The per-window accounting of one custom replacement (28a item 6). */
+const charged = (result: ReturnType<typeof memory.compact>) => {
+  if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
+  return result.charged!;
+};
+
 function session() {
   const project = memory.store.createProject({ name: "p", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
@@ -834,7 +851,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
     role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
   for (const id of ["a", "b", "c", "d", "e", "f"]) big(id);
   // Over 12,000 view tokens (30: each entry is worth at most `render.entryTokens`, 2,000): over
-  // `noting.batchTokens`, inside `render.episodicBlockTokens`. Before 25c this escalated on the inner
+  // `noting.batchTokens`, inside the compaction envelope. Before 25c this escalated on the inner
   // cap; the bounded views keep every entry, and the Noter's ceiling is not a knob compact reads at
   // all — moving it changes nothing here.
   expect(tokens(memory.pendingEntries(s.id, "main", t.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n")))
@@ -843,16 +860,73 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   memory.config.noting.batchTokens = 50;
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   memory.config.noting.batchTokens = DEFAULT_CONFIG.noting.batchTokens;
-  // The one budget compact still answers to is the envelope: below the same Raw it is missed, and 30
-  // left one thing to do about that — delegate to the host's native compaction.
-  memory.config.render.episodicBlockTokens = 5_000;
+  // The budgets compact still answers to are its three windows and their envelope (28a): below the
+  // same Raw it is missed, and 30 left one thing to do about that — delegate to the native compaction.
+  compactionWindows(1_000, 100, 100);
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(true);
-  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  defaultWindows();
   // Noting is unchanged: its batch still stops at 10,000 and leaves the rest pending.
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const views = calls[0]!.material.entries.map(e => e.view);
   expect(tokens(views.join("\n\n"))).toBeLessThanOrEqual(DEFAULT_CONFIG.noting.batchTokens);
   expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest waits; 50,000 would have taken it
+});
+
+// 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
+// episodic envelope, and nothing else". Superseded by ticket 28a: compaction has three material
+// windows with 10,000-token baselines — knowledge (`render.knowledgeBlockTokens`), pending facts
+// (`compaction.factsTokens`) and pending Raw (`compaction.rawTokens`) — over one envelope that is
+// their sum. `render.episodicBlockTokens` is not retired; it stayed the Noter's history envelope, and
+// compaction no longer reads it. Required material is placed first and is never trimmed; what is left
+// refills with recent consolidated facts and then recent already-extracted Raw.
+test("28: three windows, one envelope — required material first, refills into the spare, never a trimmed pending window", () => {
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
+  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(10_000);
+  expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
+  expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
+  const { s, t } = session();
+  // Pending facts and pending Raw of one path, plus one consolidated fact and one extracted entry.
+  const write = (text: string, turnId = t.id) => {
+    const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: turnId, branch: "main" });
+    return JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${turnId}#user`] }] })).factIds[0] as number;
+  };
+  const history = write("CONSOLIDATED HISTORY");
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time },
+    operations: [], consolidated: [history] });
+  const pending = write("PENDING FACT");
+  const extracted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: "EXTRACTED RAW", raw: "", calls: [] });
+  expect(memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+    facts: [], entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) }).ok).toBe(true);
+  const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
+
+  // Everything fits: required material and both refills, inside the 30,000-token envelope.
+  const full = memory.compact(s.id, "main", t.id);
+  const text = compacted(full), windows = charged(full);
+  expect(windows.envelope).toBe(30_000);
+  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
+  for (const marker of ["PENDING FACT", "PENDING RAW", "CONSOLIDATED HISTORY", "EXTRACTED RAW"]) expect(text).toContain(marker);
+  // The Noter's envelope is not compact's: moving it changes not one byte here.
+  memory.config.render.episodicBlockTokens = 40;
+  expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
+  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+
+  // No spare: the refills are gone and the required material is untouched — never trimmed to fit.
+  compactionWindows(Math.max(1, windows.knowledge), Math.ceil(windows.required.facts + windows.required.raw), 0);
+  const required = compacted(memory.compact(s.id, "main", t.id));
+  expect(required).toContain("PENDING FACT"); expect(required).toContain("PENDING RAW");
+  expect(required).not.toContain("CONSOLIDATED HISTORY"); expect(required).not.toContain("EXTRACTED RAW");
+  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  expect(memory.store.entryNoted(extracted.id)).toBe(true); // no processing was reset by any of it
+
+  // Required material that does not fit even after lending delegates, naming the window and the
+  // numbers; it never trims the pending window and never starts a worker (28b owns recovery).
+  compactionWindows(10, 1, 1);
+  const delegated = memory.compact(s.id, "main", t.id);
+  expect("native" in delegated).toBe(true);
+  expect("native" in delegated && delegated.reason).toContain("compaction.rawTokens");
+  expect("text" in delegated).toBe(false);
+  expect(calls).toHaveLength(0);
+  defaultWindows();
 });
 
 // ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----
@@ -874,7 +948,7 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
   expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   // Over the enclosing budget: the one route to a model, and it is Pi's, not core's (30 removed the
   // second rendering that used to stand between them).
-  memory.config.render.episodicBlockTokens = 10;
+  compactionWindows(1_000, 10, 10);
   const delegated = memory.compact(s.id, "main", t.id);
   expect("native" in delegated).toBe(true);
   expect(delegated).not.toHaveProperty("text"); // a request, never an empty or manufactured summary
@@ -886,7 +960,7 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
   expect(pending.length).toBeGreaterThan(0);
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual(expect.arrayContaining(pending));
   // Normal Noter input keeps using the same bounded views; the compact-only view exists nowhere else.
-  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  defaultWindows();
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(calls).toHaveLength(1);
   expect(calls[0]!.material.entries.every(e => !e.view.includes("compact-only"))).toBe(true);
@@ -958,6 +1032,27 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
   expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
 });
 
+// 28a "Windows": the two new compaction keys are ordinary token settings — the same finite positive
+// integer validation, the same unknown-key rejection by name — and nothing existing was reinterpreted
+// or silently retired to make room for them.
+test("28a configuration: compaction.factsTokens and compaction.rawTokens are validated like every other token key", () => {
+  const open = (compaction: Record<string, number>) => sourceSeededMemory(join(directory, "windows.sqlite"), async () => ok([]), { compaction } as never);
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
+  for (const key of ["factsTokens", "rawTokens"] as const) {
+    expect(() => open({ [key]: 0 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
+    expect(() => open({ [key]: 1.5 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
+    const set = open({ [key]: 4_321 });
+    try { expect(set.config.compaction[key]).toBe(4_321); } finally { set.close(); }
+  }
+  expect(() => open({ episodicBlockTokens: 100 })).toThrow("Unknown setting compaction.episodicBlockTokens");
+  // Nothing lost a meaning here, so nothing joined the removed list; `render.episodicBlockTokens` is
+  // still a live setting, now read only by the Noter's history envelope.
+  expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined();
+  expect(REMOVED_SETTINGS["compaction.factsTokens"]).toBeUndefined();
+  const noter = sourceSeededMemory(join(directory, "noter.sqlite"), async () => ok([]), { render: { episodicBlockTokens: 12_345 } });
+  try { expect(noter.config.render.episodicBlockTokens).toBe(12_345); } finally { noter.close(); }
+});
+
 // 20c, 2026-09-08: compaction's second tier was a separate compact-only renderer with its own version
 // and its own excerpt rules; ticket 23 made it the one entry renderer under a tier-2 profile.
 // Superseded by ticket 30: there is no second tier at all. Compaction renders the one bounded view of
@@ -977,9 +1072,9 @@ test("30: 23's tier-2 profile is superseded; compaction has one bounded view and
   expect("SECONDARY_VIEW_VERSION" in api).toBe(false); // the version constant went with the renderer
   expect("secondaryRawTitle" in api).toBe(false); // and the tier-2 block title went with the tier
   // The remaining escalation is the native one, and it names the cap it missed.
-  memory.config.render.episodicBlockTokens = 100;
+  compactionWindows(1_000, 100, 100);
   const delegated = memory.compact(s.id, "main", t.id);
-  expect("native" in delegated && delegated.reason).toContain("the episodic budget by");
+  expect("native" in delegated && delegated.reason).toContain("compaction.rawTokens");
 });
 
 // 29a, 2026-09-10: a tier-2 compact view established no coverage, so `visibleView` recorded only
@@ -1454,14 +1549,21 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   expect(long.text).toContain(`[F${shared}]`); expect(long.text).toContain(`[F${onPath}]`);
   expect(long.text).not.toContain(`[F${siblingOnly}]`); expect(long.text).not.toContain("SIBLING ONLY");
 
-  // --- the freshness order survives the filter. Squeezed below one fact group, the block keeps the
-  // raw and the receipt enumerates the candidates `budgetFacts` was given, newest first: the sibling's
-  // fact is not among them, because it is not omitted for budget but absent for membership.
-  memory.config.render.episodicBlockTokens = 105 + tokens(`[T${selected.id}] ${time} (selected facts)\n`);
+  // --- the freshness order survives the filter. 28a: a pending fact is required and is never
+  // squeezed out, so consolidating both path facts is what makes them refill (a) — optional history
+  // in the spare. With an envelope holding the required material and the receipt alone, the block
+  // keeps the Raw and the receipt enumerates the candidates the refill was given, newest first: the
+  // sibling's fact is not among them, because it is not omitted for budget but absent for membership.
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "C", kind: "consolidation", createdAt: time },
+    operations: [], consolidated: [onPath, shared] });
+  const measured = charged(memory.compact(s.id, "C", selected.id));
+  const receipt = tokens(`omitted 2 older facts; expand: F${onPath}, F${shared}`) + tokens("Receipts:") + 2;
+  const total = measured.knowledge + measured.required.facts + measured.required.raw + receipt;
+  compactionWindows(Math.max(1, measured.knowledge), Math.ceil((total - measured.knowledge) / 2), Math.floor((total - measured.knowledge) / 2));
   const squeezed = compacted(memory.compact(s.id, "C", selected.id));
   expect(squeezed).not.toContain(`[F${onPath}]`); expect(squeezed).not.toContain(`[F${shared}]`);
   expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`);
-  memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
+  defaultWindows();
 
   // --- the Noter's freeze: the same list in the same order, from one snapshot. The write-tool
   // binding builds its own later, which is a different operation, so the freeze is measured directly.

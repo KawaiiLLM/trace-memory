@@ -40,6 +40,25 @@ function populated() {
   return { s, t, f, e };
 }
 const golden = (name: string) => readFileSync(new URL(`../../fixtures/read/${name}.txt`, import.meta.url), "utf8").trimEnd();
+/** 28a: what one custom replacement charged, window by window. A `native` delegation has none. */
+const charged = (result: ReturnType<typeof memory.compact>) => {
+  if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
+  return result.charged!;
+};
+/** 28a "Lending": the three windows are one envelope and a window needing less lends the difference,
+ * so what a test controls is the sum, not one key. This sets the sum, keeping the knowledge window at
+ * exactly what its block already charges — the required-material fit test measures knowledge at its
+ * own baseline, so pinning it there leaves the envelope as the only thing that moves. */
+const envelope = (total: number, knowledge: number) => {
+  memory.config.render.knowledgeBlockTokens = Math.max(1, knowledge);
+  memory.config.compaction.factsTokens = Math.max(0, Math.ceil((total - knowledge) / 2));
+  memory.config.compaction.rawTokens = Math.max(0, Math.floor((total - knowledge) / 2));
+};
+const defaultWindows = () => {
+  memory.config.render.knowledgeBlockTokens = 10_000;
+  memory.config.compaction.factsTokens = 10_000;
+  memory.config.compaction.rawTokens = 10_000;
+};
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
   const { s, t } = populated();
@@ -121,13 +140,18 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   // 17a: an omitted head resolves one path, never a union of sibling queues.
   expect(compacted(memory.compact(s.id))).not.toContain("abandoned raw");
   const n = noting(s.id, selected.id, fixture.interpretation);
-  const full = compacted(memory.compact(s.id, "main", selected.id));
+  const whole = memory.compact(s.id, "main", selected.id);
+  const full = compacted(whole);
   expect(full.indexOf("[F1]")).toBeLessThan(full.indexOf(`[F${n.facts[0]!.id}]`)); // chronological presentation
-  // 20b charges the block titles and the joining separators too, so the same "one fact fits, the
-  // older one does not" budget is a little larger than 17a's bare fact-line arithmetic.
-  memory.config.render.episodicBlockTokens = 100 + tokens(`[T${selected.id}] ${selected.startedAt} (selected facts)\n`);
+  // 28a: F1 is already consolidated, so it is refill (a) — optional material in the spare — while the
+  // new fact is pending and required. An envelope that holds exactly the required material therefore
+  // keeps the pending fact whole and leaves the older consolidated one out; the pending window is
+  // never trimmed to make room for a refill.
+  const windows = charged(whole);
+  envelope(windows.knowledge + windows.required.facts + windows.required.raw, windows.knowledge);
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
+  defaultWindows();
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();
 });
 
@@ -151,13 +175,17 @@ test("20c 2026-09-08 scenario 9: all pending bounded views fit, historical facts
   expect(calls).toBe(0);
   expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
   expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual(pending.map(e => e.id));
-  // Historical facts fill only what the selected material and the framing left, and the honest
-  // omission receipt for the rest sits outside the block, as every other receipt does.
-  memory.config.render.episodicBlockTokens = 105 + tokens(`[T${t.id}] ${t.startedAt} (selected facts)\n`); // one fact plus its Turn heading
+  // 28a: F1 is consolidated, so it refills the spare; the newer fact is pending and required. An
+  // envelope holding the required material plus room for the refill's own omission receipt keeps the
+  // pending fact, leaves F1 out and says so — the receipt sits outside the block, as every other does.
+  const windows = charged(result);
+  const receipt = tokens("omitted 1 older facts; expand: F1") + tokens("Receipts:") + 2;
+  envelope(windows.knowledge + windows.required.facts + windows.required.raw + receipt, windows.knowledge);
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
   expect(limited).toContain("omitted 1 older facts; expand: F1");
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
+  defaultWindows();
 });
 
 test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under the ordinary Raw title, and an envelope it cannot meet delegates to native compaction", () => {
@@ -197,14 +225,16 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
   expect(compacted(memory.compact(s.id, "main", next.id))).toBe(text);
   expect(calls).toBe(0);
   // There is no second, tighter rendering to fall back on (30): an envelope these views cannot meet
-  // is a native delegation naming the cap and the overage, with nothing hidden to force a success.
-  memory.config.render.episodicBlockTokens = 500;
+  // is a native delegation naming the overflowing window and its numbers, with nothing hidden to
+  // force a success and no pending window trimmed (28a item 3).
+  envelope(500, 100);
   const delegated = memory.compact(s.id, "main", next.id);
   expect("native" in delegated).toBe(true);
-  expect("native" in delegated && delegated.reason).toContain("the episodic budget by");
+  expect("native" in delegated && delegated.reason).toContain("compaction.rawTokens");
   expect("native" in delegated && delegated.reason).toContain(`bounded views of ${pending.length} pending entries`);
+  expect("native" in delegated && delegated.reason).toContain("required material does not fit after lending");
   expect(memory.pendingEntries(s.id, "main", next.id).map(e => e.id)).toEqual(pending.map(e => e.id));
-  memory.config.render.episodicBlockTokens = 20_000;
+  defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
   expect(memory.trace(`T${next.id}#user`, { full: true })).toContain(body);
@@ -214,11 +244,13 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
 });
 
 /** 25c amended this acceptance on its own terms — its thresholds moved from `noting.batchTokens` to
- * `render.episodicBlockTokens`, because compaction no longer applies the Noter's batch ceiling to a
- * foreground backlog (parent amendment 3) — and 30 amends it again: there is no second rendering to
- * escalate to, so a backlog the one bounded view cannot fit delegates to native compaction, and the
- * tighter `E` (2,000) keeps long replies that used to need the tier-2 profile inside the envelope. */
-test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long replies fit, two dozen delegate to native with the reason, eight three times as long still fit under E", () => {
+ * the shared envelope, because compaction no longer applies the Noter's batch ceiling to a foreground
+ * backlog (parent amendment 3) — 30 amended it again (there is no second rendering to escalate to, so
+ * a backlog the one bounded view cannot fit delegates to native compaction, and the tighter `E` of
+ * 2,000 keeps long replies inside the envelope), and 28a makes that envelope the sum of the three
+ * windows: Raw over its own 10,000-token baseline borrows the knowledge and facts allowance nothing
+ * else is using, which is exactly the lending this acceptance now exercises. */
+test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long replies fit, three dozen delegate to native with the reason, eight three times as long still fit under E", () => {
   const dense = (count: number, words: number) => {
     const s = session();
     let parent: number | undefined;
@@ -231,7 +263,7 @@ test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long rep
   };
   const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
-  const envelope = memory.config.render.episodicBlockTokens;
+  const capacity = memory.config.render.knowledgeBlockTokens + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens;
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
@@ -240,29 +272,30 @@ test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long rep
   // Above the Noter's batch ceiling and below the shared envelope: before 25c the inner cap escalated
   // this; the one view keeps every entry, and the ordinary Raw title is the only one there is.
   expect(fits).toBeGreaterThan(memory.config.noting.batchTokens);
-  expect(fits).toBeLessThan(envelope);
+  expect(fits).toBeLessThan(capacity);
   const kept = memory.compact(dozen.s.id, "main", dozen.parent);
   expect("native" in kept).toBe(false);
   for (const entry of pending) expect(compacted(kept)).toContain(view(entry));
   expect(compacted(kept)).toContain("\nRaw:\n");
-  // Twice the backlog is over the envelope even in the one view, and 30 removed the tighter second
+  // Three times the backlog is over the 30,000-token envelope even in the one view (28a rescaled this
+  // from twice: the envelope grew from 20,000 to the sum of the three windows), and 30 removed the
   // rendering that used to be tried next: compact says so instead of cutting harder than the profile
   // allows, and starts no recovery worker of its own (28 amendment 9).
-  const many = dense(24, 1_000);
+  const many = dense(36, 1_000);
   memory.store.appendToolCall({ turnId: many.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
   const overflowing = memory.pendingEntries(many.s.id, "main", many.parent);
-  expect(total(overflowing.map(view))).toBeGreaterThan(envelope);
+  expect(total(overflowing.map(view))).toBeGreaterThan(capacity);
   const result = memory.compact(many.s.id, "main", many.parent);
   expect("native" in result).toBe(true);
   expect((result as { reason: string }).reason).toContain("bounded views");
-  expect((result as { reason: string }).reason).toContain("the episodic budget by");
+  expect((result as { reason: string }).reason).toContain("compaction.rawTokens");
   expect(calls).toBe(0);
   // Eight replies three times as long: each is over `E` on its own, so each is cut to it, and the
   // backlog that needed the tier-2 profile before 30 now fits the one view.
   const longer = dense(8, 3_000);
   const longEntries = memory.pendingEntries(longer.s.id, "main", longer.parent);
   expect(longEntries.some(e => tokens(view(e)) === memory.config.render.entryTokens)).toBe(true);
-  expect(total(longEntries.map(view))).toBeLessThan(envelope);
+  expect(total(longEntries.map(view))).toBeLessThan(capacity);
   const fewer = memory.compact(longer.s.id, "main", longer.parent);
   expect("native" in fewer).toBe(false);
   for (const entry of longEntries) expect(compacted(fewer)).toContain(view(entry));
@@ -274,24 +307,24 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
   for (let i = 0; i < 40; i++) parent = turn(s.id, `entry ${i}`, parent).id;
   const pending = memory.pendingEntries(s.id, "main", parent).map(e => e.id);
   expect(pending.length).toBeGreaterThanOrEqual(40);
-  // Many tiny entries: their identities and labels alone exceed the enclosing budget.
-  memory.config.render.episodicBlockTokens = 200;
+  // Many tiny entries: their identities and labels alone exceed the whole envelope.
+  envelope(200, 100);
   const outer = memory.compact(s.id, "main", parent);
   expect("native" in outer).toBe(true);
-  expect("native" in outer && outer.reason).toContain("the episodic budget by");
+  expect("native" in outer && outer.reason).toContain("compaction.rawTokens");
   expect("native" in outer && outer.reason).toContain(`bounded views of ${pending.length} pending entries`);
   expect("text" in outer).toBe(false); // not an empty success, and no oversized block either
   // 25c: there is no second cap to miss. The Noter's batch ceiling is not compact's knob any more —
   // shrinking it to fifty tokens neither escalates this snapshot nor appears in any reason — so the
-  // envelope is the only budget a delegation can name.
-  memory.config.render.episodicBlockTokens = 200_000; memory.config.noting.batchTokens = 50;
+  // three windows and their envelope are the only budgets a delegation can name (28a).
+  defaultWindows(); memory.config.noting.batchTokens = 50;
   const inner = memory.compact(s.id, "main", parent);
   expect("native" in inner).toBe(false);
   expect(compacted(inner)).not.toContain("raw ceiling");
   for (const id of pending) expect(compacted(inner)).toContain(`T${memory.store.listSourceEntries(s.id).find(e => e.id === id)!.turnId}#`);
-  memory.config.render.episodicBlockTokens = 200;
+  envelope(200, 100);
   const named = memory.compact(s.id, "main", parent);
-  expect("native" in named && named.reason).toContain("the episodic budget by");
+  expect("native" in named && named.reason).toContain("compaction.rawTokens");
   expect("native" in named && named.reason).not.toContain("raw ceiling");
   // Delegation is a request, not a summary: nothing was read differently, processed or erased.
   expect(memory.pendingEntries(s.id, "main", parent).map(e => e.id)).toEqual(pending);
@@ -299,38 +332,52 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
   expect(calls).toBe(0);
 });
 
-// ---- Ticket 25, amendment 3 (25c): one shared episodic envelope, Raw reserved out of it first ----
+// ---- Ticket 25, amendment 3 (25c), as 28a left it: three windows over one envelope, required
+// material reserved out of it before either refill ----
 
-test("25c 2026-09-09: with nothing pending the historical facts take the whole shared envelope, and when Raw needs it they take none of it, under an independent knowledge cap", () => {
+test("25c 2026-09-09, as 28a left it: with nothing pending the consolidated refill takes the whole spare, and pending Raw that needs the envelope leaves it none", () => {
   const { s, t } = populated();
-  // Historical facts large enough that "some space" and "no space" are far apart: about 830 tokens each.
+  // Already-consolidated facts, large enough that "some space" and "no space" are far apart: about
+  // 830 tokens each. Consolidated, so they are refill (a) — optional history in the spare — and not
+  // the pending facts a required window must hold whole.
   for (let i = 0; i < 15; i++) noting(s.id, t.id, `history ${i} ` + "word ".repeat(800));
   const facts = memory.store.listSessionFacts(s.id);
+  memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time },
+    operations: [], consolidated: facts.map(f => f.id) });
+  expect(memory.store.consolidationBatch(s.id, "main", t.id)).toHaveLength(0);
   expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(0);
-  // No pending Raw: the facts may use the whole shared space, and all of them fit inside it.
-  const spare = compacted(memory.compact(s.id, "main", t.id));
+  // No pending Raw: the refill may use the whole spare, and all of it fits inside the envelope.
+  const roomy = memory.compact(s.id, "main", t.id);
+  const spare = compacted(roomy);
   for (const fact of facts) expect(spare).toContain(`[F${fact.id}]`);
   expect(spare).not.toContain("older facts; expand:");
-  expect(tokens(spare)).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens + memory.config.render.knowledgeBlockTokens);
-  // Now pending Raw that needs almost all of the envelope. It and its framing are reserved first, so
-  // the same facts receive no space at all — and are named in a receipt, never silently dropped. One
-  // entry is worth at most `render.entryTokens` (2,000 since 30), so ten of them fill the envelope.
+  const windows = charged(roomy);
+  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
+  // Now pending Raw that needs almost all of the envelope. It is required and is reserved first, so
+  // the optional facts receive no space at all. One entry is worth at most `render.entryTokens`
+  // (2,000 since 30), so ten of them are about 19,400 tokens.
   for (let i = 0; i < 10; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: `big${i}`, turnId: t.id,
     role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
   const pending = memory.pendingEntries(s.id, "main", t.id);
   expect(pending).toHaveLength(10);
+  const measured = charged(memory.compact(s.id, "main", t.id));
+  // An envelope of exactly the required material plus the refill's own omission receipt: the pending
+  // views are all kept, the optional facts are all left out, and the receipt says so.
+  const receipt = tokens(`omitted ${facts.length} older facts; expand: F1, F2, F3, F4, F5, F6, F7, F8 and 8 more up to F16`) + tokens("Receipts:") + 2;
+  envelope(measured.knowledge + measured.required.facts + measured.required.raw + receipt, measured.knowledge);
   const crowded = memory.compact(s.id, "main", t.id);
-  expect("native" in crowded).toBe(false); // ~19,400 tokens of Raw is inside the 20,000 envelope
+  expect("native" in crowded).toBe(false); // the required material fits; only the optional refill yields
   const text = compacted(crowded);
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
   for (const fact of facts) expect(text).not.toContain(`[F${fact.id}]`);
   expect(text).toContain(`omitted ${facts.length} older facts; expand: F1`);
   expect(text.indexOf("Receipts:")).toBeGreaterThan(text.indexOf("</episodic>"));
-  // The knowledge cap is its own budget and is untouched by that pressure: the block is still there.
+  // Knowledge keeps its own baseline under that pressure: the block is still there.
   expect(text).toContain("<knowledge>");
   expect(text.indexOf("<knowledge>")).toBeLessThan(text.indexOf("<episodic>"));
   expect(memory.inject(s.id).startsWith("<knowledge>")).toBe(true);
   expect(calls).toBe(0);
+  defaultWindows();
 });
 
 test("25c 2026-09-09, as 30 left it: pending membership is processing progress inside a Turn, and a native delegation leaves injection alone", () => {
@@ -345,20 +392,25 @@ test("25c 2026-09-09, as 30 left it: pending membership is processing progress i
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
   const bounded = compacted(memory.compact(s.id, "main", t.id));
   expect(bounded).toContain("PARTIAL_PENDING");
-  expect(bounded.split("Raw:")[1]).not.toContain("PARTIAL_NOTED"); // its evidence is a fact now, not pending Raw
   expect(bounded).toContain("PARTIAL_FACT");
-  // The membership the block carries is exactly the pending entry, in the one bounded view (30).
+  // 28a refill (b): the already-extracted entry is not pending, and it is not excluded on that
+  // account either — the spare allowance supplies recent applicable already-extracted Raw beside the
+  // pending views. Membership is what `pendingEntries` says, never presence in the block.
+  expect(bounded).toContain("PARTIAL_NOTED");
+  expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
+  // The identities the block carries, in the one bounded view (30), in source order.
   const membership = (text: string) => memory.store.listSourceEntries(s.id)
     .filter(e => text.includes(renderEntry(e, memory.config.render, memory.resultText).content)).map(e => e.id);
-  expect(membership(bounded)).toEqual([open.id]);
+  expect(membership(bounded)).toEqual(memory.store.sourcePath(s.id, "main", t.id).map(e => e.id));
+  expect(membership(bounded)).toContain(noted.id); expect(membership(bounded)).toContain(open.id);
   // Native delegation: the pending set does not shrink to fit, and the injection does not move.
   const injection = memory.inject(s.id);
-  memory.config.render.episodicBlockTokens = 10;
+  envelope(200, 200);
   const delegated = memory.compact(s.id, "main", t.id);
   expect("native" in delegated).toBe(true);
   expect("text" in delegated).toBe(false); // no custom summary is built, so none can be consumed
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
-  memory.config.render.episodicBlockTokens = 20_000;
+  defaultWindows();
   expect(memory.inject(s.id)).toBe(injection);
   expect(calls).toBe(0);
 });
@@ -631,4 +683,161 @@ test("21b 2026-09-08: labels match literally, never as JSON syntax, and empty to
   expect(memory.search("100%", "knowledge")).toContain(`[K${labelled}@`);
   expect(memory.search("100X_done", "knowledge")).not.toContain("[K");
   expect(memory.search("unlabelled but searchable", "knowledge")).toContain(`[K${plain}@${plain}]`);
+});
+
+// ---- Ticket 28a: three material windows over one envelope, lending, and the two refills ----
+
+/** Facts of one Turn that no Consolidation has taken and that mark no entry as processed: the
+ * pending facts a required window must hold whole. */
+function pendingFacts(sessionId: number, turnId: number, texts: string[], branch = "main") {
+  const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
+    facts: texts.map(text => ({ turnId, text, category: "observation" as const, actor: "user" as const, source: [`T${turnId}#user`], createdAt: time })),
+    entryIds: [] });
+  if (!result.ok) throw new Error(result.problems.join("\n"));
+  return result.facts;
+}
+/** Mark facts consolidated on this path, which is what makes them refill (a) candidates. */
+function consolidate(sessionId: number, ids: number[], branch = "main") {
+  const result = memory.store.commitConsolidationRun({ run: { sessionId, branch, kind: "consolidation", createdAt: time },
+    operations: [], consolidated: ids });
+  if (!result.ok) throw new Error(JSON.stringify(result));
+}
+const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
+  memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
+
+test("28a acceptance 1: 8k knowledge, 14k facts and 6k Raw fit at 28k with no delegation, no window clipped to its 10k baseline", () => {
+  const s = session(), t = turn(s.id, "head");
+  const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
+  consolidate(s.id, [seed.id]);
+  for (let i = 0; i < 4; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `202${i}`);
+  const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
+  for (let i = 0; i < 3; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
+  const result = memory.compact(s.id, "main", t.id);
+  expect("native" in result).toBe(false); // 28k of demand inside the 30k envelope
+  const windows = charged(result), text = compacted(result);
+  // Every window is served past the 10,000-token baseline where it needed to be: the facts window
+  // borrowed what knowledge and Raw were not using, and nothing was clipped to a baseline.
+  expect(windows.facts).toBeGreaterThan(10_000);
+  expect(windows.knowledge).toBeGreaterThan(7_000);
+  expect(windows.raw).toBeGreaterThan(5_000);
+  expect(windows.envelope).toBe(30_000);
+  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
+  for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
+  for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
+  for (let i = 0; i < 4; i++) expect(text).toContain(`K${i} `);
+  expect(calls).toBe(0);
+});
+
+test("28a acceptance 2: a window keeps its baseline material when another wants more, optional knowledge yields first, and a required overflow delegates naming the window", () => {
+  const s = session(), t = turn(s.id, "head");
+  const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
+  consolidate(s.id, [seed.id]);
+  // A knowledge corpus far past its own window, 7k of pending facts and 12k of pending Raw.
+  for (let i = 0; i < 13; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `20${10 + i}`);
+  const facts = pendingFacts(s.id, t.id, [...Array(7)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
+  for (let i = 0; i < 6; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
+  const result = memory.compact(s.id, "main", t.id);
+  expect("native" in result).toBe(false);
+  const windows = charged(result), text = compacted(result);
+  // The facts window keeps everything inside its own baseline although Raw wants more than its own…
+  for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
+  expect(windows.raw).toBeGreaterThan(10_000);
+  // …and optional knowledge beyond its baseline is what yields, down to its baseline but never below.
+  expect(windows.knowledge).toBeLessThan(13 * 2_000);
+  expect(windows.knowledge).toBeGreaterThanOrEqual(memory.config.render.knowledgeBlockTokens - 2_000);
+  expect(text).toContain("knowledge; expand: K"); // the rest is named, never silently dropped
+  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
+  // Required material that still does not fit after all of that lending delegates, naming the window
+  // and its numbers — the pending window is never trimmed to force a success.
+  pendingFacts(s.id, t.id, [...Array(24)].map((_, i) => `OVER_${i} ` + "word ".repeat(990)));
+  const delegated = memory.compact(s.id, "main", t.id);
+  expect("native" in delegated).toBe(true);
+  expect("native" in delegated && delegated.reason).toContain("compaction.factsTokens");
+  expect("native" in delegated && delegated.reason).toContain("pending facts need");
+  expect("native" in delegated && delegated.reason).toContain("required material does not fit after lending");
+  expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(7); // nothing was processed or erased
+  expect(calls).toBe(0);
+});
+
+test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, path-applicable, deduplicated, in source order, and never crowd out required material", () => {
+  const s = session(), t = turn(s.id, "head");
+  const sibling = turn(s.id, "sibling", t.id), selected = turn(s.id, "selected", t.id);
+  // Refill (a)'s candidates: consolidated facts of the path, and one of a sibling branch that is not.
+  const history = pendingFacts(s.id, t.id, ["HISTORY_OLD", "HISTORY_NEW"]);
+  const elsewhere = pendingFacts(s.id, sibling.id, ["SIBLING_HISTORY"], "sibling");
+  consolidate(s.id, history.map(f => f.id));
+  consolidate(s.id, elsewhere.map(f => f.id), "sibling");
+  const pending = pendingFacts(s.id, selected.id, ["PENDING_FACT"])[0]!;
+  // Refill (b)'s candidates: already-extracted entries of the path. The Turn prompts are entries too.
+  entry(s.id, t.id, "old", "EXTRACTED_OLD");
+  const newer = entry(s.id, t.id, "new", "EXTRACTED_NEW");
+  const run = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
+    facts: [], entryIds: memory.store.sourcePath(s.id, "main", selected.id).map(e => e.id) });
+  expect(run.ok).toBe(true);
+  const open = entry(s.id, selected.id, "open", "STILL_PENDING");
+  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual([open.id]);
+
+  const result = memory.compact(s.id, "main", selected.id);
+  const text = compacted(result), windows = charged(result);
+  // Required first, refills after: the pending fact and the pending entry are both there…
+  expect(text).toContain("PENDING_FACT"); expect(text).toContain("STILL_PENDING");
+  // …refill (a) is the path's consolidated facts, deduplicated against the pending ones by
+  // construction, and a sibling branch's consolidated fact is not applicable here.
+  expect(text).toContain("HISTORY_OLD"); expect(text).toContain("HISTORY_NEW");
+  expect(text).not.toContain("SIBLING_HISTORY");
+  expect(text.match(/PENDING_FACT/g)).toHaveLength(1); // whole items, once each
+  // …and refill (b) is the path's already-extracted entries, whole, in source order.
+  expect(text).toContain("EXTRACTED_OLD"); expect(text).toContain("EXTRACTED_NEW");
+  expect(text.indexOf("EXTRACTED_OLD")).toBeLessThan(text.indexOf("EXTRACTED_NEW"));
+  expect(text.indexOf("EXTRACTED_NEW")).toBeLessThan(text.indexOf("STILL_PENDING"));
+  // The carrier lists exactly what was included, pending and refilled alike, each in the one view.
+  const supplied = "native" in result ? { entries: [], factIds: [] } : result.supplied;
+  expect([...supplied.factIds].sort((a, b) => a - b)).toEqual([...history.map(f => f.id), pending.id].sort((a, b) => a - b));
+  expect(supplied.entries.map(e => e.id)).toEqual(memory.store.sourcePath(s.id, "main", selected.id).map(e => e.id));
+  expect(new Set(supplied.entries.map(e => e.view))).toEqual(new Set(["bounded"]));
+  expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
+
+  // 30 case 10: an entry the post-compaction context retains is not supplied a second time — and an
+  // entry whose only earlier visibility was the summary being discarded is NOT excluded on that
+  // account, since only the pending set and the retained set exclude anything.
+  const retained = memory.compact(s.id, "main", selected.id, [newer.nativeId, open.nativeId]);
+  const kept = compacted(retained);
+  expect(kept).not.toContain("EXTRACTED_NEW");
+  expect(kept).toContain("EXTRACTED_OLD"); // an older view of it rode a discarded summary; still refilled
+  expect(kept).toContain("STILL_PENDING"); // pending is required, and "retained" never removes it
+  expect("native" in retained ? [] : retained.supplied.entries.map(e => e.nativeId)).not.toContain(newer.nativeId);
+
+  // 30 case 12: with no spare at all the refills are simply absent — no worker, no delegation, no
+  // processing reset, no coverage claim, and the required material is untouched.
+  const runsBefore = memory.store.listRuns(s.id).length;
+  envelope(windows.knowledge + windows.required.facts + windows.required.raw, windows.knowledge);
+  const tight = memory.compact(s.id, "main", selected.id);
+  expect("native" in tight).toBe(false);
+  const bare = compacted(tight);
+  expect(bare).toContain("PENDING_FACT"); expect(bare).toContain("STILL_PENDING");
+  for (const absent of ["HISTORY_OLD", "HISTORY_NEW", "EXTRACTED_OLD", "EXTRACTED_NEW"]) expect(bare).not.toContain(absent);
+  expect("native" in tight ? [] : tight.supplied.factIds).toEqual([pending.id]);
+  expect("native" in tight ? [] : tight.supplied.entries.map(e => e.id)).toEqual([open.id]);
+  const tightWindows = charged(tight);
+  expect(tightWindows.knowledge + tightWindows.facts + tightWindows.raw).toBeLessThanOrEqual(tightWindows.envelope);
+  expect(memory.store.listRuns(s.id)).toHaveLength(runsBefore);
+  expect(memory.pendingEntries(s.id, "main", selected.id).map(e => e.id)).toEqual([open.id]);
+  expect(calls).toBe(0);
+  defaultWindows();
+});
+
+test("28a: refill (a) takes the most recent consolidated facts first, whole, and stops at the remaining budget", () => {
+  const s = session(), t = turn(s.id, "head");
+  const older = pendingFacts(s.id, t.id, ["OLDEST " + "word ".repeat(400)])[0]!;
+  const newer = pendingFacts(s.id, t.id, ["NEWEST " + "word ".repeat(400)])[0]!;
+  consolidate(s.id, [older.id, newer.id]);
+  expect(newer.id).toBeGreaterThan(older.id);
+  const measured = charged(memory.compact(s.id, "main", t.id));
+  // Room for one whole refilled fact and the receipt naming the other: freshness decides which.
+  const receipt = tokens(`omitted 1 older facts; expand: F${older.id}`) + tokens("Receipts:") + 2;
+  envelope(measured.knowledge + measured.required.facts + measured.required.raw + receipt + 600, measured.knowledge);
+  const text = compacted(memory.compact(s.id, "main", t.id));
+  expect(text).toContain("NEWEST"); expect(text).not.toContain("OLDEST");
+  expect(text).toContain(`omitted 1 older facts; expand: F${older.id}`);
+  defaultWindows();
 });

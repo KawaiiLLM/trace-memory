@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
-import { CONFIG_ALIASES, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
+import { CONFIG_ALIASES, CONFIG_SECTIONS, DEFAULT_CONFIG, canonicalFlatConfig, validateConfig, type ConfigOverride, type ClosedSessionScope } from "../../core/api/index.ts";
 import { THINKING_LEVELS } from "./native.ts";
 
 /** The section of a Pi settings file this extension owns, and its status/entry identity in the host. */
@@ -38,7 +38,7 @@ const thinkingKeys = ["notingThinking", "consolidationThinking"];
  * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
 export function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
   const core: ConfigOverride = { closedSessionScope: (flat.closedSessionScope === undefined ? DEFAULT_CONFIG.closedSessionScope : flat.closedSessionScope) as ClosedSessionScope };
-  for (const section of ["render", "noting", "consolidation"] as const) {
+  for (const section of CONFIG_SECTIONS) {
     const values: Record<string, number | boolean> = {};
     for (const [key, value] of Object.entries(DEFAULT_CONFIG[section])) {
       const override = flat[`${section}.${key}`];
@@ -49,7 +49,7 @@ export function parseLayer(flat: FlatConfig, named: (key: string) => string = ke
     Object.assign(core, { [section]: values });
   }
   for (const key of Object.keys(flat)) if (key !== "closedSessionScope" && !hostStrings.includes(key) &&
-    !["render", "noting", "consolidation"].some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s as "render" | "noting" | "consolidation"], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
+    !CONFIG_SECTIONS.some(s => key.startsWith(`${s}.`) && Object.hasOwn(DEFAULT_CONFIG[s], key.slice(s.length + 1)))) throw new Error(`Unknown setting ${named(key)}`);
   for (const key of hostStrings) if (flat[key] !== undefined && typeof flat[key] !== "string") throw new Error(`Invalid ${key}`);
   // 26d: an unrecognized level is rejected by name with the accepted list, never normalized silently.
   for (const key of thinkingKeys) if (flat[key] !== undefined && !thinkingChoices.includes(flat[key] as string))

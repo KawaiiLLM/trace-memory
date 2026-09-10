@@ -123,6 +123,37 @@ test("29a case 5/6 (compaction baseline, retained entries): the custom summary a
   } finally { await h.dispose(); }
 });
 
+test("28a carrier: the persisted compaction lists the refilled already-extracted entries too, each in the one bounded view", async () => {
+  const h = host(quiet);
+  try {
+    await h.prompt("first");
+    await h.emit("message_end", { message: reply("one") });
+    await h.emit("agent_settled"); await h.drain();
+    // Everything recorded so far is extracted, so it is refill (b) material rather than pending Raw.
+    const store = h.memory.store, sid = bound(h).session!;
+    const head = () => store.listTurns(sid).at(-1)!.id;
+    const extracted = store.sourcePath(sid, "main", head()).map(e => e.id);
+    expect(extracted.length).toBeGreaterThan(0);
+    expect(store.commitNotingRun({ run: { kind: "noting", sessionId: sid, branch: "main", createdAt: "now" }, facts: [], entryIds: extracted }).ok).toBe(true);
+    await h.prompt("second");
+    await h.emit("message_end", { message: reply("two") });
+    await h.emit("agent_settled"); await h.drain();
+    const pending = h.memory.pendingEntries(sid, "main", head()).map(e => e.id);
+    expect(pending.length).toBeGreaterThan(0);
+    const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100 } });
+    const supplied = carrierOf(result.compaction).supplied;
+    // Exactly the included identities, pending and refilled alike, in source order and one view.
+    expect(supplied.entries.map(e => e.id)).toEqual(store.sourcePath(sid, "main", head()).map(e => e.id));
+    expect(supplied.entries.map(e => e.id)).toEqual(expect.arrayContaining([...extracted, ...pending]));
+    expect(new Set(supplied.entries.map(e => e.view))).toEqual(new Set(["bounded"]));
+    // Receipt and content are one entry, and every listed identity counts as visible Raw afterwards.
+    const compaction = h.compaction(result.compaction.summary) as CompactionEntry;
+    expect(carrierOf(compaction).supplied).toEqual(supplied);
+    const visible = view(h);
+    for (const entry of supplied.entries) expect(visible.raw.has(entry.nativeId)).toBe(true);
+  } finally { await h.dispose(); }
+});
+
 test("29a case 7 (opaque fallback): a native summary proves nothing, and the entries Pi retained past it still count", async () => {
   const h = host(quiet);
   try {
