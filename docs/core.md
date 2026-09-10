@@ -44,6 +44,11 @@ Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 Hosts pass completed source identities/content through `appendEntry(SourceInput)`
 and select the persisted ancestry with `selectEntries(sessionId, branch, entryIds)`.
 The exposed store's transaction groups ingestion with Turn/tool projections.
+`notingBatch(target, boundary?)` answers what a Noting freeze of that target would
+select — the pending set the boundary admits, cut to the oldest prefix that fits
+`noting.batchTokens` — through the same selection `freezeNoting` uses, without
+freezing, claiming or diagnosing anything (29c: the Pi host decides a fork's Raw
+availability against exactly the entries the task will process).
 `pendingEntries(sessionId, branch, headTurnId)` derives work from native path
 membership and committed entry processing; it is not a queue of results for the foreground.
 Call `noting({ sessionId, branch, headTurnId, model?, mode? })` at the existing

@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -103,15 +103,14 @@ export default function (pi: ExtensionAPI) {
     // while this memory session is automatically downgraded.
     const suppression = memory.store.forkSuppression(input.sessionId);
     if (suppression) return { refused: latchReason(suppression) };
-    // Ticket 20 "Post-compaction worker mode", rechecked here at the actual launch against the
-    // exact frozen entry set — a task prepared before a compaction but held for a slot, a claim
-    // or native readiness reaches this line with its evidence range already frozen. A fork
-    // would inherit a context those entries are no longer in, so the whole batch runs as a
-    // fresh child instead, recorded like any other fallback: requested mode fork, actual mode
-    // subagent, reason named. This is a per-task readiness decision, not the cache-miss latch.
+    // Ticket 29c, rechecked here at the actual launch against the exact frozen entry set — a task
+    // admitted before a compaction but held for a slot, a claim or native readiness reaches this line
+    // with its batch already frozen, and the context it would inherit has moved since. The whole batch
+    // then runs as a fresh child instead, recorded like any other fallback: requested mode fork,
+    // actual mode subagent, reason named. A per-task readiness decision, not the cache-miss latch.
     if (input.kind === "noting") {
-      const evidence = preCompactionEvidence(context, input.entryAudit.entries.map(e => e.nativeId));
-      if (evidence) return { refused: evidence };
+      const refused = rawUnavailable(input.entryAudit.entries);
+      if (refused) return { refused };
     }
     // A tree switch since admission invalidates this launch context; the new branch's history is
     // never substituted for the task frozen on the old one.
@@ -189,7 +188,7 @@ export default function (pi: ExtensionAPI) {
     });
   }, core, piResultText);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
-   * admission (the cache-miss latch, pre-compaction evidence), the launch, the native runner's own
+   * admission (the cache-miss latch, 29c's Raw availability), the launch, the native runner's own
    * gate, and (27b) a capacity refusal before sending or a provider overflow after a real attempt.
    * A warning, never an error — the work continues on the fresh child, and a later task may request
    * fork again. */
@@ -277,16 +276,6 @@ export default function (pi: ExtensionAPI) {
   const suppressed = () => (state.sessionId ? memory.store.forkSuppression(state.sessionId) : null);
   /** The one wording of the cache-miss latch's refusal, said the same way at admission and at launch. */
   const latchReason = (suppression: { at: string }) => `cache miss latch: fork suppressed for this session since ${suppression.at}`;
-  /** Ticket 20 "Post-compaction worker mode". The boundary is the last compaction entry on the
-   * target's currently selected ancestry. Pi writes that entry only when a compaction was persisted
-   * successfully, whatever produced its summary, so a request to compact, a failed or cancelled
-   * attempt and a compaction on a sibling path establish nothing here by construction. The ancestry
-   * is re-read on every call — never cached, never compared by wall clock, database entry id or a
-   * current-context flag — so reopen and tree navigation restore the same answer.
-   *
-   * An entry the selected ancestry no longer carries is counted as preceding the boundary: a fork
-   * would not inherit evidence Pi is not carrying either, and entries Pi happens to have retained
-   * past a compaction do not waive the rule. */
   /** Ticket 29a "Carriers": the `details.traceMemory` written on the two entries that put memory
    * material into this conversation — the injected `custom_message` and a custom compaction — beside
    * what the renderer actually supplied. The database identity is the resolved `dbPath`, the same
@@ -295,32 +284,55 @@ export default function (pi: ExtensionAPI) {
    * id; an injection written before that is recognised afterwards through the Pi session id here. */
   const binding = (): VisibleBinding => ({ db: dbPath, session: state.sessionId ?? null, pi: state.piId });
   const carrier = (supplied: SuppliedMaterial) => ({ traceMemory: { ...binding(), supplied } });
-  const preCompactionEvidence = (context: ExtensionContext, nativeIds: string[]): string | undefined => {
-    const ancestry = context.sessionManager.getBranch() as { id: string; type: string }[];
-    let boundary = -1;
-    for (let i = 0; i < ancestry.length; i++) if (ancestry[i]!.type === "compaction") boundary = i;
-    if (boundary < 0) return;
-    const position = new Map(ancestry.map((entry, i) => [entry.id, i]));
-    const before = nativeIds.filter(id => (position.get(id) ?? -1) < boundary).length;
-    return before ? `pre-compaction evidence: ${before} selected ${before === 1 ? "entry precedes" : "entries precede"} the persisted compaction ${ancestry[boundary]!.id}` : undefined;
+  /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
+   * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
+   * really select and not a larger set it will never freeze. */
+  type ForkTask = { kind: "noting" | "consolidation"; target: TaskTarget; boundary?: TaskBoundary };
+  /** Ticket 29c "Noter fork eligibility by actual Raw availability" (parent 29). A requested Noter
+   * fork runs as a fork exactly when every entry of its target is available in the inherited context
+   * in a representation it may extract from — a source entry Pi retained, or the primary (tier-1)
+   * view a carrier of ours supplied for an entry the conversation itself no longer holds. That is
+   * precisely what 29a's view calls `raw`, so a tier-2 view, a free summary, an id in prose and an
+   * absent tool result are simply not in it; an incomplete tool-call group stays the native gate's
+   * own check (`forkable`). One unavailable entry sends the whole target down the existing fallback
+   * (27c) with its exact membership — the invisible entry is never skipped to manufacture a forkable
+   * batch. This replaces ticket 20's blanket pre-compaction refusal: a pre-compaction entry Pi
+   * retained, and one a custom compaction carried at tier 1, are both available and both fork.
+   *
+   * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
+   * reason 27a refuses an unknown context measure: nothing about the inherited context is
+   * established, so there is no fork base to check a target against. */
+  const rawUnavailable = (entries: readonly { id: number; turnId: number; nativeId: string }[]): string | undefined => {
+    const view = visible(binding());
+    if (!view.raw.size) return "Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited";
+    const missing = entries.find(entry => !view.raw.has(entry.nativeId));
+    return missing ? `Raw availability: entry ${missing.id} (T${missing.turnId}, native ${missing.nativeId}) of this batch is not in the inherited context:`
+      + " Pi retained no source for it and no compaction carrier supplied its primary view" : undefined;
   };
   /** Why a requested fork will not run with inherited context for this task, decided against this
-   * host's live state at admission: the cache-miss latch is set, or — ticket 20's admission rule —
-   * the entries a Noter would select include evidence from before a persisted compaction. Undefined
-   * means it may fork. Neither refusal is a latch: both are re-decided for every task, and 27c
-   * records the reason rather than only its verdict, because the reason is what the run audit and the
-   * one warning say. */
-  const forkRefused = (requested: "fork" | "subagent", task?: { kind: "noting" | "consolidation"; target: { sessionId: number; branch: string; headTurnId: number } }): string | undefined => {
+   * host's live state at admission — before anything is frozen, so the refused task is admitted once
+   * more as a subagent with fresh material (27c): the cache-miss latch is set, or 29c's Raw
+   * availability rule refuses the batch. Undefined means it may fork. Neither refusal is a latch:
+   * both are re-decided for every task, and 27c records the reason rather than only its verdict,
+   * because the reason is what the run audit and the one warning say. */
+  const forkRefused = (requested: "fork" | "subagent", task?: ForkTask): string | undefined => {
     if (requested !== "fork") return;
     const suppression = suppressed();
     if (suppression) return latchReason(suppression);
-    // Noting's batch is the oldest pending prefix, so any pending pre-boundary entry is in it.
-    if (task?.kind === "noting") return preCompactionEvidence(ctx, memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId).map(e => e.nativeId));
-    return;
+    if (task?.kind !== "noting") return;
+    const view = visible(binding());
+    if (!view.raw.size) return rawUnavailable([]);
+    // 29c: the target is the batch a freeze of this task would select — the pending set this task's
+    // boundary admits, cut to the oldest prefix that fits `noting.batchTokens`. Asking core for it
+    // renders those entries, which is what a freeze costs, so it is asked only once the whole pending
+    // set (a superset of that batch) is known to be missing something at all.
+    const pending = memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId);
+    if (!pending.some(entry => !view.raw.has(entry.nativeId))) return;
+    return rawUnavailable(memory.notingBatch(task.target, task.boundary));
   };
   /** The mode a task of this session will actually run in, for the readiness wait and the budget;
    * the requested mode is still what the run record keeps. */
-  const effectiveMode = (requested: "fork" | "subagent", task?: { kind: "noting" | "consolidation"; target: { sessionId: number; branch: string; headTurnId: number } }) =>
+  const effectiveMode = (requested: "fork" | "subagent", task?: ForkTask) =>
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
     ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
@@ -421,10 +433,10 @@ export default function (pi: ExtensionAPI) {
     // run's recorded reason. A task carrying one is never refused a fork again (the launch below is
     // not even offered one), which is the structural one-transition guard.
     const asSubagent = (reason: string) => { notifyFallback(kind, reason); return { ...selected, model: modelName(kind), fallbackReason: reason }; };
-    // The refusals this host knows before anything is frozen — the cache-miss latch, ticket 20's
-    // pre-compaction evidence — are applied here, where the model and the capacity are still open:
+    // The refusals this host knows before anything is frozen — the cache-miss latch, 29c's Raw
+    // availability — are applied here, where the model and the capacity are still open:
     // one admission, no second freeze. A re-admitted task carries its own reason and re-resolves none.
-    const refusal = selected.fallbackReason ? undefined : forkRefused(selected.mode, { kind, target });
+    const refusal = selected.fallbackReason ? undefined : forkRefused(selected.mode, { kind, target, boundary: options.boundary });
     const selection = refusal ? asSubagent(refusal) : selected;
     const effective = selection.fallbackReason ? "subagent" as const : selection.mode; // admission pauses by what will run, not by what was asked
     const [provider, ...id] = selection.model.split("/");

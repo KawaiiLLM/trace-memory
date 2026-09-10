@@ -77,13 +77,13 @@ test("27c: a task admitted with a reason runs fresh and records it — the launc
   const f = await fixture();
   try {
     f.script(async () => say("Done."));
-    const result = await runWorker({ ...task("fork"), fallbackReason: "pre-compaction evidence: 2 selected entries precede the persisted compaction e5" } as NotingAgentInput,
+    const result = await runWorker({ ...task("fork"), fallbackReason: "Raw availability: entry 2 (T1, native e5) of this batch is not in the inherited context" } as NotingAgentInput,
       { model: f.model as never, checkCapacity: () => {},
         tools: [note()], runsDir: f.runsDir, cwd: f.h.dir, agentDir: f.agentDir, maxToolRounds: 0,
         onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
     expect(result.outcome).toBe("success");
     expect(result.mode).toBe("subagent");
     expect(result.refused).toBeUndefined();
-    expect(result.fallbackReason).toBe("pre-compaction evidence: 2 selected entries precede the persisted compaction e5");
+    expect(result.fallbackReason).toBe("Raw availability: entry 2 (T1, native e5) of this batch is not in the inherited context");
   } finally { await f.dispose(); }
 });

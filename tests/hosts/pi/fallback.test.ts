@@ -26,7 +26,7 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
 import { fixture, say, call, worker, submitted, noteBatch, settled, usage as wireUsage, type Body } from "./native-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
-import { runNative } from "../../../src/hosts/pi/native.ts";
+import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
 import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
 
 /** A provider rejection, at the status this fixture's wire uses for one: Pi does not treat it as
@@ -352,7 +352,9 @@ const foregroundTooSmall = (h: ReturnType<typeof host>) => { h.ctx.model = { ...
 
 test.each([
   ["the cache-miss latch", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); expect(h.memory.store.suppressFork(1)).toBe(true); }, "cache miss latch"],
-  ["pre-compaction evidence", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); h.compaction(); }, "pre-compaction evidence"],
+  // 29c: a compaction Pi persisted that kept none of the selected entries and carried no views of
+  // ours, so the batch is no longer available in the context a fork would inherit.
+  ["an entry the compacted context no longer holds", (h: ReturnType<typeof host>) => { foregroundTooSmall(h); h.compaction(); }, "Raw availability: entry "],
   ["a launch-time refusal", () => {}, "native runner: No current-branch provider payload captured"],
 ])("27c: whatever the refusal, the subagent model (%s)", async (_kind, arrange, reason) => {
   // `notingModel` is a model the foreground is not on, so the run record's model is the whole point:
@@ -382,10 +384,12 @@ test.each([
   } finally { await h.dispose(); }
 });
 
-test("27c 2026-09-10: the reported live case — evidence before a persisted compaction runs on the configured Noter model, at its own thinking level", async () => {
-  // The defect as it was reported: a Noter admitted as `fork` whose evidence precedes the compaction
+test("27c 2026-09-10: the reported live case — an entry the compaction did not keep runs on the configured Noter model, at its own thinking level", async () => {
+  // The defect as it was reported: a Noter admitted as `fork` whose evidence a compaction had removed
   // ran as a subagent on the FOREGROUND model, at the foreground's level. Here the foreground is
   // `fake/test` and the configured Noter is a second model with its own configured level.
+  // 29c retargeted the arrangement, not the outcome: the compaction below is Pi's own, so the earlier
+  // entries are neither retained nor carried as tier-1 views, which is what refuses the fork now.
   const f = await fixture({ notingModel: "fake/test-thinking", notingThinking: "high" });
   try {
     let notes = 0;
@@ -394,8 +398,9 @@ test("27c 2026-09-10: the reported live case — evidence before a persisted com
     const first = await settled(f);
     expect(first.mode).toBe("fork");
     expect(first.model).toBe("fake/test");
-    // New foreground evidence, then a compaction Pi persists on this ancestry: the next Noter's
-    // entries precede the boundary, so its fork is refused at admission.
+    // New foreground evidence, then a compaction Pi persists on this ancestry keeping only the leaf:
+    // the next Noter's older entries are in no representation the inherited context holds, so its fork
+    // is refused at admission.
     f.manager().appendMessage({ role: "user", content: "用 bun，不要 node " + "word ".repeat(400), timestamp: 1 } as never);
     f.manager().appendMessage({ ...reply("an answer " + "word ".repeat(400)), timestamp: 1 } as never);
     f.manager().appendCompaction("native summary", f.manager().getLeafId()!, 100);
@@ -407,7 +412,7 @@ test("27c 2026-09-10: the reported live case — evidence before a persisted com
     const audit = JSON.parse(second.response!);
     expect(second.mode).toBe("subagent");
     expect(audit.requestedMode).toBe("fork");
-    expect(String(audit.fallbackReason)).toContain("pre-compaction evidence");
+    expect(String(audit.fallbackReason)).toContain("Raw availability: entry ");
     expect(second.model).toBe("fake/test-thinking");
     const child = f.sent.filter((body: Body) => worker(body)).at(-1)!; // the second run's own child
     expect(child.model).toBe("test-thinking"); // the model the request really named
@@ -545,3 +550,126 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
     expect(f.h.memory.pendingEntries(1, "main", f.h.memory.store.listTurns(1).at(-1)!.id).map(e => e.id)).toEqual(frozen);
   } finally { await f.dispose(); }
 }, 30000);
+
+
+// ------------------------------------------------- 29c: a fork needs its whole target in the context
+
+/** 29a's persisted carrier shape (`details.traceMemory` on the compaction entry), stated directly so
+ * one row can pin one representation. The real tier-1 path is driven through the compaction hook in
+ * the row above it; core's own reading of every tier is `tests/core/api/visible.test.ts`. */
+const carrier = (h: ReturnType<typeof host>, entries: { id: number; nativeId: string; tier: 1 | 2 }[]) =>
+  ({ traceMemory: { db: h.dbPath, session: 1, pi: "pi-test", supplied: { entries, factIds: [], knowledgeCommitIds: [] } } });
+
+type Older = { id: number; turnId: number; nativeId: string }[];
+/** Each row arranges what the context holds of the three entries laid down before it, and answers
+ * with the refusal the admission must state — `undefined` when the target is available and the fork
+ * is admitted (the fake host has no persisted parent session, so an admitted fork is refused at the
+ * LAUNCH for the capture it has no way to have; that is the assertion the `undefined` rows make). */
+test.each([
+  ["every entry retained: nothing was compacted at all", () => {}, undefined],
+  ["the oldest entries survive as tier-1 views in a custom compaction of ours",
+    async (h: ReturnType<typeof host>, older: Older) => {
+      // The real escalation, not a stated payload: compact chooses tier 1 for a session this small and
+      // writes the carrier that says so, which is exactly what the rule then reads back.
+      const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
+      const entry = h.compaction(block.compaction.summary) as { details: { traceMemory: { supplied: { entries: { tier: number }[] } } } };
+      for (const e of older) expect(entry.details.traceMemory.supplied.entries).toContainEqual(expect.objectContaining({ id: e.id, tier: 1 }));
+    }, undefined],
+  ["the oldest entries survive only as tier-2 views",
+    (h: ReturnType<typeof host>, older: Older) =>
+      h.compaction("secondary views", { details: carrier(h, older.map(e => ({ id: e.id, nativeId: e.nativeId, tier: 2 as const }))) }),
+    (older: Older) => older[0]!],
+  ["a compaction Pi wrote itself: a summary and nothing else", (h: ReturnType<typeof host>) => h.compaction(), (older: Older) => older[0]!],
+  ["ids named in the summary text with no supplied entry behind them",
+    (h: ReturnType<typeof host>, older: Older) => h.compaction(`covers ${older.map(e => e.nativeId).join(", ")}`, { details: carrier(h, []) }),
+    (older: Older) => older[0]!],
+  ["one entry absent from an otherwise tier-1 carrier",
+    (h: ReturnType<typeof host>, older: Older) =>
+      h.compaction("most of it", { details: carrier(h, older.slice(0, -1).map(e => ({ id: e.id, nativeId: e.nativeId, tier: 1 as const }))) }),
+    (older: Older) => older.at(-1)!],
+])("29: a Noter forks only when its whole target is available in the inherited context (%s)", async (_label, arrange, expected) => {
+  const h = host({ "noting.triggerTokens": 100, notingModel: "fake/test-mini" }); // fork is the default mode
+  try {
+    await h.emit("session_start");
+    // Two turns too small to be due: they lay down the entries a compaction can drop, and the memory
+    // session the carriers above are bound to.
+    for (const [ask, answer] of [["hi", "ok"], ["hey", "sure"]]) {
+      await h.prompt(ask!); await h.answer(answer!); await h.emit("agent_settled"); await h.drain();
+    }
+    expect(h.memory.store.listRuns(1)).toEqual([]);
+    const head = () => h.memory.store.listTurns(1).at(-1)!.id;
+    // The fake host's compaction keeps its last entry, so these three are the droppable ones.
+    const older = h.memory.pendingEntries(1, "main", head()).slice(0, 3);
+    expect(older).toHaveLength(3);
+    await arrange(h, older);
+    // A turn large enough to be due. Its own entries are always retained, and so — for this rule — is
+    // the head reply: `buildContextEntries()` holds it, and 29b's increment restates it for the fork
+    // whose captured request stops before it, so a target whose only non-retained entry is the head
+    // reply still forks.
+    await h.prompt("word ".repeat(200)); await h.answer("word ".repeat(200));
+    await h.emit("agent_settled"); await h.drain();
+    const runs = h.memory.store.listRuns(1).filter(r => r.kind === "noting");
+    expect(runs).toHaveLength(1); // one task, one run: never a second batch and never a partial one
+    const run = runs[0]!, response = JSON.parse(run.response!);
+    expect(response.requestedMode).toBe("fork"); // the audit keeps what was configured, either way
+    // Whatever the verdict, the target is the whole batch: an entry the context does not hold is never
+    // dropped to make the rest forkable.
+    const frozen = (response.entryAudit.entries as { id: number }[]).map(e => e.id);
+    expect(frozen).toEqual(expect.arrayContaining(older.map(e => e.id)));
+    if (!expected) {
+      // The head reply — the one entry a fork's captured request stops before, which 29b's increment
+      // therefore always restates — is not a member of this target at all: Noting's target ends before
+      // the head Turn's own reply. So the rule never has to special-case it, and a target that does
+      // contain it (a later task, once the head has moved on) holds it as an ordinary retained source,
+      // because `buildContextEntries()` carries it. A target whose only non-inherited entry is the head
+      // reply forks, and this row is that case.
+      const headReply = h.memory.store.listSourceEntries(1).at(-1)!;
+      expect(headReply.role).toBe("assistant");
+      expect(frozen).not.toContain(headReply.id);
+      expect(String(response.fallbackReason)).not.toContain("Raw availability");
+      // Admitted as a fork: what stops it here is the fake host's missing capture, at the launch.
+      expect(String(response.fallbackReason)).toContain("No current-branch provider payload captured");
+    } else {
+      const entry = expected(older);
+      expect(run.mode).toBe("subagent");
+      expect(run.model).toBe("fake/test-mini"); // 27c: the configured Noter model, not the foreground
+      expect(String(response.fallbackReason)).toContain(`Raw availability: entry ${entry.id} (T${entry.turnId}, native ${entry.nativeId})`);
+      expect(frozen).toContain(entry.id); // the entry that refused the fork is in the batch that ran
+      expect(h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+      expect(h.memory.store.forkSuppression(1)).toBeNull(); // a per-task refusal, not the cache-miss latch
+    }
+  } finally { await h.dispose(); }
+});
+
+test("29: a Noter forks only when its whole target is available in the inherited context (an unknown view, and an incomplete tool group)", async () => {
+  const h = host({ "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
+  try {
+    await h.emit("session_start");
+    await h.prompt("hi"); await h.answer("ok"); await h.emit("agent_settled"); await h.drain();
+    // A context that holds no conversation entry of ours establishes nothing about what a fork would
+    // inherit. Like 27a's unknown context measure, unknown is not "available": it reroutes.
+    const build = h.ctx.sessionManager.buildContextEntries.bind(h.ctx.sessionManager);
+    (h.ctx.sessionManager as { buildContextEntries: () => unknown[] }).buildContextEntries = () => [];
+    await h.prompt("word ".repeat(200)); await h.answer("word ".repeat(200));
+    await h.emit("agent_settled"); await h.drain();
+    const run = h.memory.store.listRuns(1).filter(r => r.kind === "noting")[0]!;
+    const response = JSON.parse(run.response!);
+    expect(run.mode).toBe("subagent");
+    expect(response.requestedMode).toBe("fork");
+    expect(run.model).toBe("fake/test-mini");
+    expect(String(response.fallbackReason)).toContain("holds no conversation entry of ours");
+    (h.ctx.sessionManager as { buildContextEntries: () => unknown[] }).buildContextEntries = build;
+  } finally { await h.dispose(); }
+});
+
+test("29: an incomplete tool-call group is not availability (the native gate, unchanged by 29c)", () => {
+  // 29c decides Raw availability and leaves this check where it already is: `forkable` rejects the
+  // checkpoint itself, so the group never becomes "one more available entry". Its deferral at the
+  // launch is `readiness.test.ts` ("a checkpoint with an unanswered tool call defers the launch"),
+  // and the runner's own refusal reaches the subagent path through 27c's `NotForkable` seam.
+  const entries = [
+    { id: "e0", type: "message", message: { role: "user", content: "hi" } },
+    { id: "e1", type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read" }] } },
+  ] as never;
+  expect(() => forkable(entries)).toThrow("checkpoint tool call call-1 has no result");
+});

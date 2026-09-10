@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
-import type { Store, RunInput } from "../store/index.ts";
+import type { Store, RunInput, SourceEntry } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
-import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
+import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, type NotingMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
@@ -103,6 +103,36 @@ export const NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no long
  * entry progress, so the same entries stay pending for the next admission. */
 export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calling note, so nothing was submitted; call note({facts: []}) to complete an empty batch. The selected entries stay pending.";
 
+/** The pending entries one task's boundary admits, and the exact-membership form when it has one.
+ * A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
+ * 27d (parent 27 amendment 6): `entryIds` is exact membership instead — the frozen batch of a fork
+ * attempt the host is re-admitting. It is taken whole or not at all: a member no longer pending was
+ * processed by another executor under its own claim, which drops the task at the freeze below instead
+ * of re-processing the rest of the batch as though it were a fresh one. Selection only: the freeze
+ * owns every diagnostic, so a caller that merely asks what would be selected raises none of them. */
+export const notingPending = (store: Store, input: { sessionId: number; branch: string; headTurnId: number; boundary?: TaskBoundary }) => {
+  const pendingAll = store.pendingEntries(input.sessionId, input.branch, input.headTurnId);
+  const exact = input.boundary?.entryIds;
+  return { exact, pending: exact ? pendingAll.filter(e => exact.includes(e.id))
+    : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!) };
+};
+
+/** The batch a freeze takes out of those: the oldest prefix whose views together fit
+ * `noting.batchTokens`. 22d: an entry's view is immutable within one freeze — the same stored entry,
+ * the same profile, the same result extractor — so selection renders it once and every re-freeze
+ * reuses it. 29c: the Pi host asks the same question at admission, to decide a fork against the
+ * entries this task would really select rather than against everything still pending. */
+export const notingBatch = (pending: readonly SourceEntry[], config: TraceMemoryConfig, resultText: ResultExtractor) => {
+  const entries: SourceEntry[] = [], views: string[] = [];
+  const rendered = new Map<number, ReturnType<typeof renderEntry>>();
+  for (const entry of pending) {
+    const view = renderEntry(entry, config.render, resultText);
+    if (tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
+    entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
+  }
+  return { entries, views, rendered };
+};
+
 export function freezeNoting(store: Store, input: NotingInput, config: TraceMemoryConfig, resultText: ResultExtractor = rawResultText) {
   const session = store.getSession(input.sessionId);
   if (!session) throw new Error(`session S${input.sessionId} does not exist`);
@@ -120,15 +150,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   }
   if (input.capacity && (!Number.isSafeInteger(input.capacity.inputTokens) || input.capacity.inputTokens < 0 ||
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
-  const pendingAll = store.pendingEntries(session.id, input.branch, input.headTurnId);
-  // A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
-  // 27d (parent 27 amendment 6): `entryIds` is exact membership instead — the frozen batch of a fork
-  // attempt the host is re-admitting. It is taken whole or not at all: a member no longer pending was
-  // processed by another executor under its own claim, which drops this task here instead of
-  // re-processing the rest of the batch as though it were a fresh one.
-  const exact = input.boundary?.entryIds;
-  const pending = exact ? pendingAll.filter(e => exact.includes(e.id))
-    : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!);
+  const { exact, pending } = notingPending(store, { ...input, sessionId: session.id });
   if (exact && pending.length !== exact.length)
     throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter(id => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
@@ -147,16 +169,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
     throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
       + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
-  const entries: typeof pending = [];
-  const views: string[] = [];
-  // 22d: an entry's view is immutable within one freeze — the same stored entry, the same profile,
-  // the same result extractor — so selection renders it once and every re-freeze below reuses it.
-  const rendered = new Map<number, ReturnType<typeof renderEntry>>();
-  for (const entry of pending) {
-    const view = renderEntry(entry, config.render, resultText);
-    if (tokens([...views, view.content].join(BLOCK)) > config.noting.batchTokens) break;
-    entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
-  }
+  const { entries, views, rendered } = notingBatch(pending, config, resultText);
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
   // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
   // A membership selected under that ceiling once can only fail this on a configuration change, and

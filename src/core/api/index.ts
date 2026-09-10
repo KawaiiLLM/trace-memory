@@ -9,7 +9,7 @@ export { noVisibility, visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, InitialContext, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { freezeNoting, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
+import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
 export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
@@ -20,7 +20,7 @@ export { notingText, consolidationText, injectionText, compactText, knowledgeBlo
 export type { SharedMaterial, KnowledgeGroup, TaskRange } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
-export type { SourceInput, SourceEntry } from "../store/index.ts";
+export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
@@ -341,6 +341,11 @@ export interface TraceMemory {
   appendEntry(input: SourceInput): SourceEntry;
   selectEntries(sessionId: number, branch: string, entryIds: number[]): void;
   pendingEntries(sessionId: number, branch: string, headTurnId: number): SourceEntry[];
+  /** Ticket 29c: the entries a Noting freeze of this target would really select — the pending set the
+   * boundary admits, cut to the oldest prefix that fits `noting.batchTokens` — without freezing,
+   * claiming or diagnosing anything. The Pi host decides a fork's Raw availability against exactly
+   * this set, so admission and the freeze can never disagree about which entries the task is about. */
+  notingBatch(target: TaskTarget, boundary?: TaskBoundary): SourceEntry[];
   tools(context: ToolContext): ToolDefinition[];
   noting(input: NotingInput): Promise<NotingResult>;
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
@@ -646,6 +651,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     appendEntry: input => store.appendSourceEntry(input),
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
+    notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
     tools: (context) => bindTools(store, read, context).tools,
     noting: input => execute("noting", input) as Promise<NotingResult>,
     consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
