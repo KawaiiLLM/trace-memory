@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -40,6 +40,23 @@ export const piResultText: ResultExtractor = (result) => {
   const empty = details == null || (typeof details === "object" && !Object.keys(details as object).length);
   return { text, ...(empty ? {} : { details: JSON.stringify(details) }) };
 };
+
+/** Ticket 29a "One derived view": the visible view of the selected context, computed at most once per
+ * context position. The key is the leaf id, the entry count and the identity the view is bound to —
+ * three cheap reads, none of which walks the tree — so a rewind, a fork, a new entry, a compaction and
+ * the allocation of the memory session id each invalidate it, while a streaming token changes none of
+ * them and re-reads the cached value. Database state is deliberately NOT in the key: applicability
+ * must observe a new fact or commit even when the native leaf has not moved, so it is answered by its
+ * own reads and never memoized with this. */
+export type VisibleSource = Pick<ExtensionContext["sessionManager"], "getLeafId" | "getEntries" | "buildContextEntries">;
+export function visibility(manager: VisibleSource) {
+  let cached: { key: string; view: VisibleView } | undefined;
+  return (binding: VisibleBinding): VisibleView => {
+    const key = `${binding.db}|${binding.session ?? ""}|${binding.pi}|${manager.getLeafId() ?? ""}|${manager.getEntries().length}`;
+    if (cached?.key !== key) cached = { key, view: visibleView(manager.buildContextEntries() as ContextEntry[], binding) };
+    return cached.view;
+  };
+}
 
 // 19c gate 6: retry and provider policy are Pi's own, read by the `SettingsManager` the native child
 // is built with (hosts/pi/native.ts). The handwritten `retry` merge that used to live here — and its
@@ -270,6 +287,14 @@ export default function (pi: ExtensionAPI) {
    * An entry the selected ancestry no longer carries is counted as preceding the boundary: a fork
    * would not inherit evidence Pi is not carrying either, and entries Pi happens to have retained
    * past a compaction do not waive the rule. */
+  /** Ticket 29a "Carriers": the `details.traceMemory` written on the two entries that put memory
+   * material into this conversation — the injected `custom_message` and a custom compaction — beside
+   * what the renderer actually supplied. The database identity is the resolved `dbPath`, the same
+   * value `restore` already compares its own state entries by, so another database's equal integer ids
+   * can never satisfy coverage. `session` is null until the first reply allocates the memory session
+   * id; an injection written before that is recognised afterwards through the Pi session id here. */
+  const carrier = (supplied: SuppliedMaterial) =>
+    ({ traceMemory: { db: dbPath, session: state.sessionId ?? null, pi: state.piId, supplied } });
   const preCompactionEvidence = (context: ExtensionContext, nativeIds: string[]): string | undefined => {
     const ancestry = context.sessionManager.getBranch() as { id: string; type: string }[];
     let boundary = -1;
@@ -693,11 +718,17 @@ export default function (pi: ExtensionAPI) {
     // Both are confirmed at this turn's agent_settled, after Pi has persisted the message (ruling
     // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
     const parts: string[] = [];
+    // 29a "Carriers": what this message actually supplies, written on it as `details` when Pi persists
+    // it. Only the initial knowledge block has identities to state — the deliveries below are prose
+    // this ticket does not annotate (29d retires them), and an id that appears only in text is not
+    // coverage. Undefined means this message carries no coverage claim at all.
+    let supplied: SuppliedMaterial | undefined;
     if (!state.injected) {
       // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
       try {
-        const block = memory.inject(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
-        if (block) { parts.push(block); unconfirmed.injected = true; } // nothing yet: try again next prompt
+        const block = memory.injection(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
+        // nothing yet: try again next prompt
+        if (block.text) { parts.push(block.text); unconfirmed.injected = true; supplied = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds }; }
       } catch (error) { context.ui.notify(String(error), "error"); }
     }
     if (state.sessionId) {
@@ -706,7 +737,9 @@ export default function (pi: ExtensionAPI) {
       unconfirmed.deliveries.push(...delivery.runIds); // only what this prompt took; later results wait for the next prompt
     }
     if (!parts.length) return;
-    return { message: { customType: tag, content: parts.join("\n\n"), display: false } };
+    // A planned injection is not a persisted one: this handler only offers the message, and the
+    // carrier rides the same value, so a turn Pi never persists leaves no coverage behind either.
+    return { message: { customType: tag, content: parts.join("\n\n"), display: false, ...(supplied ? { details: carrier(supplied) } : {}) } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -919,13 +952,19 @@ export default function (pi: ExtensionAPI) {
     ensure(context); if (!enabled()) return; flush();
     let result: ReturnType<typeof memory.compact>;
     try {
-      result = state.sessionId ? memory.compact(state.sessionId, state.branch, state.head)
-        : { tier: "primary" as const, text: memory.inject({ projectId: state.projectId }) };
+      if (state.sessionId) result = memory.compact(state.sessionId, state.branch, state.head);
+      else {
+        const block = memory.injection({ projectId: state.projectId });
+        result = { tier: "primary" as const, text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+      }
     } catch (error) { result = { tier: "native", reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
     lastCompaction = result.tier === "native" ? `native delegation — ${result.reason}` : `${result.tier} views`;
     context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
     if (result.tier === "native") return; // no custom replacement: Pi's own compaction runs and reports
-    return { compaction: { summary: result.text, firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore } };
+    // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
+    // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
+    // leaves the earlier baseline untouched, and a tier-3 delegation carries no `traceMemory` at all.
+    return { compaction: { summary: result.text, firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore, details: carrier(result.supplied) } };
   });
   pi.on("session_compact", event => {
     if (enabled() && state.sessionId) {

@@ -1,8 +1,11 @@
 export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type TopicGroups } from "./read.ts";
-export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./read.ts";
+import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
+export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
+// 29a "One derived view": the pure visibility projection over a host's own retained context entries.
+export { visibleView } from "./visible.ts";
+export type { Carrier, ContextEntry, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
@@ -344,6 +347,9 @@ export interface TraceMemory {
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
+  /** 29a: the same block with the commit ids it kept, for the carrier the host writes on the message
+   * it persists. `inject` is this call read for its text alone. */
+  injection(target: number | { projectId: number } | KnowledgePath): Injection;
   /** Pending noting results for this session and branch, rendered once and marked delivered; "" when none. */
   /** Pending noting results for this session and branch, rendered but not consumed; "" when none. */
   deliver(sessionId: number, branch?: string | null): { text: string; runIds: number[] };

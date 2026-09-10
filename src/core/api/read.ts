@@ -4,6 +4,7 @@ import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
+import type { SuppliedMaterial } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
  * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
@@ -30,7 +31,13 @@ export interface TopicGroups {
   unclassified: { knowledgeId: number; commit: number }[];
 }
 
-export type CompactResult = { tier: "primary" | "secondary"; text: string } | { tier: "native"; reason: string };
+/** 29a "Renderers return what they kept": beside the replacement text, the identities it actually
+ * carries — every selected pending entry with the tier that rendered it, plus the historical facts and
+ * knowledge commits that survived budgeting. What a budget dropped is receipted inside the text and
+ * absent here. A tier-3 delegation supplies nothing, so it has no `supplied` at all. */
+export type CompactResult = { tier: "primary" | "secondary"; text: string; supplied: SuppliedMaterial } | { tier: "native"; reason: string };
+/** 29a: the initial knowledge block and the exact commits it carries. */
+export interface Injection { text: string; knowledgeCommitIds: number[] }
 
 /** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page, with
  * the mutable state its line would otherwise read from the database then. Everything else a hit
@@ -108,11 +115,26 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id));
   // The knowledge part of the shared material contract (20a): the same parts, budgeted the same way,
   // that a Noting or Consolidation task freezes. Its block layout lives in core/render/material.ts.
-  const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string): SharedMaterial => {
+  const knowledgeFor = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string): SharedMaterial & { commits: number[] } => {
     const active = budgetKnowledge(store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch), config.render.knowledgeBlockTokens, knowledgeLine);
-    return { knowledge: active.groups, receipts: active.receipts };
+    return { knowledge: active.groups, receipts: active.receipts, commits: active.commits };
   };
   const knowledge = (id: number, headTurnId?: number | null, branch?: string) => knowledgeFor(session(id).projectId, id, headTurnId, branch);
+  /** 29a "Renderers return what they kept": the initial knowledge block together with the exact commit
+   * ids it carries, so the host persists those identities on the message it injects instead of parsing
+   * them back out of the rendered prose. `inject` is this same call read for its text alone. */
+  const injection = (target: number | { projectId: number } | KnowledgePath): Injection => {
+    const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
+    if (id !== undefined && !store.enabled(id)) return { text: "", knowledgeCommitIds: [] };
+    let material: SharedMaterial & { commits: number[] };
+    if (typeof target === "object" && "sessionId" in target) material = knowledge(target.sessionId, target.headTurnId, target.branch);
+    else if (typeof target === "object") {
+      // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
+      if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
+      material = knowledgeFor(target.projectId);
+    } else material = knowledge(target);
+    return { text: injectionText(material), knowledgeCommitIds: material.commits };
+  };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
    * The hyphen is the whole interval grammar, so `..` keeps its single meaning (`F81..` walks later
    * strong negations, `K1@57..K1@61` diffs two commits). Endpoints are positive safe integers without
@@ -232,17 +254,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     },
     // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
     // prompt (ruling 08:53: noting results are injected with the next user message). Two reads, one job each.
-    inject: (target: number | { projectId: number } | KnowledgePath): string => {
-      const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
-      if (id !== undefined && !store.enabled(id)) return "";
-      if (typeof target === "object" && "sessionId" in target) return injectionText(knowledge(target.sessionId, target.headTurnId, target.branch));
-      if (typeof target === "object") {
-        // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
-        if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
-        return injectionText(knowledgeFor(target.projectId));
-      }
-      return injectionText(knowledge(target));
-    },
+    injection,
+    inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
     deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
       session(sessionId);
       return store.deliver(sessionId, branch, (facts, commits) => [
@@ -257,7 +270,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // Nothing here waits for, cancels or starts a memory worker, touches a claim or advances any
     // progress: a Noter finishing concurrently may make this snapshot redundant, never incomplete.
     compact: (sessionId: number, branch = "main", headTurnId?: number): CompactResult => {
-      if (!store.enabled(sessionId)) return { tier: "primary", text: "" };
+      if (!store.enabled(sessionId)) return { tier: "primary", text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
@@ -280,12 +293,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       // 4. Recheck the whole block: one accounting for both tiers. Identities, labels, retained tool
       //    names, excerpts and omission markers are charged exactly as normal material is, all of them
       //    inside the one episodic budget that holds the views and the framing around them.
-      const build = (views: { content: string; receipts: string[] }[], title: string) => {
+      // 29a: `tier` is the representation these views were rendered under (1 = primary, 2 = tier-2), so
+      // the identities go out beside the text and a reader never infers them from the block title.
+      const build = (views: { content: string; receipts: string[] }[], title: string, tier: 1 | 2) => {
         const budgeted = budgetMaterial({ knowledge, knowledgeLine, current: views.map((v) => v.content).join(BLOCK),
           framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), factTurns, caps });
         return { over: budgeted.over, text: compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
           entries: pending.map((entry, i) => ({ id: entry.id, view: views[i]!.content })),
-          receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title) };
+          receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title),
+          // Every selected entry is represented in both tiers (step 1), so the whole frozen set is
+          // supplied or this tier does not apply — a budget never hides one of them.
+          supplied: { entries: pending.map((entry) => ({ id: entry.id, nativeId: entry.nativeId, tier })),
+            factIds: budgeted.factIds, knowledgeCommitIds: budgeted.knowledgeCommitIds } };
       };
       // 2. Try normal views: the shared primary views against the episodic envelope alone. No batch
       //    selector here — the whole pending set is represented or this tier does not apply — and a
@@ -295,8 +314,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       let primaryViews: { content: string; receipts: string[] }[] | undefined;
       try { primaryViews = pending.map((e) => renderEntry(e, config.render, resultText)); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      const primary = primaryViews && build(primaryViews, RAW_TITLE);
-      if (primary && !primary.over.episodic) return { tier: "primary", text: primary.text };
+      const primary = primaryViews && build(primaryViews, RAW_TITLE, 1);
+      if (primary && !primary.over.episodic) return { tier: "primary", text: primary.text, supplied: primary.supplied };
       // 3. Try tier 2: the same renderer under the tier-2 profile (ticket 23, superseding 20c's
       //    separate compact-only renderer), still every selected entry, still deterministic and local.
       //    An entry whose minima that tighter `E` cannot hold is a capacity failure of tier 2, and the
@@ -304,9 +323,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const profile = { toolCallTokens: config.render.secondaryToolCallTokens, entryTokens: config.render.secondaryEntryTokens };
       const title = secondaryRawTitle(profile);
       let secondary: ReturnType<typeof build> | undefined;
-      try { secondary = build(pending.map((e) => renderEntry(e, profile, resultText)), title); }
+      try { secondary = build(pending.map((e) => renderEntry(e, profile, resultText)), title, 2); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      if (secondary && !secondary.over.episodic) return { tier: "secondary", text: secondary.text };
+      if (secondary && !secondary.over.episodic) return { tier: "secondary", text: secondary.text, supplied: secondary.supplied };
       // 5. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
       //    can miss the cap even here. Ask for native compaction with the reason instead of hiding
       //    entries, falsifying a receipt or relaxing the cap to force a success. Since 25c there is

@@ -625,6 +625,30 @@ count, latest attempts by run id, and pending delivery count. The derived Turn
 watermark readers and status line were removed by 17b.
 
 
+## Kept identities and the visible view (29a)
+
+Renderers return what they kept beside their text, so nothing is recovered by parsing
+rendered prose. `injection(target)` is the initial knowledge block plus the exact
+`knowledgeCommitIds` inside it (`inject` is the same call read for its text alone), and a
+tier-1/tier-2 `compact` result carries `supplied: {entries, factIds, knowledgeCommitIds}` —
+every selected pending entry as `{id, nativeId, tier}`, plus the historical facts and
+commits that survived budgeting. Identities a budget dropped are receipted in the text and
+absent from these lists, so a consumer that persists them as coverage can only understate it.
+`budgetKnowledge`, `budgetFacts` and `budgetMaterial` report the same identities; no block's
+bytes changed.
+
+`visibleView(contextEntries, {db, session, pi})` (in `core/api/visible.ts`) is the one
+derived view: given the entries a host's context builder returns for the selected leaf, it
+yields `raw` (native entry id → `source` for a retained conversation entry, `tier1` for one a
+carrier supplied a primary view of), `factIds` and `knowledgeCommitIds`. It is pure, reads no
+database and imports no host SDK type — it reads only `{id, type, details}`. A tier-2 view, an
+id that appears only in text, a free-form summary and a compaction without our
+`details.traceMemory` contribute nothing; entries retained past such a compaction still count;
+a carrier from another database or another memory session contributes nothing, and one written
+before the memory session id existed is matched through its host session id. Applicability is a
+separate authority and is never folded in: a new fact or commit changes what is applicable
+without changing this view. The carrier format itself is host-side (see `docs/pi.md`).
+
 ## Branch summary read (ticket 07)
 
 `branchSummary(sessionId, branch, headTurnId)` returns one `<branch_carry>` XML

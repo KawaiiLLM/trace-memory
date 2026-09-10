@@ -523,6 +523,40 @@ is preserved in the run record, the actual `subagent` mode, the model that ran a
 fork suppression are untouched. A batch whose
 entries all follow the boundary uses the normal configured mode.
 
+## Visible material carriers (29a)
+
+Two entries put memory material into the conversation, and each states what it supplied in
+its own `details`, under `traceMemory`:
+
+| Entry | Written by | Payload |
+|---|---|---|
+| `custom_message` (`customType: trace-memory`) | the message `before_agent_start` returns, when it carries the initial knowledge block | `{db, session, pi, supplied}` |
+| `compaction` | `CompactionResult.details` of a tier-1/tier-2 replacement | the same shape |
+
+`supplied` is what the renderer actually kept, never what it considered: the selected pending
+entries as `{id, nativeId, tier}` (`tier` 1 = primary view, 2 = tier-2 view), the complete
+fact ids and the exact knowledge commit ids. `db` is the resolved database path — the same
+value `restore` compares its own state entries by — so another database's equal integers
+match nothing. `session` is the memory session id, or `null` on an injection written before
+the first reply allocated one; such a carrier is recognised afterwards through `pi`, the Pi
+session id it was written under.
+
+The receipt and the content are one entry, so nothing else has to be kept in step: a planned
+injection Pi never persists, and a cancelled or failed compaction (which appends no entry at
+all), change no baseline. A tier-3 delegation writes no `traceMemory`; Pi's own compaction
+entry has its own `details` (`{readFiles, modifiedFiles}`), so a reader tests for
+`details.traceMemory`, never for an empty slot. Nothing of ours is appended around a
+compaction — there is no preparation entry, no frozen `considered` set and no database table
+mirroring any of this — and the `session_compact` event's entry id is never keyed on: it
+resolves by summary text and hands back the first entry with that text.
+
+`visibility(sessionManager)` (exported from `hosts/pi/index.ts`) wraps core's `visibleView`
+with the memo the host reads it through: keyed on the leaf id, the entry count and the
+identity binding, so a rewind, a new entry, a compaction and the allocation of the memory
+session id each invalidate it while a streaming token recomputes nothing. Database state is
+deliberately not in the key — applicability must observe a new fact or commit even when the
+native leaf has not moved.
+
 ## Manual catchup and stop (18b)
 
 `/trace catchup` operates on the current enabled session's selected branch, not
