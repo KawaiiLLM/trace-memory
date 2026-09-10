@@ -24,13 +24,13 @@ describe("checkMemoryBatch", async () => {
   test("accepts all four operations and skipped facts", async () => {
     const { problems, value } = await checkMemoryBatch({ operations: [
       { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, not npm.", scope: "project", category: "constraint", supports: ["F1"] },
-      { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"] },
-      { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K4", absorb: ["K6"], text: "Merged text.", scope: "project", category: "constraint", supports: ["F2", "F3"] },
-      { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K9", supports: ["F5"] },
+      { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K5@5", text: "Updated wording.", scope: "project", category: "constraint", supports: ["F2"] },
+      { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K4@4", absorb: ["K6@6"], text: "Merged text.", scope: "project", category: "constraint", supports: ["F2", "F3"] },
+      { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K9@9", supports: ["F5"] },
     ], skipped: [{ fact: "F6", because: "duplicate of F2" }] });
     expect(problems).toEqual([]);
     expect(value!.operations.filter((op: any) => op.op === "create")).toHaveLength(1);
-    expect(value!.operations.find((op: any) => op.op === "merge")!.absorb).toEqual(["K6"]);
+    expect(value!.operations.find((op: any) => op.op === "merge")!.absorb).toEqual(["K6@6"]);
   });
 
   test("accepts an empty operations and skipped batch", async () => {

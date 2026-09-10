@@ -123,7 +123,7 @@ test("22d: spend totals come from the recorded usage without loading a run's req
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   write(runId, { output: "x".repeat(200_000), usage, problems: [] });
   // The pre-change implementation, computed here from the bodies: the same totals, read the slow way.
-  const reference = { runs: { noting: 0, consolidation: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  const reference = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   for (const run of memory.store.listRuns(sessionId)) {
     reference.runs[run.kind]++;
     let recorded: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
@@ -157,7 +157,7 @@ test("22d: an unknown or non-JSON usage counts its run and contributes no observ
   expect(cancelled).not.toBe(failed);
   const after = memory.spend(sessionId);
   expect(after).toMatchObject({ input: one.input, output: one.output, cacheRead: one.cacheRead, cacheWrite: one.cacheWrite, cost: one.cost });
-  expect(after.runs).toEqual({ noting: 2, consolidation: 1, manual: 0 }); // counted as runs, never as usage
+  expect(after.runs).toEqual({ noting: 2, consolidation: 1, dreaming: 0, manual: 0 }); // counted as runs, never as usage
   // A run that did record an all-zero usage is an observation, and stays one: the totals are unchanged
   // by it, but it is not confused with the two above — its usage is present in the projection.
   memory.store.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(JSON.stringify({ output: "empty", usage: {} }), cancelled);

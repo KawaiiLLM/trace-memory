@@ -271,7 +271,13 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
   // 29a "Renderers return what they kept". This phase supplies no Raw (25a); the facts are the bodies
   // this text carries, and the commits are the ones the knowledge block kept after its cap.
   const keptIdentities: SuppliedMaterial = { entries: [], factIds: supplied.map(f => f.id), knowledgeCommitIds: budgeted.knowledgeCommitIds };
-  return { range, material, text, supplied: keptIdentities, over: budgeted.over };
+  // One authoritative list for write eligibility and the run audit. A reminder grants a read
+  // only when its emitted material contains the full canonical body, not an address or summary.
+  const readKnowledgeCommits = applicable.filter(item => initial.visible.knowledgeCommitIds.has(item.revision.id)
+    || keptIdentities.knowledgeCommitIds.includes(item.revision.id)
+    || material.reminders.some(reminder => reminder.startsWith(renderKnowledge(item))))
+    .map(item => ({ knowledgeId: item.knowledge.id, commit: item.revision.id }));
+  return { range, material, text, supplied: keptIdentities, readKnowledgeCommits, over: budgeted.over };
 }
 
 // Unicode character bigrams retain CJK text; punctuation and whitespace are ignored.
@@ -294,7 +300,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   // The material was rendered and budgeted when the task was frozen (consolidationMaterial), so the
   // batch that runs is exactly the batch whose size was checked.
   const { range, material, text, supplied } = frozen.prepared;
-  const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
+  const readKnowledgeCommits = frozen.prepared.readKnowledgeCommits;
   // A first valid `memory` batch commits nothing and returns the review guidance inside its receipt,
   // as a user-role message. Core owns that protocol and reads its own receipt; the adapter only
   // decides how to put the message in front of the model (native message, steering, appended turn).
@@ -304,8 +310,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   };
   const base = { kind: "consolidation" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "consolidation", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
-  const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}` +
-    (knowledge.filter(k => k.knowledge.id === item.knowledge.id).length > 1 ? `@${item.revision.id}` : "");
+  const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}@${item.revision.id}`;
   const binding = bind({ kind: "consolidation", sessionId, branch, headTurnId: frozen.path.headTurnId, range, readKnowledgeCommits }, run, { frozen, feedback: (batch) => {
   const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
     .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))

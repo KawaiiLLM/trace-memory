@@ -1,29 +1,32 @@
 import { prepareMemory, accounting } from "./commit.ts";
 import type { MemoryBatch } from "../model/index.ts";
-import type { Store, RunInput, KnowledgePath } from "../store/index.ts";
+import type { Store, RunInput, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
+import { renderKnowledge } from "../render/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
 export interface MemoryReview {
   frozen: ReturnType<typeof freezeConsolidation>;
   feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
 }
-export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId)) {
-  const reads = new Map((review?.frozen.knowledge ?? store.listCurrentKnowledge(path)).map(k => [k.revision.id, k]));
-  const reread = (addresses: string) => {
-    for (const address of addresses.split(",").map(a => a.trim())) {
-      const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address);
-      if (!match) continue;
-      const id = Number(match[1]);
-      if (!match[2]) for (const [commit, item] of reads) if (item.knowledge.id === id) reads.delete(commit);
-      if (match[2]) {
-        const revision = store.getKnowledgeRevision(id, Number(match[2]));
-        if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(id)!, revision });
-      } else for (const item of store.listCurrentKnowledge(path).filter(k => k.knowledge.id === id)) reads.set(item.revision.id, item);
+export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId),
+  reads = new Map<number, KnowledgeWithRevision>()) {
+  for (const handle of review?.frozen.prepared?.readKnowledgeCommits ?? []) {
+    const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit)!;
+    reads.set(handle.commit, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
+  }
+  const supplied = (content: string) => {
+    for (const match of content.matchAll(/\[K([1-9]\d*)@([1-9]\d*)\]/g)) {
+      const revision = store.getKnowledgeRevision(Number(match[1]), Number(match[2]));
+      if (!revision || revision.op === "archive") continue;
+      const value = { knowledge: store.getKnowledge(revision.knowledgeId)!, revision };
+      // Pagination/search labels alone never grant a handle; the entire rendered body must occur.
+      if (content.includes(renderKnowledge(value, store.listKnowledgeMarks(revision.knowledgeId).filter(m => m.commitId === revision.id))))
+        reads.set(revision.id, value);
     }
   };
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
-  let requests = 0, candidateRequest = -1;
+  let requests = 0, candidateRequest = -1, pendingFeedback: string | undefined;
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
@@ -36,6 +39,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (review && !candidate) {
       candidate = structuredClone(prepared.batch); candidateRequest = requests;
       const feedback = review.feedback(candidate); near = feedback.near;
+      pendingFeedback = feedback.text; // Grant only when the next provider request confirms delivery.
       problems = ["first batch requires a second submission"];
       return JSON.stringify({ results: prepared.results, feedback: { role: "user", content: feedback.text } });
     }
@@ -49,12 +53,12 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
       ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id) } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path, committed));
-        return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });
+        return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.prepared?.readKnowledgeCommits ?? [] }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
-    for (const item of result.committed) reread(`K${item.knowledgeId}`);
+    // A receipt names the new version but does not supply its complete rendered body.
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, requestSeen: () => { requests++; }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, supplied, sequence, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { supplied(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }

@@ -53,6 +53,7 @@ export interface TraceMemoryConfig {
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
+  dreaming: { triggerTokens: number };
   consolidation: {
     /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
      * boolean the Noter has, for the phase that lost its mode preference in 25b. Default `false`:
@@ -78,7 +79,7 @@ export interface TraceMemoryConfig {
 
 /** The configuration sections, in one place: the loader, the validator and the host's flat
  * `section.key` layer all enumerate them from here rather than repeating the list (28a added one). */
-export const CONFIG_SECTIONS = ["render", "noting", "consolidation", "compaction"] as const;
+export const CONFIG_SECTIONS = ["render", "noting", "consolidation", "dreaming", "compaction"] as const;
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   closedSessionScope: "project",
@@ -95,6 +96,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
+  dreaming: { triggerTokens: 5_000 },
   consolidation: {
     forkModeDefault: false,
     triggerTokens: 5_000,
@@ -114,6 +116,7 @@ export type ConfigOverride = {
   /** `branchModeDefault` is the accepted legacy spelling of `forkModeDefault` (CONFIG_ALIASES). */
   noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
   consolidation?: Partial<TraceMemoryConfig["consolidation"]>;
+  dreaming?: Partial<TraceMemoryConfig["dreaming"]>;
   compaction?: Partial<TraceMemoryConfig["compaction"]>;
 };
 
@@ -217,6 +220,7 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
     render: { ...base.render, ...override.render },
     noting: { ...base.noting, ...override.noting },
     consolidation: { ...base.consolidation, ...override.consolidation },
+    dreaming: { ...base.dreaming, ...override.dreaming },
     compaction: { ...base.compaction, ...override.compaction },
   };
 }
@@ -472,7 +476,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }
       if (from !== undefined) return describe(commit(from));
       if (knowledgeMatch[5]) return `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
-      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, undefined, display.headTurnId);
+      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
       const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
       const tips = store.currentCommit(id!, path);
       const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
@@ -572,9 +576,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return { due: phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
+      : phase === "dreaming" ? store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
       : consolidationDue(target) };
   };
-  const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
+  const execute = async (phase: Exclude<Phase, "dreaming">, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
     // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
     // refused here by name. What stays subagent stays subagent where it is decided — borrowed work
     // and manual catchup request it explicitly, and ticket 28's recovery workers will too.
@@ -690,6 +695,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     }
     return result;
   };
+  // A manual tool binding may be recreated between host calls. Keep exact full-body reads in
+  // this database instance and target branch, never in a process-global or cross-database cache.
+  const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
     store, executorId, resultText, cancelTasks, taskEligibility,
     get cancellation() { return cancellation; },
@@ -708,7 +716,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       }
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
-        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation },
+        render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation }, dreaming: cfg.dreaming,
         compaction: cfg.compaction,
       });
       // One object identity throughout, so every existing reader sees the new default at its next
@@ -726,7 +734,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     selectEntries: (sessionId, branch, ids) => store.selectSourcePath(sessionId, branch, ids),
     pendingEntries: (sessionId, branch, head) => store.pendingEntries(sessionId, branch, head),
     notingBatch: (target, boundary) => notingBatch(notingPending(store, { ...target, boundary }).pending, cfg, resultText).entries,
-    tools: (context) => bindTools(store, read, context).tools,
+    tools: (context) => {
+      const key = `${context.sessionId}/${context.branch}`;
+      if (!manualReads.has(key)) manualReads.set(key, new Map());
+      return bindTools(store, read, context, undefined, undefined, manualReads.get(key)).tools;
+    },
     noting: input => execute("noting", input) as Promise<NotingResult>,
     consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
     ...read,

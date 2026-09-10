@@ -1,3 +1,4 @@
+import { readHandle } from "../../read-handle-fixture.ts";
 import { knowledgeStatusNotes } from "../../../src/core/api/read.ts";
 import { compacted, recorded } from "../../source-fixture.ts";
 // Ruling test points: each test pins a user ruling that an implementation could silently deviate
@@ -274,7 +275,7 @@ function memoryWriter() {
   tools[2]!.execute({ facts: ["Use pnpm", "Do not use npm"].map(text => ({ category: "decision", actor: "user", text, source: [`T${t.id}#user`] })) });
   recorded(memory, s.id, "main", t.id); // recorded: the facts may enter an Consolidation batch
   const create = { op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm", category: "constraint", scope: "project", supports: ["F1"] };
-  return { s, t, write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
+  return { s, t, read: (address: string) => readHandle(tools, address), write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })), create };
 }
 
 test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
@@ -303,11 +304,11 @@ test("2026-09-07: one operation shape, inapplicable fields rejected", () => {
 });
 
 test("2026-09-07: supports replaces, history keeps the old set", () => {
-  const { create, write, s } = memoryWriter();
+  const { create, write, read, s } = memoryWriter();
   const created = write([create]);
   expect(created.results).toEqual(["ok"]);
   expect(memory.store.getKnowledgeRevision(1, 1)).toMatchObject({ supports: [1], reason: "Initial admission of this conclusion." });
-  write([{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K1", text: "Avoid npm", supports: ["F2"] }]);
+  write([{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: read("K1@1"), text: "Avoid npm", supports: ["F2"] }]);
   expect(memory.store.getKnowledgeRevision(1, 2)).toMatchObject({ supports: [2], reason: "Substantive correction of the recorded conclusion." });
   expect(memory.store.getKnowledgeRevision(1, 1)?.supports).toEqual([1]);
   expect(memory.trace("K1@1..K1@2")).toContain("F2");
@@ -318,8 +319,8 @@ test("2026-09-07: supports replaces, history keeps the old set", () => {
 });
 
 test("2026-09-07: merge atomic", () => {
-  const { create, write } = memoryWriter(); write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]);
-  const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["K2"], supports: ["F1", "F2"] };
+  const { create, write, read } = memoryWriter(); write([create, { ...create, text: "Avoid npm", supports: ["F2"] }]);
+  const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: read("K1@1"), absorb: [read("K2@2")], supports: ["F1", "F2"] };
   expect(write([merge, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K999", supports: [] }]).results[1]).toContain("rejected:");
   expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
   expect(memory.store.currentCommit(2)[0]?.op).toBe("create");
@@ -445,14 +446,18 @@ function commitPaths() {
     const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: branch, source: [`T${headTurnId}#user`] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     const fact = `F${receipt.factIds[0]}`;
+    // This branch fixture begins by reading its one shared rule, not every candidate in the database.
+    if (memory.store.getKnowledge(1)) tools[0]!.execute({ address: "K1", cap: Number.MAX_SAFE_INTEGER });
     return { sessionId, headTurnId, branch, fact, tools,
+      read: (address = "K1") => readHandle(tools, address),
       write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })) };
   };
   const root = writer(s.id, t.id, "main");
   const content = (fact: string, text = "Use blue tiles") => ({ text, category: "constraint", scope: "project", supports: [fact] });
   expect(root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0].commit).toBe(1);
+  root.read("K1@1");
   const c = node(s.id, t.id, "C"), d = node(s.id, t.id, "D");
-  const edit = (who: typeof root, text: string, fact = who.fact) => who.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(fact, text) }]);
+  const edit = (who: typeof root, text: string, fact = who.fact) => who.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: who.read(), ...content(fact, text) }]);
   const tips = (path: { sessionId: number; headTurnId: number }) => memory.store.currentCommit(1, path).map(r => r.id);
   const peer = (projectId = s.projectId) => {
     const other = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId, startedAt: time, firstReplyAt: time });
@@ -483,7 +488,7 @@ test("2026-09-07 A: revert then develop on one path follows commit ancestry, inc
   const { root, c, node, edit, tips, content } = commitPaths();
   expect(edit(c, "C version").committed[0].commit).toBe(2);
   const next = node(c.sessionId, c.headTurnId, "C");
-  expect(next.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact) }]).committed[0].commit).toBe(3);
+  expect(next.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: next.read(), ...content(root.fact) }]).committed[0].commit).toBe(3);
   // Commit 3 cites only root evidence, so it supersedes commit 1 even where commit 2 does not apply.
   expect(tips(root)).toEqual([3]);
   expect(edit(next, "Develop after revert").committed[0].commit).toBe(4);
@@ -496,7 +501,7 @@ test("2026-09-07 B: pre-fork evidence applies to both branches and rejects the s
   const { root, c, d, content, edit, tips } = commitPaths();
   expect(edit(c, "Shared pre-fork correction", root.fact).committed[0].commit).toBe(2);
   expect(tips(c)).toEqual([2]); expect(tips(d)).toEqual([2]);
-  const rejected = d.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(d.fact) }, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(d.fact) }]);
+  const rejected = d.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(d.fact) }, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(d.fact) }]);
   expect(rejected.results).toHaveLength(2); expect(rejected.results[1]).toContain("current: K1@2");
   expect(memory.store.getKnowledge(2)).toBeNull();
   expect(d.tools[0]!.execute({ address: "K1" })).toContain("K1@2");
@@ -509,11 +514,12 @@ test("2026-09-07 B: cross-session concurrent edits reject linearly, then re-read
   const second = sourceSeededMemory(join(directory, "test.sqlite"), async () => ok([]));
   try {
     const writer = second.tools({ kind: "manual", sessionId: other.sessionId, currentTurnId: other.headTurnId, branch: "main" });
-    expect(root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "First writer") }]).committed[0].commit).toBe(2);
-    const stale = JSON.parse(writer[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(other.fact) }, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(other.fact) }], skipped: [] }));
+    readHandle(writer, "K1@1");
+    expect(root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(root.fact, "First writer") }]).committed[0].commit).toBe(2);
+    const stale = JSON.parse(writer[3]!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(other.fact) }, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(other.fact) }], skipped: [] }));
     expect(stale.results[1]).toContain("K1@2"); expect(second.store.getKnowledge(2)).toBeNull();
     writer[0]!.execute({ address: "K1" });
-    const accepted = JSON.parse(writer[3]!.execute({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(other.fact, "Second writer") }], skipped: [] }));
+    const accepted = JSON.parse(writer[3]!.execute({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@2", ...content(other.fact, "Second writer") }], skipped: [] }));
     expect(accepted.committed[0].commit).toBe(3);
     expect(memory.store.currentCommit(1, root).map(r => r.id)).toEqual([3]);
     expect(second.store.getKnowledgeRevision(1, 3)?.parentId).toBe(2);
@@ -522,7 +528,7 @@ test("2026-09-07 B: cross-session concurrent edits reject linearly, then re-read
 
 test("2026-09-07 A: archive has empty text and retires its parent only on its applicable path", () => {
   const { root, c, d, tips } = commitPaths();
-  expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: [c.fact] }]).committed[0].commit).toBe(2);
+  expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1@1", supports: [c.fact] }]).committed[0].commit).toBe(2);
   expect(memory.store.getKnowledgeRevision(1, 2)).toMatchObject({ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", text: "", supports: [Number(c.fact.slice(1))], parentId: 1 });
   expect(tips(c)).toEqual([2]); expect(tips(d)).toEqual([1]); expect(tips(root)).toEqual([1]);
   expect(memory.inject(c)).not.toContain("K1@"); expect(memory.inject(d)).toContain("K1@1");
@@ -560,7 +566,7 @@ test("2026-09-07 B: two tips surface as alternatives to a third session and merg
   expect(memory.trace("K1")).toContain("Alternative K1@2");
   expect(memory.trace("K1")).toContain("Alternative K1@3 (newest-created)");
   expect(memory.inject(third)).toContain("K1@2"); expect(memory.inject(third)).toContain("K1@3");
-  expect(third.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(third.fact) }]).results[0]).toContain("several tips");
+  expect(third.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(third.fact) }]).results[0]).toContain("current tips: K1@2, K1@3");
   expect(() => memory.mark("K1", "verified", third)).toThrow("several tips");
   expect(memory.mark("K1@2", "verified", third)).toBe("K1@2: verified");
   third.tools[0]!.execute({ address: "K1@2" }); third.tools[0]!.execute({ address: "K1@3" });
@@ -600,7 +606,7 @@ test("24a 2026-09-09: the footer counts use current-tip semantics, and pending f
 
 test("2026-09-07 B: store rechecks every base inside the transaction and rolls back an earlier create", () => {
   const { root, content } = commitPaths();
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact) }]);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact) }]);
   const result = memory.store.commitConsolidationRun({ path: root, run: { kind: "manual", sessionId: root.sessionId, createdAt: time }, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
     { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
@@ -615,22 +621,22 @@ test("2026-09-07 B: store rechecks every base inside the transaction and rolls b
 test("2026-09-07 B: reading a historical commit never refreshes the base to an unread successor", () => {
   const { root, peer, content } = commitPaths();
   const other = peer();
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Unread successor") }]);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(root.fact, "Unread successor") }]);
   expect(other.tools[0]!.execute({ address: "K1@1" })).not.toContain("Unread successor");
-  expect(other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(other.fact) }]).results[0]).toContain("current: K1@2");
+  expect(other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(other.fact) }]).results[0]).toContain("current: K1@2");
   other.tools[0]!.execute({ address: "K1@2" });
   expect(other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@2", ...content(other.fact) }]).committed[0].commit).toBe(3);
 });
 
 test("2026-09-07 A: scope applies before supersedence for first-prompt injection and bare path reads", () => {
   const { root, peer, content } = commitPaths();
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Shared globally"), scope: "global" }]);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Shared globally"), scope: "global" }]);
   const outsideProject = memory.store.createProject({ name: "outside", declaredBy: "mark" });
   const outside = peer(outsideProject.id);
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Project only") }]);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Project only") }]);
   expect(memory.inject({ projectId: outsideProject.id })).toContain("K1@2");
   expect(memory.trace("K1", outside).split("\n")[0]).toContain("K1@2");
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Session only"), scope: "session" }]);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Session only"), scope: "session" }]);
   const ownProject = memory.store.getSession(root.sessionId)!.projectId;
   expect(memory.inject({ projectId: ownProject })).toContain("K1@3");
   expect(memory.inject({ projectId: outsideProject.id })).toContain("K1@2");
@@ -686,7 +692,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
     const input = raw as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
     const own = input.readKnowledgeCommits.filter(r => r.knowledgeId === 1);
     expect(own.map(r => r.commit)).toEqual([2]);
-    const batch = { operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact) }], skipped: [] };
+    const batch = { operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@2", ...content(root.fact) }], skipped: [] };
     input.reportRequest({ round: 1 }); input.tools[3]!.execute(batch);
     input.reportRequest({ round: 2 }); input.tools[3]!.execute(batch);
     return { outcome: "success", request: { round: 2 }, output: "done" };
@@ -701,9 +707,10 @@ test("2026-09-07 B: stale absorbed bases name the surviving current commit acros
   const { root, peer, content } = commitPaths();
   expect(root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0].commit).toBe(2);
   const other = peer();
-  expect(root.write([{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["K2"], ...content(root.fact) }]).committed[0].commit).toBe(3);
-  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact) }]);
-  const rejected = other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K2", ...content(other.fact) }]);
+  other.read("K2@2");
+  expect(root.write([{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: root.read(), absorb: [root.read("K2")], ...content(root.fact) }]).committed[0].commit).toBe(3);
+  root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact) }]);
+  const rejected = other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K2@2", ...content(other.fact) }]);
   expect(rejected.results[0]).toContain("current: K1@4");
   expect(memory.store.getKnowledge(2)).not.toBeNull();
   expect(memory.store.currentCommit(2, other)).toEqual([]);
@@ -753,7 +760,7 @@ test("16b: search notes describe the supplied path, including archives and unres
   expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("another branch");
   expect(memory.search("C version", "knowledge", root)).toContain("another branch");
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
-  expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: [c.fact] }]).committed[0].commit).toBe(4);
+  expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: c.read(), supports: [c.fact] }]).committed[0].commit).toBe(4);
   expect(memory.search("C version", "knowledge", c)).toContain("archived on this path");
   expect(memory.search("D version", "knowledge", d)).toContain("current on this path");
 });
@@ -801,7 +808,7 @@ test("16b: every raw source of a multi-source fact constrains carry, current and
   const { root, c, d, content } = commitPaths();
   memory.store.updateTurn(c.headTurnId, { assistantText: "Use violet tiles" });
   const fact = JSON.parse(c.tools[2]!.execute({ facts: [{ category: "decision", actor: "agent", text: "Use violet tiles", source: [`T${root.headTurnId}#user`, `T${c.headTurnId}#assistant`] }] })).factIds[0];
-  expect(c.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(`F${fact}`, "Use violet tiles") }]).committed[0].commit).toBe(2);
+  expect(c.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: c.read(), ...content(`F${fact}`, "Use violet tiles") }]).committed[0].commit).toBe(2);
   for (const path of [root, d]) {
     expect(memory.branchSummary(path.sessionId, path.branch, path.headTurnId)).not.toContain(`[F${fact}]`);
     expect(memory.inject(path)).toContain("[K1@1]"); expect(memory.inject(path)).not.toContain("[K1@2]");
@@ -1390,7 +1397,7 @@ test("19c 2026-09-08: a stored branch-mode run reads as legacy request-copy exec
 // User, 2026-09-07: "supports proves only the new text". Superseded: supports supplies the commit's
 // evidence, including the complete result's basis and the correction or withdrawal that justified it.
 test("21a 2026-09-08: the two-array write shape and the empty-supports archive are superseded by supports plus reason", () => {
-  const { create, write } = memoryWriter();
+  const { create, write, read } = memoryWriter();
   const operation = toolDefinitions.find(t => t.name === "memory")!.parameters.properties as Record<string, any>;
   const schema = operation.operations.items;
   expect(schema.required).toEqual(["op", "supports", "reason"]);
@@ -1400,7 +1407,7 @@ test("21a 2026-09-08: the two-array write shape and the empty-supports archive a
   const factSchema = (toolDefinitions.find(t => t.name === "note")!.parameters.properties as Record<string, any>).facts.items;
   expect(factSchema.properties).not.toHaveProperty("reason"); // facts gain no commit metadata and the surface stays four tools
   expect(write([create]).committed).toHaveLength(1);
-  expect(write([{ op: "archive", id: "K1", supports: ["F1"], reason: "Withdrawn by the user." }]).committed).toHaveLength(1);
+  expect(write([{ op: "archive", id: read("K1@1"), supports: ["F1"], reason: "Withdrawn by the user." }]).committed).toHaveLength(1);
   expect(memory.store.getKnowledgeRevision(1, 2)?.supports).toEqual([1]); // no longer cleared
 });
 
@@ -1411,13 +1418,13 @@ test("21a 2026-09-08: an archive's supports face the same session/project/global
   for (const scope of ["session", "project", "global"]) for (const origin of [c, same, outside]) {
     const created = c.write([{ op: "create", topics: [], ...content(c.fact), scope, reason: "Admitted for the archive scope check." }]);
     const allowed = origin === c || scope === "global" || (scope === "project" && origin === same);
-    const archived = c.write([{ op: "archive", id: `K${created.committed[0].knowledgeId}`, supports: [origin.fact],
+    const archived = c.write([{ op: "archive", id: c.read(`K${created.committed[0].knowledgeId}@${created.committed[0].commit}`), supports: [origin.fact],
       reason: `Retired on ${origin.branch} evidence.` }]);
     expect(!!archived.committed).toBe(allowed);
   }
   // Naming the foreign fact in the reason does not adopt it: the reason is prose, never a citation.
   const created = c.write([{ op: "create", topics: [], ...content(c.fact), scope: "session", reason: "Admitted for the reason-bypass check." }]);
-  expect(c.write([{ op: "archive", id: `K${created.committed[0].knowledgeId}`, supports: [outside.fact],
+  expect(c.write([{ op: "archive", id: c.read(`K${created.committed[0].knowledgeId}@${created.committed[0].commit}`), supports: [outside.fact],
     reason: `The user adopted ${outside.fact} on this path.` }]).results[0]).toContain("rejected:");
 });
 
@@ -1426,7 +1433,7 @@ test("21a 2026-09-08: an archive's supports face the same session/project/global
 // Ticket 21 "History and scope", scenario 14: a shared label is not a shared status.
 test("21b 2026-09-08: a shared label alters no applicability, keeps its history labels and never collapses two applicable tips", () => {
   const { c, d, peer, content, tips } = commitPaths();
-  const label = (who: typeof c, text: string) => who.write([{ op: "update", id: "K1", topics: ["tiling"],
+  const label = (who: typeof c, text: string) => who.write([{ op: "update", id: who.read(), topics: ["tiling"],
     reason: "Substantive correction, filed under its subject.", ...content(who.fact, text) }]);
   label(c, "C version"); label(d, "D version");
   const third = peer();
@@ -1894,7 +1901,7 @@ test("29/31 stale status follows the selected path, not a later sibling merge", 
   const { root, c, d, content } = commitPaths();
   expect(c.write([{ op: "archive", id: "K1@1", reason: "Withdraw this path's rule.", supports: [c.fact] }]).committed[0].commit).toBe(2);
   expect(d.write([{ op: "create", topics: [], reason: "Separate survivor.", ...content(d.fact, "Survivor") }]).committed[0].commit).toBe(3);
-  expect(d.write([{ op: "merge", topics: [], id: "K2@3", absorb: ["K1@1"], reason: "Merge on D only.", ...content(d.fact, "Merged rule") }]).committed[0].commit).toBe(4);
+  expect(d.write([{ op: "merge", topics: [], id: d.read("K2@3"), absorb: ["K1@1"], reason: "Merge on D only.", ...content(d.fact, "Merged rule") }]).committed[0].commit).toBe(4);
   const status = (path: typeof root) => knowledgeStatusNotes(memory.store, memory.store.listCurrentKnowledge(path), [1], path);
   expect(status(c)).toEqual(["K1@1 is archived"]);
   expect(status(d)).toEqual(["K1@1 is merged into K2@4"]);
@@ -1904,7 +1911,7 @@ test("29/31 stale status follows the selected path, not a later sibling merge", 
 test("29/31 archived divergent tip is not superseded by the surviving same-K sibling", () => {
   const { c, d, peer, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  expect(c.write([{ op: "archive", id: "K1@2", reason: "Withdraw C only.", supports: [c.fact] }]).committed[0].commit).toBe(4);
+  expect(c.write([{ op: "archive", id: c.read("K1@2"), reason: "Withdraw C only.", supports: [c.fact] }]).committed[0].commit).toBe(4);
   const selected = peer();
   const current = memory.store.listCurrentKnowledge(selected);
   expect(current.map(k => k.revision.id)).toEqual([3]);

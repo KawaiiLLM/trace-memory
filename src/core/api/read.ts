@@ -261,7 +261,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // a cancelled run with unknown usage — contributes nothing at all, not a zero.
   const spend = (sessionId: number) => {
     session(sessionId);
-    const totals = { runs: { noting: 0, consolidation: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const totals = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     for (const { kind, usage } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
       if (!usage) continue;

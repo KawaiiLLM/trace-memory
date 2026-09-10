@@ -737,7 +737,8 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   const write = (head: number, branch: string, op: "create" | "update", text: string) => {
     const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: head, branch });
     const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${head}#user`] }] })).factIds[0];
-    expect(tools[3]!.execute({ operations: [{ op, topics: [], ...(op === "update" ? { id: "K1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], reason: `${op} from the ${branch} path` }], skipped: [] })).not.toContain("rejected:");
+    if (op === "update") tools[0]!.execute({ address: "K1@1" });
+    expect(tools[3]!.execute({ operations: [{ op, topics: [], ...(op === "update" ? { id: "K1@1" } : {}), text, category: "constraint", scope: "project", supports: [`F${fact}`], reason: `${op} from the ${branch} path` }], skipped: [] })).not.toContain("rejected:");
   };
   write(1, "main", "create", "Root rule");
   const root = [...h.entries];
@@ -793,7 +794,7 @@ test("the plugin's spend is a footer status item updated after every run, and th
   // 24a: idle; nothing left to note, one applicable fact, that fact still to consolidate, no knowledge yet.
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: 0->1 memory: 1->0 cost: \$\d+\.\d{2}<\/dim>$/);
   const spend = h.memory.spend(1);
-  expect(spend.runs).toEqual({ noting: 1, consolidation: 0, manual: 0 });
+  expect(spend.runs).toEqual({ noting: 1, consolidation: 0, dreaming: 0, manual: 0 });
   expect(spend.input + spend.output).toBeGreaterThan(0);
   await h.prompt("more"); await h.answer();
   const result = await h.emit("session_before_tree");

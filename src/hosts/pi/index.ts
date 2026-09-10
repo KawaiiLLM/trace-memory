@@ -1269,16 +1269,21 @@ export default function (pi: ExtensionAPI) {
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
+      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id,
+        readKnowledgeCommits: [...visible(binding()).knowledgeCommitIds].flatMap(commit => {
+          const revision = memory.store.knowledgeRevision(commit);
+          return revision ? [{ knowledgeId: revision.knowledgeId, commit }] : [];
+        }) }) : null;
       if (definition.name === "trace" || definition.name === "search") {
         const input = validateReadInput(definition.name, raw);
+        if (bound) return result(bound.find(t => t.name === definition.name)!.execute(input));
         const options = { ...input, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
         return result(definition.name === "trace" ? memory.trace(input.address as string, options)
           : memory.search(input.query as string, input.layer as import("../../core/api/index.ts").SearchScope, options));
       }
       if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
-      const bound = memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id });
-      const content = bound.find(t => t.name === definition.name)!.execute(raw);
+      const content = bound!.find(t => t.name === definition.name)!.execute(raw);
       if (toolRejected(definition.name, content)) throw new Error(content);
       return result(content);
     } }) as unknown as ToolDefinition);

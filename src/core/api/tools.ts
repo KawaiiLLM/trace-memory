@@ -1,7 +1,7 @@
 import { sourceAddresses } from "../render/index.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
-import type { Store, RunInput, FactCommitInput } from "../store/index.ts";
+import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision } from "../store/index.ts";
 import type { ListingOptions, SearchScope } from "./read.ts";
 
 export interface ToolDefinition {
@@ -10,7 +10,7 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
   execute(input: unknown): string;
 }
-export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
+export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; readKnowledgeCommits?: { knowledgeId: number; commit: number }[] }
   | { kind: "noting" | "consolidation"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
       readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
 type Reads = { trace(address: string, options?: ListingOptions): string;
@@ -25,7 +25,7 @@ const factSchema = { ...object({ category: { enum: FACT_CATEGORIES }, actor: { e
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
-const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*(@[1-9][0-9]*)?$" };
+const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*@[1-9][0-9]*$" };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "merge", "archive"] }, id: knowledgeId,
   absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, text: { type: "string", minLength: 1 },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: factId, minItems: 1 },
@@ -39,7 +39,7 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. cap counts output lines (default 100); cursor continues that same read.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: "Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent.", parameters: object({ query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
-  { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Bare K1 is rejected with several tips; use explicit K1@57 bases.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
+  { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Update/archive and every merge participant require an explicit K1@57 handle whose complete body was supplied or read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
 export function validateReadInput(name: "trace" | "search", raw: unknown): Record<string, unknown> {
@@ -69,7 +69,8 @@ export function toolRejected(name: string, content: string): boolean {
   } catch { return false; }
 }
 
-export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview) {
+export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview,
+  reads = new Map<number, KnowledgeWithRevision>()) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
@@ -105,7 +106,11 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const frozenPath = new Set(context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
   const sourceEligible = (source: string) => frozenSources.has(source) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
     .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
-  const memory = bindMemory(store, session.id, run, review, path);
+  if (context.kind === "manual") for (const handle of context.readKnowledgeCommits ?? []) {
+    const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
+    if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
+  }
+  const memory = bindMemory(store, session.id, run, review, path, reads);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
@@ -192,7 +197,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const tools = [
     definition("trace", (input) => {
       const content = read.trace(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
-      memory.reread(input.address as string);
+      memory.supplied(content);
       fetched.push({ address: input.address as string, input: structuredClone(input), content }); return content;
     }),
     definition("search", (input) => {

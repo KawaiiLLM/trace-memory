@@ -5,6 +5,9 @@
 
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { migrateDreaming } from "./migration.ts";
+import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, type DreamingRange } from "./processing.ts";
+import { renderKnowledge, tokens } from "../render/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -57,7 +60,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE TABLE IF NOT EXISTS task_claims (
   session_id INTEGER NOT NULL REFERENCES sessions(id),
-  phase TEXT NOT NULL CHECK (phase IN ('noting','consolidation')),
+  phase TEXT NOT NULL CHECK (phase IN ('noting','consolidation','dreaming')),
   executor_id TEXT NOT NULL,
   token TEXT NOT NULL,
   expires_at INTEGER NOT NULL,
@@ -156,7 +159,7 @@ CREATE TABLE IF NOT EXISTS knowledge_links (
 
 CREATE TABLE IF NOT EXISTS runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','manual')),
+  kind TEXT NOT NULL CHECK (kind IN ('noting','consolidation','dreaming','manual')),
   session_id INTEGER REFERENCES sessions(id),
   branch TEXT,
   range_from TEXT,
@@ -279,7 +282,7 @@ export interface SourceInput {
 }
 export interface SourceEntry extends SourceInput { id: number }
 
-export type Phase = "noting" | "consolidation";
+export type Phase = "noting" | "consolidation" | "dreaming";
 export interface TaskTarget { sessionId: number; branch: string; headTurnId: number }
 export interface TaskClaim {
   sessionId: number; phase: Phase; executorId: string; token: string; expiresAt: number;
@@ -289,6 +292,8 @@ export interface TaskClaim {
 export type ClosedSessionScope = "off" | "project" | "global";
 
 export interface RunInput {
+  /** Retained source range for Dreamer's immediate writes; not a new trigger source. */
+  dreamingRangeId?: number;
   claim?: TaskClaim;
   /** Borrowing policy frozen at admission; not a new persisted queue or claim field. */
   closedSessionScope?: ClosedSessionScope;
@@ -549,6 +554,8 @@ export class Store {
     // SQLITE_BUSY at once, without the busy handler, when a writer is already active.
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec(SCHEMA_SQL);
+    migrateDreaming(this.db);
+    this.db.exec(PROCESSING_SQL);
   }
 
   beginShutdown(): void {
@@ -600,9 +607,11 @@ export class Store {
   /** Relabel a merged project's sessions and project-scoped knowledge onto the survivor. */
   mergeProject(fromProjectId: number, intoProjectId: number): void {
     this.transaction(() => {
+      const before = this.processedPlacements();
       this.db.prepare("UPDATE projects SET merged_into = ? WHERE id = ?").run(intoProjectId, fromProjectId);
       this.db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
       this.db.prepare("UPDATE knowledge SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+      this.revalidatePlacement(before);
     });
   }
 
@@ -674,7 +683,7 @@ export class Store {
     this.transaction(() => {
       this.db.prepare("UPDATE sessions SET closed_at = NULL WHERE id = ?").run(sessionId);
       // Reserve the new tokens for this executor without launching either phase.
-      for (const phase of ["noting", "consolidation"] as const) {
+      for (const phase of ["noting", "consolidation", "dreaming"] as const) {
         const previous = this.getClaim(sessionId, phase);
         if (!previous || previous.executorId === executorId) continue;
         this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ?")
@@ -694,6 +703,7 @@ export class Store {
       if (!executorId || !this.enabled(target.sessionId)) return null;
       if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+        : phase === "dreaming" ? this.pendingKnowledgeEvents(target)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       if (!pending.length || !eligible()) return null;
       const current = this.getClaim(target.sessionId, phase), now = Date.now();
@@ -762,7 +772,9 @@ export class Store {
       for (const { branch } of branches) {
         const headTurnId = this.knowledgePath(sessionId, String(branch)).headTurnId;
         if (!headTurnId) continue;
-        const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId) : this.consolidationBatch(sessionId, String(branch), headTurnId);
+        const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId)
+          : phase === "dreaming" ? this.pendingKnowledgeEvents({ sessionId, branch: String(branch), headTurnId })
+          : this.consolidationBatch(sessionId, String(branch), headTurnId);
         if (pending.length) targets.push({ sessionId, branch: String(branch), headTurnId, oldest: Math.min(...pending.map(e => e.id)) });
       }
     }
@@ -884,16 +896,20 @@ export class Store {
   // -- runs (standalone: failure / cancelled, or a run with nothing else to commit) --
 
   recordRun(input: RunInput & { outcome: RunOutcome }): Run {
-    return this.getRun(this.insertRun(input))!;
+    return this.transaction(() => this.getRun(this.insertRun(input))!);
   }
 
   updateRun(id: number, input: RunInput & { outcome: RunOutcome }): void {
-    const previous = this.getRun(id);
-    if (!previous) throw new Error(`run ${id} does not exist`);
-    const factIds = (this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id) as { id: number }[]).map((f) => f.id);
-    const response = JSON.parse(input.response ?? "{}");
-    this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
-      .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "noting" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+    this.transaction(() => {
+      const previous = this.getRun(id);
+      if (!previous) throw new Error(`run ${id} does not exist`);
+      if (input.outcome !== "success" && this.db.prepare("SELECT 1 FROM dreaming_completions WHERE run_id = ?").get(id))
+        throw new Error("A completed Dreaming run cannot be changed to an unsuccessful outcome");
+      const factIds = (this.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(id) as { id: number }[]).map((f) => f.id);
+      const response = JSON.parse(input.response ?? "{}");
+      this.db.prepare("UPDATE runs SET request = ?, response = ?, outcome = ?, mode = ? WHERE id = ?")
+        .run(input.request ?? null, JSON.stringify({ ...response, ...(input.entryAudit ? { entryAudit: input.entryAudit } : {}), ...(previous.kind === "noting" || factIds.length ? { factIds } : {}) }), input.outcome, input.mode ?? null, id);
+    });
   }
 
   /** The session a run was run for, as metadata: one column, never the request and response bodies.
@@ -1021,7 +1037,14 @@ export class Store {
         input.outcome,
         input.createdAt,
       );
-    return Number(info.lastInsertRowid);
+    const id = Number(info.lastInsertRowid);
+    if (input.dreamingRangeId !== undefined) {
+      const range = this.dreamingRange(input.dreamingRangeId);
+      if (input.kind !== "dreaming" || !range || range.sessionId !== input.sessionId)
+        throw new Error("Dreaming run must belong to its retained range session");
+      this.db.prepare("INSERT INTO dreaming_run_ranges VALUES (?, ?)").run(id, range.id);
+    }
+    return id;
   }
 
   // -- knowledge & revisions --
@@ -1327,11 +1350,133 @@ export class Store {
       // 21b: labels belong to this immutable revision; an archive inherits its parent's, as it does category and scope.
       op.reason, JSON.stringify(op.op === "archive" ? prior!.topics : op.topics), runId, op.createdAt);
     const commitId = Number(info.lastInsertRowid);
+    const range = this.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId);
+    if (range) this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?, ?)").run(range.range_id!, knowledgeId);
+    changeWeight(this, commitId);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);
     }
     return { ok: true, value: { op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId } };
+  }
+
+  // -- shared exact Dreamer processing; no automatic worker is launched by these primitives --
+
+  knowledgeRevision(commitId: number): KnowledgeRevision | null {
+    const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE id = ?").get(commitId);
+    return row ? toKnowledgeRevision(row) : null;
+  }
+
+  knowledgeEventWeight(commitId: number, version = KNOWLEDGE_VIEW_VERSION): number {
+    return changeWeight(this, commitId, version);
+  }
+
+  pendingKnowledgeEvents(path: KnowledgePath) { return pendingEvents(this, path); }
+
+  isKnowledgeProcessed(commitId: number): boolean {
+    return !!this.db.prepare("SELECT 1 FROM processed_knowledge_versions WHERE commit_id = ?").get(commitId);
+  }
+
+  /** Event weight is cumulative; changed input supplies each current exact body only once.
+   * A bounded caller selects eventIds first and settles only those actually supplied. */
+  dreamingInput(path: KnowledgePath, eventIds = this.pendingKnowledgeEvents(path).map(e => e.id)) {
+    const events = this.pendingKnowledgeEvents(path).filter(e => eventIds.includes(e.id));
+    const ids = new Set(events.map(e => e.knowledgeId));
+    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
+    if (range) for (const id of range.knowledgeIds) ids.add(id);
+    const graph = this.commitGraph(path);
+    const versions = graph.current.filter(r => ids.has(r.knowledgeId)).map(revision => ({
+      knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
+    }));
+    const text = [`Change events: ${events.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
+      ...versions.map(v => v.revision.op === "archive"
+        ? `K${v.knowledge.id}@${v.revision.id} archived; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
+        : `${renderKnowledge(v)}\n  processed: ${v.processed}`)].join("\n");
+    return { events, oldestId: events[0]?.id ?? null, versions, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
+  }
+
+  dreamingRange(id: number): DreamingRange | null {
+    const row = this.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ? AND completed_run IS NULL").get(id);
+    return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: Number(row.anchor),
+      eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map(r => Number(r.event_id)),
+      knowledgeIds: this.db.prepare("SELECT knowledge_id FROM dreaming_family WHERE range_id = ? ORDER BY knowledge_id").all(id).map(r => Number(r.knowledge_id)) } : null;
+  }
+
+  openDreamingRange(sessionId: number, branch: string): DreamingRange | null {
+    const row = this.db.prepare("SELECT id FROM dreaming_ranges WHERE session_id = ? AND branch = ? AND completed_run IS NULL").get(sessionId, branch);
+    return row ? this.dreamingRange(Number(row.id)) : null;
+  }
+
+  retainDreamingRange(target: TaskTarget, eventIds: number[]): DreamingRange {
+    return this.transaction(() => {
+      const retained = this.openDreamingRange(target.sessionId, target.branch);
+      if (retained) return retained;
+      const pending = this.pendingKnowledgeEvents(target);
+      const ids = [...new Set(eventIds)].sort((a, b) => a - b);
+      if (!ids.length || ids.some(id => !pending.some(e => e.id === id))) throw new Error("Dreaming range requires exact applicable pending events");
+      const id = Number(this.db.prepare("INSERT INTO dreaming_ranges(session_id,branch,head_turn_id,anchor) VALUES (?,?,?,?)")
+        .run(target.sessionId, target.branch, target.headTurnId, ids[0]!).lastInsertRowid);
+      for (const event of pending.filter(e => ids.includes(e.id))) {
+        this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, event.id);
+        this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, event.knowledgeId);
+      }
+      return this.dreamingRange(id)!;
+    });
+  }
+
+  checkProcessedScopes(acceptedResultIds: number[] = []) { return checkProcessedScopes(this, acceptedResultIds); }
+
+  /** 32d passes its target/claim/frozen-family recheck here, inside the same short transaction.
+   * The successful run and two exact sets are authoritative; no watermark or tip substitution. */
+  completeDreaming(runId: number, eventIds: number[], resultIds: number[], validate: () => void = () => {}): void {
+    this.transaction(() => {
+      const events = [...new Set(eventIds)].sort((a, b) => a - b), results = [...new Set(resultIds)].sort((a, b) => a - b);
+      const previous = this.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").get(runId);
+      if (previous) {
+        if (previous.event_ids !== JSON.stringify(events) || previous.result_ids !== JSON.stringify(results)) throw new Error("Dreaming completion already recorded with different exact sets");
+        return;
+      }
+      const run = this.getRun(runId);
+      if (!run || run.kind !== "dreaming" || run.outcome !== "success") throw new Error("Dreaming completion requires a successful dreaming run");
+      validate();
+      for (const id of [...events, ...results]) if (!Number.isSafeInteger(id) || !this.db.prepare("SELECT 1 FROM knowledge_revisions WHERE id = ?").get(id))
+        throw new Error(`Unknown knowledge commit ${id}`);
+      const check = this.checkProcessedScopes(results);
+      if (check.problems.length) throw new Error(check.problems.join("; "));
+      this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
+      for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
+      for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
+      this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ? WHERE completed_run IS NULL
+        AND id IN (SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?)
+        AND NOT EXISTS (SELECT 1 FROM dreaming_range_events e WHERE e.range_id = dreaming_ranges.id
+          AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).run(runId, runId);
+    });
+  }
+
+  private processedPlacements(): { owners: Map<number, string>; active: Set<number> } {
+    const placements = new Map<number, string>();
+    // Include certified historical versions too: their content certificate survives placement.
+    for (const row of this.db.prepare(`SELECT r.* FROM knowledge_revisions r JOIN processed_knowledge_versions p ON p.commit_id = r.id`).all()) {
+      const revision = toKnowledgeRevision(row);
+      placements.set(revision.id, placementOwner(this, { knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
+    }
+    const active = new Set<number>();
+    if (placements.size) for (const pool of processedProjection(this).pools.values()) for (const id of pool.keys()) active.add(id);
+    return { owners: placements, active };
+  }
+
+  private revalidatePlacement(before: ReturnType<Store["processedPlacements"]>): void {
+    const after = this.processedPlacements();
+    // Admission can expose a certified global predecessor even when no certificate's owner moves.
+    // Compare the actual projected pool, not just the relabelled sessions or knowledge rows.
+    const moved = [...new Set([...before.active, ...after.active])].filter(id =>
+      before.owners.get(id) !== after.owners.get(id) || before.active.has(id) !== after.active.has(id));
+    if (!moved.length) return;
+    const affected = new Set(moved.flatMap(id => [before.owners.get(id)!, after.owners.get(id)!]));
+    const check = checkProcessedScopes(this, [], affected);
+    if (check.problems.length) throw new Error(`Project placement rejected: ${check.problems.join("; ")}`);
+    for (const id of moved) this.db.prepare(`INSERT INTO knowledge_placement_validations
+      (commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)`).run(id, before.owners.get(id)!, after.owners.get(id)!, KNOWLEDGE_VIEW_VERSION, new Date().toISOString());
   }
 
   // -- marks: each row belongs to one immutable commit --
@@ -1409,7 +1554,9 @@ export class Store {
       let target = this.findProjectByName(name) ?? this.createProject({ name, declaredBy: source });
       while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
       if (prior === "undeclared" && session.projectId !== target.id) this.mergeProject(session.projectId, target.id);
+      const before = this.processedPlacements();
       this.db.prepare("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?").run(target.id, source, sessionId);
+      this.revalidatePlacement(before);
       return target;
     });
   }

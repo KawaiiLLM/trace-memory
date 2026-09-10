@@ -161,6 +161,7 @@ test("review 2026-09-08: topic sets that join to the same text are still differe
     const memory = f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id }).find(tool => tool.name === "memory")!;
     const content = { text: "Use SQLite", category: "constraint", scope: "project", supports: ["F1"], reason: "Classify this conclusion." };
     expect(memory.execute({ operations: [{ op: "create", ...content, topics: ["a, b"] }], skipped: [] })).toContain("committed");
+    f.m.tools({ kind: "manual", sessionId: f.s.id, branch: "main", currentTurnId: f.t.id })[0]!.execute({ address: "K1@1" });
     expect(memory.execute({ operations: [{ op: "update", id: "K1@1", ...content, topics: ["a", "b"] }], skipped: [] })).toContain("committed");
     expect(f.m.trace("K1@1..K1@2")).toContain('topics: ["a, b"] -> ["a","b"]');
     expect(f.m.trace("K1@1")).toContain('topics: ["a, b"]');
