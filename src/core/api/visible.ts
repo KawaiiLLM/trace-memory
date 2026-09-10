@@ -40,7 +40,15 @@ export interface SuppliedMaterial {
 export interface VisibleBinding { db: string; session: number | null; pi: string }
 
 /** A carrier's payload, as it is persisted under `details.traceMemory`. */
-export interface Carrier extends VisibleBinding { supplied: SuppliedMaterial }
+export interface Carrier extends VisibleBinding {
+  supplied: SuppliedMaterial;
+  /** Ticket 31 "One-shot knowledge supplement": the host supplement generation this message serves.
+   * Absent on every carrier that serves none — a compaction, and an injection the initial condition
+   * (29d) alone asked for. Persisting it here is what makes completion the persistence of *this*
+   * generation's message: a generation the host advanced after the message was handed over is a
+   * higher number than any carrier states, so the old message can never consume it. */
+  generation?: number;
+}
 
 /** The shape this module needs from a host's context entries — one entry of what Pi's
  * `buildContextEntries()` returns for the selected leaf. Core stays host-neutral: no SDK type is
@@ -61,6 +69,11 @@ export interface VisibleView {
    * prompt. A compaction carrier is deliberately not an injection: what it covers is stated by
    * `knowledgeCommitIds` alone, so a compaction that carried no knowledge fabricates no earlier supply. */
   injection: boolean;
+  /** 31: the highest supplement generation a persisted carrier of ours in this context states, or 0
+   * when none does. The host compares its own counter against this, so a generation stays open until
+   * the message serving it is confirmed saved: a turn that aborted before the entry was written
+   * supplies again at the next prompt (duplicates over silent loss). */
+  suppliedGeneration: number;
 }
 
 /** 29b "Same builder, different initial state": what the child a task will run in already holds when
@@ -72,18 +85,18 @@ export interface InitialContext { visible: VisibleView; inheritedTokens: number 
 
 /** The view a fresh child starts from: it can see nothing. Its `inheritedTokens` is zero, but that
  * number is the freeze's own (the host's measure, frozen with the task), so it is paired there. */
-export const noVisibility = (): VisibleView => ({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false });
+export const noVisibility = (): VisibleView => ({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 });
 
 /** The carrier this entry holds for this binding, or nothing. Fails closed on every mismatch: a
  * foreign database, another memory session, a pre-allocation carrier from a different Pi session, and
  * a missing or malformed payload (an older version's, or a native compaction's own details). */
-const carrierOf = (entry: ContextEntry, binding: VisibleBinding): SuppliedMaterial | undefined => {
+const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | undefined => {
   const carrier = (entry.details as { traceMemory?: Carrier } | null | undefined)?.traceMemory;
   if (!carrier || typeof carrier !== "object" || !carrier.supplied || typeof carrier.supplied !== "object") return;
   if (carrier.db !== binding.db) return;
   const bound = binding.session !== null && carrier.session === binding.session;
   const beforeAllocation = carrier.session === null && carrier.pi === binding.pi;
-  return bound || beforeAllocation ? carrier.supplied : undefined;
+  return bound || beforeAllocation ? carrier : undefined;
 };
 
 /** The visible view of one selected context, computed from that context and nothing else (29a case 8:
@@ -94,14 +107,18 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): SuppliedMateri
 export function visibleView(entries: readonly ContextEntry[], binding: VisibleBinding): VisibleView {
   const raw = new Map<string, "source" | "view">();
   const factIds = new Set<number>(), knowledgeCommitIds = new Set<number>();
-  let injection = false;
+  let injection = false, suppliedGeneration = 0;
   for (const entry of entries) {
     // An ordinary retained conversation entry is the strongest evidence there is, and the only kind
     // that needs no metadata. Our own injections are `custom_message`, so they are never Raw sources.
     if (entry.type === "message") { raw.set(entry.id, "source"); continue; }
-    const supplied = carrierOf(entry, binding);
-    if (!supplied) continue; // a free summary, a native compaction, a foreign carrier: nothing at all
+    const carrier = carrierOf(entry, binding);
+    if (!carrier) continue; // a free summary, a native compaction, a foreign carrier: nothing at all
+    const supplied = carrier.supplied;
     if (entry.type === "custom_message") injection = true; // 29d: a marked injection of ours, whatever it supplied
+    // 31: the generation a persisted message of ours served. Only a supplement states one, and only
+    // this — the saved entry, never the value the handler returned — completes it.
+    if (typeof carrier.generation === "number" && carrier.generation > suppliedGeneration) suppliedGeneration = carrier.generation;
     // 30 "No richness gate": every marked compressed view counts, whatever budget produced it — the
     // one bounded representation, or either legacy tier. A carrier whose entry declares neither is
     // not one of ours and establishes nothing.
@@ -112,5 +129,5 @@ export function visibleView(entries: readonly ContextEntry[], binding: VisibleBi
     for (const id of supplied.factIds ?? []) factIds.add(id);
     for (const id of supplied.knowledgeCommitIds ?? []) knowledgeCommitIds.add(id);
   }
-  return { raw, factIds, knowledgeCommitIds, injection };
+  return { raw, factIds, knowledgeCommitIds, injection, suppliedGeneration };
 }

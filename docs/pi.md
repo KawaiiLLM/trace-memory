@@ -138,18 +138,41 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   automatic per-prompt delivery that used to ride beside it — a Noting's facts as `<noted>`, a
   Consolidation's knowledge changes as `<consolidated>` — together with its settle-time confirmation
   and the fork wait keyed on it. **The foreground does not receive a background result because a
-  worker finished; it learns that result through a later compaction or an explicit read. A child
+  worker finished; it learns that result through a later compaction, an explicit read, or — ticket 31,
+  the one exception — the single supplement a `/trace on` or `/trace project` command asks for. A child
   receiving material does not establish that the parent received it.** Worker `note`/`memory` tool
   receipts, manual foreground tool results, explicit reads and compaction content are unchanged.
 
-  The block is offered on a prompt exactly when the *selected context's* visible view (29a) holds
-  neither a marked injection of ours nor a custom compaction carrying knowledge commit ids. Empty or
-  unknown coverage — a native compaction, a foreign carrier, a turn Pi never persisted — fabricates no
-  earlier supply, so the block is offered again: duplicates over silent loss. It is a baseline test,
-  not a delta, so a newer commit does not reopen it prompt by prompt; there is no `injected` flag in
-  the host's persisted state any more (an old state file still loads, and its field is not read). It
-  performs no search. The facade controls category order, chronological ordering and constraints
-  first.
+  There is **one selection with two triggers** (31). The selection is the applicable knowledge at the
+  current node — the existing scope and commit-graph rules — minus the commit ids the selected
+  context's visible view (29a) already holds, with 29b's status lines for the visible commits that are
+  no longer current, rendered as the knowledge block and its receipts within
+  `render.knowledgeBlockTokens`. A commit visible at the same version is never repeated, so the delta
+  is empty exactly when every candidate is visible; a commit an earlier budget omitted, a newer
+  revision and a commit a compaction did not keep are candidates again.
+
+  Trigger (a), the initial one, is unchanged and independent: the block is offered on a prompt when
+  the visible view holds neither a marked injection of ours nor a custom compaction carrying knowledge
+  commit ids. Empty or unknown coverage — a native compaction, a foreign carrier, a turn Pi never
+  persisted — fabricates no earlier supply, so the block is offered again: duplicates over silent
+  loss. It is a baseline test, not a delta, so a newer commit does not reopen it prompt by prompt;
+  a rewind to before the first injection satisfies it on its own. There is no `injected` flag in the
+  host's persisted state any more (an old state file still loads, and its field is not read).
+
+  Trigger (b) is a generation counter in the host's persisted state, advanced by every successful
+  `on` command and every successful `project` command — each time they run, with no "did the state
+  actually change" test. A tree switch, an ordinary prompt and a background commit advance nothing;
+  `off` advances nothing and closes nothing, so with memory off a prompt injects nothing and the
+  generation stays open. Several commands before one prompt collapse: the final state is what that
+  prompt is served from. Completion is the **persistence of that generation's own message**: the
+  generation is consumed only once the `custom_message` entry whose carrier states it is confirmed
+  saved in the session — never the value the handler returned, never the settle. So a generation
+  advanced while a message is in flight is a new one the old message cannot consume, a turn that
+  aborted before the entry was written supplies again at the next prompt, and a persisted message
+  whose turn never settles is complete (the remainder its budget omitted is not re-supplied for it).
+  An empty delta sends no message and completes its generation at once. It performs no search, carries
+  no facts and no Raw, and applies no source-visibility filter. The facade controls category order,
+  chronological ordering and constraints first.
 
   A fork Noting appends control material only (25a): the range, the head turn's
   final reply and the source-address index. It adds no knowledge block, no

@@ -1587,7 +1587,7 @@ test("29: one material builder — filter visible, then budget", async () => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
   const view = (raw: Map<string, "source" | "view">, factIds: number[] = []) =>
-    ({ raw, factIds: new Set(factIds), knowledgeCommitIds: new Set<number>(), injection: false });
+    ({ raw, factIds: new Set(factIds), knowledgeCommitIds: new Set<number>(), injection: false, suppliedGeneration: 0 });
   const freeze = async (visible: ReturnType<typeof view>) => {
     calls.length = 0;
     await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible });

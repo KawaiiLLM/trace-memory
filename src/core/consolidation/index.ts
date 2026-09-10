@@ -8,6 +8,7 @@ import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentCon
 import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
 import { toolDefinitions } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
+import { knowledgeStatusNotes } from "../api/read.ts";
 import { budgetMaterial, consolidationText, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type ConsolidationMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
@@ -139,23 +140,9 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // Parent 29 "Version-aware knowledge": a commit the child inherited that is not among this path's
   // current applicable commits is stale — superseded, archived or merged away — and the block below
   // carries only what is current, so nothing in it would contradict the inherited text. One line per
-  // stale commit says what happened to it. Computed once for the freeze: the batch does not affect it,
-  // and the full revision read behind it happens only when there is a stale commit to explain.
-  const currentCommits = new Set(knowledge.map(k => k.revision.id));
-  const stale = [...initial.visible.knowledgeCommitIds].filter(id => !currentCommits.has(id));
-  const knowledgeNotes = stale.length ? (() => {
-    const byCommit = new Map(store.listKnowledgeRevisions().map(r => [r.id, r]));
-    return stale.flatMap(id => {
-      const revision = byCommit.get(id);
-      if (!revision) return []; // another database's id cannot reach here (the carrier binding), and an unknown one explains nothing
-      const current = knowledge.find(k => k.knowledge.id === revision.knowledgeId);
-      if (current) return [`K${revision.knowledgeId}@${id} is superseded by K${revision.knowledgeId}@${current.revision.id} above`];
-      const successor = store.commitChildren(revision).at(-1);
-      return [`K${revision.knowledgeId}@${id} is ${successor?.op === "archive" ? "archived"
-        : successor?.op === "merge" ? `merged into K${successor.knowledgeId}@${successor.id}`
-        : "no longer current on this path"}`];
-    });
-  })() : [];
+  // stale commit says what happened to it. Computed once for the freeze: the batch does not affect it.
+  // 31 made this the shared rule: the main agent's knowledge block explains a stale commit the same way.
+  const knowledgeNotes = knowledgeStatusNotes(store, knowledge, initial.visible.knowledgeCommitIds);
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
   const byId = new Map(facts.map(f => [f.id, f]));

@@ -99,11 +99,17 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   await h.answer();
   expect(h.memory.store.projectDeclaration(2)).toBe("undeclared");
   await h.commands.get("trace").handler("project project-name", h.ctx);
-  // 29d: the declaration makes the project's knowledge applicable, but this conversation already
-  // holds its injection baseline, so it is not injected a second time — it reaches the foreground
-  // through a later compaction or an explicit read (parent 29).
+  // 31 (revising 29d for this one case): the declaration makes the project's knowledge applicable, and
+  // the next prompt carries exactly what this conversation does not already hold — 项目规则, never the
+  // 全局规则 the first prompt's block already supplied. Every later prompt carries nothing again.
   expect(h.memory.injection({ projectId: h.memory.store.getSession(2)!.projectId }).text).toContain("项目规则");
-  expect((await h.prompt())?.message).toBeUndefined();
+  const supplement = (await h.prompt())?.message;
+  expect(supplement.content).toContain("项目规则");
+  expect(supplement.content).not.toContain("全局规则");
+  expect(supplement.details.traceMemory.generation).toBe(1);
+  expect(supplement.details.traceMemory.supplied.knowledgeCommitIds).toEqual([1]);
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect((await h.prompt("after"))?.message).toBeUndefined(); // one shot, never a running delivery
   await h.emit("session_start");
   expect(h.memory.status(2)).toContain("project-name (mark)");
   expect(h.requests).toHaveLength(0);
@@ -422,11 +428,15 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.getKnowledgeRevision(2, 2)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
   expect(h.memory.inject(1)).toContain("仅当前会话");
-  // 29d: the merged project's knowledge is applicable at once, but the "before" prompt above already
-  // left this conversation's injection baseline, and a project declaration is not a re-injection
-  // trigger any more — the foreground learns it through a later compaction or an explicit read.
+  // 31: the merged project's knowledge is applicable at once, and the project command is a supplement
+  // trigger, so the next prompt carries the peer's K3 alone — the two commits the "before" prompt
+  // already injected are visible at the same version and are never repeated.
   expect(h.memory.inject(1)).toContain("用 pnpm，不要 npm");
-  expect((await h.prompt("next"))?.message).toBeUndefined();
+  const supplement = (await h.prompt("next"))?.message;
+  expect(supplement.details.traceMemory.supplied.knowledgeCommitIds).toEqual([3]);
+  expect(supplement.content).not.toContain("仅当前会话");
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect((await h.prompt("later"))?.message).toBeUndefined();
 });
 
 test("before-tree waits for a frozen pending noting and summarizes its facts plus later raw, and delivers nothing on either branch (29d)", async () => {
