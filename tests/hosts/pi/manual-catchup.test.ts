@@ -106,7 +106,9 @@ test("18b 2026-09-08: an empty target completes without a model call; a disabled
 });
 
 test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on release; repeating catchup reports the same operation", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: one entry view is capped at 2,000 tokens, so the ordinary run that occupies the slot needs a
+  // trigger a single long reply can still reach.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
@@ -192,7 +194,9 @@ test("18b 2026-09-08: stop during a Noting batch cancels it, leaves it pending, 
 }, 30000);
 
 test("18b 2026-09-08: stop while waiting for an occupied slot prevents the frozen batch from ever starting", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: one entry view is capped at 2,000 tokens, so the ordinary run that occupies the slot needs a
+  // trigger a single long reply can still reach.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const release = hold(h);

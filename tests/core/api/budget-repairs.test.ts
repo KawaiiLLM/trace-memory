@@ -99,17 +99,18 @@ test("review 2026-09-08, on Noting since 25a: a smaller model window trims the o
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: a tier-1 view that cannot hold its labels escalates compact to the tier-2 profile instead of failing", () => {
+test("review 2026-09-08, as 30 left it: a view that cannot hold its labels delegates compact to native compaction instead of failing", () => {
   const f = seeded();
   try {
-    f.m.config.render.toolCallTokens = 10;
+    f.m.config.render.toolInputTokens = 4;
     f.m.store.appendToolCall({ turnId: f.t.id, name: "bash", input: "pwd", result: "done", status: "success" });
     const pending = f.m.pendingEntries(f.s.id, "main", f.t.id);
     expect(() => pending.map(e => renderEntry(e, f.m.config.render))).toThrow(/capacity/);
-    const tier2 = { toolCallTokens: f.m.config.render.secondaryToolCallTokens, entryTokens: f.m.config.render.secondaryEntryTokens };
-    expect(tokens(pending.map(e => renderEntry(e, tier2).content).join("\n\n"))).toBeLessThan(10000);
+    // 30 removed the second, tighter rendering this used to escalate to: the capacity failure of the
+    // one profile is a reason to delegate, reported by name, and compact still returns rather than throws.
     const result = f.m.compact(f.s.id, "main", f.t.id);
-    expect(result.tier).toBe("secondary");
+    expect("native" in result).toBe(true);
+    expect("native" in result && result.reason).toContain("their labels and omission markers do not fit");
   } finally { f.m.close(); }
 });
 

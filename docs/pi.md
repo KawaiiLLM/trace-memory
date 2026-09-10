@@ -157,7 +157,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   already carries the injected knowledge (29d: not the facts of earlier runs, which are no longer
   delivered to it; a fork that needs one reads it by address). A
   fork that falls back to a subagent sends the complete subagent material — history
-  within 10,000 tokens and tier-1 Raw within 10,000, independently capped — and is
+  within 10,000 tokens and bounded Raw within 10,000, independently capped — and is
   priced on it.
 - Source identity is `(Trace Memory session, native session lineage, Pi entry id)`.
   The host reconciles completed messages from the selected persisted ancestry on
@@ -173,7 +173,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   using the same stable Turn tool ordinal. Original messages, arguments and results
   are retained. `trace` with `full: true` retrieves the original tool argument and
   result strings, whatever the envelope carries. An explicit `trace` without `full`
-  is assembled from that Turn's selected source entries under the tier-1 entry view
+  is assembled from that Turn's selected source entries under the configured entry view
   (ticket 23b), so a branch's own occurrences are what a bound read shows; pagination
   retains its existing protocol.
 - Every eligible persisted entry completion checks the active branch's queues at
@@ -218,11 +218,16 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - `render.stdoutHeadTokens`, `render.stdoutTailTokens` and `render.stderrTailTokens` are **removed**
   (ticket 23). They budgeted a stdout/stderr result shape Pi never produces, so they were never
   effective on any Pi run; a layer that still supplies one fails the load with `Removed setting
-  render.<key>: use render.toolCallTokens (one budget for the whole tool call)`.
+  render.<key>: use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens
+  (the whole rendered result part)`.
 - `render.commandTokens`, `render.reportHeadTokens` and `render.reportTailTokens` are **removed**
   (ticket 23b) with the same message and the same replacement. They shaped the per-tool branches of
-  the explicit Turn preview; that preview is now the entry view under the tier-1 profile, and `full`
-  renders the stored evidence uncut, so neither has a budget of its own.
+  the explicit Turn preview; that preview is now the entry view under the configured profile, and
+  `full` renders the stored evidence uncut, so neither has a budget of its own.
+- `render.toolCallTokens`, `render.secondaryToolCallTokens` and `render.secondaryEntryTokens` are
+  **removed** (ticket 30). `B` was one budget for a call and its result, split in half, so its value
+  is not `C` or `R` and is never reinterpreted as either; the tier-2 pair went with the second tier
+  itself. A layer that still supplies one fails the load naming the key and the new ones.
 - Worker completion starts nothing. A fresh eligible entry completion provides
   the next opportunity; no polling or draining is added. Each runtime reserves one
   slot per phase before asynchronous admission. Quit/reload cancels its workers
@@ -233,10 +238,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   Pi forks carrying these references stay in the same Trace Memory conversation
   lineage with a new branch name. A fresh Pi session gets a fresh Trace Memory
   session on its first reply. The before-tree hook returns a read-only summary as described below.
-- Compaction reconciles persisted source entries and asks core to escalate over that
-  frozen snapshot (see **Compaction tiers** below). For tiers 1 and 2 the adapter
-  returns the prepared text as `compaction.summary`; for tier 3 it returns nothing at
-  all, so Pi runs its own compaction. `firstKeptEntryId: ""` retains no old Pi
+- Compaction reconciles persisted source entries and asks core to render that
+  frozen snapshot (see **Compaction and the post-compaction boundary** below). For a custom
+  replacement the adapter returns the prepared text as `compaction.summary`; for a native
+  delegation it returns nothing at all, so Pi runs its own compaction. `firstKeptEntryId: ""` retains no old Pi
   messages: the facade block replaces the context. Pi 0.85.0's context builder
   searches for that id, finds none, and keeps the compaction plus later messages.
   Successful compaction is then recorded as a `compaction` turn; it receives no facts.
@@ -481,44 +486,42 @@ still fails with a capacity message and retains pending sources. Changing `dbPat
 requires reloading the extension. A disabled session's footer is the compact
 `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow indicator and its counts.
 
-## Compaction tiers and the post-compaction boundary (20c)
+## Compaction and the post-compaction boundary (20c, one view since 30)
 
 `session_before_compact` reconciles persisted history, then asks core to escalate over
 one frozen read snapshot of every pending entry on the selected path. Rendering never
 changes that set: compact takes no claim, waits for no worker, starts no worker and
 advances no progress, so a Noter finishing concurrently can make the snapshot redundant
-but never incomplete. `memory.compact(...)` returns a tier rather than a string:
+but never incomplete. `memory.compact(...)` returns one of two outcomes rather than a string:
 
-| Tier | When | What the adapter returns |
+| Outcome | When | What the adapter returns |
 |---|---|---|
-| `primary` | every pending entry's normal shared view, with the framing, fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
-| `secondary` | the tier-1 views miss that envelope but the tier-2 views of *all* the same entries fit | the text, as `compaction.summary` |
-| `native` | not even the tier-2 views fit, or an entry's minima exceed the tier-2 `E` | nothing at all, with a reason naming the cap and the overage |
+| `{text, supplied}` | every pending entry's bounded view, with the framing, fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
+| `{native: true, reason}` | they do not fit, or an entry's minima exceed the configured profile | nothing at all, with a reason naming the cap and the overage |
 
 Ticket 25 amendment 3 (25c) removed the inner `noting.batchTokens` cap on that pending
 Raw. Compaction's budgets are the knowledge block within `render.knowledgeBlockTokens`
 (10,000) and pending Raw plus historical facts sharing `render.episodicBlockTokens`
 (20,000), Raw and its framing reserved first: facts may receive none of the envelope, and
 with nothing pending they may use all of it. The total is unchanged, a backlog between
-10,000 and 20,000 tokens now stays in tier 1, and `noting.batchTokens` keeps its one
+10,000 and 20,000 tokens stays a custom replacement, and `noting.batchTokens` keeps its one
 meaning — the Noter's batch ceiling.
 
-Tier 2 is the same entry renderer under the tier-2 profile (ticket 23, superseding 20c's
-separate compact-only renderer and its version constant): `render.secondaryToolCallTokens`
-(100) and `render.secondaryEntryTokens` (1,000). It is deterministic local work: entry order,
-the source addresses, user boundaries and the non-text placeholder are preserved; each tool
-part keeps its name, its `T<id>#t<n>` address and, for a result, its status, and shows what
-the tighter budget holds of its arguments or result; text is cut with the same
-`[... N characters truncated]` marker tier 1 uses. The block title names the
-view version and both numbers of the profile. It is never a Noter's input and never a token
-counter's input — those keep using tier 1 — and no view or summary becomes a source entry, a
-fact or a processing receipt.
+Ticket 30 retired the second, tighter rendering that used to stand between the custom
+replacement and the delegation: the views compaction emits are `renderEntry` under the one
+configured profile — the same bytes a Noter, the token counters and `trace` use, under the
+ordinary `Raw:` title — and there is no second profile, no second block title and no recovery
+worker of ours (28 amendment 9). It stays deterministic local work: entry order, the source
+addresses, user boundaries and the non-text placeholder are preserved; each tool part keeps its
+name, its `T<id>#t<n>` address and, for a result, its status; text is cut with the same
+`[... N characters truncated]` marker. No view or summary becomes a source entry, a fact or a
+processing receipt.
 
-Tier 3 is the one place where compaction reaches a model, and the call is Pi's: the
-adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
+The native delegation is the one place where compaction reaches a model, and the call is Pi's:
+the adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
 is cancelled under its own outcome handling. The adapter manufactures no summary, appends
 no oversized block to Pi's result and starts no extraction flush; an unused custom summary
-prepared before the fallback confirms no injection. The tier used
+prepared before the fallback confirms no injection. What was used
 and its reason go to a `ui.notify` info line and to a `Compaction:` line in the status text
 (the menu's Current session, or headless bare `/trace`).
 
@@ -537,13 +540,14 @@ in the inherited context in a representation it may extract from**:
 
 ```text
 available Raw = native ids the visible view marks "source"  (Pi retained the entry)
-              ∪ native ids it marks "tier1"                 (a carrier supplied its primary view)
+              ∪ native ids it marks "view"                  (a carrier supplied its bounded view)
 fork allowed  ⇔ every entry of the target ∈ available Raw
 ```
 
-That set is 29a's `VisibleView.raw` unchanged, so what does **not** count needs no rule of its
-own: a tier-2 compact view, a summary with no carrier behind it (a compaction Pi wrote itself),
-an id that appears only in rendered prose, and an absent tool result are simply not in `raw`.
+That set is 29a's `VisibleView.raw` as 30 left it — every marked compressed view counts, the one
+bounded representation and both legacy tiers alike — so what does **not** count needs no rule of
+its own: a summary with no carrier behind it (a compaction Pi wrote itself), an id that appears
+only in rendered prose, and an absent tool result are simply not in `raw`.
 An incomplete tool-call group stays where it already was — `forkable()` rejects the checkpoint
 in the native gate and defers the launch through `checkpointReadiness` — and 29c adds nothing
 there.
@@ -595,10 +599,11 @@ its own `details`, under `traceMemory`:
 | Entry | Written by | Payload |
 |---|---|---|
 | `custom_message` (`customType: trace-memory`) | the message `before_agent_start` returns, when it carries the initial knowledge block | `{db, session, pi, supplied}` |
-| `compaction` | `CompactionResult.details` of a tier-1/tier-2 replacement | the same shape |
+| `compaction` | `CompactionResult.details` of a custom replacement | the same shape |
 
 `supplied` is what the renderer actually kept, never what it considered: the selected pending
-entries as `{id, nativeId, tier}` (`tier` 1 = primary view, 2 = tier-2 view), the complete
+entries as `{id, nativeId, view: "bounded"}` (30; a carrier written earlier says `tier: 1` or
+`tier: 2` instead, and both are read as that same view), the complete
 fact ids and the exact knowledge commit ids. `db` is the resolved database path — the same
 value `restore` compares its own state entries by — so another database's equal integers
 match nothing. `session` is the memory session id, or `null` on an injection written before
@@ -607,7 +612,7 @@ session id it was written under.
 
 The receipt and the content are one entry, so nothing else has to be kept in step: a planned
 injection Pi never persists, and a cancelled or failed compaction (which appends no entry at
-all), change no baseline. A tier-3 delegation writes no `traceMemory`; Pi's own compaction
+all), change no baseline. A native delegation writes no `traceMemory`; Pi's own compaction
 entry has its own `details` (`{readFiles, modifiedFiles}`), so a reader tests for
 `details.traceMemory`, never for an empty slot. Nothing of ours is appended around a
 compaction — there is no preparation entry, no frozen `considered` set and no database table
@@ -751,11 +756,10 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
    result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
-   notice names the tier that was used. To see the other two tiers, set
-   `render.episodicBlockTokens` low enough that the pending views no longer fit
-   (tier-2 views, labelled `Raw (tier-2 entry views, <version>, tool call budget …)`) and then low
-   enough that even those miss the cap (native delegation, where Pi runs its own
-   summarization call and writes its own `compaction` entry).
+   notice says the bounded entry views were used. To see the other outcome, set
+   `render.episodicBlockTokens` low enough that the pending views no longer fit: the
+   notice then reads `native delegation — …`, Pi runs its own summarization call and
+   writes its own `compaction` entry.
 5. Ask the agent to call `search` for `pnpm`, then `trace` on a returned fact and
    its source turn. Expect the original conversation text and source addresses.
    The search/trace tools themselves are recorded as raw tool calls.
@@ -1493,22 +1497,21 @@ No call id and no native-identity header enters the model-facing text: the addre
 labels carry are what the Noter cites, and native identity, lineage and the view budgets
 stay in storage and in the run's entry audit.
 
-`render.toolCallTokens` (`B`) defaults to **300** with a hard ceiling of **1,000**,
-rejected above it; `render.entryTokens` (`E`) keeps its 17a **10,000**. The
-compaction tier-2 pair is `render.secondaryToolCallTokens` (**100**) and
-`render.secondaryEntryTokens` (**1,000**). All four are positive safe integers
+The profile is three independently named budgets (ticket 30): `render.entryTokens` (`E`)
+defaults to **2,000**, `render.toolInputTokens` (`C`, the whole rendered call part) to
+**100** and `render.toolResultTokens` (`R`, the whole rendered result part) to **100**, the
+two part budgets with a hard ceiling of **1,000**, rejected above it. An explicitly
+configured value is honoured as written. All three are positive safe integers
 through the existing flat configuration, are configuration rather than per-batch
 decisions, and count the rendered text of the part or the entry — label lines, key
-names, separators and every marker included. Inside `B`, arguments and the result take
-one half each (23c, superseding 23a's quarter and three quarters on the measurement that
-the quarter cut 218 of 337 bash commands while three quarters still cut 573 of 835
-results): arguments are rendered before their result exists and views are immutable, so
-the split is fixed. Allocation is two
-staged: `B` caps each tool part first; if the entry is still over `E`, tool parts
-give way, shared fairly down to their label-plus-marker minimum; only when they
-are all at the minimum does the text part yield, head and tail. A rendered part
-never exceeds its allocation, the entry never exceeds `E`, and no part is emitted
-empty or shorter than its minimum. Excerpts retain head and tail, including within
+names, separators and every marker included. `C` and `R` are independent allowances,
+superseding 23c's single `B` split in half: room a short call leaves does not enlarge a
+result, or the other way round. Allocation is staged:
+each tool part is capped by its own budget first; if the entry is still over `E`, result
+payloads give way, then call arguments, each shared fairly down to their label-plus-marker
+minimum, and only when they are all at the minimum does the text part yield, head and tail.
+A rendered part never exceeds its allocation, the entry never exceeds `E`, and no part is
+emitted empty or shorter than its minimum. Excerpts retain head and tail, including within
 one huge line or JSON value, and never cut inside a surrogate pair or a JSON escape
 sequence. One marker family states the count of omitted characters —
 `[... N characters truncated]`, and `[... N characters of details truncated]` for
@@ -1518,7 +1521,7 @@ is the same renderer with no budget: the same labels, the stored arguments and r
 text uncut, each native occurrence of a call as its own entry, and its read scope
 unrestricted whatever branch the reader is bound to (17a). A budget too
 small for an entry's labels and markers reports a capacity error and leaves the
-entry pending (compaction escalates a tier over it).
+entry pending (compaction delegates to the host's own over it).
 
 The host registers one result-text extractor with the façade at construction; core
 applies it wherever it renders an entry and never inspects envelope fields itself.

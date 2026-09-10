@@ -37,7 +37,7 @@ That's it — you spotted a real swap. Noting it:
 
 那张最新截图我还没看（只用了 txt）—— **你截的是哪一格？** 如果它正好是我上面说的边界情况，可能还能再钉死一个值。
 [T1#t1] mcp__plugin_claude-mnemo_mnemo__note(turn=S18993/T248)
-[T1#t2] Bash(command="cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'\n\n---\n\n## 14. 编辑器整表导出：原版名字表，以及**海"[... 76 characters truncated]"/陷阱/方向/内政/防守/贼/水淹/种类？/庙与遗迹/坐标`，UTF-8，\n2,175,557 字节，取自 Windows 机 `makisekurisu@192.168.1.6` 的 `Downloads`）。\n**不入库")
+[T1#t2] Bash(command="cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'\n\n---"[... 133 characters truncated]"`，UTF-8，\n2,175,557 字节，取自 Windows 机 `makisekurisu@192.168.1.6` 的 `Downloads`）。\n**不入库")
 [T1#t2] Bash success: {"stdout":"MD5 (refs/san11/mapC.json) = de6783f8a71dff7b79273a1c9cdc8cea\n0cd0969 mapC §14：编辑器整表导出坐实「海与荒地被对调」","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}
 
 Receipts:

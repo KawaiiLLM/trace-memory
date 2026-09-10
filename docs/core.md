@@ -167,7 +167,7 @@ Receipts follow all content, including assistant text, and list omitted calls
 (including partially omitted calls) and expansion addresses.
 
 An explicit `trace` of a Turn without `full` is assembled from that Turn's selected
-source entries, in path order, each rendered by `renderEntry` under the tier-1
+source entries, in path order, each rendered by `renderEntry` under the configured
 profile (ticket 23b): several assistant messages each show, a call with several
 native result occurrences shows each occurrence, and a sibling branch's entries do
 not appear when the reader's branch is known — an unbound read stays unrestricted.
@@ -180,15 +180,18 @@ on several forks, a full trace shows each original occurrence as its own entry. 
 optional listing cap paginates the rendered lines; it never becomes a tool-output
 token cap.
 
-`renderEntry` is the one view: a tool call is worth at most `B` tokens (arguments one
-half, the result one half — 23c, superseding 23a's quarter and three quarters) and an
-entry at most `E`, including all labels and omission markers. Natural language receives
-only the entry limit. Huge lines and JSON values keep character-level head/tail
+`renderEntry` is the one view, under one profile of three independent budgets (ticket 30,
+superseding 23c's single `B` split in half): a tool-call part is worth at most `C`
+(`render.toolInputTokens`), a tool-result part at most `R` (`render.toolResultTokens`) and one
+entry at most `E` (`render.entryTokens`), including all labels and omission markers. Room one
+side leaves unused never enlarges the other. Natural language receives only the entry limit.
+When the parts together exceed `E`, result payloads give way first, then call arguments, then
+natural text; parts of equal priority share the reduction through the same per-part allocator. Huge lines and JSON values keep character-level head/tail
 excerpts. One marker family says what was left out: `[... N characters truncated]`,
 `[... N characters of details truncated]` for structured data the host dropped, and
 `[<type> omitted]` for a non-text block; the honesty clause "the omitted middle was not
 inspected" is stated once in the Noter prompt instead of in every marker. Every consumer
-— Noting material, both compaction tiers, branch carry and the assembled `trace` — uses
+— Noting material, compaction, branch carry and the assembled `trace` — uses
 identical entry bytes, and `full` is the same renderer with no budget. The shared
 segment-based token estimator remains unchanged (ruling 2026-09-07).
 
@@ -254,7 +257,7 @@ corrected it):
 | Noter (`notingText`) | historical facts → range → selected Raw → receipts |
 | Consolidator (`consolidationText`) | knowledge → range → selected pending facts → negation reminders → receipts |
 | Main-agent injection (`injectionText`) | knowledge → receipts |
-| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (tier-1 or, in tier 2, tier-2 entry views) → receipts |
+| Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (the one bounded entry view) → receipts |
 
 25a supersedes ticket 20 on two blocks of that table: the Noter's leading knowledge block, in both
 modes, and the Consolidator's already-consolidated history block. Both consumers reach that material
@@ -277,7 +280,8 @@ newest facts already visible, the whole history allowance goes to the older ones
 The allowance is a ceiling, never a target — fewer needed facts make a smaller block, not filler.
 
 - **Noting.** A target entry is withheld when the view holds its native id as a retained `source` or a
-  `tier1` carrier view (a tier-2 view is never in the view at all, so it withholds nothing). Withheld
+  carrier's bounded `view` (30: one representation, and a legacy tier-1 or tier-2 carrier counts as it).
+  Withheld
   bodies leave the mandatory framing standing: the range, the source index for the whole frozen range,
   and the head reply — restated only when the head entry's own body was withheld, because the captured
   request a fork inherits stops before the reply it produced. Optional: the applicable historical facts
@@ -592,35 +596,32 @@ turns. (29d: the `<noted>` block that used to follow knowledge on every prompt i
 `pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
 writes, reads, drains or migrates it, and its timestamps are never read as visibility.)
 
-`compact(sessionId, branch = "main", headTurnId?)` escalates over one frozen read snapshot of every
-pending entry on the path and returns a tier, not a string (ticket 20c):
+`compact(sessionId, branch = "main", headTurnId?)` renders one frozen read snapshot of every pending
+entry on the path and returns one of two outcomes, not a string (ticket 20c, one view since 30):
 
-| Tier | Condition | Result |
+| Outcome | Condition | Result |
 | --- | --- | --- |
-| `{tier: "primary", text}` | the pending entries' normal shared views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with the recent facts applicable on the selected path in chronological Turn groups, then those views |
-| `{tier: "secondary", text}` | the tier-1 views miss that envelope but the tier-2 views of the same entries fit | the same order, with `secondaryRawTitle(profile)` naming the view version and the profile |
-| `{tier: "native", reason}` | not even those fit, or an entry's minima exceed the tier-2 `E` | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
+| `{text, supplied}` | the pending entries' bounded views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with the recent facts applicable on the selected path in chronological Turn groups, then those views under `Raw:` |
+| `{native: true, reason}` | they do not fit, or an entry's minima exceed the profile | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
 
-Both tiers' historical facts are the facts **applicable on the selected path** (26 amendment 2), in
+The historical facts are the facts **applicable on the selected path** (26 amendment 2), in
 `listSessionFacts`' freshness order: a sibling branch's fact is not history here, and it is not an
 omission for budget either — it was never a candidate. One path snapshot answers that membership for
 the whole operation, the knowledge block included.
 
 Since 25c compact measures Raw against the shared episodic envelope alone — `noting.batchTokens` is
-the Noter's batch ceiling and compact does not read it — and both tiers are rechecked under the same
-`budgetMaterial` accounting as normal material. A backlog above 10,000 and below 20,000 tokens
-therefore stays in tier 1 instead of escalating, and the reason a delegation gives names the envelope
-or the tier-2 entry budget, the only two caps left to miss. Tier changes re-render one frozen
-membership: they never select a smaller pending set, advance extraction progress or touch injection
-state, and a native delegation builds no custom summary at all.
-No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
-no tier calls a provider, and core contains no summarizer — reaching a model
-is the host's native fallback alone. Tier 2 is `renderEntry` under the tier-2 profile
-(`render.secondaryToolCallTokens`, `render.secondaryEntryTokens`; ticket 23 superseded 20c's separate
-compact-only renderer and its version constant): the same parts, the same markers and the same
-addresses as tier 1, with tool parts at or near their label-plus-marker minimum and text cut to the
-tighter `E`. It is used nowhere else: Noter input, token counters and trace keep tier 1, and neither
-tier becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
+the Noter's batch ceiling and compact does not read it — under the same `budgetMaterial` accounting as
+normal material. A backlog above 10,000 and below 20,000 tokens therefore stays a custom replacement,
+and the two caps a delegation's reason can name are that envelope and the entry view profile itself.
+Ticket 30 removed the second, tighter rendering that used to stand between them: an overflowing Raw
+set delegates to native compaction exactly as the old third tier did, and starts no recovery worker
+(28 amendment 9). Nothing here selects a smaller pending set, advances extraction progress or touches
+injection state, and a native delegation builds no custom summary at all.
+Compaction never hides a selected entry to fit, falsifies an omission count or relaxes a cap;
+it calls no provider, and core contains no summarizer — reaching a model
+is the host's native fallback alone. The views it emits are `renderEntry` under the configured
+profile, the same bytes Noter input, the token counters and `trace` use, and no view or summary
+becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
 `search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
@@ -681,9 +682,9 @@ by 17b; the pending-delivery count went with the queue in 29d.
 
 Renderers return what they kept beside their text, so nothing is recovered by parsing
 rendered prose. `injection(target)` is the initial knowledge block plus the exact
-`knowledgeCommitIds` inside it (`inject` is the same call read for its text alone), and a
-tier-1/tier-2 `compact` result carries `supplied: {entries, factIds, knowledgeCommitIds}` —
-every selected pending entry as `{id, nativeId, tier}`, plus the historical facts and
+`knowledgeCommitIds` inside it (`inject` is the same call read for its text alone), and a custom
+`compact` result carries `supplied: {entries, factIds, knowledgeCommitIds}` —
+every selected pending entry as `{id, nativeId, view: "bounded"}`, plus the historical facts and
 commits that survived budgeting. Identities a budget dropped are receipted in the text and
 absent from these lists, so a consumer that persists them as coverage can only understate it.
 `budgetKnowledge`, `budgetFacts` and `budgetMaterial` report the same identities; no block's
@@ -691,9 +692,11 @@ bytes changed.
 
 `visibleView(contextEntries, {db, session, pi})` (in `core/api/visible.ts`) is the one
 derived view: given the entries a host's context builder returns for the selected leaf, it
-yields `raw` (native entry id → `source` for a retained conversation entry, `tier1` for one a
-carrier supplied a primary view of), `factIds` and `knowledgeCommitIds`. It is pure, reads no
-database and imports no host SDK type — it reads only `{id, type, details}`. A tier-2 view, an
+yields `raw` (native entry id → `source` for a retained conversation entry, `view` for one a
+carrier supplied a bounded view of — 30: a legacy `tier: 1` or `tier: 2` carrier counts as that
+same view, and a retained view is never compared with the current profile to demand a richer
+replacement), `factIds` and `knowledgeCommitIds`. It is pure, reads no
+database and imports no host SDK type — it reads only `{id, type, details}`. An
 id that appears only in text, a free-form summary and a compaction without our
 `details.traceMemory` contribute nothing; entries retained past such a compaction still count;
 a carrier from another database or another memory session contributes nothing, and one written

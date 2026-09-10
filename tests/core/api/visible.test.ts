@@ -45,22 +45,26 @@ test("29a case 4 (allocation identity): a pre-allocation injection is recognised
   expect(view.knowledgeCommitIds.size).toBe(0);
 });
 
-test("29a case 7 (opaque fallback): a native summary proves nothing, a tier-2 view proves nothing, and entries retained past either still count", () => {
+test("29a case 7 (opaque fallback): a native summary proves nothing, and entries retained past it still count", () => {
   // Pi's own compaction entry: `details` is populated — `{readFiles, modifiedFiles}` is Pi's, and the
   // 26c proof pins that it is never an empty slot — so the reader tests for `details.traceMemory`.
   const native: ContextEntry = { id: "c1", type: "compaction", details: { readFiles: ["a.ts"], modifiedFiles: [] } };
-  const tier2 = compacted("c2", { supplied: supplied({ entries: [{ id: 5, nativeId: "e9", tier: 2 }], factIds: [4] }) });
-  const view = visibleView([native, message("e1"), tier2, message("e7")], binding);
-  expect(view.raw.get("e9")).toBeUndefined(); // a compact-only view is not a representation to extract from
+  const unmarked = compacted("c2", { supplied: supplied({ entries: [{ id: 5, nativeId: "e9" } as never], factIds: [4] }) });
+  const view = visibleView([native, message("e1"), unmarked, message("e7")], binding);
+  expect(view.raw.get("e9")).toBeUndefined(); // no representation stated: nothing to extract from
   expect([...view.factIds]).toEqual([4]); // …but the complete fact bodies that block did carry are
   expect([...view.raw.keys()].sort()).toEqual(["e1", "e7"]); // retained entries either side still count
 });
 
-test("29a: a tier-1 view covers an entry the conversation dropped, and a retained original outranks it", () => {
-  const carrier = compacted("c1", { supplied: supplied({ entries: [{ id: 5, nativeId: "e9", tier: 1 }, { id: 6, nativeId: "e10", tier: 1 }] }) });
+test("30: a supplied bounded view covers an entry the conversation dropped, a legacy tier counts as one, and a retained original outranks both", () => {
+  const carrier = compacted("c1", { supplied: supplied({ entries: [{ id: 5, nativeId: "e9", view: "bounded" },
+    { id: 6, nativeId: "e10", view: "bounded" }, { id: 7, nativeId: "e12", tier: 1 }, { id: 8, nativeId: "e13", tier: 2 }] }) });
   // Pi's order: the compaction, then what it kept, then what came after.
   const view = visibleView([carrier, message("e10"), message("e11")], binding);
-  expect(view.raw.get("e9")).toBe("tier1"); // gone from the conversation, supplied as a primary view
+  expect(view.raw.get("e9")).toBe("view"); // gone from the conversation, supplied as a bounded view
+  // 30 "Visibility and fork": both legacy tiers are marked compressed views, so both count as Raw.
+  expect(view.raw.get("e12")).toBe("view");
+  expect(view.raw.get("e13")).toBe("view");
   expect(view.raw.get("e10")).toBe("source"); // retained as well: the stronger representation wins
   expect(view.raw.get("e11")).toBe("source");
 });

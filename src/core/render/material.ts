@@ -40,7 +40,7 @@
 // the child's own context proves visible, and the mandatory framing stays whatever the data delta is.
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, ENTRY_VIEW_VERSION, type EntryProfile, type FactTurns } from "./index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, type FactTurns } from "./index.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -103,12 +103,6 @@ export interface ConsolidationMaterial extends SharedMaterial {
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
 export const RAW_TITLE = "Raw:";
-/** Compaction tier 2 (20c) under ticket 23's one renderer: the block title replaces `RAW_TITLE` —
- * never joins it — and names the view version and the profile that produced these views, because a
- * reader must be able to tell which rule truncated the text in front of it. One title is charged to
- * the episodic budget either way. */
-export const secondaryRawTitle = (profile: EntryProfile): string =>
-  `Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget ${profile.toolCallTokens} tokens, entry budget ${profile.entryTokens} tokens):`;
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
 export const REMINDER_TITLE = "Negated-evidence reminder (review cues only; no status derived):";
@@ -237,9 +231,9 @@ const leading = (material: SharedMaterial): string[] => {
 export const injectionText = (material: SharedMaterial): string =>
   finish({ content: knowledgeBlock(material), receipts: material.receipts });
 
-/** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. The
- * Raw title is `secondaryRawTitle(profile)` when the views inside it were rendered under the tier-2
- * profile (ticket 20 tier 2); the order, the separators and the receipts are the same either way. */
+/** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. Ticket
+ * 30: there is one bounded view and therefore one Raw title — the second tier that renamed this block
+ * is gone, and the order, the separators and the receipts are what they always were. */
 export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TITLE): string =>
   finish({ content: block([...leading(material), xmlBlock("episodic",
     block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });

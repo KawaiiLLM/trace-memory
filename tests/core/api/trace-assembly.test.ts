@@ -222,6 +222,6 @@ test("23c: one marker family — no `[omitted ` and no `details omitted` is left
 test("23b 2026-09-09: the three explicit-preview budgets are rejected at load, by name, with the replacement named", () => {
   for (const key of ["commandTokens", "reportHeadTokens", "reportTailTokens"]) {
     expect(() => open({ render: { [key]: 2 } as never }))
-      .toThrow(`Removed setting render.${key}: use render.toolCallTokens (one budget for the whole tool call)`);
+      .toThrow(`Removed setting render.${key}: use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)`);
   }
 });

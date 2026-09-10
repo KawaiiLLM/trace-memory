@@ -100,9 +100,9 @@ test("29a case 5/6 (compaction baseline, retained entries): the custom summary a
     const entries = h.memory.store.listSourceEntries(2);
     expect(entries.length).toBeGreaterThan(1);
     const supplied = carrierOf(result.compaction).supplied;
-    // Every selected pending entry is represented, with the tier that rendered it and both identities.
+    // Every selected pending entry is represented, in the one bounded view (30), with both identities.
     expect(supplied.entries.map(e => e.nativeId).sort()).toEqual(entries.map(e => e.nativeId).sort());
-    expect(new Set(supplied.entries.map(e => e.tier))).toEqual(new Set([1]));
+    expect(new Set(supplied.entries.map(e => e.view))).toEqual(new Set(["bounded"]));
     expect(supplied.entries.map(e => e.id).sort()).toEqual(entries.map(e => e.id).sort());
     expect(supplied.knowledgeCommitIds).toEqual([commit]);
     // Receipt and content are one entry: the summary Pi appends carries the identities with it.
@@ -115,7 +115,7 @@ test("29a case 5/6 (compaction baseline, retained entries): the custom summary a
     const visible = view(h, { db: h.dbPath, session: 2, pi: h.ctx.sessionManager.getSessionId() });
     expect(carrierOf(compaction).session).toBe(2);
     expect(visible.raw.get(kept)).toBe("source"); // a pre-compaction source Pi retained still counts
-    expect(visible.raw.get(dropped)).toBe("tier1"); // …and one it summarised away is covered by the carrier
+    expect(visible.raw.get(dropped)).toBe("view"); // …and one it summarised away is covered by the carrier
     for (const entry of supplied.entries) expect(visible.raw.has(entry.nativeId)).toBe(true);
     // The replacement re-establishes the knowledge too: the injection entry it summarised away is gone
     // from the context, and the baseline is rebuilt from the accepted replacement alone.

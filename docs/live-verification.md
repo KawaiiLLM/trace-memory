@@ -23,6 +23,11 @@ old records with that substitution; a retired spelling now prints the usage and 
 
 # Live verification record (2026-09-08, ticket 20c compaction, after fb83b41)
 
+**30 note.** The primary/secondary tiers this record observes were retired by ticket 30: compaction
+now renders one bounded view of every pending entry, or delegates to Pi's own compaction, and the
+`Raw (tier-2 entry views, …)` title and the `render.secondary*` settings no longer exist. The record
+is kept as what the two-tier build did, not as current behaviour.
+
 Environment as in the record below (Pi 0.85.1, `openai-codex/gpt-5.6-sol`, `pi --mode rpc`,
 discovery off, fresh databases under `/tmp/tm-live3`, `/tmp/tm-live5`). Two things a live compaction
 check needs that a fake host does not: Pi refuses a manual compaction before calling any extension

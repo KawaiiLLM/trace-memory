@@ -212,8 +212,9 @@ export default function (pi: ExtensionAPI) {
     diagnostic?: string;
   };
   let catchup: Catchup | undefined;
-  /** Which tier the last compaction of this executor used, for `/trace status` (ticket 20 "Failure
-   * visibility"). A diagnostic string, not a state machine: nothing reads it back. */
+  /** What the last compaction of this executor did — the bounded views, or a native delegation and its
+   * reason — for `/trace status` (ticket 20 "Failure visibility"). A diagnostic string, not a state
+   * machine: nothing reads it back. */
   let lastCompaction: string | undefined;
   let baseline: string;
   // 29a's visible-view memo for the selected context, created by `restore` (29d: the initial
@@ -290,14 +291,15 @@ export default function (pi: ExtensionAPI) {
   type ForkTask = { kind: "noting" | "consolidation"; target: TaskTarget; boundary?: TaskBoundary };
   /** Ticket 29c "Noter fork eligibility by actual Raw availability" (parent 29). A requested Noter
    * fork runs as a fork exactly when every entry of its target is available in the inherited context
-   * in a representation it may extract from — a source entry Pi retained, or the primary (tier-1)
-   * view a carrier of ours supplied for an entry the conversation itself no longer holds. That is
-   * precisely what 29a's view calls `raw`, so a tier-2 view, a free summary, an id in prose and an
-   * absent tool result are simply not in it; an incomplete tool-call group stays the native gate's
+   * in a representation it may extract from — a source entry Pi retained, or the bounded view a
+   * carrier of ours supplied for an entry the conversation itself no longer holds (30: one view, and a
+   * legacy tier-1 or tier-2 carrier counts as it). That is precisely what 29a's view calls `raw`, so a
+   * free summary, an id in prose and an absent tool result are simply not in it; an incomplete
+   * tool-call group stays the native gate's
    * own check (`forkable`). One unavailable entry sends the whole target down the existing fallback
    * (27c) with its exact membership — the invisible entry is never skipped to manufacture a forkable
    * batch. This replaces ticket 20's blanket pre-compaction refusal: a pre-compaction entry Pi
-   * retained, and one a custom compaction carried at tier 1, are both available and both fork.
+   * retained, and one a custom compaction carried as a bounded view, are both available and both fork.
    *
    * A view with no Raw at all is unknown coverage, not proven absence, and is refused for the same
    * reason 27a refuses an unknown context measure: nothing about the inherited context is
@@ -307,7 +309,7 @@ export default function (pi: ExtensionAPI) {
     if (!view.raw.size) return "Raw availability: the selected context holds no conversation entry of ours, so nothing establishes that this task's evidence is inherited";
     const missing = entries.find(entry => !view.raw.has(entry.nativeId));
     return missing ? `Raw availability: entry ${missing.id} (T${missing.turnId}, native ${missing.nativeId}) of this batch is not in the inherited context:`
-      + " Pi retained no source for it and no compaction carrier supplied its primary view" : undefined;
+      + " Pi retained no source for it and no compaction carrier supplied its bounded view" : undefined;
   };
   /** Why a requested fork will not run with inherited context for this task, decided against this
    * host's live state at admission — before anything is frozen, so the refused task is admitted once
@@ -975,12 +977,13 @@ export default function (pi: ExtensionAPI) {
     if (!sessionId || !head) return { summary: { summary: "" } };
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
-  // Ticket 20 "Compaction escalation": core escalates over its own frozen read snapshot and this
-  // handler only binds the outcome. Tiers 1 and 2 are a complete custom replacement; tier 3 returns
-  // nothing at all, so Pi proceeds through its normal compaction path — which may call a model, and
-  // may fail or be cancelled, with Pi's own outcome handling (this is the one place where compaction
-  // reaches a model, and it is Pi's call, not ours). Nothing here waits for or starts a worker, and
-  // an unused custom summary confirms no injection (29d: there are no deliveries to confirm).
+  // Ticket 20 "Compaction escalation", as ticket 30 left it: core renders its own frozen read snapshot
+  // in the one bounded view and this handler only binds the outcome. Either that is a complete custom
+  // replacement, or core asks for native delegation and this returns nothing at all, so Pi proceeds
+  // through its normal compaction path — which may call a model, and may fail or be cancelled, with
+  // Pi's own outcome handling (this is the one place where compaction reaches a model, and it is Pi's
+  // call, not ours). Nothing here waits for or starts a worker, and an unused custom summary confirms
+  // no injection (29d: there are no deliveries to confirm).
   pi.on("session_before_compact", (event, context) => {
     ensure(context); if (!enabled()) return; flush();
     let result: ReturnType<typeof memory.compact>;
@@ -988,15 +991,15 @@ export default function (pi: ExtensionAPI) {
       if (state.sessionId) result = memory.compact(state.sessionId, state.branch, state.head);
       else {
         const block = memory.injection({ projectId: state.projectId });
-        result = { tier: "primary" as const, text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+        result = { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
       }
-    } catch (error) { result = { tier: "native", reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
-    lastCompaction = result.tier === "native" ? `native delegation — ${result.reason}` : `${result.tier} views`;
+    } catch (error) { result = { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
+    lastCompaction = "native" in result ? `native delegation — ${result.reason}` : "bounded entry views";
     context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
-    if (result.tier === "native") return; // no custom replacement: Pi's own compaction runs and reports
+    if ("native" in result) return; // no custom replacement: Pi's own compaction runs and reports
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
-    // leaves the earlier baseline untouched, and a tier-3 delegation carries no `traceMemory` at all.
+    // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
     return { compaction: { summary: result.text, firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore, details: carrier(result.supplied) } };
   });
   pi.on("session_compact", event => {

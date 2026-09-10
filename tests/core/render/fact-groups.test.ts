@@ -78,8 +78,7 @@ test("carry, compact, Noter history and the Consolidator range share the one fac
     // the remaining four still share the one renderer, which is what the ruling is about.
     expect(m.branchSummary(s.id, "main", b.id)).toContain(`Facts:\n${expected}\nCommits`);
     const compact = m.compact(s.id, "main", b.id);
-    expect(compact.tier).toBe("primary");
-    if (compact.tier === "native") throw new Error(compact.reason);
+    if ("native" in compact) throw new Error(compact.reason);
     expect(compact.text).toContain(`Recent facts (by Turn):\n\n${expected}\n\nRaw:`);
     await m.noting({ sessionId: s.id, branch: "main", headTurnId: b.id, mode: "subagent" });
     expect((calls.at(-1)! as NotingAgentInput).material.facts.join("\n")).toBe(expected);

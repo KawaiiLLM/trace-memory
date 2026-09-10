@@ -249,8 +249,9 @@ test("review 2026-09-08: a downgraded session's next task is admitted as a subag
     await settled(f);
     expect(f.h.memory.store.forkSuppression(1)).toBeTruthy();
     // New entries make the backlog due again, and the subagent the latch selected runs it.
-    f.manager().appendMessage(reply("new source A " + "word ".repeat(6000)) as never);
-    f.manager().appendMessage(reply("new source B " + "word ".repeat(6000)) as never);
+    // 30: one entry view is capped at `render.entryTokens` (2,000), so it takes more entries to make
+    // the backlog due again at the ordinary 10,000-token trigger.
+    for (const label of ["A", "B", "C", "D", "E", "F"]) f.manager().appendMessage(reply(`new source ${label} ` + "word ".repeat(6000)) as never);
     await f.h.emit("agent_end"); await f.h.drain();
     const target = { sessionId: 1, branch: "main", headTurnId: 1 };
     expect(f.h.memory.taskEligibility("noting", target).due).toBe(true); // 29d: due is the whole answer; no mode pauses it

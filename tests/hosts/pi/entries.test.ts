@@ -101,7 +101,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
     const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
-    expect(audit).toMatchObject({ branch: "main", viewVersion: "23-v2-pi-lines", viewBudgets: { toolCallTokens: 300, entryTokens: 10000 } });
+    expect(audit).toMatchObject({ branch: "main", viewVersion: "30-v3-one-view", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
@@ -123,8 +123,8 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
 });
 
 test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bounded entry bytes", async () => {
-  // 20c: compact escalates to its lossier secondary views once the primary ones exceed the shared
-  // Raw ceiling, so this byte-comparison case gives every consumer — the host included — room for the
+  // 20c/30: compact delegates to native compaction once the bounded views exceed the shared Raw
+  // ceiling, so this byte-comparison case gives every consumer — the host included — room for the
   // whole pending set, exactly as the subagent Noter below is given it.
   const h = host({ ...quiet, "noting.batchTokens": 100_000 });
   try {
@@ -149,7 +149,8 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
     // 29b: this host runs the fresh path by configuration. It used to get there by a capacity refusal,
     // but a fork whose whole target is visible now supplies no Raw at all and fits comfortably — which
     // is the point of case 12 and would leave this byte comparison with no fresh request to read.
-    const runner = host({ "noting.triggerTokens": 10000, "noting.batchTokens": 100000, "noting.forkModeDefault": false });
+    // 30: one entry view is capped at 2,000 tokens, so the trigger this fresh run needs is smaller.
+    const runner = host({ "noting.triggerTokens": 1000, "noting.batchTokens": 100000, "noting.forkModeDefault": false });
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");
@@ -368,14 +369,19 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
   const h = host(quiet);
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
-    for (let i = 0; i < 7; i++) h.persist(reply(`chunk ${i}: ` + "word ".repeat(15000)));
+    // 30: each entry view is capped at `render.entryTokens` (2,000), so it takes more of them to pass
+    // the carry budget (`render.episodicBlockTokens`, 20,000) that this case is about.
+    for (let i = 0; i < 15; i++) h.persist(reply(`chunk ${i}: ` + "word ".repeat(15000)));
     h.persist(reply("LAST_PENDING_SENTINEL"));
     await h.emit("session_start");
-    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(9);
+    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(17);
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
     expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries beyond the carry budget truncated/);
-    expect(compacted(h.memory.compact(1, "main", 1))).toContain("LAST_PENDING_SENTINEL");
+    // 30: the same backlog is over compaction's envelope and there is no tighter rendering left to
+    // fall back on, so compact delegates to the host instead of dropping an entry to fit; the carry's
+    // own receipt above is what states an omission here.
+    expect("native" in h.memory.compact(1, "main", 1)).toBe(true);
   } finally { await h.dispose(); }
 });
 
@@ -490,20 +496,22 @@ test("23 2026-09-09: the Noter's captured request carries the address labels and
     // The identities are still bound, in storage and in the run audit.
     const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
     expect(audit.entries.every((e: { nativeId: string }) => Boolean(e.nativeId))).toBe(true);
-    expect(audit).toMatchObject({ viewVersion: "23-v2-pi-lines", viewBudgets: { toolCallTokens: 300, entryTokens: 10_000 } });
+    expect(audit).toMatchObject({ viewVersion: "30-v3-one-view", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
   } finally { await h.dispose(); }
 });
 
-test("23c 2026-09-09: the Noter prompt names the labels, the half split and the honesty clause once", () => {
+test("23c/30: the Noter prompt names the labels, the independent part budgets and the honesty clause once", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
   for (const named of ["`[T<n>#user]: <text>`", "`[T<n>#assistant]: <text>`",
     "`[T<n>#t<k>] <tool>(<key>=<value>, …)`", "`[T<n>#t<k>] <tool> <status>: <result text>`",
-    "one half for its arguments and one half for its result",
+    "one tool-call part is worth at most 100 tokens and one tool-result part at most 100, each an independent allowance",
+    "one entry at most 2,000",
     "`[... N characters truncated]`", "`[... N characters of details truncated]`"]) {
     expect([named, prompt.includes(named)]).toEqual([named, true]);
   }
   // The honesty clause is stated once, in the prompt, instead of being repeated in every marker.
   expect(prompt.match(/not inspected/g)).toHaveLength(1);
+  expect(prompt).not.toContain("one half for its arguments"); // 30: no shared budget to split
   expect(prompt).not.toContain("a quarter of it for arguments");
   expect(prompt).not.toContain("[Source entry id:");
 });
@@ -536,13 +544,18 @@ test("23c 2026-09-09: the run audit records the new marker family for a cut entr
   } finally { await h.dispose(); }
 });
 
-test("23 2026-09-09: the three removed budget keys and a per-call budget above the ceiling are rejected at load, by name", () => {
-  for (const key of ["stdoutHeadTokens", "stdoutTailTokens", "stderrTailTokens"]) {
-    const message = `Removed setting render.${key}: use render.toolCallTokens (one budget for the whole tool call)`;
+test("23/30: the removed budget keys and a part budget above the ceiling are rejected at load, by name", () => {
+  const replacement = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
+  for (const key of ["stdoutHeadTokens", "stdoutTailTokens", "stderrTailTokens", "toolCallTokens"]) {
+    const message = `Removed setting render.${key}: ${replacement}`;
     expect(() => host({ [`render.${key}`]: 60 })).toThrow(message);
     expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render: { [key]: 60 } } as never)).toThrow(message);
   }
-  expect(() => host({ "render.toolCallTokens": 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
-  expect(() => host({ "render.secondaryToolCallTokens": 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");
-  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 1_000 });
+  // 30: the tier-2 pair went with the second tier, and neither is reinterpreted as a new budget.
+  for (const key of ["secondaryToolCallTokens", "secondaryEntryTokens"]) {
+    expect(() => host({ [`render.${key}`]: 60 })).toThrow(`Removed setting render.${key}: removed with the tier-2 view`);
+  }
+  expect(() => host({ "render.toolInputTokens": 1_001 })).toThrow("Invalid render.toolInputTokens: at most 1000");
+  expect(() => host({ "render.toolResultTokens": 1_001 })).toThrow("Invalid render.toolResultTokens: at most 1000");
+  expect(DEFAULT_CONFIG.render).toMatchObject({ entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 });
 });

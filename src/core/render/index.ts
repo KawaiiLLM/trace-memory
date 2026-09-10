@@ -106,11 +106,13 @@ export const tokens = (text: string): number => {
   return total;
 };
 
-/** Ticket 23 "One entry view, two budgets": the two numbers of one profile. `B` is the most one tool
- * call is worth, `E` the most one entry is worth. They are configuration, static per installation and
- * never adjusted per batch — views stay immutable and versioned, and an over-full batch is handled by
- * selecting fewer entries. */
-export interface EntryProfile { toolCallTokens: number; entryTokens: number }
+/** Ticket 30 "One bounded Raw entry view": the three numbers of the one profile. `E` is the most one
+ * entry is worth, `C` the most one tool-call part is worth and `R` the most one tool-result part is
+ * worth. `C` and `R` are independent allowances, never a combined budget split in half (23c's `B`):
+ * room a short call leaves does not enlarge a result, or the other way round. They are configuration,
+ * static per installation and never adjusted per batch — views stay immutable and versioned, and an
+ * over-full batch is handled by selecting fewer entries. */
+export interface EntryProfile { entryTokens: number; toolInputTokens: number; toolResultTokens: number }
 /** Ticket 23 "Host contract": one stored tool result as core renders it. The host unwraps its own
  * envelope; core never inspects envelope fields. `details` is the structured data the host dropped,
  * serialized, so this view can state its size — it is never rendered whole except as the fallback for
@@ -120,13 +122,7 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "23-v2-pi-lines";
-/** Arguments are rendered before their result exists and views are immutable, so the split inside `B`
- * is fixed. Ticket 23c (user, 2026-09-09) puts it back at one half each, superseding 23a's quarter and
- * three quarters: measured on the real log the quarter cut 218 of 337 bash commands while three
- * quarters still cut 573 of 835 results, and at `B = 300` the half split totals 286K tokens against
- * 312K, −8%. */
-const ARGUMENTS_SHARE = 0.5;
+export const ENTRY_VIEW_VERSION = "30-v3-one-view";
 // One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
 // omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
 // of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in
@@ -408,49 +404,54 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
     omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
 }
 
-/** One immutable view of one source entry (ticket 23), used by Noting material, both compaction tiers,
- * branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one natural-text
- * part and one part per tool call. No call id and no native-identity header enters the model-facing
- * text — native identity and lineage stay in storage and in the run's entry audit, and the addresses
- * the Noter cites are the ones the labels carry. Allocation is two-staged: `B` caps each tool part
- * first; if the entry is still over `E`, tool parts give way, shared fairly down to their
- * label-plus-marker minimum; only when they are all at the minimum does the text part yield. Nothing is
- * emitted shorter than a part's minimum and no budget is exceeded to make room: when even the minima
- * cannot fit `E`, the capacity error leaves the entry pending. */
+/** One immutable view of one source entry (ticket 23, one profile since 30), used by Noting material,
+ * compaction, branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one
+ * natural-text part and one part per tool call. No call id and no native-identity header enters the
+ * model-facing text — native identity and lineage stay in storage and in the run's entry audit, and the
+ * addresses the Noter cites are the ones the labels carry. Allocation is staged (30 "Rendering
+ * contract"): each tool part is capped first by its own allowance, `C` for a call and `R` for a result,
+ * neither borrowed from the other; if the entry is still over `E`, result payloads give way first,
+ * then call arguments, each shared fairly down to their label-plus-marker minimum, and only then does
+ * the text part yield. Nothing is emitted shorter than a part's minimum and no budget is exceeded to
+ * make room: when even the minima cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
   choose: (address: string) => PartChoice = () => "render"): EntryView {
   const sources = sourceParts(entry, resultText, choose);
   if (!sources.length) return { content: "", receipts: [], omitted: [] };
   const ordinals = sources.map((source) => source.ordinal);
-  const text = ordinals[0] === null; // the text part, when it is rendered, is the entry's first part
-  const share = Math.floor(profile.toolCallTokens * (entry.role === "toolResult" ? 1 - ARGUMENTS_SHARE : ARGUMENTS_SHARE));
+  const isResult = entry.role === "toolResult";
   // A sealed part is rendered at its floor whatever the allocation would allow: an unselected call
   // keeps its label line and its omission marker even when its payload would have fitted.
   const parts = sources.map((source) => {
     const part = source.part();
     return source.choice === "floor" ? { ...part, render: () => part.floor } : part;
   });
+  const toolCap = isResult ? profile.toolResultTokens : profile.toolInputTokens;
   const caps = sources.map((source, index) => source.ordinal === null ? profile.entryTokens
-    : source.choice === "floor" ? parts[index]!.minimum : share);
+    : source.choice === "floor" ? parts[index]!.minimum : toolCap);
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
-  // Verified before returning, with the entry against `E` below: no tool part exceeds its share of `B`.
-  for (let index = text ? 1 : 0; index < parts.length; index++) if (parts[index]!.minimum > caps[index]!) throw capacity();
-  const build = (tool: number, room: number) => parts.map((part, index) =>
-    part.render(text && index === 0 ? room : Math.min(caps[index]!, tool)));
+  // Verified before returning, with the entry against `E` below: no tool part exceeds its own cap.
+  for (const [index, part] of parts.entries()) if (ordinals[index] !== null && part.minimum > caps[index]!) throw capacity();
+  // The order the entry cap takes room back in (30): results, then calls, then natural text. Parts of
+  // equal priority share their stage's allowance through the same per-part allocator as before, and a
+  // stage only moves once the one before it is at its floor.
+  const stage = (index: number) => ordinals[index] === null ? 2 : isResult ? 0 : 1;
   const cap = profile.entryTokens;
-  let rendered = build(share, cap), content = rendered.join("\n");
-  if (tokens(content) > cap) {
-    rendered = build(fit((tool) => build(tool, cap).join("\n"), share, cap), cap);
+  const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap];
+  const build = (room: readonly number[]) => parts.map((part, index) => part.render(Math.min(caps[index]!, room[stage(index)]!)));
+  let rendered = build(rooms), content = rendered.join("\n");
+  for (let level = 0; level < rooms.length && tokens(content) > cap; level++) {
+    rooms[level] = fit((room) => build(rooms.map((value, index) => index === level ? room : value)).join("\n"), rooms[level]!, cap);
+    rendered = build(rooms);
     content = rendered.join("\n");
-    if (tokens(content) > cap) { rendered = build(0, fit((room) => build(0, room).join("\n"), cap, cap)); content = rendered.join("\n"); }
-    if (tokens(content) > cap) throw capacity();
   }
+  if (tokens(content) > cap) throw capacity();
   return { content, receipts: [],
     omitted: ordinals.filter((ordinal, index) => ordinal !== null && rendered[index] !== parts[index]!.whole) as number[] };
 }
 
 /** Ticket 23 "`trace` assembly": an explicit read of a Turn without `full` is that Turn's selected
- * source entries, in path order, each rendered by the entry renderer under the tier-1 profile. Several
+ * source entries, in path order, each rendered by the entry renderer under the caller's profile. Several
  * assistant messages in one Turn therefore each show, a call with several native result occurrences
  * shows each occurrence, and a sibling branch's entries never appear — the caller's branch selected the
  * entries this assembles (`Store.listSourceEntries`). `tool` selects which call's parts are rendered

@@ -12,7 +12,7 @@ const setup = () => {
   const s = m.store.createSession({ projectId, host: "fake", enrollmentChoice: true, startedAt: "t", firstReplyAt: "t" });
   return { m, s };
 };
-const profile = { toolCallTokens: 300, entryTokens: 10_000 };
+const profile = { entryTokens: 10_000, toolInputTokens: 300, toolResultTokens: 300 };
 
 test("review 80e: a stored compaction summary is readable through trace, full and budgeted, and by its #assistant address", () => {
   const { m, s } = setup();
@@ -44,7 +44,7 @@ test("review 80e: a search continuation renders its deferred Raw hits under the 
     const first = m.search("needle", "raw", { cap: 1 });
     const cursor = /cursor=(\S+)/.exec(first)![1]!;
     // The host refreshes this same configuration object on restore; the page must not follow it.
-    m.config.render.toolCallTokens = 1000;
+    m.config.render.toolResultTokens = 1000;
     const last = m.search("", "raw", { cursor });
     expect(first.split("\n\nReceipts:")[0] + "\n" + last.split("\n\nReceipts:")[0]).toBe(expected);
   } finally { m.close(); }
@@ -54,8 +54,8 @@ test("review 80e: a root-array JSON payload is cut on escape-safe units, never i
   const input = JSON.stringify(Array.from({ length: 100 }, () => "xxa\nb\"c\\d "));
   const entry = { id: 1, sessionId: 1, turnId: 1, nativeId: "x", nativeLineage: "fake", role: "assistant" as const, text: "", raw: "",
     calls: [{ ordinal: 1, name: "tool", callId: "c", input, status: "attempted" }] };
-  for (const B of [300, 100]) {
-    const text = renderEntry(entry, { toolCallTokens: B, entryTokens: 10_000 }).content;
+  for (const C of [300, 100]) {
+    const text = renderEntry(entry, { entryTokens: 10_000, toolInputTokens: C, toolResultTokens: C }).content;
     const marker = text.indexOf("[...");
     expect(marker).toBeGreaterThan(0);
     const head = text.slice("[T1#t1] tool(".length, marker);
