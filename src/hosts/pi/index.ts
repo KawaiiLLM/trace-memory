@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, CANCELLED_BEFORE_FALLBACK, NOTING_CAPACITY, type ConsolidateResult, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -363,9 +363,31 @@ export default function (pi: ExtensionAPI) {
   // The return type is written out because 27b/27c's re-admission re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; factIds?: number[] }; forkAttempt?: ForkRefusal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }; forkAttempt?: ForkRefusal },
       ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
+    // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
+    // material. The foreground level is read once here, as a value — every later round of this run
+    // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to
+    // meanwhile — and Pi's own session constructor clamps it to what the worker model supports, so
+    // no per-model preference and no global default decides a worker's level. Borrowed closed-session
+    // work and manual catchup reach this line too, and inherit this executor's level, never a
+    // historical target session's.
+    // 26d: two levels are frozen, not one. `thinkingLevel` is the inherited foreground level a fork
+    // run uses (26b, unchanged: its request prefix must still match the captured parent's).
+    // `subagentThinkingLevel` is what every fresh child of this task thinks at — explicit subagent
+    // mode, a fork fallback, borrowed work, manual catchup — which is this phase's configured
+    // preference, or the same inherited level when it is `inherit` or unset. Read here, at admission,
+    // so a preference saved afterwards reaches neither this run's later rounds nor its fallback.
+    // 27d repair 3 (parent 27 line 96): a re-admitted task reuses the pair its refusal carried and
+    // reads neither the foreground level nor the preference again — this is the same task's admission
+    // continuing, and repricing fresh material is not permission to reread a frozen policy choice.
+    // (The subagent MODEL is still selected by `modelName(kind)` below: that is its first selection.)
+    const carried = options.forkAttempt;
+    const configuredThinking = flat[`${kind}Thinking`];
+    const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
+    const subagentThinking = carried ? carried.subagentThinkingLevel
+      : configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
     // 27c (parent 27 "Per-task fork fallback", amendments 5 and 6): the one rule for every fork this
     // host does not run — whatever the reason, the task runs as a subagent on the configured Noter
     // model (`notingModel`, the `session` preference included), priced by that model's own capacity,
@@ -409,41 +431,39 @@ export default function (pi: ExtensionAPI) {
     // launch, the gate or the provider raises after the task was frozen — is one re-admission, not a
     // retry: the same task, admitted once more as a subagent by `asSubagent` above, so the batch is
     // re-frozen with fresh material under the ordinary exact selection at the configured model's own
-    // capacity. A task that already ran keeps its frozen evidence membership through 18b's task
-    // boundary, and what its refused attempt produced travels with it, so both attempts stay in the
-    // one run record. The evidence path and a manual catchup's own boundary travel in `target` and
-    // `options`. Nothing is drained immediately: this is the same task, admitted once more.
-    const reroute = (refused: ForkRefusal) =>
-      attemptPhase(context, kind, target, asSubagent(refused.reason),
-        { ...options, ...(refused.boundary ? { boundary: refused.boundary } : {}), forkAttempt: refused });
+    // capacity. A task that already ran keeps its frozen evidence membership through the task
+    // boundary — 27d: its exact entry ids, never an upper bound — and its frozen levels and
+    // cancellation generation travel with it. The evidence path and a manual catchup's own boundary
+    // travel in `target` and `options`. Nothing is drained immediately: the same task, admitted once
+    // more.
+    // 27d repair 1: an attempt that sent a request already has its own run record, whose id core
+    // returned with the refusal; the run this admission makes names it in its own reason, so the two
+    // records read as the one task they are. The warning stays the reason alone.
+    // 27d repair 4: the warning is said only if this admission launched something. A task cancelled
+    // between the refusal and here drops before it freezes anything, and a cancelled user is owed no
+    // notice; every other ending, its own failure included, warns exactly as before.
+    const reroute = (refused: ForkRefusal) => {
+      const reason = refused.runId === undefined ? refused.reason : `${refused.reason} (fork attempt recorded as R${refused.runId})`;
+      const warn = () => notifyFallback(kind, refused.reason);
+      return attemptPhase(context, kind, target, { ...selected, model: modelName(kind), fallbackReason: reason },
+        { ...options, ...(refused.boundary ? { boundary: refused.boundary } : {}), forkAttempt: refused })
+        .then(result => { if ((result as { reason?: string }).reason !== CANCELLED_BEFORE_FALLBACK) warn(); return result; },
+          error => { warn(); throw error; });
+    };
     // An unknown measure — right after a compaction, before a valid reply — is not a fork base either,
     // and unlike the two above nothing downstream would refuse it, so it is rerouted here rather than
     // waiting: no whole-body estimate ever stands in for the measure.
     if (base && typeof measure?.tokens !== "number")
       return reroute({ reason: `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base` });
     const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
-    // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
-    // material. The foreground level is read once here, as a value — every later round of this run
-    // and its fork-to-subagent fallback use exactly this level, whatever the foreground switches to
-    // meanwhile — and Pi's own session constructor clamps it to what the worker model supports, so
-    // no per-model preference and no global default decides a worker's level. Borrowed closed-session
-    // work and manual catchup reach this line too, and inherit this executor's level, never a
-    // historical target session's.
-    // 26d: two levels are frozen, not one. `thinkingLevel` is the inherited foreground level a fork
-    // run uses (26b, unchanged: its request prefix must still match the captured parent's).
-    // `subagentThinkingLevel` is what every fresh child of this task thinks at — explicit subagent
-    // mode, a fork fallback, borrowed work, manual catchup — which is this phase's configured
-    // preference, or the same inherited level when it is `inherit` or unset. Read here, at admission,
-    // so a preference saved afterwards reaches neither this run's later rounds nor its fallback.
-    const inheritedThinking = pi.getThinkingLevel();
-    const configuredThinking = flat[`${kind}Thinking`];
     const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
-      subagentThinkingLevel: configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking,
+      subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),
-      // 27c: what the fork attempt this task was refused for produced, so the run this admission
-      // makes keeps its usage, its retries and its gate result — one task, one run record.
-      ...(options.forkAttempt ? { forkAttempt: options.forkAttempt } : {}) };
+      // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
+      // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
+      // admission when a cancellation happened in between.
+      ...(carried ? { forkAttempt: carried, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
     if (kind === "consolidation") return memory.consolidate(common);
     // 26a: this is where the host learns a Noting outcome, on every admission path it has.
     const admitted = memory.noting(common).then(result => { countNoting(target.sessionId, result, context); return result; });
@@ -456,10 +476,11 @@ export default function (pi: ExtensionAPI) {
     return admitted.catch(error => error instanceof Error && error.cause === "task admission" && error.message.startsWith(NOTING_CAPACITY)
       ? reroute({ reason: error.message.replace(/; left pending$/, "") }) : Promise.reject(error))
       // 27c: the launch, the gate or the provider refused this fork after the task was frozen. Core
-      // recorded no run for that attempt and handed the refusal back unread, so the one re-admission
-      // happens here — on the frozen batch's own entries, carrying what the attempt produced. The
-      // re-admitted task runs fresh, so nothing it returns can be a refusal again.
-      .then(result => { const refused = (result as { refused?: ForkRefusal }).refused; return refused ? reroute(refused) : result; });
+      // handed the refusal back unread, so the one re-admission happens here — on the frozen batch's
+      // own entries. The re-admitted task runs fresh, so nothing it returns can be a refusal again.
+      // 27d: `runId` is core's record of that attempt, present exactly when it sent a request.
+      .then(result => { const dropped = result as { refused?: ForkRefusal; runId?: number };
+        return dropped.refused ? reroute({ ...dropped.refused, ...(dropped.runId !== undefined ? { runId: dropped.runId } : {}) }) : result; });
   };
   // Keep the existing storage provenance value; session.project_declaration controls sharing.
   const ownProject = (piId: string) => (memory.store.findProjectByName(`pi:${piId}`)

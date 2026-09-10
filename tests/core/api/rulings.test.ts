@@ -1369,3 +1369,126 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   expect(history).not.toContain(`[F${siblingOnly}]`); expect(history).not.toContain("SIBLING ONLY");
   expect(material.text.fresh).not.toContain("SIBLING ONLY");
 });
+
+// ---- 27 review 2026-09-10: one run record per attempt, exact membership, the cancellation fence ----
+
+test("27 review: each attempt is its own run record", async () => {
+  // User ruling 2026-09-10, superseding 27c's "one run record for both attempts" (ticket text, never
+  // a ruling): a refused attempt that sent a request is finalized by core before the refusal goes
+  // back to the host, and the run the re-admission makes charges only itself.
+  const { s, t } = session(); memory.close();
+  const sent: (string | undefined)[] = [];
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    sent.push(input.fallbackReason);
+    if (sent.length === 1) return { outcome: "failure", output: "context overflow: prompt is too long", mode: "fork",
+      request: { fork: true }, usage: { input: 1234, output: 7 }, retries: [{ attempt: 1, error: "overloaded" }],
+      nativeLog: "/tmp/fork-attempt.jsonl", refused: { reason: "context overflow: prompt is too long" } };
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return { outcome: "success", output: "done", mode: "subagent", request: { fresh: true }, usage: { input: 5, output: 1 }, fallbackReason: input.fallbackReason };
+  });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const first = await memory.noting({ ...target, mode: "fork" }) as { outcome: string; refused?: { reason: string }; runId?: number };
+  expect(first.outcome).toBe("dropped");
+  expect(first.runId).toBe(1); // the attempt that sent a request has a record, and the host is told which
+  const attempt = memory.store.getRun(1)!;
+  expect(attempt.mode).toBe("fork");
+  expect(attempt.outcome).toBe("failure");
+  expect(attempt.request).toBe(JSON.stringify({ fork: true }));
+  const attemptBody = JSON.parse(attempt.response!);
+  expect(attemptBody.requestedMode).toBe("fork");
+  expect(attemptBody.usage).toEqual({ input: 1234, output: 7 });
+  expect(attemptBody.retries).toEqual([{ attempt: 1, error: "overloaded" }]);
+  expect(attemptBody.nativeLog).toBe("/tmp/fork-attempt.jsonl");
+  expect(attemptBody.problems).toEqual(["context overflow: prompt is too long"]);
+  expect(attemptBody.fallbackReason).toBeUndefined(); // the reason belongs to the run that fell back
+  expect(memory.store.listSourceEntries(s.id).some(e => memory.store.entryNoted(e.id))).toBe(false);
+
+  // The re-admission, as the host makes it: the reason names the first record, and the run records
+  // only its own spend — never the attempt's 1234 tokens a second time.
+  const reason = `${first.refused!.reason} (fork attempt recorded as R${first.runId})`;
+  const second = await memory.noting({ ...target, mode: "fork", effectiveMode: "subagent", fallbackReason: reason, forkAttempt: first.refused });
+  expect(second.outcome).toBe("success");
+  const run = memory.store.getRun(2)!;
+  expect(run.mode).toBe("subagent");
+  const body = JSON.parse(run.response!);
+  expect(body.usage).toEqual({ input: 5, output: 1 });
+  expect(body.fallbackReason).toBe(reason);
+  expect(memory.store.listRuns(s.id).filter(r => r.kind === "noting").map(r => r.mode)).toEqual(["fork", "subagent"]);
+});
+
+test("27 amendment 6: frozen membership survives fallback or the task stays pending", async () => {
+  // The frozen batch is taken whole or not at all. A capacity that holds only its oldest entry used
+  // to pop the newer one and report success on the subset; now the batch waits.
+  const { s, t } = session();
+  const e1 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u1", turnId: t.id, role: "user", text: "first evidence", raw: "first evidence", calls: [] });
+  const t2 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "second", startedAt: time });
+  const e2 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u2", turnId: t2.id, role: "user", text: "second evidence", raw: "second evidence", calls: [] });
+  memory.selectEntries(s.id, "main", [e1.id, e2.id]);
+  const target = { sessionId: s.id, branch: "main", headTurnId: t2.id, mode: "subagent" as const };
+  // What the batch really costs, priced the way the freeze prices it: instructions, tool definitions
+  // and the prepared fresh text. The oldest entry's own price is the allowance that fits one, not two.
+  const instructions = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  const priced = (entryIds: number[]) => {
+    const frozen = freezeNoting(memory.store, { ...target, boundary: { entryIds } }, memory.config);
+    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text.fresh);
+  };
+  const capacity = { inputTokens: priced([e1.id]), prefixTokens: 0 };
+  expect(priced([e1.id, e2.id])).toBeGreaterThan(capacity.inputTokens);
+  await expect(memory.noting({ ...target, boundary: { entryIds: [e1.id, e2.id] }, capacity }))
+    .rejects.toThrow(api.NOTING_CAPACITY);
+  expect(calls).toEqual([]); // nothing ran on a smaller batch
+  expect(memory.pendingEntries(s.id, "main", t2.id).map(e => e.id)).toEqual([e1.id, e2.id]);
+
+  // With room, the same boundary runs on exactly those entries, and the audit says so.
+  const ran = await memory.noting({ ...target, boundary: { entryIds: [e1.id, e2.id] } });
+  expect(ran.outcome).toBe("success");
+  expect(calls[0]!.entryIds).toEqual([e1.id, e2.id]);
+  expect(calls[0]!.entryAudit.entries.map(e => e.id)).toEqual([e1.id, e2.id]);
+
+  // A member another executor already processed drops the task with its reason, and re-processes
+  // nothing: this is the claim fence a fresh freeze would otherwise walk straight past.
+  const t3 = memory.store.appendTurn({ sessionId: s.id, parentTurnId: t2.id, kind: "turn", userPrompt: "third", startedAt: time });
+  const e3 = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "u3", turnId: t3.id, role: "user", text: "third evidence", raw: "third evidence", calls: [] });
+  memory.selectEntries(s.id, "main", [e1.id, e2.id, e3.id]);
+  const before = calls.length;
+  const dropped = await memory.noting({ ...target, headTurnId: t3.id, boundary: { entryIds: [e2.id, e3.id] } }) as { outcome: string; reason?: string };
+  expect(dropped.outcome).toBe("dropped");
+  expect(dropped.reason).toContain(api.NOTING_MEMBERSHIP);
+  expect(dropped.reason).toContain(`entries ${e2.id} of the frozen batch`);
+  expect(calls).toHaveLength(before); // no model call, and no run
+  expect(memory.pendingEntries(s.id, "main", t3.id).map(e => e.id)).toEqual([e3.id]);
+});
+
+test("27: cancellation between refusal and re-admission launches no fallback", async () => {
+  // Parent 27 line 83: "User cancellation, stop, shutdown, claim loss or disabled enrollment must
+  // not launch fallback work." The refused attempt carries the generation it was admitted under;
+  // `cancelTasks()` advances it, with or without stopping, and the re-admission drops.
+  const { s, t } = session(); memory.close();
+  const generations: unknown[] = [];
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput & { cancellation?: number };
+    generations.push(input.cancellation);
+    if (generations.length === 1) return { outcome: "failure", output: "context overflow", request: null, refused: { reason: "context overflow" } };
+    input.tools.find(tool => tool.name === "note")!.execute({ facts: [] });
+    return ok([]);
+  });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  const first = await memory.noting({ ...target, mode: "fork" }) as { outcome: string; refused?: unknown };
+  expect(first.outcome).toBe("dropped");
+  expect(memory.store.listRuns(s.id)).toEqual([]); // this refusal sent nothing, so it recorded nothing
+  const frozen = generations[0] as number;
+
+  memory.cancelTasks(); // /trace stop, between the refusal and the re-admission — no stopping flag
+  const dropped = await memory.noting({ ...target, mode: "fork", effectiveMode: "subagent",
+    fallbackReason: "context overflow", forkAttempt: first.refused, cancellation: frozen });
+  expect(dropped).toEqual({ outcome: "dropped", reason: api.CANCELLED_BEFORE_FALLBACK });
+  expect(generations).toHaveLength(1); // no fresh request
+  expect(memory.store.listRuns(s.id)).toEqual([]);
+  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+
+  // The cancellation stopped this executor's pending fallback, not the executor: a task admitted
+  // after it carries the current generation and runs.
+  expect((await memory.noting({ ...target, mode: "subagent" })).outcome).toBe("success");
+  expect(generations).toHaveLength(2);
+});

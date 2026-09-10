@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { hash, messageKey, verifyForkRequest, verifyNativeRequest } from "../../../src/hosts/pi/fork.ts";
-import { placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
+import { addUsage, placeholderUsage, runNative } from "../../../src/hosts/pi/native.ts";
 import { NOTING_INCOMPLETE, recorded } from "../../source-fixture.ts";
 import { broken, call, fixture, memoryBatch, noteBatch, say, settled, sse, toolResults, usage, worker, type Body } from "./native-fixture.ts";
 
@@ -649,3 +649,13 @@ test("review 2026-09-10 P2: the child's thinking pair is reported through progre
     expect(typeof first?.thinking?.effective).toBe("string");
   } finally { await f.dispose(); }
 }, 20000);
+
+test("27d repair 5 (review 2026-09-10): usage accumulates over the union of both operands' keys", () => {
+  // A counter only one response reports is kept: a cross-model fallback used to drop `reasoning` and
+  // `cacheWrite1h` the moment the other model omitted them, which is metadata loss, not an unknown.
+  expect(addUsage({ input: 10, reasoning: 7, cacheWrite1h: 20 }, { input: 5 })).toEqual({ input: 15, reasoning: 7, cacheWrite1h: 20 });
+  expect(addUsage({ input: 5 }, { input: 10, reasoning: 7 })).toEqual({ input: 15, reasoning: 7 });
+  expect(addUsage({ cost: { input: 1 } }, { cost: { output: 2 } })).toEqual({ cost: { input: 1, output: 2 } }); // nested counters too
+  expect(addUsage(undefined, { input: 3 })).toEqual({ input: 3 });
+  expect(addUsage({ input: 3 }, undefined)).toEqual({ input: 3 }); // an unreported response adds nothing
+});

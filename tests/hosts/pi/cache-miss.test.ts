@@ -89,6 +89,9 @@ test("19c 2026-09-08: a request that failed the prefix check does not count towa
     const response = JSON.parse(run.response!);
     expect(response.fallbackReason).toContain("native prefix mismatch");
     expect(response.verification.native.passed).toBe(false);
+    // 27d: a gate rejection sends nothing, so it is not an attempt and records no run of its own —
+    // this one re-admitted run is the whole audit of the task, and it carries the rejected gate result.
+    expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
     expect(f.h.memory.store.forkSuppression(1)).toBeNull();
     expect(misses(f.h)).toEqual([]);
   } finally { await f.dispose(); }

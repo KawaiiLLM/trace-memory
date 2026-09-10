@@ -65,7 +65,10 @@ export interface ConsolidationAgentInput extends AgentControl {
   reportRequest(request: unknown): void;
 }
 export type ConsolidateResult =
-  | { outcome: "dropped" | "empty" }
+  // 27d: two variants rather than one union member — a dropped task may name why it dropped, and the
+  // outcome alone is what narrows the results that own a `problems` list.
+  | { outcome: "dropped"; reason?: string }
+  | { outcome: "empty" }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
       committed: CommittedKnowledgeOp[]; diagnostics: ConsolidationDiagnostic[];
