@@ -516,18 +516,18 @@ still fails with a capacity message and retains pending sources. Changing `dbPat
 requires reloading the extension. A disabled session's footer is the compact
 `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow indicator and its counts.
 
-## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a)
+## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a, bounded recovery since 28b)
 
 `session_before_compact` reconciles persisted history, then asks core to allocate over
-one frozen read snapshot of the selected path. Rendering never changes that set: compact
-takes no claim, waits for no worker, starts no worker and advances no progress, so a Noter
-finishing concurrently can make the snapshot redundant but never incomplete.
-`memory.compact(...)` returns one of two outcomes rather than a string:
+one frozen read snapshot of the selected path. Rendering never changes that set: allocation
+takes no claim and advances no progress, so a Noter finishing concurrently can make the
+snapshot redundant but never incomplete. `memory.compact(...)` returns one of two outcomes
+rather than a string:
 
 | Outcome | When | What the adapter returns |
 |---|---|---|
 | `{text, supplied, charged}` | the knowledge block at its baseline, the pending facts and every pending entry's bounded view fit the envelope | the text, as `compaction.summary` |
-| `{native: true, reason}` | a required window overflows after lending, or an entry's minima exceed the configured profile | nothing at all, with a reason naming the window and its numbers |
+| `{native: true, reason, over?}` | a required window overflows after lending, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
 
 Ticket 28a replaced 25c's "knowledge plus one shared 20,000-token envelope" with three
 material windows of 10,000 tokens each — knowledge (`render.knowledgeBlockTokens`), the
@@ -550,12 +550,70 @@ derived from the same value the adapter returns, never from Pi's own preparation
 Ticket 30 retired the second, tighter rendering that used to stand between the custom
 replacement and the delegation: the views compaction emits are `renderEntry` under the one
 configured profile — the same bytes a Noter, the token counters and `trace` use, under the
-ordinary `Raw:` title — and there is no second profile, no second block title and no recovery
-worker of ours (28 amendment 9). It stays deterministic local work: entry order, the source
+ordinary `Raw:` title — and there is no second profile and no second block title (28 amendment 9;
+the one worker a compaction may start is 28b's recovery above, which changes what is pending, never
+how a view is rendered). It stays deterministic local work: entry order, the source
 addresses, user boundaries and the non-text placeholder are preserved; each tool part keeps its
 name, its `T<id>#t<n>` address and, for a result, its status; text is cut with the same
 `[... N characters truncated]` marker. No view or summary becomes a source entry, a fact or a
 processing receipt.
+
+### Bounded recovery inside the hook (28b)
+
+A required window over budget is the one case that starts memory work from a compaction — one
+bounded recovery operation attached to this attempt, not a second scheduler. The handler is
+asynchronous, and Pi awaits it (`extensions/runner.js:632`):
+
+```text
+freeze (the selected path, its pending entries, its initially applicable pending facts)
+  -> allocate -> `over`? -> one Noting for the Raw window and/or one Consolidation for the
+     facts window, launched together when both are over
+  -> await -> reallocate, which is how committed progress is re-read (nothing is subtracted
+     because a task merely ran)
+  -> facts now over with Consolidation still unused? -> run it once -> reallocate
+  -> persist the replacement with its carrier, or delegate to Pi with the reason
+```
+
+**One use per phase per attempt**, whatever that use ended as: two rounds are the whole shape
+the rule needs (28 amendment 1 — one flag per phase plus the promises the host already holds).
+Each task is one ordinary bounded batch admitted through `attemptPhase`: subagent mode on the
+configured phase model, at the levels admission freezes (26d), in a child whose own automatic
+compaction is off (27b), so a recovery worker can never compact recursively and never forks the
+context being compacted. A batch that leaves backlog behind delegates; no larger-than-normal
+batch is ever built to avoid the fallback. The Noting boundary is the frozen entry ceiling
+(`maxEntryId`) rather than exact membership, because exact membership is whole-or-nothing
+against `noting.batchTokens` and would refuse every batch an overflowing Raw window produces;
+ids are allocated in order, so the ceiling is the frozen set minus whatever gets noted. The
+Consolidation allowance is the frozen pending facts plus the facts this operation's own Noting
+committed.
+
+**Slots, claims and reuse.** The executor's one slot per phase is unchanged, but its entry now
+carries the task's target and frozen boundary beside its promise. A compatible task — same
+target, same frozen boundary — is awaited instead of duplicated and counts as that phase's one
+use (28 amendment 2), because its commits are exactly what the reallocation reads. An occupied
+slot holding anything else is waited out as capacity: not counted as progress, not cancelled,
+and its claim is never taken. A foreign claim on the target refuses this task at admission as
+it refuses any other. The awaited phase is named through the existing `ui.notify` lines and the
+footer's own running indicator; there is no second dialog and no wait loop.
+
+**Cancellation is Pi's own.** `event.signal` is the compaction abort controller behind Esc and
+`session.abortCompaction()` (`agent-session.js:1476` manual, `:1750` automatic, `:1604` aborts
+both). It travels to the tasks this operation launched — and only those — as
+`TaskOptions.signal`, so an abort closes those tasks' tools and invalidates their claims and
+touches nothing else; cancelling a reused wait cancels the wait, never the task. A cancelled
+compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted (`:1509`,
+`:1770`): nothing is published, and no native fallback is started, because cancellation is not
+a capacity failure. Committed progress — an explicit empty Noting commit included (26a) —
+survives. A worker failure keeps its run audit and delegates only once the other task is
+terminal, which awaiting both settles by construction. If the selected path moved while
+recovery ran, the attempt is not retargeted: it delegates, and nothing prepared for the old
+path is published into the new one.
+
+All three of Pi's automatic triggers reach this sequence — after `agent_end`
+(`agent-session.js:1634`), before prompt submission (`:891`) and between tool rounds (`:274`),
+all through `_runAutoCompaction` — and so does `/compact`. Ordinary triggers, drains, tree
+switching, borrowed work and manual catchup are untouched; outside this handler a compaction
+still starts no worker.
 
 The native delegation is the one place where compaction reaches a model, and the call is Pi's:
 the adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or

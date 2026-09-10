@@ -2,9 +2,11 @@
 // cache-miss.test.ts (19c). It exercises the real installed SDK: a real Pi SessionManager and
 // AgentSession for the parent, a real native child fork, the real pi-ai adapters and a real temporary
 // SQLite database. Only HTTP is stubbed, so every request below is one the adapter really serialized.
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, vi } from "vitest";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { host } from "./test-host.ts";
 import { toolDefinitions } from "../../../src/core/api/index.ts";
 import type { NativeForkTask, ThinkingLevel } from "../../../src/hosts/pi/native.ts";
@@ -30,6 +32,64 @@ export const submitted = (body: Body) => (body.messages ?? []).some((m: Body) =>
 
 export const noteBatch = { facts: [{ category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: ["T1#user"] }] };
 export const memoryBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
+
+/** A real Pi parent session that really runs extensions: `DefaultResourceLoader` accepts inline
+ * `extensionFactories`, so `compact()` finds real handlers. Nothing here touches ~/.pi or
+ * ~/.trace-memory. */
+export async function piSession(options: { extensions: ((pi: ExtensionAPI) => void)[];
+  compaction?: { enabled?: boolean; keepRecentTokens?: number; reserveTokens?: number }; contextWindow?: number;
+  /** Foreground tools the session registers, for the trigger that fires between tool rounds (28b). */
+  tools?: { name: string; description: string; parameters: unknown; execute: () => Promise<unknown> }[];
+  /** Set while the extension factories run, so an extension that reads its configuration from the
+   * environment (this host does) is built against this fixture's own database. */
+  env?: Record<string, string>;
+  /** Runs once the fixture's directories exist and before any extension is built — where a case
+   * seeds a file an extension reads at construction. */
+  prepare?: (dirs: { dir: string; agentDir: string }) => void }) {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-baseline-"));
+  const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
+  const origin = "https://fake-baseline.invalid";
+  // `keepRecentTokens: 1` is what lets a tiny scripted session compact at all; `retry.enabled: false`
+  // keeps a scripted failure one failure.
+  options.prepare?.({ dir, agentDir });
+  const compaction = { enabled: false, keepRecentTokens: 1, reserveTokens: 1, ...options.compaction };
+  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction }));
+  const contextWindow = options.contextWindow ?? 200_000;
+  writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fake: { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key",
+    api: "openai-completions", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow, maxTokens: 8192,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
+  const sent: Record<string, any>[] = [];
+  // `signal` is the request's own: a case that holds a reply open needs it to end that reply when the
+  // user aborts, exactly as a real provider call ends.
+  let respond: (body: Record<string, any>, signal?: AbortSignal) => Response | Promise<Response> = () => say("Done.");
+  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)); sent.push(body); return respond(body, init.signal as AbortSignal | undefined);
+  }));
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const previousEnv = Object.fromEntries(Object.keys(options.env ?? {}).map(key => [key, process.env[key]]));
+  Object.assign(process.env, options.env ?? {});
+  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
+  const model = modelRuntime.getModel("fake", "test")!;
+  const settingsManager = SettingsManager.create(dir, agentDir);
+  const resourceLoader = new DefaultResourceLoader({ cwd: dir, agentDir, settingsManager, noExtensions: true, noSkills: true,
+    noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: options.extensions as never });
+  await resourceLoader.reload();
+  const manager = SessionManager.create(dir, join(agentDir, "sessions", "parent"));
+  const tools = (options.tools ?? []).map(tool => ({ ...tool, label: tool.name }));
+  const { session, extensionsResult } = await createAgentSession({ cwd: dir, agentDir, model, modelRuntime, settingsManager,
+    resourceLoader, sessionManager: manager, noTools: "all", tools: tools.map(t => t.name), customTools: tools as never });
+  for (const [key, value] of Object.entries(previousEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  expect(extensionsResult.errors).toEqual([]); // an inline factory that failed to load would silently drop the hooks
+  return { dir, agentDir, session, manager, sent, model,
+    script: (fn: (body: Record<string, any>, signal?: AbortSignal) => Response | Promise<Response>) => { respond = fn; },
+    dispose() {
+      session.dispose(); vi.unstubAllGlobals();
+      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+      rmSync(dir, { recursive: true, force: true });
+    } };
+}
+
 
 /** `model`/`thinkingLevel`: the parent session's model and the level it is created at (26b). The
  * default model declares no reasoning support, so Pi clamps every level on it to `off`. */

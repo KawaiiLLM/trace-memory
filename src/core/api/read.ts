@@ -37,7 +37,13 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; charged?: ChargedWindows } | { native: true; reason: string };
+export type CompactResult = { text: string; supplied: SuppliedMaterial; charged?: ChargedWindows }
+  /** 28b: `over` says which required window overflowed, so the host's bounded recovery can decide
+   * which phase to run without reading the prose of `reason`. It is present exactly when a required
+   * window is over after lending — the one condition recovery can act on. A delegation for any other
+   * reason (an entry whose minima exceed the view profile, a store error the host caught) carries
+   * none, and recovery starts nothing for it. */
+  | { native: true; reason: string; over?: { facts: boolean; raw: boolean } };
 
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
  * Diagnostics — the outcome is still the custom replacement or the native delegation, and nothing
@@ -388,7 +394,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       if (atBaseline.cost + requiredFacts + requiredRaw > envelope) {
         const over = [requiredFacts > caps.facts ? `the facts window (${pendingFacts.length} pending facts need ${requiredFacts} tokens, compaction.factsTokens ${caps.facts})` : "",
           requiredRaw > caps.raw ? `the Raw window (bounded views of ${pending.length} pending entries need ${requiredRaw} tokens, compaction.rawTokens ${caps.raw})` : ""].filter(Boolean);
-        return { native: true, reason: `required material does not fit after lending: ${over.join(" and ") || "the required windows"} exceed the `
+        return { native: true, over: { facts: requiredFacts > caps.facts, raw: requiredRaw > caps.raw },
+          reason: `required material does not fit after lending: ${over.join(" and ") || "the required windows"} exceed the `
           + `${envelope}-token envelope beside ${atBaseline.cost} tokens of knowledge, by ${atBaseline.cost + requiredFacts + requiredRaw - envelope} tokens` };
       }
       // It fits, so the rest of the envelope is knowledge's to grow into before the refills see it

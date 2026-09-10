@@ -778,6 +778,27 @@ local tasks before `close()`. Cancellation preserves available audit and unknown
 usage; closed tools and rejection handlers prevent late store access.
 
 
+### One task's cancellation signal (28b)
+
+`TaskOptions.signal?: AbortSignal` is the per-task counterpart of the executor-wide
+`cancelTasks`, and the only cancellation entry point ticket 28 needed. `execute` links the
+signal to the controller that task already owns: an abort closes that task's tool binding —
+so a commit still in flight is fenced by the existing rule, not by a new one — and aborts
+that task's run, and it reaches no other task, no other claim and no admission. A signal
+already aborted when the task is admitted cancels it before its first request. The listener
+is removed when the task settles, so an operation that ends normally leaves nothing attached
+to its signal. Its one caller today is the Pi host's compaction recovery, which passes Pi's
+own compaction `AbortSignal` (28b): Esc during a compaction ends that compaction's own
+recovery work and nothing else. Nothing else about admission, freezing, claims, slots or
+`cancelTasks(stopping?)` changes.
+
+`compact`'s native arm gains `over?: { facts: boolean; raw: boolean }`, present exactly when a
+required window is over budget after lending — the one delegation reason bounded recovery can
+act on. A delegation for any other reason (an entry whose minima exceed the view profile)
+carries none, and the host starts no worker for it. It is a discriminator, not a second
+verdict: the outcome is still the custom replacement or the delegation, and the prose of
+`reason` is unchanged.
+
 ## Manual catchup boundary (18b)
 
 `TaskOptions` (shared by `NotingInput` and `ConsolidateInput`) gains an optional

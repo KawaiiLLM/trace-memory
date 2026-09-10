@@ -318,6 +318,13 @@ export interface TaskOptions {
    * re-admission carrying a generation older than the current one was cancelled between the refusal
    * and this call, and is dropped without launching anything. */
   cancellation?: number;
+  /** 28b (parent 28 amendment 3, "Cancellation is a signal, not a new handle"): the operation that
+   * admitted this task, as an `AbortSignal` of the host's own. Core links it to THIS task's existing
+   * controller: an abort closes this task's tool binding — so nothing it was still running can commit
+   * — and aborts its own run, and it touches no other task, no other claim and no admission. It is
+   * the per-task counterpart of the executor-wide `cancelTasks`, which stays what it is. A signal
+   * already aborted when the task reaches this point cancels it before its first request. */
+  signal?: AbortSignal;
   /** 29b "Same builder, different initial state": what the child this task will run in already holds,
    * as the host derived it from that child's own starting context (29a's `visibleView`). Present only
    * for a task the host will really run with an inherited context; a fresh child — an explicit
@@ -624,6 +631,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const progress: Partial<RunAgentResult> = {};
     const task = { controller, force, close: () => {} };
     tasks.add(task);
+    // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
+    // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
+    // first, so a commit in flight is fenced, then abort the run. `task.close` is read at abort time,
+    // never captured, so the binding this closes is whichever one `bind` installed. The listener is
+    // removed with the task below: a compaction that ends without cancelling leaves nothing attached
+    // to its signal.
+    const external = input.signal;
+    const onExternalAbort = () => { task.close(); controller.abort(external!.reason); };
+    if (external?.aborted) onExternalAbort();
+    else external?.addEventListener("abort", onExternalAbort, { once: true });
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
@@ -642,6 +659,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
         : await runConsolidation(store, frozen as ReturnType<typeof freezeConsolidation>, agent, cfg, bind);
     } finally {
+      external?.removeEventListener("abort", onExternalAbort);
       task.close(); tasks.delete(task);
       try { if (!store.closed) store.releaseClaim(claim); }
       catch (error) {
