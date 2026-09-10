@@ -67,8 +67,12 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
     expect(result).toBeUndefined(); // no summary at all: Pi's own compaction path runs and reports
     expect(h.notices.at(-1)).toContain("compaction used native delegation");
     expect(h.notices.at(-1)).toContain("exceed");
-    // Delegating starts no extraction, advances no progress, erases no source and confirms nothing.
-    expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
+    // 28b: a required window over budget is now one bounded recovery attempt before the delegation —
+    // this Noter fails, as it has all along, so the delegation and everything below are unchanged.
+    // What the delegation itself does is still nothing: no further run, no progress, no erased source.
+    expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore + 1);
+    expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure");
+    expect(h.notices.at(-1)).toContain("(after recovery: Noting)");
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
     // Pi persists a compaction entry only when compaction succeeded, so this failed/cancelled route
     // wrote none — and the next fork-mode Noter is not downgraded: every entry is still retained.

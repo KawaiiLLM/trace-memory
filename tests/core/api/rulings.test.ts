@@ -1754,6 +1754,57 @@ test("27: cancellation between refusal and re-admission launches no fallback", a
   expect(generations).toHaveLength(2);
 });
 
+test("28 amendment 3: cancellation is a signal — the signalled task's tools close and its claim goes, and no other task is touched", async () => {
+  // "Admission accepts this compaction's `AbortSignal`; core wires it into its existing task
+  // cancellation so that only this task's tools close and only its claim is invalidated." The
+  // executor-wide `cancelTasks` is untouched: what follows uses neither it nor `stopping`.
+  const { s, t } = session(); memory.close();
+  let releaseNoting = () => {};
+  const held = new Promise<void>(resolve => { releaseNoting = resolve; });
+  const submissions: unknown[] = [];
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    if (input.kind !== "noting") return ok([]); // the Consolidation below commits through its own tool
+    await held; // still in flight when the signal fires
+    submissions.push(input.tools.find(tool => tool.name === "note")!.execute({ facts: [
+      { category: "observation", actor: "user", text: "a fact this cancelled run tries to commit", source: [`T${t.id}#user`] }] }));
+    return ok([]);
+  });
+  const target = { sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" as const };
+  const controller = new AbortController();
+  const cancelled = memory.noting({ ...target, signal: controller.signal });
+  // A second task, of the other phase, running under no signal of its own: the one this must not touch.
+  const others = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
+    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "the durable claim of the untouched task", source: [`T${t.id}#user`] }] });
+  expect(String(others)).not.toContain("rejected");
+  const untouched = memory.consolidate(target);
+
+  controller.abort();
+  releaseNoting();
+  const result = await cancelled;
+  // Its tools are closed: the submission after the abort is rejected, and nothing of it is committed.
+  expect(String(submissions[0])).toContain("rejected: run has finished");
+  expect(memory.store.listSessionFacts(s.id).map(f => f.text)).toEqual(["the durable claim of the untouched task"]);
+  expect(result.outcome).not.toBe("success");
+  // Its claim is gone, so the same target is admissible again — the executor was not stopped.
+  expect(memory.store.getClaim(s.id, "noting")).toBeNull();
+  expect((await untouched).outcome).toBe("success"); // the unsignalled task of the other phase ran to completion
+  expect(memory.taskEligibility("noting", { sessionId: s.id, branch: "main", headTurnId: t.id })).toBeDefined();
+});
+
+test("28 amendment 3: a signal already aborted at admission cancels that task before its first request", async () => {
+  const { s, t } = session(); memory.close();
+  const requests: unknown[] = [];
+  memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    requests.push(raw); (raw as NotingAgentInput).tools.find(tool => tool.name === "note")!.execute({ facts: [] }); return ok([]);
+  });
+  const controller = new AbortController(); controller.abort();
+  const result = await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent", signal: controller.signal });
+  expect(result.outcome).not.toBe("success");
+  expect(requests).toEqual([]);
+  expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0); // nothing advanced
+});
+
 // ---- 29e: Consolidation's exact fact target and its cancellation fence (parent 29 cases 19 and 20)
 
 test("29e (parent 27 amendment 6, case 19): a Consolidation fork's exact fact target survives fallback or the task stays pending", async () => {

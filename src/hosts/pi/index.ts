@@ -250,7 +250,24 @@ export default function (pi: ExtensionAPI) {
   };
   let current: { started: string; id?: number } | undefined;
   const pending = new Set<Promise<unknown>>();
-  const slots = new Set<"noting" | "consolidation">();
+  /** 28 amendment 2: the executor's one slot per phase, and what occupies it. The slot itself is
+   * unchanged — one task of a kind at a time — but the entry now carries the task's target and its
+   * frozen boundary beside the promise, because 28b's recovery has to tell a task it may reuse
+   * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
+   * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
+  type Slot = { target: TaskTarget; boundary?: TaskBoundary; done?: Promise<unknown> };
+  const slots = new Map<"noting" | "consolidation", Slot>();
+  /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
+   * over `TaskBoundary` rather than by a serialization whose key order would decide it. An ordinary
+   * automatic task carries no boundary and is therefore not the same frozen range as a recovery
+   * task's. */
+  const sameTask = (slot: Slot, target: TaskTarget, boundary?: TaskBoundary) => {
+    const ids = (value?: readonly number[]) => value === undefined ? "-" : [...value].sort((a, b) => a - b).join(",");
+    const a = slot.boundary, b = boundary;
+    return slot.target.sessionId === target.sessionId && slot.target.branch === target.branch && slot.target.headTurnId === target.headTurnId
+      && (a?.maxEntryId ?? null) === (b?.maxEntryId ?? null) && ids(a?.exactEntryIds) === ids(b?.exactEntryIds)
+      && ids(a?.allowedFactIds) === ids(b?.allowedFactIds) && ids(a?.exactFactIds) === ids(b?.exactFactIds);
+  };
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
   const missDetected = new Set<"noting" | "consolidation">();
@@ -427,7 +444,7 @@ export default function (pi: ExtensionAPI) {
   // The return type is written out because 27b/27c's re-admission re-enters this function.
   const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
-      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal },
+      options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
       ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled()) return Promise.resolve({ outcome: "dropped" } as const);
     // 26b: admission is the freeze point of the worker's thinking level, beside its model and its
@@ -531,6 +548,12 @@ export default function (pi: ExtensionAPI) {
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),
+      // 28b (parent 28 amendment 3): the admitting operation's cancellation, for the one operation
+      // that has one — a compaction's recovery task. Core links it to this task's own controller, so
+      // an Esc during compaction closes this task's binding and aborts this task, and nothing else.
+      // It travels with a re-admission (`reroute` below spreads these options), because that is the
+      // same task continuing.
+      ...(options.signal ? { signal: options.signal } : {}),
       // 27c: the refused attempt's gate result, for a refusal that recorded no run of its own.
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
@@ -890,7 +913,8 @@ export default function (pi: ExtensionAPI) {
         // explicit path (manual tools, reads, receipts, /trace catchup) are untouched.
         .filter(target => kind !== "noting" || !notingPaused(target.sessionId));
       if (!candidates.length) continue;
-      slots.add(kind); // Reserve before any asynchronous admission or model work.
+      const slot: Slot = { target: own }; // ordinary automatic work: the whole pending set, no frozen boundary
+      slots.set(kind, slot); // Reserve before any asynchronous admission or model work.
       const work = async () => {
         for (const { borrowed, ...target } of candidates) {
           if (closed || !enabled()) return;
@@ -915,6 +939,7 @@ export default function (pi: ExtensionAPI) {
         activity.last = "error"; context.ui.notify(String(error), "error");
       }).finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
         if (catchup) driveCatchup(); }); // 18b: a slot release is one of the two events that may resume a waiting catchup.
+      slot.done = settled;
       pending.delete(promise); pending.add(settled);
       void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     }
@@ -958,9 +983,10 @@ export default function (pi: ExtensionAPI) {
       c.waitingPhase = phase; c.runningPhase = undefined; return; // A live foreign claim on our own target is exposed as Waiting, not stolen.
     }
     c.waitingPhase = undefined; c.runningPhase = phase;
-    slots.add(phase); activity.running.set(phase, 1); showSpend(context);
     // 29e: the *allowable* set, never the exact one — a drain takes it in bounded batches (18b).
     const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : { allowedFactIds: [...c.factIds] };
+    const slot: Slot = { target: own, boundary };
+    slots.set(phase, slot); activity.running.set(phase, 1); showSpend(context);
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
     pending.add(promise);
     let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
@@ -983,6 +1009,7 @@ export default function (pi: ExtensionAPI) {
         // that ended in Waiting is resumed by a slot release or the next ordinary opportunity, never by
         // this line: re-driving a wait immediately is a loop without a wait (review 2026-09-08).
         if (!waited) driveCatchup(); });
+    slot.done = settled;
     pending.delete(promise); pending.add(settled);
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
   };
@@ -1031,24 +1058,139 @@ export default function (pi: ExtensionAPI) {
     const at = entries.findIndex(entry => entry.id === first);
     return at < 0 ? [] : entries.slice(at).filter(entry => entry.type === "message").map(entry => entry.id);
   };
-  // Ticket 20 "Compaction escalation", as ticket 30 left it: core renders its own frozen read snapshot
-  // in the one bounded view and this handler only binds the outcome. Either that is a complete custom
-  // replacement, or core asks for native delegation and this returns nothing at all, so Pi proceeds
-  // through its normal compaction path — which may call a model, and may fail or be cancelled, with
-  // Pi's own outcome handling (this is the one place where compaction reaches a model, and it is Pi's
-  // call, not ours). Nothing here waits for or starts a worker, and an unused custom summary confirms
-  // no injection (29d: there are no deliveries to confirm).
-  pi.on("session_before_compact", (event, context) => {
+  const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation" } as const;
+  /** A wait that ends when the work ends or when the user cancels the compaction, whichever comes
+   * first. Cancelling the wait never touches the work: this operation may wait for capacity it does
+   * not own, and Pi's Esc must not end another operation's task (28 "Execution and interaction").
+   * The listener is removed on both exits, so a compaction that ends normally leaves nothing on its
+   * signal. */
+  const untilSettled = (work: Promise<unknown> | undefined, signal?: AbortSignal) => {
+    if (!work) return Promise.resolve();
+    const quiet = work.then(() => {}, () => {});
+    if (!signal) return quiet;
+    return new Promise<void>(resolve => {
+      const done = () => { signal.removeEventListener("abort", done); resolve(); };
+      signal.addEventListener("abort", done, { once: true });
+      void quiet.then(done);
+    });
+  };
+  /** 28b (parent 28 "Recovery sequence" steps 3-4): this compaction's one task of one phase. It is an
+   * ordinary bounded batch admitted through the one admission path — subagent mode on the configured
+   * phase model, at the level `attemptPhase` freezes (26d), in a child whose own automatic compaction
+   * is off (27b), so a recovery worker can never compact recursively. The executor's phase slot, the
+   * target claim and every commit fence are the existing ones: this adds no scheduler, no queue and
+   * no dialog.
+   *
+   * Three ways it can end, each one use of the phase (28 amendment 2): a compatible task was already
+   * running and its completion IS this phase's progress; the slot held unrelated work, which is
+   * waited out as capacity but neither counted as progress nor cancelled; or this operation launched
+   * and awaited its own task. */
+  const recoverPhase = async (context: ExtensionContext, kind: "noting" | "consolidation", target: TaskTarget,
+      boundary: TaskBoundary, signal?: AbortSignal): Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined> => {
+    const phase = PHASE_LABEL[kind];
+    const occupied = slots.get(kind);
+    if (occupied) {
+      const reuse = sameTask(occupied, target, boundary);
+      // 28 item 7: the awaited phase is named through the existing notify, beside the footer's own
+      // running indicator, which already paints the phase. No second dialog is opened.
+      context.ui.notify(`Trace Memory: compaction is waiting for ${reuse ? `the running ${phase} task on this target` : `the occupied ${phase} slot`}.`, "info");
+      await untilSettled(occupied.done, signal);
+      if (reuse || signal?.aborted) return undefined; // a reused task's commits are read back by the reallocation
+      if (slots.has(kind)) return undefined; // another operation took the freed slot; this attempt does not queue for it
+    }
+    if (signal?.aborted) return undefined;
+    const slot: Slot = { target, boundary };
+    slots.set(kind, slot); activity.running.set(kind, 1); showSpend(context);
+    context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : "facts"}.`, "info");
+    const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
+      { borrowed: false, automatic: false, boundary, signal });
+    pending.add(promise);
+    const settled = promise.then(result => { reportProblems(result, context); return result; },
+      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; })
+      .finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
+        if (catchup) driveCatchup(); }); // 18b: this slot release is a resumption event like any other
+    slot.done = settled;
+    pending.delete(promise); pending.add(settled);
+    return await settled;
+  };
+  // Ticket 20 "Compaction escalation", as 30 and 28a/28b left it. Core renders its own frozen read
+  // snapshot and allocates over three windows; this handler binds the outcome and, when a REQUIRED
+  // window overflows, runs ticket 28's bounded recovery before deciding:
+  //
+  //   freeze (path, the pending entries, the initially applicable pending facts)
+  //     -> allocate -> over? -> one Noting for Raw and/or one Consolidation for facts, concurrently
+  //     -> await -> re-read committed progress by reallocating on the frozen path
+  //     -> new facts overflowing with Consolidation unused? -> run it once -> reallocate
+  //     -> persist the replacement with its carrier, or delegate to Pi with the reason.
+  //
+  // One use per phase per attempt, whatever its outcome: `used` below is that flag, and two rounds
+  // are the whole shape the rule needs (28 amendment 1 — no state machine, one flag per phase plus
+  // the promises this host already holds). No larger-than-normal batch is ever built to avoid the
+  // delegation: each task is one ordinary bounded batch, and a batch that leaves backlog behind
+  // simply delegates. Nothing else changes: ordinary triggers, drains, borrowed work and manual
+  // catchup are untouched, and outside this handler compaction still starts no worker.
+  //
+  // Cancellation is Pi's own. `event.signal` is the compaction abort controller behind Esc and
+  // `session.abortCompaction()` (agent-session.js:1476 manual / :1750 automatic create it, :1604
+  // aborts both). It reaches the tasks this operation launched — and only those — through
+  // `TaskOptions.signal`, and a cancelled compaction returns `{cancel: true}`, which is how Pi ends
+  // a compaction as aborted (:1509 manual, :1770 automatic) instead of running its own.
+  pi.on("session_before_compact", async (event, context) => {
     ensure(context); if (!enabled()) return; flush();
-    let result: ReturnType<typeof memory.compact>;
-    try {
-      if (state.sessionId) result = memory.compact(state.sessionId, state.branch, state.head, retainedNativeIds(context, KEPT_AFTER_CUSTOM_COMPACTION));
-      else {
+    const signal = (event as { signal?: AbortSignal }).signal;
+    const allocate = (): ReturnType<typeof memory.compact> => {
+      try {
+        if (state.sessionId) return memory.compact(state.sessionId, state.branch, state.head, retainedNativeIds(context, KEPT_AFTER_CUSTOM_COMPACTION));
         const block = memory.injection({ projectId: state.projectId });
-        result = { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+        return { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+      } catch (error) { return { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
+    };
+    let result = allocate();
+    const recovered: string[] = [];
+    // The freeze of this attempt: the selected path, its pending source entries and the pending facts
+    // applicable to it. New foreground entries never join — Pi refuses a prompt while a compaction is
+    // in progress (agent-session.js:836), and the entry ceiling below makes that structural.
+    const path = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
+    if (path && !signal?.aborted && "native" in result && result.over) {
+      const frozen = memory.pendingEntries(path.sessionId, path.branch, path.headTurnId);
+      // The boundary is that frozen ceiling, not exact membership: a recovery task is one ORDINARY
+      // bounded batch (28 "Recovery sequence"), and exact membership would refuse every batch bigger
+      // than `noting.batchTokens` — which is exactly what an overflowing Raw window is. Entry ids are
+      // allocated in order, so the ceiling is the frozen set minus whatever gets noted, and never more.
+      const maxEntryId = frozen.length ? Math.max(...frozen.map(e => e.id)) : undefined;
+      // The Consolidation allowance: the initially applicable pending facts, plus the facts this
+      // operation's own Noting commits (28 "Recovery sequence" step 5). A task this operation merely
+      // reused belongs to another operation, so its facts are not claimed into this allowance.
+      const factIds = new Set(memory.store.consolidationBatch(path.sessionId, path.branch, path.headTurnId).map(f => f.id));
+      const used = { noting: false, consolidation: false };
+      for (let round = 0; round < 2; round++) {
+        if (!("native" in result) || !result.over) break;
+        const over = result.over;
+        const wanted = (["noting", "consolidation"] as const).filter(kind => !used[kind]
+          && (kind === "noting" ? over.raw && maxEntryId !== undefined : over.facts && factIds.size > 0));
+        if (!wanted.length) break; // the allowed tasks are exhausted: the delegation below is the outcome
+        const results = await Promise.all(wanted.map(kind => {
+          used[kind] = true; recovered.push(PHASE_LABEL[kind]);
+          return recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : { allowedFactIds: [...factIds] }, signal);
+        }));
+        if (signal?.aborted) break;
+        for (const settled of results) for (const fact of (settled as { facts?: { id: number }[] } | undefined)?.facts ?? []) factIds.add(fact.id);
+        result = allocate(); // re-read committed progress on the frozen path; nothing is subtracted merely because a task ran
       }
-    } catch (error) { result = { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
-    lastCompaction = "native" in result ? `native delegation — ${result.reason}` : "bounded entry views";
+    }
+    // 28 "Failure and persistence": user cancellation cancels this operation's own work — the signal
+    // did that through core — publishes nothing and starts no native fallback. Committed progress
+    // stays committed; a cancelled compaction appends no entry, so no carrier and no baseline moves.
+    if (signal?.aborted) {
+      context.ui.notify("Trace Memory: compaction was cancelled; its recovery work was cancelled with it and no native compaction was started.", "info");
+      return { cancel: true };
+    }
+    // A tree switch during recovery abandons the path this replacement was prepared for. The attempt
+    // is never retargeted: it delegates, and a late result of the old path publishes nothing here.
+    if (path && (state.sessionId !== path.sessionId || state.branch !== path.branch || state.head !== path.headTurnId))
+      result = { native: true, reason: `the selected path changed during recovery (S${path.sessionId}/${path.branch}/T${path.headTurnId} is no longer selected); nothing prepared for it is published into the new one` };
+    lastCompaction = ("native" in result ? `native delegation — ${result.reason}` : "bounded entry views")
+      + (recovered.length ? ` (after recovery: ${[...new Set(recovered)].join(", ")})` : "");
     context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
     if ("native" in result) return; // no custom replacement: Pi's own compaction runs and reports
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the

@@ -5,6 +5,7 @@ import { expect, test, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
   type CompactionEntry, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleView, type ContextEntry, type SuppliedMaterial, type VisibleBinding } from "../../../src/core/api/index.ts";
+import { piSession } from "./native-fixture.ts";
 
 // Ticket 29a, migrated from 26c's compaction-preparation cases: the baseline of a compaction is the
 // compaction entry's own `details.traceMemory` (29 "Receipt and content are one carrier"), so the
@@ -52,48 +53,6 @@ function summarizer(plan: () => Plan, record: Record_) {
     });
     pi.on("session_compact", (event: any) => { record.events.push({ id: event.compactionEntry.id, summary: event.compactionEntry.summary }); });
   };
-}
-
-/** A real Pi parent session that really runs extensions: `DefaultResourceLoader` accepts inline
- * `extensionFactories`, so `compact()` finds real handlers. Nothing here touches ~/.pi or
- * ~/.trace-memory. */
-async function piSession(options: { extensions: ((pi: ExtensionAPI) => void)[];
-  compaction?: { enabled?: boolean; keepRecentTokens?: number; reserveTokens?: number }; contextWindow?: number }) {
-  const dir = mkdtempSync(join(tmpdir(), "trace-memory-baseline-"));
-  const agentDir = join(dir, "agent"); mkdirSync(agentDir, { recursive: true });
-  const origin = "https://fake-baseline.invalid";
-  // `keepRecentTokens: 1` is what lets a tiny scripted session compact at all; `retry.enabled: false`
-  // keeps a scripted failure one failure.
-  const compaction = { enabled: false, keepRecentTokens: 1, reserveTokens: 1, ...options.compaction };
-  writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false }, compaction }));
-  const contextWindow = options.contextWindow ?? 200_000;
-  writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fake: { name: "Fake", baseUrl: `${origin}/v1`, apiKey: "fake-key",
-    api: "openai-completions", models: [{ id: "test", name: "Test", reasoning: false, input: ["text"], contextWindow, maxTokens: 8192,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
-  const sent: Record<string, any>[] = [];
-  let respond: (body: Record<string, any>) => Response | Promise<Response> = () => say("Done.");
-  vi.stubGlobal("fetch", vi.fn(async (_url: unknown, init: RequestInit) => {
-    const body = JSON.parse(String(init.body)); sent.push(body); return respond(body);
-  }));
-  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json") });
-  const model = modelRuntime.getModel("fake", "test")!;
-  const settingsManager = SettingsManager.create(dir, agentDir);
-  const resourceLoader = new DefaultResourceLoader({ cwd: dir, agentDir, settingsManager, noExtensions: true, noSkills: true,
-    noPromptTemplates: true, noThemes: true, noContextFiles: true, extensionFactories: options.extensions as never });
-  await resourceLoader.reload();
-  const manager = SessionManager.create(dir, join(agentDir, "sessions", "parent"));
-  const { session, extensionsResult } = await createAgentSession({ cwd: dir, agentDir, model, modelRuntime, settingsManager,
-    resourceLoader, sessionManager: manager, noTools: "all", tools: [] });
-  expect(extensionsResult.errors).toEqual([]); // an inline factory that failed to load would silently drop the hooks
-  return { dir, agentDir, session, manager, sent, model,
-    script: (fn: (body: Record<string, any>) => Response | Promise<Response>) => { respond = fn; },
-    dispose() {
-      session.dispose(); vi.unstubAllGlobals();
-      if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
-      rmSync(dir, { recursive: true, force: true });
-    } };
 }
 
 const usage = (input = 10, output = 2) => ({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: 0 } });
