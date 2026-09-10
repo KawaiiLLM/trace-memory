@@ -51,10 +51,16 @@ For example, either settings file can contain:
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
-    "consolidation.batchTokens": 10000
+    "consolidation.batchTokens": 10000,
+    "compaction.factsTokens": 10000,
+    "compaction.rawTokens": 10000
   }
 }
 ```
+
+`compaction.factsTokens` and `compaction.rawTokens` are 28a's two compaction material windows;
+the third is `render.knowledgeBlockTokens`, and the envelope one custom compaction may charge is
+the sum of the three (see "Compaction and the post-compaction boundary").
 
 Environment override example:
 
@@ -208,8 +214,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
   another eligible completion.
-  It bounds this phase only: since 25c compact measures its pending views against
-  `render.episodicBlockTokens` instead, so changing this key does not change what compaction keeps.
+  It bounds this phase only: since 28a compact measures its pending views against its own Raw window
+  (`compaction.rawTokens`) inside the three-window envelope, so changing this key — or
+  `render.episodicBlockTokens`, which stayed the Noter's — does not change what compaction keeps.
   The effective batch also reserves instructions, knowledge, tools and the existing
   context: since 27a the host reports `contextWindow - 10,000` as the input allowance
   (see "Request capacity" below). An oldest entry that cannot fit remains
@@ -509,26 +516,36 @@ still fails with a capacity message and retains pending sources. Changing `dbPat
 requires reloading the extension. A disabled session's footer is the compact
 `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow indicator and its counts.
 
-## Compaction and the post-compaction boundary (20c, one view since 30)
+## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a)
 
-`session_before_compact` reconciles persisted history, then asks core to escalate over
-one frozen read snapshot of every pending entry on the selected path. Rendering never
-changes that set: compact takes no claim, waits for no worker, starts no worker and
-advances no progress, so a Noter finishing concurrently can make the snapshot redundant
-but never incomplete. `memory.compact(...)` returns one of two outcomes rather than a string:
+`session_before_compact` reconciles persisted history, then asks core to allocate over
+one frozen read snapshot of the selected path. Rendering never changes that set: compact
+takes no claim, waits for no worker, starts no worker and advances no progress, so a Noter
+finishing concurrently can make the snapshot redundant but never incomplete.
+`memory.compact(...)` returns one of two outcomes rather than a string:
 
 | Outcome | When | What the adapter returns |
 |---|---|---|
-| `{text, supplied}` | every pending entry's bounded view, with the framing, fits `render.episodicBlockTokens` | the text, as `compaction.summary` |
-| `{native: true, reason}` | they do not fit, or an entry's minima exceed the configured profile | nothing at all, with a reason naming the cap and the overage |
+| `{text, supplied, charged}` | the knowledge block at its baseline, the pending facts and every pending entry's bounded view fit the envelope | the text, as `compaction.summary` |
+| `{native: true, reason}` | a required window overflows after lending, or an entry's minima exceed the configured profile | nothing at all, with a reason naming the window and its numbers |
 
-Ticket 25 amendment 3 (25c) removed the inner `noting.batchTokens` cap on that pending
-Raw. Compaction's budgets are the knowledge block within `render.knowledgeBlockTokens`
-(10,000) and pending Raw plus historical facts sharing `render.episodicBlockTokens`
-(20,000), Raw and its framing reserved first: facts may receive none of the envelope, and
-with nothing pending they may use all of it. The total is unchanged, a backlog between
-10,000 and 20,000 tokens stays a custom replacement, and `noting.batchTokens` keeps its one
-meaning — the Noter's batch ceiling.
+Ticket 28a replaced 25c's "knowledge plus one shared 20,000-token envelope" with three
+material windows of 10,000 tokens each — knowledge (`render.knowledgeBlockTokens`), the
+pending facts (`compaction.factsTokens`) and the pending Raw (`compaction.rawTokens`) — over
+one envelope that is their sum (30,000 at the defaults). Unused allowance is lent freely
+between them and the charged total never passes the envelope; optional knowledge above its
+own baseline yields before a required window can be declared over; a required window is never
+trimmed to fit. Whatever is left after the required material is filled first by the knowledge
+block, then by the most recent already-consolidated facts, then by the most recent
+already-extracted source entries in source order. Both refills are optional: an item that does
+not fit is simply absent, which starts no worker, causes no delegation and enters no carrier.
+`render.episodicBlockTokens` and `noting.batchTokens` keep their one meaning each — the
+Noter's history envelope and the Noter's batch ceiling — and compaction reads neither.
+
+The adapter passes the native ids the post-compaction context will keep, so refill (b) never
+supplies an entry twice. The custom replacement represents every pending entry itself, so it
+returns `firstKeptEntryId: ""` and keeps none of them: that retained set is empty today and is
+derived from the same value the adapter returns, never from Pi's own preparation proposal.
 
 Ticket 30 retired the second, tighter rendering that used to stand between the custom
 replacement and the delegation: the views compaction emits are `renderEntry` under the one
@@ -1645,5 +1662,5 @@ no model call; missing history is reported and retained originals remain readabl
 `noting.triggerAnsweredTurns`, the removed `consolidation.triggerUnconsolidatedFacts` and every
 unknown setting are rejected explicitly.
 `noting.triggerTokens`, `noting.batchTokens`, `consolidation.triggerTokens`,
-`consolidation.batchTokens` and both view limits accept only
-positive safe integers.
+`consolidation.batchTokens`, `compaction.factsTokens`, `compaction.rawTokens` and both view limits
+accept only positive safe integers.

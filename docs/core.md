@@ -348,8 +348,9 @@ charged once, to the block that emits it:
 | --- | --- | ---: |
 | knowledge block, its category tags and its omission receipts (Consolidator, injection, compact) | `render.knowledgeBlockTokens` | 10,000 |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
-| Noter and compact: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
-| compact's pending Raw, inside that same envelope and with no inner cap of its own (25c) | `render.episodicBlockTokens` | 20,000 |
+| Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
+| compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
+| compact's Raw window — the pending entry views, then the already-extracted refill, with the Raw title | `compaction.rawTokens` | 10,000 |
 | Consolidator: its titles, range line, mandatory review cues and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 The current material and the mandatory cues are reserved first; historical facts then fill whatever
@@ -360,12 +361,11 @@ allowance. Outer framing is never charged against the Noter's inner Raw ceiling,
 10,000-token entry stays batchable.
 
 Ticket 25 amendment 3 (25c) removed compaction's inner Raw cap: a foreground backlog is not a Noter
-batch, so `noting.batchTokens` no longer bounds it and the shared 20,000-token envelope is the only
-budget it answers to. Pending Raw and its framing are reserved out of that envelope first, historical
-facts take what is left — none of it when Raw needs the space, all of it when nothing is pending — and
-the knowledge cap stays independent of both. `budgetMaterial` expresses this by letting a consumer
-omit `caps.current` altogether, the way a consumer already omits knowledge candidates or historical
-facts it does not emit; the Noter and the Consolidator still pass theirs and are unaffected.
+batch, so `noting.batchTokens` does not bound it. Ticket 28a replaced 25c's "knowledge plus one shared
+20,000-token envelope" with three windows and its own allocator (below); compaction no longer reads
+`render.episodicBlockTokens` at all, and that key stayed exactly what it was for the Noter.
+`budgetMaterial` keeps serving the Noter and the Consolidator unchanged — it is not compaction's
+allocator any more.
 
 The Noter's two allowances are independent, and the reservation is what makes them so: its historical
 facts are capped at `render.episodicBlockTokens − noting.batchTokens` (10,000 at the defaults), so the
@@ -607,26 +607,50 @@ turns. (29d: the `<noted>` block that used to follow knowledge on every prompt i
 `pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
 writes, reads, drains or migrates it, and its timestamps are never read as visibility.)
 
-`compact(sessionId, branch = "main", headTurnId?)` renders one frozen read snapshot of every pending
-entry on the path and returns one of two outcomes, not a string (ticket 20c, one view since 30):
+`compact(sessionId, branch = "main", headTurnId?, retainedNativeIds = [])` renders one frozen read
+snapshot of the path and returns one of two outcomes, not a string (ticket 20c, one view since 30,
+three windows since 28a):
 
 | Outcome | Condition | Result |
 | --- | --- | --- |
-| `{text, supplied}` | the pending entries' bounded views and their framing fit `render.episodicBlockTokens` | knowledge, `<episodic>` with the recent facts applicable on the selected path in chronological Turn groups, then those views under `Raw:` |
-| `{native: true, reason}` | they do not fit, or an entry's minima exceed the profile | an explicit ask that the host decline and let its own native compaction run, naming the cap and the overage |
+| `{text, supplied, charged}` | the knowledge block at its own baseline, the pending facts and the pending entries' bounded views fit the envelope | knowledge, `<episodic>` with the facts in chronological Turn groups, then the entry views under `Raw:`, with the spare filled by the two refills |
+| `{native: true, reason}` | a required window overflows after lending, or an entry's minima exceed the profile | an explicit ask that the host decline and let its own native compaction run, naming the overflowing window and its numbers |
 
-The historical facts are the facts **applicable on the selected path** (26 amendment 2), in
-`listSessionFacts`' freshness order: a sibling branch's fact is not history here, and it is not an
-omission for budget either — it was never a candidate. One path snapshot answers that membership for
-the whole operation, the knowledge block included.
+**Three windows, one envelope (28a).** Compaction has three material windows with 10,000-token
+baselines — knowledge (`render.knowledgeBlockTokens`), the pending facts (`compaction.factsTokens`)
+and the pending Raw (`compaction.rawTokens`) — and one envelope that is their sum, 30,000 at the
+defaults. There is no fourth key. Lending is free between them: a window needing less than its
+baseline leaves the difference in the envelope, a window needing more spends it, and the charged total
+never passes the envelope. Two rules make that safe. The fit test measures knowledge **at its own
+baseline**, so optional knowledge beyond it yields before a required window can be declared over, and
+a large knowledge corpus can never manufacture an overflow. And a required window is never trimmed:
+if the pending facts or the pending Raw still do not fit, the operation delegates to native compaction
+naming the window and the numbers rather than dropping one of them. (Ticket 28b interposes the bounded
+recovery at exactly that point; this slice starts no worker.)
 
-Since 25c compact measures Raw against the shared episodic envelope alone — `noting.batchTokens` is
-the Noter's batch ceiling and compact does not read it — under the same `budgetMaterial` accounting as
-normal material. A backlog above 10,000 and below 20,000 tokens therefore stays a custom replacement,
-and the two caps a delegation's reason can name are that envelope and the entry view profile itself.
-Ticket 30 removed the second, tighter rendering that used to stand between them: an overflowing Raw
-set delegates to native compaction exactly as the old third tier did, and starts no recovery worker
-(28 amendment 9). Nothing here selects a smaller pending set, advances extraction progress or touches
+Once the required material is placed, the rest of the envelope is filled in a fixed priority: the
+knowledge block grows into it first, then **refill (a)** — the most recent already-consolidated facts
+of the path, whole, in `listSessionFacts`' freshness order, deduplicated against the pending facts by
+construction and charged to the facts window — then **refill (b)** — the most recent already-extracted
+source entries of the path, whole, through the same E/C/R profile, displayed in source order and
+charged to the Raw window. Refill (b) excludes exactly two things: entries that are pending (they are
+already required material) and entries whose native ids the caller passes as `retainedNativeIds`,
+which are what the post-compaction context keeps. An entry whose only earlier visibility was the
+summary this compaction discards is *not* excluded on that account.
+
+Both refills are optional in the strict sense: an item that does not fit is left out, and that
+omission starts no worker, causes no native delegation, resets no processing and enters no carrier.
+Spare space left over stays empty. `charged` reports what each window spent, the envelope, and what
+the required material alone cost — diagnostics for 28b, never a third outcome.
+
+Facts and knowledge are the ones **applicable on the selected path** (26 amendment 2), in
+`listSessionFacts`' freshness order: a sibling branch's fact is not a candidate here, and its absence
+is membership, not a budget omission. One path snapshot answers that membership for the whole
+operation, the knowledge block included.
+
+Ticket 30 removed the second, tighter rendering that used to stand between a custom replacement and
+the fallback: an overflowing required Raw set delegates to native compaction exactly as the old third
+tier did. Nothing here selects a smaller pending set, advances extraction progress or touches
 injection state, and a native delegation builds no custom summary at all.
 Compaction never hides a selected entry to fit, falsifies an omission count or relaxes a cap;
 it calls no provider, and core contains no summarizer — reaching a model

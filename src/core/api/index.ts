@@ -65,7 +65,20 @@ export interface TraceMemoryConfig {
     nearThreshold: number;
     maxToolRounds: number;
   };
+  /** Ticket 28a "Windows": the two compaction material windows that are not knowledge. The third is
+   * `render.knowledgeBlockTokens`, and the envelope one custom compaction may charge is the sum of
+   * the three. `render.episodicBlockTokens` is not read here — it stayed the Noter's history envelope. */
+  compaction: {
+    /** The facts window: the pending facts on the path, then the consolidated refill (28a items 1, 4). */
+    factsTokens: number;
+    /** The Raw window: the pending entry views, then the already-extracted refill (28a items 1, 5). */
+    rawTokens: number;
+  };
 }
+
+/** The configuration sections, in one place: the loader, the validator and the host's flat
+ * `section.key` layer all enumerate them from here rather than repeating the list (28a added one). */
+export const CONFIG_SECTIONS = ["render", "noting", "consolidation", "compaction"] as const;
 
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   closedSessionScope: "project",
@@ -89,6 +102,10 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     nearThreshold: 0.28,
     maxToolRounds: 0,
   },
+  compaction: {
+    factsTokens: 10_000,
+    rawTokens: 10_000,
+  },
 };
 
 export type ConfigOverride = {
@@ -97,6 +114,7 @@ export type ConfigOverride = {
   /** `branchModeDefault` is the accepted legacy spelling of `forkModeDefault` (CONFIG_ALIASES). */
   noting?: Partial<TraceMemoryConfig["noting"]> & { branchModeDefault?: boolean };
   consolidation?: Partial<TraceMemoryConfig["consolidation"]>;
+  compaction?: Partial<TraceMemoryConfig["compaction"]>;
 };
 
 /** Legacy configuration spellings accepted at the boundary, `section.key` on both sides (ticket 19
@@ -199,6 +217,7 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
     render: { ...base.render, ...override.render },
     noting: { ...base.noting, ...override.noting },
     consolidation: { ...base.consolidation, ...override.consolidation },
+    compaction: { ...base.compaction, ...override.compaction },
   };
 }
 
@@ -210,7 +229,7 @@ export const TOOL_CALL_CEILING = 1_000;
 export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
   const cfg = mergeConfig(DEFAULT_CONFIG, override);
   if (!["off", "project", "global"].includes(cfg.closedSessionScope)) throw new Error("Invalid closedSessionScope: expected off, project or global");
-  for (const section of ["render", "noting", "consolidation"] as const) for (const [key, value] of Object.entries(cfg[section])) {
+  for (const section of CONFIG_SECTIONS) for (const [key, value] of Object.entries(cfg[section])) {
     const name = `${section}.${key}`;
     if (key.endsWith("ModeDefault")) {
       if (typeof value !== "boolean") throw new Error(`Invalid ${name}: expected boolean`);
@@ -362,9 +381,11 @@ export interface TraceMemory {
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
-  /** Ticket 20, as 30 left it: the compaction result — the bounded views of every pending entry, or
-   * the explicit ask that the host decline and let its native compaction run (20c). */
-  compact(sessionId: number, branch?: string, headTurnId?: number): CompactResult;
+  /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
+   * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
+   * `retainedNativeIds` are the host entries the post-compaction context keeps, which refill (b) must
+   * not supply a second time (28a item 5); a host that keeps none passes none. */
+  compact(sessionId: number, branch?: string, headTurnId?: number, retainedNativeIds?: readonly string[]): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
@@ -650,6 +671,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const next = validateConfig({
         closedSessionScope: requested.closedSessionScope === undefined ? cfg.closedSessionScope : requested.closedSessionScope,
         render: cfg.render, noting: { ...cfg.noting, ...requested.noting }, consolidation: { ...cfg.consolidation, ...requested.consolidation },
+        compaction: cfg.compaction,
       });
       // One object identity throughout, so every existing reader sees the new default at its next
       // admission; nothing else of the frozen configuration moves.

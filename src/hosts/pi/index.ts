@@ -1017,6 +1017,20 @@ export default function (pi: ExtensionAPI) {
     if (!sessionId || !head) return { summary: { summary: "" } };
     return { summary: { summary: memory.branchSummary(sessionId, branch, head) } };
   });
+  // The custom replacement represents every pending entry itself, so it asks Pi to keep no original
+  // entry beside it: an empty `firstKeptEntryId` makes `buildContextEntries` (session-manager.ts:410)
+  // find no first-kept entry, and the post-compaction context is the compaction plus what follows it.
+  // 28a item 5 reads the retained set off exactly this value, so the two can never disagree — with
+  // nothing kept, refill (b) excludes nothing but the pending entries it already excludes.
+  const KEPT_AFTER_CUSTOM_COMPACTION = "";
+  /** The native ids the post-compaction context retains: the ordinary conversation entries from
+   * `first` onwards in Pi's own compaction-aware view (28a item 5, so nothing is supplied twice). */
+  const retainedNativeIds = (context: ExtensionContext, first: string): string[] => {
+    if (!first) return [];
+    const entries = context.sessionManager.buildContextEntries() as ContextEntry[];
+    const at = entries.findIndex(entry => entry.id === first);
+    return at < 0 ? [] : entries.slice(at).filter(entry => entry.type === "message").map(entry => entry.id);
+  };
   // Ticket 20 "Compaction escalation", as ticket 30 left it: core renders its own frozen read snapshot
   // in the one bounded view and this handler only binds the outcome. Either that is a complete custom
   // replacement, or core asks for native delegation and this returns nothing at all, so Pi proceeds
@@ -1028,7 +1042,7 @@ export default function (pi: ExtensionAPI) {
     ensure(context); if (!enabled()) return; flush();
     let result: ReturnType<typeof memory.compact>;
     try {
-      if (state.sessionId) result = memory.compact(state.sessionId, state.branch, state.head);
+      if (state.sessionId) result = memory.compact(state.sessionId, state.branch, state.head, retainedNativeIds(context, KEPT_AFTER_CUSTOM_COMPACTION));
       else {
         const block = memory.injection({ projectId: state.projectId });
         result = { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
@@ -1040,7 +1054,7 @@ export default function (pi: ExtensionAPI) {
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
-    return { compaction: { summary: result.text, firstKeptEntryId: "", tokensBefore: event.preparation.tokensBefore, details: carrier(result.supplied) } };
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: carrier(result.supplied) } };
   });
   pi.on("session_compact", event => {
     if (enabled() && state.sessionId) {

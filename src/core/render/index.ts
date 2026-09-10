@@ -679,6 +679,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
     text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
     receipts: receipts(kept),
+    // 28a "Lending": what this block actually charges, by the same accounting the cap was applied
+    // with. The compaction allocator compares it against the other two windows, so it may not
+    // re-measure the rendered text with a second, slightly different sum.
+    cost: cost(kept),
     // 29a "Renderers return what they kept": the exact commits this block carries, in render order.
     // What the cap above cut is receipted, never listed here — a carrier states what was supplied.
     commits: ordered.slice(0, kept).map((item) => item.commit) };
