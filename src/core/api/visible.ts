@@ -58,6 +58,17 @@ export interface VisibleView {
   injection: boolean;
 }
 
+/** 29b "Same builder, different initial state": what the child a task will run in already holds when
+ * it starts. It is the ONLY difference between a fork's material and a fresh child's — one builder per
+ * phase reads this and subtracts, instead of two fixed layouts. `inheritedTokens` is the host's own
+ * measure of that context (Pi's `getContextUsage`), which the freeze prices once; core never learns
+ * how the number was obtained and never re-derives it from the view. */
+export interface InitialContext { visible: VisibleView; inheritedTokens: number }
+
+/** The view a fresh child starts from: it can see nothing. Its `inheritedTokens` is zero, but that
+ * number is the freeze's own (the host's measure, frozen with the task), so it is paired there. */
+export const noVisibility = (): VisibleView => ({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false });
+
 /** The carrier this entry holds for this binding, or nothing. Fails closed on every mismatch: a
  * foreign database, another memory session, a pre-allocation carrier from a different Pi session, and
  * a missing or malformed payload (an older version's, or a native compaction's own details). */

@@ -261,7 +261,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
     const target = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId, mode: "subagent" as const };
     const noting = instructions("noting.md");
     const natural = freezeNoting(store, target, memory.config, memory.resultText);
-    const naturalTokens = noting + toolCost + tokens(natural.prepared!.text.fresh);
+    const naturalTokens = noting + toolCost + tokens(natural.prepared!.text);
     samples.push(measure("noting freeze (no allowance)", () => freezeNoting(store, target, memory.config, memory.resultText),
       `${natural.entries.length} of ${store.pendingEntries(fixture.sessionId, fixture.branch, fixture.headTurnId).length} pending entries selected, ${naturalTokens} tokens priced`));
     rejected("noting freeze (impossible 2,000-token allowance)",

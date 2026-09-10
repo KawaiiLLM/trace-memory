@@ -78,7 +78,7 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
   const generous = 60_000;
   expect((await noting({ inputTokens: generous, prefixTokens: 0 })).outcome).toBe("success");
   const run = calls.at(-1)!;
-  expect(tokens(run.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(run.text.fresh)).toBeLessThanOrEqual(generous);
+  expect(tokens(run.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(run.text)).toBeLessThanOrEqual(generous);
 });
 
 // 27a: the host's half of the rule (`contextWindow - 10,000`) is pinned in tests/hosts/pi/capacity.test.ts.
@@ -87,8 +87,8 @@ test("22d: the preflight is a floor and not the guard — an allowance over the 
 // prefix is the host's context measure and is counted once.
 test("27a 2026-09-10: the freeze admits material the allowance exactly fits and refuses the same material one token above it", async () => {
   const price = (input: NotingAgentInput, prefix = 0) =>
-    prefix ? prefix + tokens(input.prompt) + tokens(input.text.inherited!)
-      : tokens(input.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(input.text.fresh);
+    prefix ? prefix + tokens(input.prompt) + tokens(input.text)
+      : tokens(input.prompt) + tokens(JSON.stringify(toolDefinitions)) + tokens(input.text);
   // What this batch costs, priced by the same terms the freeze prices it by.
   expect((await noting({ inputTokens: 60_000, prefixTokens: 0 })).outcome).toBe("success");
   const whole = calls[0]!;

@@ -9,7 +9,8 @@ import { renderKnowledge, renderFact, renderFactGroups, tokens, type FactTurns }
 import { toolDefinitions } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { budgetMaterial, consolidationText, RANGE_FACTS_TITLE, REMINDER_TITLE,
-  type MaterialText, type ConsolidationMaterial } from "../render/material.ts";
+  type ConsolidationMaterial } from "../render/material.ts";
+import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -54,9 +55,10 @@ export interface ConsolidationAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: ConsolidationMaterial;
-  /** Core's prepared domain text, both representations from this one frozen task (20a). The host
-   * chooses one by the native context capability it has, and places it in its own messages. */
-  text: MaterialText;
+  /** Core's prepared domain text: the one material this task supplies, whatever mode runs it (29b). */
+  text: string;
+  /** 29a/29b: the identities this text actually carries, for the carrier a host persists with it. */
+  supplied: SuppliedMaterial;
   /** Core's own reader of a `memory` receipt: the review guidance the adapter must put in front of
    * the model as a user message before the second submission, or undefined. The two-submission
    * protocol stays in core; the adapter only chooses the message or steering mechanism. */
@@ -99,6 +101,33 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: instructions ${instructions} and tools ${tools} already cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
+  // 29b "Same builder, different initial state", the twin of the Noting freeze. 25b still leaves this
+  // phase one mode, so nothing the façade admits reaches this line inheriting anything; 29e restores
+  // the fork option and this is where its view arrives. Until then the empty start is what runs, and
+  // the pricing below is the subagent's, unchanged.
+  const inheriting = (input.effectiveMode ?? input.mode) === "fork";
+  const initial: InitialContext = { visible: inheriting && input.visible ? input.visible : noVisibility(),
+    inheritedTokens: inheriting ? capacity?.prefixTokens ?? 0 : 0 };
+  // Parent 29 "Version-aware knowledge": a commit the child inherited that is not among this path's
+  // current applicable commits is stale — superseded, archived or merged away — and the block below
+  // carries only what is current, so nothing in it would contradict the inherited text. One line per
+  // stale commit says what happened to it. Computed once for the freeze: the batch does not affect it,
+  // and the full revision read behind it happens only when there is a stale commit to explain.
+  const currentCommits = new Set(knowledge.map(k => k.revision.id));
+  const stale = [...initial.visible.knowledgeCommitIds].filter(id => !currentCommits.has(id));
+  const knowledgeNotes = stale.length ? (() => {
+    const byCommit = new Map(store.listKnowledgeRevisions().map(r => [r.id, r]));
+    return stale.flatMap(id => {
+      const revision = byCommit.get(id);
+      if (!revision) return []; // another database's id cannot reach here (the carrier binding), and an unknown one explains nothing
+      const current = knowledge.find(k => k.knowledge.id === revision.knowledgeId);
+      if (current) return [`K${revision.knowledgeId}@${id} is superseded by K${revision.knowledgeId}@${current.revision.id} above`];
+      const successor = store.commitChildren(revision).at(-1);
+      return [`K${revision.knowledgeId}@${id} is ${successor?.op === "archive" ? "archived"
+        : successor?.op === "merge" ? `merged into K${successor.knowledgeId}@${successor.id}`
+        : "no longer current on this path"}`];
+    });
+  })() : [];
   const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
   const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
   const byId = new Map(facts.map(f => [f.id, f]));
@@ -147,11 +176,13 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   let last: { priced: number; episodic: number } | undefined; // what the smallest candidate cost, for the diagnostic
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
-      knowledge, lines, reminders: remindersFor(rangeFacts),
+      knowledge, knowledgeNotes, lines, reminders: remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
-    const prepared = consolidationMaterial(frozen, config);
-    // Priced by the mode that runs, which since 25b is the only mode this phase has.
-    const priced = instructions + tools + tokens(prepared.text.fresh);
+    const prepared = consolidationMaterial(frozen, config, initial);
+    // Priced by the mode that runs (29b's one line, as in Noting): the subagent's instructions, tools
+    // and material today, and the inherited measure plus the newly supplied text once 29e can fork.
+    const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
+      : instructions + tools + tokens(prepared.text);
     last = { priced, episodic: prepared.over.episodic };
     const fits = !prepared.over.episodic && (!capacity || priced <= capacity.inputTokens);
     if (fits) return { ...frozen, prepared };
@@ -162,34 +193,46 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   if (applicable.length) throw new Error(`Consolidation capacity: oldest fact with its mandatory cues cannot fit consolidation.batchTokens or the model context: `
     + `${last!.episodic ? `it is ${last!.episodic} tokens over consolidation.batchTokens (${config.consolidation.batchTokens})` : `it costs ${last!.priced} tokens`}`
     + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, lines, factTurns, reminders: [] as string[],
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, knowledgeNotes, lines, factTurns, reminders: [] as string[],
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
 }
 
-/** Every part of one run's material, rendered and budgeted once from the frozen task (ticket 20, as
- * 25a corrected it). Consolidation's automatic material is two independent allowances: the active
- * knowledge within `render.knowledgeBlockTokens`, and the pending facts to integrate within
- * `consolidation.batchTokens` — which also carries their review cues, the titles and the range,
+/** The one Consolidation material builder (29b, parent 29 "One material-selection mechanism"). The
+ * frozen task is the whole processing target — the oldest applicable pending whole-fact prefix, chosen
+ * by `consolidation.batchTokens` alone — and `initial` is the child's starting point. Newly supplied
+ * is the target minus the fact bodies the view holds by id, plus the current knowledge it does not
+ * hold at that exact commit (a visible predecessor covers nothing), and only then the budgets.
+ *
+ * The two allowances are unchanged (ticket 20, as 25a corrected it): the knowledge within
+ * `render.knowledgeBlockTokens` — which 29b's status lines are charged inside — and the pending facts
+ * within `consolidation.batchTokens`, which also carries their review cues, the titles and the range,
  * because required framing belongs to the allowance of the material it frames. There is no automatic
- * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read.
- * Core lays out both representations (ruling 08:53); the host only decides which message carries them. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig) {
-  const { rangeFacts, knowledge, lines, factTurns, reminders } = frozen;
+ * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read. */
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+  const { rangeFacts, knowledge: applicable, knowledgeNotes, lines, factTurns, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
-  const grouped = renderFactGroups(rangeFacts, f => lines.get(f.id)!, factTurns);
-  const budgeted = budgetMaterial({ knowledge, current: grouped.join("\n"),
+  // The addresses name the whole frozen target — that is what this run must integrate — while the
+  // bodies are only the facts the child cannot already read in its own context.
+  const supplied = rangeFacts.filter(fact => !initial.visible.factIds.has(fact.id));
+  const knowledge = applicable.filter(({ revision }) => !initial.visible.knowledgeCommitIds.has(revision.id));
+  const grouped = renderFactGroups(supplied, f => lines.get(f.id)!, factTurns);
+  const budgeted = budgetMaterial({ knowledge, knowledgeNotes, current: grouped.join("\n"),
     framing: [RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
     caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: grouped,
     knowledge: budgeted.knowledge.filter((g) => g.text),
+    knowledgeNotes: budgeted.knowledgeNotes,
     reminders,
     receipts: budgeted.receipts,
   };
-  const text: MaterialText = { fresh: consolidationText(material, range) }; // one mode, one representation (25b)
-  return { range, material, text, over: budgeted.over };
+  const text = consolidationText(material, range);
+  // 29a "Renderers return what they kept". This phase supplies no Raw (25a); the facts are the bodies
+  // this text carries, and the commits are the ones the knowledge block kept after its cap.
+  const keptIdentities: SuppliedMaterial = { entries: [], factIds: supplied.map(f => f.id), knowledgeCommitIds: budgeted.knowledgeCommitIds };
+  return { range, material, text, supplied: keptIdentities, over: budgeted.over };
 }
 
 // Unicode character bigrams retain CJK text; punctuation and whitespace are ignored.
@@ -211,7 +254,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   if (!rangeFacts.length || !frozen.prepared) return { outcome: "empty" };
   // The material was rendered and budgeted when the task was frozen (consolidationMaterial), so the
   // batch that runs is exactly the batch whose size was checked.
-  const { range, material, text } = frozen.prepared;
+  const { range, material, text, supplied } = frozen.prepared;
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
   // A first valid `memory` batch commits nothing and returns the review guidance inside its receipt,
   // as a user-role message. Core owns that protocol and reads its own receipt; the adapter only
@@ -242,7 +285,7 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
     return { text: feedback, near };
   } });
   let result: RunAgentResult;
-  try { result = await runAgent({ ...structuredClone(base), material, text, reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
+  try { result = await runAgent({ ...structuredClone(base), material, text, supplied: structuredClone(supplied), reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
   catch (error) { result = agentException(error); }
   binding.close();
   // A direct facade close may dispose before the provider settles; never access that store.

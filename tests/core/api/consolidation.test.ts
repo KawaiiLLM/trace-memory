@@ -102,10 +102,10 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(result.readKnowledgeCommits).toEqual([{ knowledgeId: e, commit: 1 }]);
   for (const call of calls) {
     expect(call.branch).toBe("main"); expect(call.model).toBe("fake-model"); expect(call.mode).toBe("subagent");
-    expect(call.text.fresh).not.toContain(`[F${late}]`); expect(call.text.fresh).not.toContain(`[F${foreign}]`);
-    expect(call.text.fresh).not.toContain(`inbound negate F${late}`); expect(call.text.fresh).not.toContain(`[K${e}@2]`);
+    expect(call.text).not.toContain(`[F${late}]`); expect(call.text).not.toContain(`[F${foreign}]`);
+    expect(call.text).not.toContain(`inbound negate F${late}`); expect(call.text).not.toContain(`[K${e}@2]`);
   }
-  expect(calls[1]!.text.fresh).toContain(`[K${e}@${e}]`);
+  expect(calls[1]!.text).toContain(`[K${e}@${e}]`);
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(consolidated(current)).toBe(true);
@@ -153,7 +153,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   expect(result.output).toEqual(candidate);
   expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
   expect(calls[0]!.feedback).toBeUndefined();
-  expect(calls[0]!.text.fresh).not.toContain("NEAR:"); expect(calls[0]!.text.fresh).not.toContain("CLOSER:");
+  expect(calls[0]!.text).not.toContain("NEAR:"); expect(calls[0]!.text).not.toContain("CLOSER:");
   expect(calls[0]!.request.rounds).toHaveLength(1);
   const second = calls[1]!;
   expect(second.request.rounds.slice(0, 1)).toEqual(calls[0]!.request.rounds);
@@ -265,7 +265,7 @@ test("already-consolidated facts are not supplied while the range remains comple
   // the one fact that is still pending.
   expect(memory.store.listConsolidatedProjectFacts(projectId).map(f => f.id).sort()).toEqual([newest, oldest].sort());
   queue(empty, empty); await consolidation();
-  const input = calls[0]!.text.fresh;
+  const input = calls[0]!.text;
   expect(input).not.toContain(`[F${newest}]`);
   expect(input).not.toContain(`[F${oldest}]`);
   expect(input).toContain(`[F${current}]`);
@@ -391,14 +391,14 @@ test("each session settles only its own branch facts; another session's settled 
   const other = await memory.consolidate({ sessionId: secondSession, branch: "fork" });
   if (other.outcome !== "success") throw new Error("expected success");
   expect(other.range.facts.map((f) => f.id)).toEqual([second]);
-  expect(calls[0]!.text.fresh).not.toContain(`[F${first}]`);
+  expect(calls[0]!.text).not.toContain(`[F${first}]`);
   queue(createOutput(first), createOutput(first));
   const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.range.facts.map((f) => f.id)).toEqual([first]);
   // 25a: the other session's settled fact is no longer injected as context; an explicit read still
   // returns it, unrestricted across sessions and projects.
-  expect(calls[2]!.text.fresh).not.toContain(memory.trace(`F${second}`));
+  expect(calls[2]!.text).not.toContain(memory.trace(`F${second}`));
   expect(memory.trace(`F${second}`)).toContain(`[F${second}]`);
   expect(consolidated(second, "fork", secondSession)).toBe(true);
   expect(consolidated(first)).toBe(true);

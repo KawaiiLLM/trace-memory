@@ -15,10 +15,10 @@ Model calls go through one interface, runAgent(input) → {outcome: success | fa
 user's ruling of 2026-09-08 in ticket 20).** `runAgent` receives structured task material and core's
 prepared text, never a system or user message, a provider body, a message sequence or an SDK type:
 the domain prompt and its hash, the frozen range and knowledge commits, the mode, the tools,
-`reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, and `text` with the
-two representations of that same frozen task (`fresh` for a fresh child, `inherited` for a run whose
-context is inherited). The host chooses which representation its native context capability needs and
-which message carries it; it lays out no block of its own. Consolidation additionally supplies
+`reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, `text` — one
+prepared string, whatever mode runs the task (29b; the `{fresh, inherited}` pair is gone) — and
+`supplied`, the identities that text actually carries. The host decides which message carries the
+text; it lays out no block of its own and chooses between no representations. Consolidation additionally supplies
 `reviewFeedback(toolResult)`, core's own reader of a `memory` receipt: the host delivers the returned
 guidance as a user message but does not parse the protocol.
 
@@ -198,14 +198,17 @@ is the text the host's extractor returns, cut head and tail. The rules that name
 memory writers are gone (ticket 23b), and so are their budgets. The host records
 tool status; the renderer does not infer completion from text.
 
-In fork mode the run sends core's inherited increment — the range, the head reply and the frozen
-source index: the raw turns are already in the conversation the host appends to, and 25a adds no
-historical-fact block, no fact index and no Raw view on top of them (29d: the facts of earlier
-notings are no longer delivered into that conversation either — a fork that needs one reads it by
-address). The native prefix remains uncompressed; fork Noting gains nothing from the
-compressed view (accepted 2026-09-08). Subagent Noting and fallback send the shared entry views
-below. Core freezes one material for both, and a fork downgraded to subagent is priced on that
-complete subagent material (22d).
+In fork mode the run sends what its own context does not already hold (29b): with the whole target
+visible that is the range, the head reply and the frozen source index — the shape 20a fixed by layout
+— but it is now the output of one subtraction, so a partly visible target sends the Raw of the rest,
+and the missing applicable history is supplied in either mode (superseding 25a's "a Noter fork never
+adds historical facts"). The native prefix remains uncompressed; fork Noting gains nothing from the
+compressed view (accepted 2026-09-08). Subagent Noting and fallback start from the empty view and
+therefore send the complete entry views below. A fork is priced as its inherited measure plus the
+instructions plus the text it supplies — never the cost of a fresh representation it does not build
+(29b, superseding 22d/25a's "a fork is priced on the complete subagent material"); the fallback is
+guarded instead by the re-admitted subagent's own freeze, which re-prices the fresh material at the
+fresh model's capacity and refuses the batch there if it does not fit.
 
 Noting context is two independent allowances (25a): the selected raw within `noting.batchTokens`,
 and the historical facts within what remains of `render.episodicBlockTokens` once that Raw ceiling is
@@ -251,13 +254,38 @@ corrected it):
 modes, and the Consolidator's already-consolidated history block. Both consumers reach that material
 by explicit read instead, and knowledge a fork already inherited from the foreground is untouched.
 
-The Noter also gets the inherited-context increment from that same frozen task (`notingIncrement`;
-user ruling 2026-09-06 08:53): the instruction, the range, and then the head reply and source index.
-It is what the inherited conversation does not already carry, never a second copy of the knowledge,
-facts and Raw — and, since 25a, never a fact index or a Raw view either. A Noting run has both
-representations prepared as `input.text.fresh` and `input.text.inherited`, so the execution mode
-cannot change the writable evidence range. Consolidation runs as a subagent alone (25b), so its task
-carries `fresh` only and `inherited` is absent; the former `consolidationIncrement` is gone.
+## One material builder, two initial states (29b)
+
+Each phase has ONE builder, and the only thing that separates a fork's material from a fresh child's
+is the initial state it is given: `{visible: VisibleView, inheritedTokens}` — the empty view and zero
+for a fresh child, the parent's real view (29a) and the host's context measure for a fork.
+`notingIncrement` and the `MaterialText` pair are gone.
+
+A task has two sets, frozen separately. The **processing target** is chosen regardless of visibility —
+Noting's oldest whole-entry prefix within `noting.batchTokens`, Consolidation's oldest applicable
+pending whole-fact prefix — and it is what the run may write for, what the audit lists and what
+progress advances. The **newly supplied material** is that target minus what the view proves visible
+at the same identity and representation, then the optional material minus visible ids, and only then
+the injection budget. Never a budget-limited prefix with visibility subtracted afterwards: with the
+newest facts already visible, the whole history allowance goes to the older ones the child cannot see.
+The allowance is a ceiling, never a target — fewer needed facts make a smaller block, not filler.
+
+- **Noting.** A target entry is withheld when the view holds its native id as a retained `source` or a
+  `tier1` carrier view (a tier-2 view is never in the view at all, so it withholds nothing). Withheld
+  bodies leave the mandatory framing standing: the range, the source index for the whole frozen range,
+  and the head reply — restated only when the head entry's own body was withheld, because the captured
+  request a fork inherits stops before the reply it produced. Optional: the applicable historical facts
+  the view does not hold, within the same `render.episodicBlockTokens - noting.batchTokens` ceiling; no
+  knowledge block, and no borrowing from the Raw allowance.
+- **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming
+  the whole target. Optional: the current applicable knowledge the view does not hold at that exact
+  commit — a visible predecessor covers nothing — plus one status line per inherited commit that is no
+  longer current (superseded, archived or merged), charged inside `render.knowledgeBlockTokens` with
+  the block it corrects. No historical-fact block and no automatic Raw block.
+
+Both builders return `supplied: SuppliedMaterial` beside the text: what the text really carries, after
+budgeting, for the carrier a host persists with it (29a). Later tool rounds add nothing — the child
+keeps its own earlier messages, and core prepares one material per task.
 
 The leading knowledge block is `renderKnowledgeBlock`, the same `<knowledge>` block the three
 consumers that carry one use; nothing task-specific may enter it — no range, no entry id of the new batch, no

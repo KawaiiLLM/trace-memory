@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
-import { compacted } from "../../source-fixture.ts";
+import { compacted, visibleTarget } from "../../source-fixture.ts";
 import { host, reply } from "./test-host.ts";
 import { piResultText } from "../../../src/hosts/pi/index.ts";
 
@@ -107,12 +107,17 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
     const next = TraceMemory(join(h.dir, "trace.db"), async raw => {
       const forkInput = raw as NotingAgentInput;
-      expect(forkInput.text.inherited).not.toContain("T1#user");
-      expect(forkInput.text.inherited).toContain("late assistant");
+      // 29b: with the whole target visible the fork supplies no Raw body, so the only entry text it
+      // carries is the head reply the captured request cannot contain.
+      expect(forkInput.text).not.toContain("T1#user");
+      expect(forkInput.text).toContain("late assistant");
       forkInput.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); // 26a: completed by a submission
       return { outcome: "success", output: "", request: {} };
     });
-    try { expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "fork" })).outcome).toBe("success"); }
+    try {
+      const visible = visibleTarget(next, 1, "main", 1);
+      expect((await next.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "fork", visible })).outcome).toBe("success");
+    }
     finally { next.close(); }
   } finally { release?.(); noter.close(); await h.dispose(); }
 });
@@ -135,20 +140,23 @@ test("17a 2026-09-08: Noting, fallback, compaction and carry supply identical bo
     // 20b: the batch ceiling is 10,000 tokens, and this test is about bytes, not batching — every
     // consumer here is given room for the whole pending set so the four renderings are comparable.
     const noter = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      subagent = (raw as NotingAgentInput).text.fresh;
+      subagent = (raw as NotingAgentInput).text;
       return { outcome: "failure", output: "leave entries pending", request: {} };
     }, { noting: { batchTokens: 100_000 } });
     await noter.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); noter.close();
     expect(rawOf(subagent)).toBe(expected.join("\n\n"));
     // A separate host with the normal trigger reattaches the same native fixture; attach itself is quiet.
-    const runner = host({ "noting.triggerTokens": 10000, "noting.batchTokens": 100000 });
+    // 29b: this host runs the fresh path by configuration. It used to get there by a capacity refusal,
+    // but a fork whose whole target is visible now supplies no Raw at all and fits comfortably — which
+    // is the point of case 12 and would leave this byte comparison with no fresh request to read.
+    const runner = host({ "noting.triggerTokens": 10000, "noting.batchTokens": 100000, "noting.forkModeDefault": false });
     runner.entries.push(...h.entries.filter(e => e.type === "message"));
     runner.allEntries.push(...runner.entries);
     await runner.emit("session_start");
     runner.persist(reply("tick")); await runner.emit("agent_end"); await runner.drain();
     const sent = runner.conversations[0]!.messages[0]!.content as string;
     expect(rawOf(sent)).toContain(rawOf(subagent));
-    expect(JSON.parse(runner.memory.store.listRuns(1).at(-1)!.response!).fallbackReason).toBeTruthy();
+    expect(runner.memory.store.listRuns(1).at(-1)!.mode).toBe("subagent");
     await runner.dispose();
     expect(expected.every(view => tokens(view) <= 10000)).toBe(true);
   } finally { await h.dispose(); }
@@ -169,7 +177,7 @@ test("17a 2026-09-08: compaction measures compressed tokens and preserves facts 
     expect(block.split("Recent facts (by Turn):\n\n")[1]!.split("\n\nRaw:")[0]).toBe(grouped);
     let sent = "";
     const noting = TraceMemory(join(h.dir, "trace.db"), async raw => {
-      sent = (raw as NotingAgentInput).text.fresh;
+      sent = (raw as NotingAgentInput).text;
       return { outcome: "failure", output: "leave pending", request: {} };
     });
     try { await noting.noting({ sessionId: 1, branch: "main", headTurnId: 1, mode: "subagent" }); }
@@ -384,7 +392,7 @@ test("review 2026-09-08 P3: the Noter's active knowledge follows the branch path
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(h.memory.inject({ sessionId: 1, headTurnId: 1, branch })).not.toContain("SIBLING_POLICY_ALPHA");
     let sent = "";
-    runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as NotingAgentInput).text.fresh; return { outcome: "failure", output: "inspection only", request: {} }; });
+    runner = TraceMemory(join(h.dir, "trace.db"), async input => { sent = (input as NotingAgentInput).text; return { outcome: "failure", output: "inspection only", request: {} }; });
     await runner.noting({ sessionId: 1, branch, headTurnId: 1, mode: "subagent" });
     expect(sent.split("</knowledge>")[0]).not.toContain("SIBLING_POLICY_ALPHA");
   } finally { runner?.close(); await h.dispose(); }

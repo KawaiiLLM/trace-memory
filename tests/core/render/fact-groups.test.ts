@@ -101,7 +101,7 @@ test("carry, compact, Noter history and the Consolidator range share the one fac
     const later = calls.at(-1)! as ConsolidationAgentInput, next4 = [m.store.getFact(4)!];
     expect(later.material.rangeFacts.join("\n")).toBe(renderFactGroups(next4, f => m.trace(`F${f.id}`), m.store.factTurnTimes(next4)).join("\n"));
     expect("facts" in later.material).toBe(false);
-    expect(later.text.fresh).not.toContain(expected);
+    expect(later.text).not.toContain(expected);
     expect(m.trace("F2")).not.toContain("(selected facts)"); // explicit single-fact reads stay unchanged
   } finally { m.close(); }
 });

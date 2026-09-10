@@ -772,30 +772,37 @@ exception, which is 27b's post-attempt fallback below: a rejection pi-ai's own `
 classifies as a context overflow, in a run that committed nothing and was not cancelled.
 
 Fallback keeps the run honest: it accepts the actual returned `mode`, records `requestedMode`
-beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b
-the fresh-context material comes from the same frozen task as the inherited increment rather
-than from a second core string, so a fallback cannot send range-only context or falsely record
-fork mode.
+beside it, and preserves `verification`/`fallbackReason` in the response envelope. Since 19b the
+fresh-context material comes from the same frozen task rather than from a second core string, and
+since 29b from the same builder: the re-admission carries no visible view, so its material is the
+complete fresh one and a fallback cannot send range-only context or falsely record fork mode.
 No store schema changed.
 
 ## Message binding (20a)
 
-This adapter composes no domain text. Core prepares both representations of one frozen task and
-this host only binds them to native messages (user ruling 2026-09-08; `compose.ts` and its test
-were deleted with the layout that lived in them):
+This adapter composes no domain text. Core prepares ONE text per frozen task (29b) and this host
+only binds it to a native message (user ruling 2026-09-08; `compose.ts` and its test were deleted
+with the layout that lived in them):
 
-- **Inherited context (`fork`)**: `${input.prompt}\n\n${input.text.inherited}` as the appended
-  user message. A fork has no system slot of its own, so the instructions ride in that message;
-  core's increment is the range, the head turn's final reply and the source index (Noting) or the
-  range, the exact fact list and the review cues (Consolidation), because the raw turns and the
-  injected knowledge are already in that conversation (user ruling 2026-09-06 08:53; 29d removed that
-  ruling's third item, the delivered facts, with automatic delivery itself).
-- **Fresh context (`subagent`)**: `input.prompt` becomes the child's system prompt and
-  `input.text.fresh` its first user message.
+- **Inherited context (`fork`)**: `${input.prompt}\n\n${input.text}` as the appended user message.
+  A fork has no system slot of its own, so the instructions ride in that message.
+- **Fresh context (`subagent`)**: `input.prompt` becomes the child's system prompt and `input.text`
+  its first user message.
 
-Choosing the representation is this host's decision, made from the native context capability it
-actually has; the titles, block order and separators inside the text are core's, pinned in
-`tests/core/render/material.test.ts`. Consolidation's review guidance is still read back from the
+There is no representation to choose any more: what the text contains is decided by the initial
+state this host froze with the task at admission — the 29a visible view for a fork, nothing for a
+fresh child — and the titles, block order and separators inside it are core's, pinned in
+`tests/core/render/material.test.ts`.
+
+## The visible view at admission (29b)
+
+`visibility(context.sessionManager)` (29a) is created in `restore` and held for the session; it
+memoizes by leaf id, entry count and binding, so a streaming token re-reads the cached view while a
+rewind, a new entry, a compaction and the memory-session allocation each invalidate it. Admission
+passes `visible` to core only for a task whose effective mode is `fork`, beside the
+`capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork
+re-admitted as a subagent after any refusal (27b/27c: `fallbackReason` makes the effective mode
+subagent), pass none and get the complete fresh material. Consolidation's review guidance is still read back from the
 `memory` receipt with core's own `input.reviewFeedback(result)`; the adapter only chooses how to
 put that message in front of the model (here: a native user message queued with `deliverAs:
 "steer"`).

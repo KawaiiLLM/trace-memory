@@ -63,7 +63,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   const pending = noting(first.id);
   const second = turn(first.id, 1);
   expect(calls[0]!.range.to).toBe(`S${sessionId}/T${first.id}`);
-  expect(calls[0]!.text.fresh).not.toContain(second.userPrompt!);
+  expect(calls[0]!.text).not.toContain(second.userPrompt!);
   resolve(success([batch(first.id)]));
   const result = await pending;
   expect(result.outcome).toBe("success");
@@ -71,9 +71,9 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   script.push(async () => success([batch(second.id, [fact({ source: [`T${second.id}#user`], support: [["F1", "weak"]] })])]));
   await noting(second.id);
-  expect(calls[1]!.text.fresh).toContain(second.userPrompt!);
+  expect(calls[1]!.text).toContain(second.userPrompt!);
   expect(calls[1]!.material.facts[0]).toContain("[F1]");
-  expect(calls[1]!.text.fresh).not.toContain(first.userPrompt!);
+  expect(calls[1]!.text).not.toContain(first.userPrompt!);
   expect(memory.store.sourcePath(sessionId, "main", second.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "main", second.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(2);
@@ -97,7 +97,7 @@ test("switching branch while pending keeps the old branch's progress and exclude
   expect(memory.store.sourcePath(sessionId, "old", old.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(calls[1]!.text.fresh).not.toContain(`[S${sessionId}/T${old.id}]`);
+  expect(calls[1]!.text).not.toContain(`[S${sessionId}/T${old.id}]`);
   expect(memory.store.getRun(1)?.branch).toBe("old");
 });
 
@@ -191,7 +191,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(calls[1]!.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   // 25a: the run freezes the commit its explicit reads are judged against, and supplies no block.
   expect(calls[1]!.material.knowledge).toBeUndefined();
-  expect(calls[1]!.text.fresh).not.toContain("[K1@1]");
+  expect(calls[1]!.text).not.toContain("[K1@1]");
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [
     { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: 1, baseCommit: 1, category: "mechanism", scope: "project", text: memories.editedKnowledge, supports: [1], createdAt: time },
   ] });
@@ -201,7 +201,7 @@ test("read knowledge revisions and exact provider request are recorded, even whe
   expect(JSON.parse(run.response!).readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
   expect(JSON.parse(run.request!)).toEqual(request);
   expect(run.model).toBe("fake-model"); expect(run.promptHash).toMatch(/^[0-9a-f]{64}$/);
-  expect(run.request).not.toBe(calls[1]!.text.fresh);
+  expect(run.request).not.toBe(calls[1]!.text);
 });
 
 const golden = (name: string) => readFileSync(new URL(`../../fixtures/noting/${name}.txt`, import.meta.url), "utf8").trimEnd();
@@ -295,7 +295,7 @@ test("selected historical facts display by Turn time rather than insertion id", 
   const later = memory.store.appendTurn({ sessionId, parentTurnId: first.id, kind: "turn", assistantText: "later", startedAt: "2026-08-16 03:00" });
   script.push(async () => success([batch(later.id), batch(first.id)])); await noting(later.id);
   const second = turn(later.id, 1); script.push(async () => success([])); await noting(second.id);
-  expect(calls[1]!.text.fresh.indexOf("[F2]")).toBeLessThan(calls[1]!.text.fresh.indexOf("[F1]"));
+  expect(calls[1]!.text.indexOf("[F2]")).toBeLessThan(calls[1]!.text.indexOf("[F1]"));
 });
 
 test("reopening the database preserves the run, facts and watermark", async () => {

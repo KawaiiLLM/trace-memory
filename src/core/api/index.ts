@@ -4,8 +4,9 @@ export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
 // 29a "One derived view": the pure visibility projection over a host's own retained context entries.
-export { visibleView } from "./visible.ts";
-export type { Carrier, ContextEntry, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
+import type { VisibleView } from "./visible.ts";
+export { noVisibility, visibleView } from "./visible.ts";
+export type { Carrier, ContextEntry, InitialContext, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { freezeNoting, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
@@ -15,8 +16,8 @@ export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, 
 export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.ts";
 // 20a: core owns the domain text of every memory consumer. A host places this text; it does not lay
 // out knowledge, facts or Raw itself.
-export { notingText, notingIncrement, consolidationText, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
-export type { SharedMaterial, KnowledgeGroup, MaterialText, TaskRange } from "../render/material.ts";
+export { notingText, consolidationText, injectionText, compactText, knowledgeBlock } from "../render/material.ts";
+export type { SharedMaterial, KnowledgeGroup, TaskRange } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
@@ -286,6 +287,12 @@ export interface TaskOptions {
    * re-admission carrying a generation older than the current one was cancelled between the refusal
    * and this call, and is dropped without launching anything. */
   cancellation?: number;
+  /** 29b "Same builder, different initial state": what the child this task will run in already holds,
+   * as the host derived it from that child's own starting context (29a's `visibleView`). Present only
+   * for a task the host will really run with an inherited context; a fresh child — an explicit
+   * subagent, a fork re-admitted as one after a refusal — carries none and its material is built from
+   * the empty view. Core reads it to subtract, never to decide the mode. */
+  visible?: VisibleView;
 }
 export interface AgentControl {
   signal?: AbortSignal;

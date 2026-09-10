@@ -481,7 +481,14 @@ export default function (pi: ExtensionAPI) {
     if (base && typeof measure?.tokens !== "number")
       return reroute({ reason: `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base` });
     const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
+    // 29b: the second half of a fork's initial state, beside the measure above — what this session's
+    // selected context actually holds, read through the 29a memo and frozen with the task. Only a task
+    // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
+    // a subagent (`fallbackReason` makes `effective` subagent above) pass none, so core builds the
+    // complete fresh material for them, exactly as before.
+    const inherited = effective === "fork" ? visible(binding()) : undefined;
     const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
+      ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),

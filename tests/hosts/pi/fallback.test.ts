@@ -101,6 +101,10 @@ test("27b 2026-09-10: the pre-send fallback decides before any provider request,
     expect(String(response.nativeLog).startsWith(`${f.runsDir}/`)).toBe(true);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+    // 29b: the re-admitted subagent is given no visible view, so its material is the complete fresh
+    // one — the Raw of its whole target — however much of it the foreground it did not fork happens
+    // to hold. A fresh child that inherited the fork's subtraction would be a task with no evidence.
+    expect(JSON.stringify(f.sent.filter(fresh)[0]!.messages![1]!.content)).toContain("Raw:");
   } finally { await f.dispose(); }
 }, 30000);
 
