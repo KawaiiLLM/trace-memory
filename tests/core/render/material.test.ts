@@ -355,28 +355,30 @@ test("25a 2026-09-09: a Noter freeze keeps its history inside the reserved allow
 
 /** Ticket 25 "One full-fact renderer": for one selected fact set and annotation snapshot, the
  * foreground `<noted>` receipt and the Noter subagent's history block are the same bytes. Only the
- * enclosing title differs, which is what lets a fork inherit its history through the receipts. */
-test("25a 2026-09-09: the <noted> receipt payload and the Noter's history block are byte-identical between their titles", async () => {
+ * enclosing title differs, which is what lets a fork inherit its history through the receipts.
+ * 29d: the `<noted>` delivery payload this test used to compare against is retired, so the surviving
+ * second producer of that same set is the branch carry — the ruled property (one renderer, two
+ * titles) is unchanged, only its witness. */
+test("25a 2026-09-09: the branch carry's fact payload and the Noter's history block are byte-identical between their titles", async () => {
   const project = memory.store.createProject({ name: "shared-renderer", declaredBy: "mark" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: project.id });
   const first = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "记下来", assistantText: "好。", startedAt: time });
   const later = "2026-09-09T00:00:00Z";
   const second = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn", userPrompt: "再来一次", assistantText: "好。", startedAt: later });
-  // One committed batch with a pending delivery, spanning two Turns and one multi-Turn citation.
-  const write = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: later },
-    pendingDelivery: { sessionId: s.id, branch: "main" }, facts: [
+  // One committed batch spanning two Turns and one multi-Turn citation.
+  const write = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: later }, facts: [
       { turnId: second.id, category: "observation", actor: "user", text: "late claim", quote: null, source: [`T${second.id}#user`], createdAt: later },
       { turnId: first.id, category: "observation", actor: "user", text: "early claim", quote: null, source: [`T${first.id}#user`], createdAt: time },
       { turnId: first.id, category: "observation", actor: "user", text: "multi-source claim", quote: null, source: [`T${first.id}#user`, `T${second.id}#assistant`], createdAt: time },
     ] });
   if (!write.ok) throw new Error(write.problems.join("; "));
-  const delivered = memory.deliver(s.id, "main");
+  const carry = memory.branchSummary(s.id, "main", second.id);
   // A later Noting task whose history is exactly that same selected set and annotation snapshot.
   memory.appendEntry({ sessionId: s.id, nativeLineage: "shared", nativeId: "e1", turnId: second.id, role: "assistant", text: "still here", raw: "", calls: [] });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: second.id, mode: "subagent" });
   const history = (calls.at(-1)! as NotingAgentInput).material.facts;
   expect(history.length).toBe(memory.store.listSessionFacts(s.id).length); // the same selected set
-  expect(delivered.text).toBe(`<noted>\n${history.join("\n")}\n</noted>`);
+  expect(carry).toContain(`Facts:\n${history.join("\n")}\nCommits`);
 });
 
 /** Ticket 25 "Noter material contract": a fork is priced on the subagent material too, so the

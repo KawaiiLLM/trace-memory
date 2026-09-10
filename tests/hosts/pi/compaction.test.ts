@@ -52,7 +52,6 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
-    const deliveries = h.memory.store.listPendingDeliveries(1, "main").length;
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result).toBeUndefined(); // no summary at all: Pi's own compaction path runs and reports
     expect(h.notices.at(-1)).toContain("compaction used native delegation");
@@ -60,7 +59,6 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
     // Delegating starts no extraction, advances no progress, erases no source and confirms nothing.
     expect(h.memory.store.listRuns(1)).toHaveLength(runsBefore);
     expect(h.memory.pendingEntries(1, "main", 1).map(e => e.id)).toEqual(pendingBefore);
-    expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(deliveries);
     // Pi persists a compaction entry only when compaction succeeded, so this failed/cancelled route
     // wrote none — and the next fork-mode Noter is not downgraded for pre-compaction evidence.
     await work(h, long("more"));

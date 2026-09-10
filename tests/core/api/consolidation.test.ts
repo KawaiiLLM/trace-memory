@@ -109,7 +109,11 @@ test("freezes session branch range, read revisions, relations and guidance throu
   expect(audit(result.runId, 1).toolCalls).toHaveLength(2);
   expect(memory.trace(`K${e}`)).toBe(moved);
   expect(consolidated(current)).toBe(true);
-  expect(memory.deliver(sessionId, "main").text).toContain("<consolidated>"); // 2026-09-08 supersedes mode-derived delivery
+  // 29d (ticket 29, "Retire automatic foreground receipt delivery") supersedes the 2026-09-08 ruling
+  // this line pinned ("a Consolidation commit delivers its knowledge to the foreground whatever mode
+  // it ran in"): a commit now delivers to no one, and the foreground learns of it through a later
+  // compaction or an explicit read.
+  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
 });
 
 test("reminder lists every visible supporting knowledge for both strengths and ignores lexical distance and budgets", async () => {
@@ -533,7 +537,7 @@ const withFraming = (facts: Fact[]) => tokens(grouped(facts).join("\n"))
 const applicableTokens = (branch = "main") =>
   tokens(grouped(memory.store.consolidationBatch(sessionId, branch, memory.store.knowledgePath(sessionId, branch).headTurnId ?? undefined)).join("\n"));
 const due = (branch = "main") => memory.taskEligibility("consolidation",
-  { sessionId, branch, headTurnId: memory.store.knowledgePath(sessionId, branch).headTurnId! }, "subagent").due;
+  { sessionId, branch, headTurnId: memory.store.knowledgePath(sessionId, branch).headTurnId! }).due;
 
 /** Ticket 20 acceptance scenario 6, superseding 17b's fifty-fact trigger: the same rendered fact view
  * decides both admission and selection, and neither historical facts nor knowledge contribute. */

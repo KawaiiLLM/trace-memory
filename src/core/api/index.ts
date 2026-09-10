@@ -261,8 +261,8 @@ export interface TaskBoundary { maxEntryId?: number; entryIds?: number[]; factId
 export interface TaskOptions {
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
-   * (a requested fork resolved to subagent by the host's cache-miss latch). Admission's delivery
-   * pause follows it; the requested mode is still recorded (review 2026-09-08). */
+   * (a requested fork resolved to subagent by the host's cache-miss latch). Capacity and material
+   * follow it; the requested mode is still recorded (review 2026-09-08). */
   effectiveMode?: "fork" | "subagent";
   /** 26b: the runtime thinking level the host froze for this task at admission, beside its model.
    * Opaque to core, which only hands it back with the frozen task; the host's runtime resolves and
@@ -317,7 +317,7 @@ export interface TraceMemory {
   /** Ticket 23 "Host contract": the result-text extractor this host registered at construction. Core
    * applies it wherever it renders an entry and never inspects envelope fields itself. */
   readonly resultText: ResultExtractor;
-  taskEligibility(phase: Phase, target: TaskTarget, mode: "fork" | "subagent"): { due: boolean; paused: boolean };
+  taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
   /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
   cancelTasks(stopping?: boolean): void;
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
@@ -337,7 +337,7 @@ export interface TraceMemory {
   tools(context: ToolContext): ToolDefinition[];
   noting(input: NotingInput): Promise<NotingResult>;
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
-  /** Committed lineage facts and unrecorded raw, without consuming deliveries or dropping facts. */
+  /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   /** Ticket 20: the escalating compaction result — primary views, secondary views, or the explicit
    * ask that the host decline and let its native compaction run (20c). */
@@ -345,16 +345,11 @@ export interface TraceMemory {
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;
-  /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge, no deliveries. */
+  /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
   /** 29a: the same block with the commit ids it kept, for the carrier the host writes on the message
    * it persists. `inject` is this call read for its text alone. */
   injection(target: number | { projectId: number } | KnowledgePath): Injection;
-  /** Pending noting results for this session and branch, rendered once and marked delivered; "" when none. */
-  /** Pending noting results for this session and branch, rendered but not consumed; "" when none. */
-  deliver(sessionId: number, branch?: string | null): { text: string; runIds: number[] };
-  /** Marks the given deliveries consumed once the host has persisted them. */
-  confirmDelivery(runIds: number[]): void;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
@@ -512,17 +507,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const facts = store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
     return tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n")) >= cfg.consolidation.triggerTokens;
   };
-  const taskEligibility = (phase: Phase, target: TaskTarget, mode: "fork" | "subagent") => {
-    if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false, paused: false };
-    const due = phase === "noting" ? notingDue(target)
+  // 29d: eligibility is the trigger threshold and nothing else. The delivery pause that used to hold
+  // a fork-mode Noting task until its predecessor's facts had been delivered to the foreground went
+  // with the deliveries themselves (parent 29: "Old pending rows cannot pause either phase once the
+  // new version stops consuming them"), so the requested mode no longer changes this answer. Phase
+  // slots, enrollment, the host's readiness wait and claim checks are untouched.
+  const taskEligibility = (phase: Phase, target: TaskTarget) => {
+    if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
+    return { due: phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
-      : consolidationDue(target);
-    // Only Noting has an inherited-context mode to pause (25b), and it waits for the fact receipts a
-    // Noter fork would otherwise re-extract; deliveries of another phase are not its business.
-    const paused = mode === "fork" && store.listPendingDeliveries(target.sessionId, target.branch)
-      .some(p => store.getRun(p.runId)?.kind === "noting");
-    return { due, paused };
+      : consolidationDue(target) };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
     // 25 amendment 2: an explicit request for the retired Consolidation mode is refused by name, with
@@ -563,11 +558,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
         if (!input.automatic || input.borrowed) return true;
-        // 25b: Consolidation has one mode, so only Noting reads a configured default here.
-        const mode = phase === "consolidation" ? "subagent" as const
-          : input.mode ?? (cfg.noting.forkModeDefault ? "fork" : "subagent");
-        const { due, paused } = taskEligibility(phase, target, input.effectiveMode ?? mode);
-        return due && !paused;
+        return taskEligibility(phase, target).due;
       });
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;

@@ -22,7 +22,6 @@ for (const outcome of ["failure", "cancelled"] as const) test(`2026-09-07 transa
     expect(input.tools[2]!.execute({ facts: [fact()] })).toContain("F1");
     expect(memory.store.getRun(1)).toMatchObject({ outcome: "success", request: JSON.stringify({ round: 1 }) });
     expect(JSON.parse(memory.store.getRun(1)!.response!).toolCalls[0].result).toContain("F1");
-    expect(memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
     return { outcome, output: "connection stopped", request: { round: 2 } };
   };
   expect(await record()).toMatchObject({ outcome: "success", facts: [{ id: 1 }] });

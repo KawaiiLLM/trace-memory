@@ -113,7 +113,7 @@ async function triggerBacklog(fixture: Fixture, size: string): Promise<Sample[]>
     const pending = entries.length;
     return [
       measure("pendingEntries (whole backlog pending)", () => memory.pendingEntries(fixture.sessionId, fixture.branch, head), `${pending} pending entries`),
-      measure("taskEligibility noting (whole backlog pending)", () => memory.taskEligibility("noting", target, "subagent"), `${pending} pending entries`),
+      measure("taskEligibility noting (whole backlog pending)", () => memory.taskEligibility("noting", target), `${pending} pending entries`),
       ...viewTokens(memory, entries, size),
     ];
   } finally { memory.close(); rmSync(copy, { force: true }); }
@@ -406,7 +406,7 @@ async function runSize(size: string) {
     measure("branchSummary", () => memory.branchSummary(fixture.sessionId, fixture.branch, head)),
     measure("citationProblem (20 facts)", () => store.citationProblem(citations, "session", path)),
     measure("pendingEntries (whole selected path)", () => store.pendingEntries(fixture.sessionId, fixture.branch, head)),
-    measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }, "subagent"),
+    measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }),
       `${fixture.pendingEntryCount} pending entries`),
     // 24a: the enabled footer's whole refresh — the four counts as one core progress query over one
     // path snapshot, plus this session's cumulative spend. The 22a scenario measured the three reads

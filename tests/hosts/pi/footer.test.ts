@@ -131,7 +131,9 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   // committed work is not restored to the pending queue.
   const pendingBefore = Number(footer(h).entries);
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
-  await h.turn(); await h.answer("next completed source"); await h.drain();
+  // 29d: no trailing extra reply here. Without the retired delivery pause a small trailing entry no
+  // longer joins the previous batch, and would start a further run this case is not about.
+  await h.turn(); await h.drain();
   const after = footer(h);
   expect(after.role).toBe("warning"); // committed with problems
   expect(Number(after.entries)).toBeLessThan(pendingBefore);

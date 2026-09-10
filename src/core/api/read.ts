@@ -220,8 +220,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
    *
    * Nothing here loads a Raw payload, tokenizes, freezes a task or reads a run's audit body; the
    * snapshot is built for this one read and dropped with it, so another connection's commits are
-   * seen by the next call. The branch defaults like `deliver`'s, so a caller without a host path
-   * still asks about a named branch rather than about Turn-only membership. */
+   * seen by the next call. The branch defaults to `main`, so a caller without a host path still asks
+   * about a named branch rather than about Turn-only membership. */
   const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
@@ -252,20 +252,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }
       return { topics: [...groups.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(topic => ({ topic, commits: groups.get(topic)! })), unclassified };
     },
-    // Knowledge are injected once, at session start (ruling: "constraints first", grilling Q15); deliveries ride every
-    // prompt (ruling 08:53: noting results are injected with the next user message). Two reads, one job each.
+    // Knowledge is injected once per visible baseline (ruling: "constraints first", grilling Q15);
+    // 29d retired the per-prompt delivery that used to ride beside it, so this is the only automatic
+    // material the foreground receives — later background results reach it through a compaction or an
+    // explicit read, never because a worker finished.
     injection,
     inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
-    deliver: (sessionId: number, branch: string | null = "main"): { text: string; runIds: number[] } => {
-      session(sessionId);
-      return store.deliver(sessionId, branch, (facts, commits) => [
-        facts.length ? xmlBlock("noted", factGroups(facts).join("\n")) : "",
-        commits.length ? xmlBlock("consolidated", commits.map((r) => knowledgeLine({ knowledge: store.getKnowledge(r.knowledgeId)!, revision: r })).join("\n")) : "",
-      ].filter(Boolean).join("\n\n"));
-    },
-    // Ruling 2026-09-07: a delivery is confirmed only after the host persisted it (at the turn's stop);
-    // an unconfirmed delivery is rendered again next time. Duplicates are allowed, silent loss is not.
-    confirmDelivery: (runIds: number[]): void => { store.confirmDeliveries(runIds); },
     // Ticket 20 "Compaction escalation" (20c). Five ruled steps, in order, over one frozen snapshot.
     // Nothing here waits for, cancels or starts a memory worker, touches a claim or advances any
     // progress: a Noter finishing concurrently may make this snapshot redundant, never incomplete.
@@ -427,7 +419,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const s = session(sessionId), runs = store.listRuns(sessionId);
       const totals = spend(sessionId);
       const counts = progress(sessionId, branch, headTurnId);
-      const branches = [...new Set(runs.map((r) => r.branch))];
       return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
         `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
@@ -436,8 +427,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note, ${counts.unconsolidated} of ${counts.facts} applicable ${counts.facts === 1 ? "fact" : "facts"} to consolidate; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
-        ...(["noting", "consolidation"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; }),
-        `Pending deliveries: ${branches.reduce((n, b) => n + store.listPendingDeliveries(sessionId, b).length, 0)}`].join("\n");
+        ...(["noting", "consolidation"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");
     },
   };
 }

@@ -334,9 +334,8 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
   expect(response.usage).toEqual({ tokens: 12 }); // the available usage is kept
   expect(response.problems).toEqual([NOTING_INCOMPLETE]);
   expect(response.output).toBe("I answered a question instead."); // final prose is audit content, never facts
-  // No business progress: no facts, no processed entry, no delivery — and the next freeze selects the same entries.
+  // No business progress: no facts and no processed entry — and the next freeze selects the same entries.
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]);
   expect(memory.pendingEntries(sessionId, "main", t.id).map(e => e.id)).toEqual(before);
   let frozen: number[] = [];
   runAgent = async raw => {
@@ -351,9 +350,10 @@ test("26a scenario 1: a run that never calls note is incomplete, records its usa
 
 /** Ticket 26 "Empty submission" and acceptance scenario 1: `note({facts: []})` is a valid explicit
  * submission. It commits a successful zero-fact run, marks exactly the frozen entries processed,
- * creates no delivery (there is no payload), closes the batch to later `note` calls, and a provider
- * failure after that commit keeps the success and only appends the trailing problem. */
-test("26a scenario 1: note({facts: []}) commits a zero-fact run with no delivery, and a later provider failure keeps it", async () => {
+ * closes the batch to later `note` calls, and a provider failure after that commit keeps the success
+ * and only appends the trailing problem. (29d removed this scenario's "creates no delivery" clause
+ * with the delivery mechanism itself: no commit creates one now.) */
+test("26a scenario 1: note({facts: []}) commits a zero-fact run, and a later provider failure keeps it", async () => {
   const sessionId = session();
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   const before = memory.pendingEntries(sessionId, "main", t.id).map(e => e.id);
@@ -372,7 +372,6 @@ test("26a scenario 1: note({facts: []}) commits a zero-fact run with no delivery
   expect(result.problems?.join(" ")).toContain("provider failed after commit"); // trailing problem, commit intact
   expect(memory.store.getRun(result.runId)!.outcome).toBe("success");
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toEqual([]); // an empty batch has nothing to deliver
   expect(memory.store.sourcePath(sessionId, "main", t.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id)).toEqual(before);
   expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual([]);
 });

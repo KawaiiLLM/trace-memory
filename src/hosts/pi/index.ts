@@ -198,7 +198,7 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
     session.notified = true;
   };
-  type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; injected?: boolean; project?: string };
+  type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; project?: string };
   let state: State;
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
   // system — it drives 17c's own executor slot and target claim under a frozen entry/fact snapshot).
@@ -217,6 +217,9 @@ export default function (pi: ExtensionAPI) {
    * visibility"). A diagnostic string, not a state machine: nothing reads it back. */
   let lastCompaction: string | undefined;
   let baseline: string;
+  // 29a's visible-view memo for the selected context, created by `restore` (29d: the initial
+  // knowledge block's only lifecycle input).
+  let visible: ReturnType<typeof visibility>;
   const baselinePath = join(agentDir, "trace-memory-baseline.json");
   const enrollment = () => state.sessionId ? memory.store.enrollment(state.sessionId) : state.enrollment!;
   const enabled = () => { const e = enrollment(); return e.choice ?? e.defaultEnabled; };
@@ -241,9 +244,6 @@ export default function (pi: ExtensionAPI) {
     finally { if (existsSync(temporary)) unlinkSync(temporary); }
   };
   let current: { started: string; id?: number } | undefined;
-  // What this agent run has shown the model and must confirm when it settles. Kept apart from
-  // `current`, which a queued (steering or follow-up) user message replaces mid-run.
-  const unconfirmed: { deliveries: number[]; injected: boolean } = { deliveries: [], injected: false };
   const pending = new Set<Promise<unknown>>();
   const slots = new Set<"noting" | "consolidation">();
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
@@ -293,8 +293,8 @@ export default function (pi: ExtensionAPI) {
    * value `restore` already compares its own state entries by, so another database's equal integer ids
    * can never satisfy coverage. `session` is null until the first reply allocates the memory session
    * id; an injection written before that is recognised afterwards through the Pi session id here. */
-  const carrier = (supplied: SuppliedMaterial) =>
-    ({ traceMemory: { db: dbPath, session: state.sessionId ?? null, pi: state.piId, supplied } });
+  const binding = (): VisibleBinding => ({ db: dbPath, session: state.sessionId ?? null, pi: state.piId });
+  const carrier = (supplied: SuppliedMaterial) => ({ traceMemory: { ...binding(), supplied } });
   const preCompactionEvidence = (context: ExtensionContext, nativeIds: string[]): string | undefined => {
     const ancestry = context.sessionManager.getBranch() as { id: string; type: string }[];
     let boundary = -1;
@@ -318,8 +318,8 @@ export default function (pi: ExtensionAPI) {
     if (task?.kind === "noting") return preCompactionEvidence(ctx, memory.pendingEntries(task.target.sessionId, task.target.branch, task.target.headTurnId).map(e => e.nativeId));
     return;
   };
-  /** The mode a task of this session will actually run in, for the delivery pause, the readiness wait
-   * and the budget; the requested mode is still what the run record keeps. */
+  /** The mode a task of this session will actually run in, for the readiness wait and the budget;
+   * the requested mode is still what the run record keeps. */
   const effectiveMode = (requested: "fork" | "subagent", task?: { kind: "noting" | "consolidation"; target: { sessionId: number; branch: string; headTurnId: number } }) =>
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
@@ -514,6 +514,10 @@ export default function (pi: ExtensionAPI) {
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
     ctx = context;
+    // 29a's memo, bound to this session's manager: one visible-view computation per context position,
+    // re-read by every prompt of that position. Rebuilt here because `restore` is the one place a
+    // different Pi session (and therefore a different manager) can arrive.
+    visible = visibility(ctx.sessionManager);
     const loaded = configuration(ctx.cwd, environment, agentDir);
     if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
     ({ flat, core, sources, layers } = loaded);
@@ -708,38 +712,39 @@ export default function (pi: ExtensionAPI) {
     if (state.sourceHead !== previous && state.sourceHead !== undefined) checkQueues();
   });
   pi.on("session_start", (_event, context) => restore(context));
-  pi.on("session_tree", (_event, context) => { restore(context, true); state.injected = false; save(); });
+  // 29d: the injected-once flag is gone, so a tree switch resets nothing here — the selected
+  // context's own visible view is what decides the next prompt's knowledge block (29a case 8).
+  pi.on("session_tree", (_event, context) => { restore(context, true); });
   pi.on("before_agent_start", (event, context) => {
     ensure(context);
     current = { started: now() };
     if (!enabled()) { showSpend(context); return; }
     reconcile();
-    // Knowledge once per session (the compaction block carries them afterwards); deliveries on every prompt.
-    // Both are confirmed at this turn's agent_settled, after Pi has persisted the message (ruling
-    // 2026-09-07): a turn that never settles injects or delivers again; duplicates over silent loss.
-    const parts: string[] = [];
+    // 29d "Retire automatic foreground receipt delivery": the knowledge block is the only automatic
+    // material a prompt still carries. The per-prompt `<noted>`/`<consolidated>` delivery, its
+    // settle-time confirmation and the `injected` flag that competed with the native context are gone;
+    // the foreground learns a worker's results through a later compaction or an explicit read.
+    //
+    // Whether the block is offered is decided by 29a's baseline of the *selected* context alone: it is
+    // offered iff that context holds neither a marked injection of ours nor a custom compaction that
+    // carried knowledge commits. Unknown coverage — a native compaction, a foreign carrier, a turn Pi
+    // never persisted — fabricates no earlier supply and injects again: duplicates over silent loss.
+    // It is a baseline test, never a delta: once a baseline is present, newer commits are not offered
+    // prompt by prompt, which is what keeps initial setup from becoming continuous delivery.
+    const view = visible(binding());
+    if (view.injection || view.knowledgeCommitIds.size) return;
+    // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
+    let block: { text: string; knowledgeCommitIds: number[] };
+    try {
+      block = memory.injection(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
+    } catch (error) { context.ui.notify(String(error), "error"); return; }
+    if (!block.text) return; // nothing yet: try again next prompt
     // 29a "Carriers": what this message actually supplies, written on it as `details` when Pi persists
-    // it. Only the initial knowledge block has identities to state — the deliveries below are prose
-    // this ticket does not annotate (29d retires them), and an id that appears only in text is not
-    // coverage. Undefined means this message carries no coverage claim at all.
-    let supplied: SuppliedMaterial | undefined;
-    if (!state.injected) {
-      // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
-      try {
-        const block = memory.injection(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId });
-        // nothing yet: try again next prompt
-        if (block.text) { parts.push(block.text); unconfirmed.injected = true; supplied = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds }; }
-      } catch (error) { context.ui.notify(String(error), "error"); }
-    }
-    if (state.sessionId) {
-      const delivery = memory.deliver(state.sessionId, state.branch);
-      if (delivery.text) parts.push(delivery.text);
-      unconfirmed.deliveries.push(...delivery.runIds); // only what this prompt took; later results wait for the next prompt
-    }
-    if (!parts.length) return;
-    // A planned injection is not a persisted one: this handler only offers the message, and the
-    // carrier rides the same value, so a turn Pi never persists leaves no coverage behind either.
-    return { message: { customType: tag, content: parts.join("\n\n"), display: false, ...(supplied ? { details: carrier(supplied) } : {}) } };
+    // it. An id that appears only in the rendered text is not coverage. A planned injection is not a
+    // persisted one: this handler only offers the message, and the carrier rides the same value, so a
+    // turn Pi never persists leaves no coverage behind either.
+    const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds };
+    return { message: { customType: tag, content: block.text, display: false, details: carrier(supplied) } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -768,10 +773,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", (_event, context) => {
     ensure(context); persistState();
     try {
-      if (!enabled()) { unconfirmed.deliveries = []; unconfirmed.injected = false; return; }
-      // Pi appended and flushed this turn's messages before settling: confirm what this prompt took.
-      if (unconfirmed.deliveries.length) { memory.confirmDelivery(unconfirmed.deliveries); unconfirmed.deliveries = []; }
-      if (unconfirmed.injected) { state.injected = true; unconfirmed.injected = false; save(); }
+      if (!enabled()) return;
+      // 29d: nothing is confirmed here any more. What this prompt supplied is stated on the entry Pi
+      // persisted for it (29a's carrier), so the settle has no delivery queue to drain and no
+      // injected-once flag to set.
       if (!state.sessionId || !state.head) return;
       if (current?.id && memory.store.getTurn(current.id)?.assistantText !== null) flush(true);
     } finally { showSpend(context); } // one refresh at the settle, whichever path this turn took
@@ -794,22 +799,21 @@ export default function (pi: ExtensionAPI) {
     for (const kind of ["noting", "consolidation"] as const) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
-      // The delivery pause and the readiness wait follow the mode that will actually run: a session
-      // the cache-miss latch has downgraded runs fresh-context work, which reads nothing from the
-      // conversation and forks nothing. The requested mode stays what it is, for the audit
-      // (review 2026-09-08).
+      // The readiness wait follows the mode that will actually run: a session the cache-miss latch has
+      // downgraded runs fresh-context work, which reads nothing from the conversation and forks
+      // nothing. The requested mode stays what it is, for the audit (review 2026-09-08). 29d removed
+      // the delivery pause that used to read this too.
       const effective = effectiveMode(selected.mode, { kind, target: own });
-      let due = false, paused = false;
-      try { ({ due, paused } = memory.taskEligibility(kind, own, effective)); }
+      let due = false;
+      try { ({ due } = memory.taskEligibility(kind, own)); }
       catch (error) { context.ui.notify(String(error), "error"); }
-      if (due && paused) { activity.last = "warning"; showSpend(context); }
       // 19c "Trigger versus launch": the threshold above decides that this task is due; the checkpoint
       // decides when it may launch. A due fork-mode task whose native checkpoint is not yet persisted,
       // reopenable and free of an open tool-call group waits for the next safe boundary — no timer, no
       // duplicate task, no progress, and starting later is not a new extraction trigger. Borrowed
       // closed-session work is fresh-context and is never held back by this.
-      const waiting = due && !paused ? forkWait(context, effective) : undefined;
-      const candidates = [...(due && !paused && !waiting ? [{ ...own, borrowed: false }] : []),
+      const waiting = due ? forkWait(context, effective) : undefined;
+      const candidates = [...(due && !waiting ? [{ ...own, borrowed: false }] : []),
         ...memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope).map(target => ({ ...target, borrowed: true }))]
         // 26a: automatic Noting is paused for a session whose last two runs ended without a
         // submission, and for that session alone — the other phase, other sessions and every
@@ -947,7 +951,7 @@ export default function (pi: ExtensionAPI) {
   // nothing at all, so Pi proceeds through its normal compaction path — which may call a model, and
   // may fail or be cancelled, with Pi's own outcome handling (this is the one place where compaction
   // reaches a model, and it is Pi's call, not ours). Nothing here waits for or starts a worker, and
-  // an unused custom summary confirms no delivery and no injection.
+  // an unused custom summary confirms no injection (29d: there are no deliveries to confirm).
   pi.on("session_before_compact", (event, context) => {
     ensure(context); if (!enabled()) return; flush();
     let result: ReturnType<typeof memory.compact>;
@@ -1035,8 +1039,6 @@ export default function (pi: ExtensionAPI) {
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
     // Disable ends a manual catchup the same way it cancels any other owned in-flight work (18b lifecycle).
     if (!value) { memory.cancelTasks(); if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.runningPhase) catchup.outcome = "stopped"; } }
-    state.injected = false;
-    unconfirmed.deliveries = []; unconfirmed.injected = false;
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
@@ -1069,7 +1071,7 @@ export default function (pi: ExtensionAPI) {
     const marked = memory.declareProject(state.sessionId, name);
     state.projectId = memory.store.getSession(state.sessionId)!.projectId;
     state.project = memory.store.getProject(state.projectId)!.name;
-    state.injected = false; save(); // the new project's knowledge is injected at the next prompt through the usual path
+    save(); // 29d: the new project's knowledge reaches this conversation through a later compaction or an explicit read, not through a re-injection
     ctx.ui.notify(marked, "info");
   };
   /** Knowledge marks, shared by the command form and the menu: core keeps exact-commit handling and

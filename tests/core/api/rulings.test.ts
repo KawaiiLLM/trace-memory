@@ -213,7 +213,6 @@ test("2026-09-07: one batch per run", async () => {
     expect(JSON.parse(memory.store.getRun(1)!.request!)).toEqual({ round: 1 });
     expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
     expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-    expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
     expect(note.execute(batch)).toContain("already committed");
     return { outcome: "success", output: "Done", request: { round: 2 } };
   });
@@ -241,7 +240,6 @@ test("2026-09-07: bounced is not empty", async () => {
   expect(await memory.noting(input)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.sourcePath(s.id, "main", t.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
 });
 
 function memoryWriter() {
@@ -944,7 +942,7 @@ test("20b 2026-09-08: 17b's fifty-fact Consolidation trigger and unbounded batch
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
   expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(50); // a count would be due
   expect(tokens(memory.store.consolidationBatch(s.id, "main", t.id).map(f => memory.trace(`F${f.id}`)).join("\n"))).toBeLessThan(5_000);
-  expect(memory.taskEligibility("consolidation", target, "subagent").due).toBe(false);
+  expect(memory.taskEligibility("consolidation", target).due).toBe(false);
 });
 
 // 17b, 2026-09-08: the knowledge budget was a soft cap — constraints, open items and disputes were
@@ -1283,11 +1281,11 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
   expect(prompt).toContain("note({facts: []})");
   expect(prompt).not.toContain("Stopping without submitting is a normal zero-fact success");
-  // An explicit empty submission is the completion, and it delivers nothing.
+  // An explicit empty submission is the completion, and (29d) it writes no delivery intent — as no commit does.
   submit = true;
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
+  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
 });
 
 /** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the

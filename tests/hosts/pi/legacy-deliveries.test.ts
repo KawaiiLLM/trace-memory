@@ -1,0 +1,78 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { expect, test } from "vitest";
+import { sourceSeededMemory } from "../../source-fixture.ts";
+import { host, notingFact } from "./test-host.ts";
+
+// Ticket 29d, acceptance case 23 ("Old pending rows"). 29d retired automatic foreground receipt
+// delivery on all four sides but kept the `pending_deliveries` table: a published Beta database must
+// open unchanged, and no version migrates or rewrites it. What this file pins is that its rows are
+// inert — the new version never pauses a worker on them, never drains them into a prompt, never turns
+// a timestamp into visibility, and never edits them — while the facts, runs, processing marks and
+// knowledge beside them are read exactly as before.
+//
+// The rows are written with raw SQL on purpose: the writers (`addPendingDelivery`,
+// `clearPendingDelivery`) are gone, and a case that could only produce this state through code that
+// no longer exists would prove nothing about a real Beta file.
+
+/** A database shaped like a published Beta one: real facts, a real run, real processing marks and
+ * knowledge, plus one delivered and one undelivered legacy row. */
+function betaDatabase(directory: string) {
+  const dbPath = join(directory, "beta.db");
+  const memory = sourceSeededMemory(dbPath, async () => { throw new Error("no model in this fixture"); });
+  const project = memory.store.createProject({ name: "beta", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "pi:beta", projectId: project.id, startedAt: "now", firstReplyAt: "now", enrollmentChoice: true });
+  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: "now", userPrompt: "用 pnpm，不要 npm", assistantText: "好的。" });
+  const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" },
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "用 pnpm", source: [`T${turn.id}#user`], createdAt: "now" }],
+    entryIds: memory.store.sourcePath(session.id, "main", turn.id).map(e => e.id) });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const consolidated = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, branch: "main", createdAt: "now" },
+    operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "beta",
+      text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "now" }] });
+  if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+  // One consumed row and one that the old version would still have delivered.
+  memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', '2026-09-01T00:00:00Z')").run(noted.runId, session.id);
+  memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', NULL)").run(consolidated.runId, session.id);
+  const rows = () => memory.store.db.prepare("SELECT run_id, session_id, branch, delivered_at FROM pending_deliveries ORDER BY run_id").all();
+  const state = {
+    rows: rows(),
+    facts: memory.store.listSessionFacts(session.id).map(f => f.text),
+    runs: memory.store.listRuns(session.id).map(r => [r.id, r.kind, r.outcome]),
+    knowledge: memory.store.listVisibleKnowledge(session.id, project.id).map(k => k.revision.text),
+    noted: memory.store.listSourceEntries(session.id).filter(e => memory.store.entryNoted(e.id)).map(e => e.id),
+  };
+  expect(state.rows).toHaveLength(2);
+  memory.close();
+  return { dbPath, sessionId: session.id, headTurnId: turn.id, projectId: project.id, state, rows };
+}
+
+test("29d case 23: a published Beta database's delivery rows pause nothing, deliver nothing and are never rewritten", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "trace-memory-beta-"));
+  const beta = betaDatabase(directory);
+  // Fork mode with a low trigger: the exact configuration the retired pause used to hold back.
+  const h = host({ dbPath: beta.dbPath, "noting.triggerTokens": 20, "noting.forkModeDefault": true });
+  try {
+    const target = { sessionId: beta.sessionId, branch: "main", headTurnId: beta.headTurnId };
+    // The undelivered row belongs to this very session and branch. Eligibility is the trigger alone.
+    expect(h.memory.taskEligibility("noting", target).due).toBe(false); // nothing pending yet, not "paused"
+    h.provider(async c => notingFact(c));
+    await h.turn(); // this executor's own session: a fork-mode Noting task runs to completion
+    expect(h.memory.store.listRuns(2).filter(r => r.kind === "noting").map(r => r.outcome)).toEqual(["success"]);
+    // No burst, no drain: the prompt after that commit carries no receipt of any kind.
+    expect(String((await h.prompt("second"))?.message?.content ?? "")).not.toContain("<noted>");
+    expect(String((await h.prompt("third"))?.message?.content ?? "")).not.toContain("<consolidated>");
+    // The old rows are exactly as they were found: no timestamp written, none consumed, none added.
+    const store = h.memory.store;
+    expect(store.db.prepare("SELECT run_id, session_id, branch, delivered_at FROM pending_deliveries ORDER BY run_id").all()).toEqual(beta.state.rows);
+    // The undelivered row's commits did not become visibility either: its knowledge is offered as the
+    // ordinary initial block for the new session, by applicability, not because a row said so.
+    expect(store.listSessionFacts(beta.sessionId).map(f => f.text)).toEqual(beta.state.facts);
+    expect(store.listRuns(beta.sessionId).map(r => [r.id, r.kind, r.outcome])).toEqual(beta.state.runs);
+    expect(store.listVisibleKnowledge(beta.sessionId, beta.projectId).map(k => k.revision.text)).toEqual(beta.state.knowledge);
+    expect(store.listSourceEntries(beta.sessionId).filter(e => store.entryNoted(e.id)).map(e => e.id)).toEqual(beta.state.noted);
+    // Membership is untouched: the old session's processed entries stay processed and nothing of it re-enters a batch.
+    expect(h.memory.pendingEntries(beta.sessionId, "main", beta.headTurnId)).toEqual([]);
+  } finally { await h.dispose(); rmSync(directory, { recursive: true, force: true }); }
+});

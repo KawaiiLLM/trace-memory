@@ -99,7 +99,11 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   await h.answer();
   expect(h.memory.store.projectDeclaration(2)).toBe("undeclared");
   await h.commands.get("trace").handler("project project-name", h.ctx);
-  expect((await h.prompt())?.message?.content).toContain("项目规则");
+  // 29d: the declaration makes the project's knowledge applicable, but this conversation already
+  // holds its injection baseline, so it is not injected a second time — it reaches the foreground
+  // through a later compaction or an explicit read (parent 29).
+  expect(h.memory.injection({ projectId: h.memory.store.getSession(2)!.projectId }).text).toContain("项目规则");
+  expect((await h.prompt())?.message).toBeUndefined();
   await h.emit("session_start");
   expect(h.memory.status(2)).toContain("project-name (mark)");
   expect(h.requests).toHaveLength(0);
@@ -125,7 +129,35 @@ test("raw is incremental and compaction contains intermediate assistant text wit
   expect(h.memory.store.listTurns(1)[2]!.assistantText).toBeNull();
 });
 
-test("pending delivery is injected once on its own branch", async () => {
+// 29d (ticket 29, "Retire automatic foreground receipt delivery") supersedes the ruling this test
+// pinned, "a pending delivery is injected once on its own branch": there is no delivery to place on a
+// branch. The same scenario is kept as its negative -- acceptance case 22 -- because the branch
+// machinery around it (a worker committing after a tree switch) is exactly where a leftover receipt
+// would surface. The foreground learns F1 through a later compaction or an explicit read instead.
+// Ticket 29d, acceptance case 24 ("Operation boundaries"). Retiring the receipt queue removed the
+// one thing that used to make a worker's completion interesting to the foreground; nothing replaced
+// it. A commit is a terminal event: it starts no follow-up run of its own, and a tree switch — which
+// re-selects a context and used to reset the injected-once flag — launches no extraction either.
+// Manual catchup and borrowed work stay subagent, and their slots and claims are pinned by
+// `catchup.test.ts`; what is pinned here is the absence of a drain loop behind an ordinary commit.
+test("29d case 24: a worker's completion starts no drain loop, and a tree switch launches nothing", async () => {
+  const h = host({ "noting.triggerTokens": 20 });
+  h.provider(async c => notingFact(c));
+  await h.turn(); // one Noting run over T1, committing F1
+  const after = h.requests.length;
+  expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success"]);
+  // Settling again, draining again and idling start nothing: the commit is not itself a trigger.
+  await h.emit("agent_settled"); await h.emit("agent_end"); await h.drain();
+  expect(h.requests).toHaveLength(after);
+  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  // A tree switch re-selects the context and launches no extraction of its own.
+  await h.emit("session_tree"); await h.drain();
+  expect(h.requests).toHaveLength(after);
+  expect(h.memory.store.listRuns(1)).toHaveLength(1);
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+});
+
+test("29d case 22: a worker's commit reaches no later prompt, on the branch it ran on or a sibling", async () => {
   const h = host({ "noting.triggerTokens": 20 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
@@ -134,22 +166,28 @@ test("pending delivery is injected once on its own branch", async () => {
   await h.prompt("second"); await h.answer();
   const mainTip = [...h.entries];
   release(notingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // the fact is committed and readable
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  const injected = async () => (await h.prompt())?.message?.content ?? "";
   h.entries.splice(0, h.entries.length, ...original);
   await h.emit("session_tree");
-  const injected = async () => (await h.prompt())?.message?.content ?? "";
   expect(await injected()).not.toContain("noted");
   h.entries.splice(0, h.entries.length, ...mainTip); await h.emit("session_tree");
-  expect(await injected()).toContain("noted");
-  expect(await injected()).toContain("noted"); // not settled yet: delivered again rather than lost
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  expect(await injected()).not.toContain("noted");
+  expect(await injected()).not.toContain("[F1]");
   h.provider(async c => notingFact(c));
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main").map(d => d.runId)).not.toContain(1); // the first delivery is confirmed
-  expect(await injected()).not.toContain("[F1]"); // run 1's delivery is not repeated once confirmed
+  expect(await injected()).not.toContain("[F1]"); // settling confirms nothing; there is nothing queued
+  expect(h.memory.trace("F1")).toContain("[F1]"); // an explicit read still reaches it
 });
 
-test("2026-09-07: deliveries and the first injection are confirmed at agent_settled with only the run ids that prompt took", async () => {
+// 29d supersedes the 2026-09-07 ruling this test pinned ("deliveries and the first injection are
+// confirmed at agent_settled with only the run ids that prompt took"): nothing is confirmed at settle
+// any more. The injection half of it is retargeted to 29a's baseline -- the knowledge block is offered
+// until the *selected context* carries a marked injection of ours, so a prompt Pi never persisted
+// injects again (duplicates over silent loss) and a persisted one ends it without a settle. The
+// delivery half has no subject and is asserted as its negative.
+test("29d: the knowledge block is offered until the selected context carries it, and the settle confirms nothing", async () => {
   const h = host({ "noting.triggerTokens": 20 });
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
@@ -157,23 +195,26 @@ test("2026-09-07: deliveries and the first injection are confirmed at agent_sett
   const noted = store.commitNotingRun({ run: { kind: "noting", sessionId: seed.id, createdAt: "now" }, facts: [{ turnId: st.id, category: "decision", actor: "user", text: "规则", source: [`T${st.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw new Error("seed");
   store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: seed.id, createdAt: "now" }, operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture", text: "全局规则", supports: [noted.facts[0]!.id], createdAt: "now", category: "constraint", scope: "global" }] });
-  // Injection prepared at the prompt, persisted only at settle: a turn that never settles injects again.
+  // A prompt whose message Pi never persisted leaves no baseline, so the next prompt offers it again.
+  const offered = await h.emit("before_agent_start", { prompt: "dropped", systemPrompt: "host" });
+  expect(offered?.message?.content).toContain("<knowledge>");
   expect((await h.prompt())?.message?.content).toContain("<knowledge>");
-  expect(h.entries.some(e => e.data?.injected === true)).toBe(false);
-  expect((await h.prompt("again"))?.message?.content).toContain("<knowledge>");
+  // `prompt` persisted that message as a `custom_message` carrying its commit ids: the baseline exists
+  // now, with no settle and no `injected` flag in the host's own state entries.
+  expect(h.entries.some(e => e.data?.injected !== undefined)).toBe(false);
+  expect((await h.prompt("again"))?.message).toBeUndefined();
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.entries.some(e => e.data?.injected === true)).toBe(true);
-  // A delivery taken by a prompt stays pending until that turn settles; a result committed mid-turn waits.
+  expect((await h.prompt("third"))?.message).toBeUndefined();
+  // A worker committing mid-turn changes none of it: no receipt on the next prompt, no queue behind it.
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt("one"); await h.answer(); await h.emit("agent_settled"); await h.drain(); // noting A in flight
-  await h.prompt("two"); // took nothing: A is not committed yet
+  await h.prompt("two");
   release(notingFact(h.conversations.at(-1)!)); await h.drain(); // A commits during turn two
   h.provider(async c => notingFact(c));
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(h.memory.store.getSession(2) ? 2 : 1, "main").length).toBeGreaterThanOrEqual(1); // A's delivery was not confirmed by a turn that never showed it
-  const content = (await h.prompt("three"))?.message?.content ?? "";
-  expect(content).toContain("<noted>");
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect((await h.prompt("three"))?.message?.content ?? "").not.toContain("<noted>");
 });
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
@@ -189,7 +230,6 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
   expect(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryNoted(e.id))).toBe(true);
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   expect(h.conversations[0]!.messages[0]!.content).not.toContain("later raw");
 });
 
@@ -261,7 +301,7 @@ test("consolidation in-flight duplicates cannot erase the candidate continuation
   expect(h.memory.store.listRuns(1).map(r => r.outcome)).toEqual(["success", "success"]);
 });
 
-test("knowledge are injected once per session, only once something exists; later prompts carry only deliveries", async () => {
+test("knowledge is injected once per visible baseline, only once something exists; later prompts carry nothing (29d)", async () => {
   const h = host();
   expect((await h.prompt())?.message?.content ?? "").not.toContain("<knowledge>"); // empty store: no block at all
   await h.answer();
@@ -275,7 +315,8 @@ test("knowledge are injected once per session, only once something exists; later
   void p;
   const second = await h.prompt("again");
   expect(second?.message?.content).toContain("<knowledge>");
-  await h.answer(); await h.emit("agent_settled"); // the injection is confirmed only when the turn settles
+  // 29d: the baseline is the persisted carrier on that message, not a settle-time flag.
+  await h.answer(); await h.emit("agent_settled");
   const third = await h.prompt("once more");
   expect(third?.message?.content ?? "").not.toContain("<knowledge>");
 });
@@ -381,11 +422,14 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   expect(store.getKnowledgeRevision(2, 2)).toEqual(sessionRevision);
   expect(h.memory.inject(peer.id)).not.toContain("仅当前会话");
   expect(h.memory.inject(1)).toContain("仅当前会话");
-  // The declaration re-injects at the next prompt through the usual path, so the model sees the new project's knowledge.
-  expect((await h.prompt("next"))?.message?.content).toContain(h.memory.inject(1));
+  // 29d: the merged project's knowledge is applicable at once, but the "before" prompt above already
+  // left this conversation's injection baseline, and a project declaration is not a re-injection
+  // trigger any more — the foreground learns it through a later compaction or an explicit read.
+  expect(h.memory.inject(1)).toContain("用 pnpm，不要 npm");
+  expect((await h.prompt("next"))?.message).toBeUndefined();
 });
 
-test("before-tree waits for a frozen pending noting and summarizes its facts plus later raw without delivering", async () => {
+test("before-tree waits for a frozen pending noting and summarizes its facts plus later raw, and delivers nothing on either branch (29d)", async () => {
   const h = host({ "noting.triggerTokens": 20 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
@@ -408,11 +452,12 @@ test("before-tree waits for a frozen pending noting and summarizes its facts plu
   h.entries.splice(0, h.entries.length, ...forkPoint); await h.emit("session_tree");
   const branch = h.entries.filter(e => e.type === "custom").at(-1).data.branch;
   expect(branch).not.toBe("main");
-  expect(h.memory.store.listPendingDeliveries(1, branch)).toEqual([]);
   expect((await h.prompt())?.message?.content ?? "").not.toContain("noted");
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
   h.entries.splice(0, h.entries.length, ...tip); await h.emit("session_tree");
-  expect((await h.prompt())?.message?.content).toContain("noted");
+  // 29d: the branch the Noter actually ran on receives no receipt either -- the summary above is the
+  // one place this conversation's own facts are still assembled for it.
+  expect((await h.prompt())?.message?.content ?? "").not.toContain("noted");
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
 });
 
 test.each(["success", "failure", "unavailable"])("before-tree attempts subagent noting below threshold: %s", async outcome => {
@@ -484,21 +529,27 @@ test("a former marker cannot make a new session merge an existing shared project
   expect(h.memory.store.getProject(shared)!.mergedInto).toBeNull();
 });
 
-test.each([true, false])("08:53 premise: a fork note (%s) waits until a note result committed mid-turn has been delivered; 2026-09-08 supersession: enabled sessions always receive delivery; only fork mode waits", async forkMode => {
+// 29d supersedes both rulings this test pinned -- the 08:53 premise that "a fork note waits until a
+// note result committed mid-turn has been delivered", and its 2026-09-08 amendment that an enabled
+// session always receives that delivery. The wait went with the delivery: a fork-mode Noting task is
+// no longer held until its predecessor's facts reached the foreground, so both modes now advance
+// identically and neither prompt carries a receipt. Phase slots, enrollment, the readiness wait and
+// claim checks still gate the launch and are exercised by their own tests.
+test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes advance identically and neither prompt carries one", async forkMode => {
   const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": forkMode, notingModel: "fake/noter" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Noting A in flight over T1.
-  await h.prompt("second"); await h.answer(); // This prompt saw no delivery.
+  await h.prompt("second"); await h.answer();
   release(notingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1); // 2026-09-08: enabled means delivered, whatever the worker mode
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(forkMode ? 2 : 4);
-  expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(true);
+  expect(h.requests).toHaveLength(4);
+  expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(forkMode ? 4 : 6);
-  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: forkMode ? "S1/T2" : "S1/T3", rangeTo: "S1/T3" });
+  expect(h.requests).toHaveLength(6);
+  expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T3", rangeTo: "S1/T3" });
 });
 
 test("spec overflow policy: a subagent noting fetches cut evidence through the trace tool; the run records the fetch and the last request", async () => {
@@ -645,14 +696,19 @@ test("maxToolRounds is a budget: unlimited by default, and a run over an explici
   expect(capped.memory.store.listSourceEntries(1).some(e => capped.memory.store.entryNoted(e.id))).toBe(false);
 });
 
-test("a queued user message mid-run does not lose the confirmation of what the prompt injected and delivered", async () => {
+// 29d supersedes the ruling this test pinned ("a queued user message mid-run does not lose the
+// confirmation of what the prompt injected and delivered"): there is no confirmation left to lose,
+// because what a prompt supplied is stated on the entry Pi persisted for it rather than on a
+// settle-time acknowledgement. The steering path is kept as the negative.
+test("29d: a queued user message mid-run finds no receipt to carry and no confirmation to lose", async () => {
   const h = host({ "noting.triggerTokens": 20 });
   h.provider(async c => notingFact(c));
-  await h.turn(); // noting of T1 leaves a delivery
-  expect((await h.prompt("two"))?.message?.content).toContain("<noted>");
+  await h.turn(); // noting of T1 commits F1
+  expect((await h.prompt("two"))?.message?.content ?? "").not.toContain("<noted>");
   await h.emit("message_start", { message: { role: "user", content: "steer: keep going", timestamp: Date.now() } }); // queued message replaces the turn
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.listPendingDeliveries(1, "main").map(d => d.runId)).not.toContain(1); // confirmed despite the replacement
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // the commit itself is untouched
 });
 
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
@@ -689,8 +745,13 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   await h.commands.get("trace").handler("mark K1@3 clear", h.ctx);
   expect(h.notices.at(-1)).toBe("K1@3: clear");
   await expect(h.commands.get("trace").handler("mark K1@57 verified", h.ctx)).rejects.toThrow("does not exist");
-  const injected = (await h.prompt("Continue C")).message.content;
+  // The restored branch and head are what select the knowledge, which is the ruling here. 29d moved
+  // where that shows: this restored context already carries an injection baseline, so the prompt
+  // offers nothing, and the selection is read through the same call the handler would make.
+  const restored = h.entries.filter(e => e.type === "custom").at(-1).data;
+  const injected = h.memory.injection({ sessionId: 1, headTurnId: restored.head, branch: restored.branch }).text;
   expect(injected).toContain("[K1@2]"); expect(injected).not.toContain("[K1@3]");
+  expect((await h.prompt("Continue C"))?.message).toBeUndefined();
   const carry = await h.emit("session_before_tree");
   expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.filter(e => e.type === "custom").at(-1).data.branch, 4));
   expect(carry.summary.summary).toMatch(/^<branch_carry>\nthis is knowledge from another branch;/);
@@ -746,7 +807,7 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
   h.provider(async c => notingFact(c));
   await h.turn(); // T1 recorded
   const atT1 = [...h.entries];
-  await h.turn(); await h.answer("next completed source"); await h.drain(); // T2 recorded on main; main's watermark is now T2
+  await h.turn(); await h.drain(); // T2 recorded on main; main's watermark is now T2
   expect(h.memory.store.sourcePath(1, "main", 2).length).toBeGreaterThan(0);
   expect(h.memory.store.sourcePath(1, "main", 2).every(e => h.memory.store.entryNoted(e.id))).toBe(true);
   h.entries.splice(0, h.entries.length, ...atT1); // the fork copies the path up to T1
@@ -767,10 +828,10 @@ test("the footer indicator follows activity: accent while noting runs, error aft
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   h.provider(async () => { throw new Error("offline"); });
-  await h.turn(); await h.answer("next completed source"); await h.drain();
+  await h.turn(); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
-  await h.turn(); await h.answer("next completed source"); await h.drain();
+  await h.turn(); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
 });
 
@@ -781,7 +842,7 @@ test("a fork sees consolidation progress exactly when every fact of that consoli
     : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : consolidationReply());
   await h.turn(); // T1 → F1
   const atT1 = [...h.entries];
-  await h.turn(); await h.answer("next completed source"); await h.emit("agent_settled"); await h.drain(); // T2 → F2; main consolidated F1 while T2 was still being recorded
+  await h.turn(); await h.emit("agent_settled"); await h.drain(); // T2 -> F2; main consolidated F1 while T2 was still being recorded
   expect(h.memory.store.sourcePath(1, "main", 2).length).toBeGreaterThan(0);
   expect(h.memory.store.sourcePath(1, "main", 2).every(e => h.memory.store.entryNoted(e.id))).toBe(true);
   expect(h.memory.store.consolidatedOnPath(1, { sessionId: 1, headTurnId: 2 })).toBe(true);
@@ -823,7 +884,7 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
-  await h.turn(); await h.answer("next completed source"); await h.drain();
+  await h.turn(); await h.drain();
   run = h.memory.store.listRuns(1).at(-1)!;
   expect(run.outcome).toBe("success");
   expect(JSON.parse(run.response!).problems[0]).toContain("stream reset after commit");
@@ -866,7 +927,7 @@ test("a transient provider error is retried with Pi's policy before the run is f
   // A non-retryable error is not retried.
   calls = 0;
   h.provider(async () => { calls++; return { ...reply(""), stopReason: "error", errorMessage: "invalid_api_key" }; });
-  await h.turn(); await h.answer("next completed source"); await new Promise(r => setTimeout(r, 50)); await h.drain();
+  await h.turn(); await new Promise(r => setTimeout(r, 50)); await h.drain();
   expect(h.memory.store.listRuns(1).at(-1)!.outcome).toBe("failure"); expect(calls).toBe(1);
 });
 
@@ -908,16 +969,21 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
 test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the Consolidator subagent gets facts and knowledge changes and waits for no receipt it does not inherit", async () => {
   const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
-  await h.turn(); // Noting commits F1 and leaves it for delivery.
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toHaveLength(1);
+  await h.turn(); // Noting commits F1.
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : reply("No new facts."));
   await h.answer("tick"); await h.emit("agent_settled"); await h.drain();
-  // The batch is due while F1 is still undelivered. Before 25b a fork-mode Consolidator would have
-  // waited for that receipt; a fresh context reads the pending facts from storage, so it does not.
+  // The batch is due right after F1 is committed. Before 25b a fork-mode Consolidator would have
+  // waited for a receipt; a fresh context reads the pending facts from storage, so it does not.
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["subagent"]);
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
+  // 29d: no receipt of either change reaches the conversation. The initial knowledge block is the one
+  // automatic material left, and this conversation had no baseline yet, so it is offered once here --
+  // and not again on the prompt after it.
   const carried = String((await h.prompt("second"))?.message?.content ?? "");
-  expect(carried).toContain("<noted>");
-  expect(carried).toContain("<consolidated>"); // both changes reach the conversation
-  expect(carried).toContain("[K1@1]");
+  expect(carried).not.toContain("<noted>");
+  expect(carried).not.toContain("<consolidated>");
+  expect(carried).toContain("<knowledge>");
+  await h.answer(); await h.emit("agent_settled"); await h.drain();
+  expect((await h.prompt("third"))?.message).toBeUndefined();
+  expect(h.memory.trace("F1")).toContain("[F1]"); // the facts stay reachable by explicit read
 });

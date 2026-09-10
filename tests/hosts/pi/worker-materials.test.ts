@@ -59,9 +59,10 @@ test("25a 2026-09-09: the Noter fork's captured request carries the increment al
     expect(increment).not.toContain("Recent facts (by Turn):");
     expect(increment).not.toContain("Raw:");
     expect(increment).not.toContain("[F1]"); // no fact block and no fact index of any kind
-    // The inheritance is not a claim: the earlier run really delivered its facts as a foreground
-    // `<noted>` receipt, and that delivery was confirmed before this task was admitted.
-    expect(f.h.memory.store.listPendingDeliveries(1, "main")).toEqual([]);
+    // 29d: the earlier run's facts are no longer delivered into the foreground at all, so this
+    // increment's omission of them is the 08:53 layout rule alone, not a claim about a receipt. The
+    // fact itself is committed and reachable by address.
+    expect(f.h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.id)).toEqual([1]);
   } finally { await f.dispose(); }
 });
