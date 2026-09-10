@@ -204,7 +204,7 @@ test("25d pagination: a fact negated, a knowledge marked or a profile changed be
   expect(memory.trace(`K${knowledgeId}@${consolidated.committed[0]!.commit}`)).toContain("flagged");
 
   store.appendToolCall({ turnId, name: "tool", input: "{}", result: "head " + "value ".repeat(400) + " tail", status: "success" });
-  const profile = paged(`T${turnId},F1-F4`, () => { memory.config.render.toolCallTokens = 1_000; }, 3);
+  const profile = paged(`T${turnId},F1-F4`, () => { memory.config.render.toolResultTokens = 1_000; }, 3);
   expect(profile.joined).toBe(profile.whole);
 });
 

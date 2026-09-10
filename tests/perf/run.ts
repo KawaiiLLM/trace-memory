@@ -12,7 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, renderEntry, toolDefinitions, tokens } from "../../src/core/api/index.ts";
+import { TraceMemory, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
 import { Store } from "../../src/core/store/index.ts";
@@ -121,14 +121,14 @@ async function triggerBacklog(fixture: Fixture, size: string): Promise<Sample[]>
 
 /** Ticket 23 acceptance: what the entry view costs on that same backlog. The pre-change totals below
  * were measured on this generator at `e7cd633` (the 17a view, `B = 1,000` in fixed halves, one native
- * identity header per entry) with Node 24.6.0; the tier-1 total must be at most half of them. Both
- * tiers are rendered here because the second one is what compaction escalates to. */
+ * identity header per entry) with Node 24.6.0; the configured total must be at most half of them.
+ * Ticket 30 retired the second tier, so there is one profile left to render. */
 const VIEW_TOKENS_BEFORE_23: Record<string, number> = { baseline: 553_980, large: 1_086_050 };
 
 function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: ReturnType<typeof memory.pendingEntries>, size: string): Sample[] {
-  // A tier whose `E` cannot hold one entry's minima raises the capacity error; that entry is counted,
-  // not rendered smaller, and compaction escalates over it exactly as it does in production.
-  const total = (profile: { toolCallTokens: number; entryTokens: number }) => {
+  // A profile whose `E` cannot hold one entry's minima raises the capacity error; that entry is
+  // counted, not rendered smaller, and compaction delegates over it exactly as it does in production.
+  const total = (profile: EntryProfile) => {
     const started = performance.now();
     let sum = 0, overflowed = 0;
     for (const entry of entries) {
@@ -137,20 +137,19 @@ function viewTokens(memory: ReturnType<typeof TraceMemory>, entries: ReturnType<
     }
     return { sum, overflowed, ms: performance.now() - started };
   };
-  const tier1 = total(memory.config.render);
-  const tier2 = total({ toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens });
+  const view = total(memory.config.render);
   const before = VIEW_TOKENS_BEFORE_23[size];
   // The ticket's target is half the pre-23 total. 23a fell short of it on this fixture at 42.2%,
-  // because about half of the tier-1 total here is natural text, which the rule keeps at its own size
-  // on purpose; 23c's line format and half split reach it (52.6% on the baseline). The note still
-  // reports the shortfall whenever it returns, and what is enforced is only that the view never costs
-  // more than the one it replaced.
-  const saving = before ? `${(100 * (1 - tier1.sum / before)).toFixed(1)}% under the pre-23 view (${before}); target 50%${tier1.sum * 2 <= before ? "" : ", not reached on this fixture"}`
+  // because about half of the total here is natural text, which the rule keeps at its own size on
+  // purpose; 23c's line format reached it (52.4% on the large fixture) and 30's tighter defaults go
+  // further. The note still reports the shortfall whenever it returns, and what is enforced is only
+  // that the view never costs more than the one it replaced.
+  const saving = before ? `${(100 * (1 - view.sum / before)).toFixed(1)}% under the pre-23 view (${before}); target 50%${view.sum * 2 <= before ? "" : ", not reached on this fixture"}`
     : "no recorded pre-23 total for this size";
-  if (before && tier1.sum >= before) throw new Error(`entry view regression: tier 1 is ${tier1.sum} tokens over ${entries.length} pending entries, not below the pre-23 ${before}`);
+  if (before && view.sum >= before) throw new Error(`entry view regression: ${view.sum} tokens over ${entries.length} pending entries, not below the pre-23 ${before}`);
   return [
-    { name: "entry views tier 1 (whole backlog)", cold: tier1.ms, warm: tier1.ms, p95: tier1.ms, reads: 0, note: `${tier1.sum} tokens, ${saving}` },
-    { name: "entry views tier 2 (whole backlog)", cold: tier2.ms, warm: tier2.ms, p95: tier2.ms, reads: 0, note: `${tier2.sum} tokens, ${tier2.overflowed} entries over its entry budget (compaction escalates)` },
+    { name: "entry views (whole backlog)", cold: view.ms, warm: view.ms, p95: view.ms, reads: 0,
+      note: `${view.sum} tokens, ${saving}${view.overflowed ? `, ${view.overflowed} entries over the entry budget (compaction delegates)` : ""}` },
   ];
 }
 

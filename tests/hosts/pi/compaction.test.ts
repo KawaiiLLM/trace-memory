@@ -2,16 +2,17 @@ import { expect, test, vi } from "vitest";
 import { host, reply, notingFact, type Reply } from "./test-host.ts";
 import { call, fixture, noteBatch, say, toolResults, worker } from "./native-fixture.ts";
 
-// Ticket 20c — compaction escalation and post-compaction worker mode, at the host boundary. Core
-// decides the tier over its own frozen snapshot (core/api/read.test.ts); this file pins what the Pi
-// adapter does with it, and what a persisted compaction does to the next Noter's fork.
+// Ticket 20c — compaction and post-compaction worker mode, at the host boundary. Core decides between
+// the custom replacement and the native delegation over its own frozen snapshot (core/api/read.test.ts);
+// this file pins what the Pi adapter does with it, and what a persisted compaction does to the next
+// Noter's fork.
 //
 // 29c replaced the admission rule these cases were written for: the question is no longer "does a
 // selected entry precede the compaction" but "is every selected entry still in the inherited
 // context". A compaction persisted here keeps only its `firstKeptEntryId` and carries no views of
 // ours, so its pre-boundary entries are in no representation at all and the outcome of every case
 // below is unchanged; only the reason is. The representations that DO survive a compaction — a
-// retained source, a tier-1 view a carrier supplied — are the rows in `fallback.test.ts`.
+// retained source, a bounded view a carrier supplied — are the rows in `fallback.test.ts`.
 
 const long = (word: string) => `${word} ` + "word ".repeat(200);
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
@@ -23,31 +24,34 @@ const response = (h: ReturnType<typeof host>) => JSON.parse(lastRun(h).response!
 const failing = (h: ReturnType<typeof host>) => h.provider(async () => ({ ...reply(""), stopReason: "error" as const, errorMessage: "leave pending" }));
 const work = async (h: ReturnType<typeof host>, text: string) => { h.persist(reply(text)); await h.emit("agent_end"); await h.drain(); };
 
-test("20c 2026-09-08 scenario 10: the host hands Pi the labelled secondary summary and names the tier in its own diagnostics", async () => {
+test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary under one Raw title and names it in its own diagnostics", async () => {
   const h = host(quiet);
   try {
-    // 25c: tier 1 now holds pending Raw up to `render.episodicBlockTokens` (20,000) and one entry view
-    // is worth at most `render.entryTokens` (10,000), so three such prompts are what escalates.
+    // 25c/30: pending Raw is held up to `render.episodicBlockTokens` (20,000) and one entry view is
+    // worth at most `render.entryTokens` (2,000), so three such prompts are three cut views.
     for (const head of ["HEAD", "SECOND", "THIRD"]) {
       await h.prompt(`${head} ` + "word ".repeat(12_000) + " TAIL");
       await h.answer();
     }
     const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
-    // The custom entry names the view version and the profile its views were rendered under (23).
-    expect(block.compaction.summary).toContain("Raw (tier-2 entry views, 23-v2-pi-lines, tool call budget 100 tokens, entry budget 1000 tokens):");
+    // One view, one title: the tier-2 block title went with the tier (30), and every prompt is present.
+    expect(block.compaction.summary).toContain("\nRaw:\n");
+    expect(block.compaction.summary).not.toContain("tier-2 entry views");
+    for (const head of ["HEAD", "SECOND", "THIRD"]) expect(block.compaction.summary).toContain(head);
+    expect(block.compaction.summary).toMatch(/\[\.\.\. \d+ characters truncated\]/);
     expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
-    expect(h.notices.at(-1)).toContain("compaction used secondary views");
+    expect(h.notices.at(-1)).toContain("compaction used bounded entry views");
     await h.commands.get("trace").handler("", h.ctx);
-    expect(h.notices.at(-1)).toContain("Compaction: secondary views");
-    expect(h.requests).toEqual([]); // the plugin's own tiers call no model
+    expect(h.notices.at(-1)).toContain("Compaction: bounded entry views");
+    expect(h.requests).toEqual([]); // the plugin's own rendering calls no model
   } finally { await h.dispose(); }
 });
 
 test("20c 2026-09-08 scenario 11: the host returns no custom replacement when compact delegates, and an attempt that never persists establishes no boundary", async () => {
-  // Many tiny entries: their primary views together exceed the episodic envelope, and their secondary
-  // views — each carrying its identity header — exceed it too, so even tier 2 cannot represent them
-  // all. 25c: that envelope is the only budget compact measures against, so this session is built by
+  // Many tiny entries: their bounded views together exceed the episodic envelope, and 30 left no
+  // second, tighter rendering to try — the delegation is what represents them.
+  // 25c: that envelope is the only budget compact measures against, so this session is built by
   // lowering `render.episodicBlockTokens` rather than the Noter's batch ceiling, which compact no
   // longer reads. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than

@@ -307,15 +307,16 @@ test("reopening the database preserves the run, facts and watermark", async () =
   expect(memory.store.getRun(1)?.outcome).toBe("success");
 });
 
-/** Ticket 20 "Primary entry bound" and acceptance scenario 8. The primary renderer either returns an
- * entry inside its configured budget or throws: it never returns an oversized view, and an entry
- * whose mandatory labels and omission markers cannot fit leaves Noting pending with no progress. */
+/** Ticket 20 "Primary entry bound" and acceptance scenario 8, under 30's one profile. The renderer
+ * either returns an entry inside its configured budget or throws: it never returns an oversized view,
+ * and an entry whose mandatory labels and omission markers cannot fit leaves Noting pending with no
+ * progress. */
 test("20b 2026-09-08 scenario 8: an entry whose mandatory metadata cannot fit is a capacity failure, never an oversized success", async () => {
   const first = turn();
   const views = memory.pendingEntries(sessionId, "main", first.id).map(e => renderEntry(e, memory.config.render).content);
   for (const view of views) expect(tokens(view)).toBeLessThanOrEqual(memory.config.render.entryTokens); // bounded, labels included
   const before = memory.pendingEntries(sessionId, "main", first.id);
-  memory.close(); open({ render: { entryTokens: 4, toolCallTokens: 4 } });
+  memory.close(); open({ render: { entryTokens: 4, toolInputTokens: 4, toolResultTokens: 4 } });
   script.push(async () => success([]));
   await expect(noting(first.id)).rejects.toThrow("entry view capacity cannot hold source labels and omission markers");
   expect(calls).toEqual([]);

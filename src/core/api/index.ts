@@ -35,13 +35,13 @@ export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, Cons
 export interface TraceMemoryConfig {
   closedSessionScope: ClosedSessionScope;
   render: {
-    /** Ticket 23 tier 1: `B`, the most one tool call is worth (ceiling `TOOL_CALL_CEILING`). */
-    toolCallTokens: number;
-    /** Ticket 23 tier 1: `E`, the most one entry is worth. */
+    /** Ticket 30: `E`, the most one entry view is worth. */
     entryTokens: number;
-    /** Ticket 23 tier 2 (compaction only): the same two numbers, tighter. */
-    secondaryToolCallTokens: number;
-    secondaryEntryTokens: number;
+    /** Ticket 30: `C`, the most one tool-call part is worth (ceiling `TOOL_CALL_CEILING`). */
+    toolInputTokens: number;
+    /** Ticket 30: `R`, the most one tool-result part is worth (the same ceiling). Independent of `C`:
+     * neither allowance is ever lent to the other. */
+    toolResultTokens: number;
     knowledgeBlockTokens: number;
     episodicBlockTokens: number;
   };
@@ -70,10 +70,9 @@ export interface TraceMemoryConfig {
 export const DEFAULT_CONFIG: TraceMemoryConfig = {
   closedSessionScope: "project",
   render: {
-    toolCallTokens: 300,
-    entryTokens: 10_000,
-    secondaryToolCallTokens: 100,
-    secondaryEntryTokens: 1_000,
+    entryTokens: 2_000,
+    toolInputTokens: 100,
+    toolResultTokens: 100,
     knowledgeBlockTokens: 10_000,
     episodicBlockTokens: 20_000,
   },
@@ -113,6 +112,7 @@ export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branch
  * flat `section.key` settings space and for the nested `ConfigOverride`, and the read-only menu shows
  * it nowhere, because it builds itself from `DEFAULT_CONFIG`. Most remedies are a replacement key
  * ("use …"); a setting whose choice no longer exists says so instead. */
+const PART_BUDGETS = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
   // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
@@ -121,16 +121,24 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // silently. No file is rewritten and no request is normalized.
   "consolidation.subagentModeDefault": "use consolidation.forkModeDefault (the inverse boolean: true means fork)",
   // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
-  // were never effective on any Pi run; the uniform entry rule and `render.toolCallTokens` replace them.
-  "render.stdoutHeadTokens": "use render.toolCallTokens (one budget for the whole tool call)",
-  "render.stdoutTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
-  "render.stderrTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  // were never effective on any Pi run; the uniform entry rule replaces them. Ticket 30 renamed the
+  // budget they were pointed at, so the guidance names the two independent ones.
+  "render.stdoutHeadTokens": PART_BUDGETS,
+  "render.stdoutTailTokens": PART_BUDGETS,
+  "render.stderrTailTokens": PART_BUDGETS,
   // Ticket 23b: the per-tool branches of the explicit Turn preview they budgeted are gone — an
-  // explicit `trace` without `full` is the entry view under the tier-1 profile, and `full` renders
+  // explicit `trace` without `full` is the entry view under the configured profile, and `full` renders
   // the stored evidence uncut, so neither has a budget of its own any more.
-  "render.commandTokens": "use render.toolCallTokens (one budget for the whole tool call)",
-  "render.reportHeadTokens": "use render.toolCallTokens (one budget for the whole tool call)",
-  "render.reportTailTokens": "use render.toolCallTokens (one budget for the whole tool call)",
+  "render.commandTokens": PART_BUDGETS,
+  "render.reportHeadTokens": PART_BUDGETS,
+  "render.reportTailTokens": PART_BUDGETS,
+  // Ticket 30 "Configuration and compatibility": `B` was one budget for a call and its result, split
+  // in half; `C` and `R` are independent allowances, so the old value cannot be reinterpreted as
+  // either of them and the key is removed rather than aliased. The tier-2 profile went with the
+  // second tier itself: there is one bounded view, under `render.entryTokens` and the two below.
+  "render.toolCallTokens": PART_BUDGETS,
+  "render.secondaryToolCallTokens": `removed with the tier-2 view: ${PART_BUDGETS} — one bounded view everywhere`,
+  "render.secondaryEntryTokens": "removed with the tier-2 view: use render.entryTokens — one bounded view everywhere",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
@@ -194,8 +202,9 @@ function mergeConfig(base: TraceMemoryConfig, override: ConfigOverride): TraceMe
   };
 }
 
-/** Ticket 23: `B` has a hard upper bound — the 17a default — and is rejected above it, in either
- * profile. A per-call budget larger than that is the volume problem this ticket exists to remove. */
+/** Ticket 23: a per-part budget has a hard upper bound — the 17a default — and is rejected above it.
+ * A tool part larger than that is the volume problem that ticket exists to remove; ticket 30 applies
+ * the same ceiling to each of the two independent allowances. */
 export const TOOL_CALL_CEILING = 1_000;
 
 export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
@@ -210,7 +219,7 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     } else if (typeof value !== "number" || !Number.isSafeInteger(value) || value < (key === "maxToolRounds" ? 0 : 1)) {
       throw new Error(`Invalid ${name}: expected ${key === "maxToolRounds" ? "a nonnegative" : "a positive"} safe integer`);
     }
-    if (/toolCallTokens$/i.test(key) && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
+    if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
   return cfg;
 }
@@ -353,8 +362,8 @@ export interface TraceMemory {
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
-  /** Ticket 20: the escalating compaction result — primary views, secondary views, or the explicit
-   * ask that the host decline and let its native compaction run (20c). */
+  /** Ticket 20, as 30 left it: the compaction result — the bounded views of every pending entry, or
+   * the explicit ask that the host decline and let its native compaction run (20c). */
   compact(sessionId: number, branch?: string, headTurnId?: number): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
@@ -488,7 +497,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
     // 23b: without `full` the read is this Turn's selected source entries, in path order, each
-    // rendered by the entry renderer under the tier-1 profile — 22c's Turn-scoped read is what it
+    // rendered by the entry renderer under the configured profile — 22c's Turn-scoped read is what it
     // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's
     // occurrences out of it.
     // 23c ruling 4: `full` is the same assembly through the renderer's unbounded path and the raw

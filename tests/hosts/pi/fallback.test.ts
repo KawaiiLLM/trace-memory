@@ -390,7 +390,7 @@ test("27c 2026-09-10: the reported live case — an entry the compaction did not
   // ran as a subagent on the FOREGROUND model, at the foreground's level. Here the foreground is
   // `fake/test` and the configured Noter is a second model with its own configured level.
   // 29c retargeted the arrangement, not the outcome: the compaction below is Pi's own, so the earlier
-  // entries are neither retained nor carried as tier-1 views, which is what refuses the fork now.
+  // entries are neither retained nor carried as bounded views, which is what refuses the fork now.
   const f = await fixture({ notingModel: "fake/test-thinking", notingThinking: "high" });
   try {
     let notes = 0;
@@ -556,9 +556,10 @@ test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold 
 // ------------------------------------------------- 29c: a fork needs its whole target in the context
 
 /** 29a's persisted carrier shape (`details.traceMemory` on the compaction entry), stated directly so
- * one row can pin one representation. The real tier-1 path is driven through the compaction hook in
- * the row above it; core's own reading of every tier is `tests/core/api/visible.test.ts`. */
-const carrier = (h: ReturnType<typeof host>, entries: { id: number; nativeId: string; tier: 1 | 2 }[]) =>
+ * one row can pin one representation. The real bounded-view path is driven through the compaction
+ * hook in the row above it; core's own reading of every representation — the one bounded view and
+ * both legacy tiers — is `tests/core/api/visible.test.ts`. */
+const carrier = (h: ReturnType<typeof host>, entries: { id: number; nativeId: string; view?: "bounded"; tier?: 1 | 2 }[]) =>
   ({ traceMemory: { db: h.dbPath, session: 1, pi: "pi-test", supplied: { entries, factIds: [], knowledgeCommitIds: [] } } });
 
 type Older = { id: number; turnId: number; nativeId: string }[];
@@ -568,25 +569,29 @@ type Older = { id: number; turnId: number; nativeId: string }[];
  * LAUNCH for the capture it has no way to have; that is the assertion the `undefined` rows make). */
 test.each([
   ["every entry retained: nothing was compacted at all", () => {}, undefined],
-  ["the oldest entries survive as tier-1 views in a custom compaction of ours",
+  ["the oldest entries survive as bounded views in a custom compaction of ours",
     async (h: ReturnType<typeof host>, older: Older) => {
-      // The real escalation, not a stated payload: compact chooses tier 1 for a session this small and
-      // writes the carrier that says so, which is exactly what the rule then reads back.
+      // The real path, not a stated payload: compact writes the custom replacement and the carrier
+      // that says what it supplied, which is exactly what the rule then reads back.
       const block = await h.emit("session_before_compact", { preparation: { tokensBefore: 1_000 } });
-      const entry = h.compaction(block.compaction.summary) as { details: { traceMemory: { supplied: { entries: { tier: number }[] } } } };
-      for (const e of older) expect(entry.details.traceMemory.supplied.entries).toContainEqual(expect.objectContaining({ id: e.id, tier: 1 }));
+      const entry = h.compaction(block.compaction.summary) as { details: { traceMemory: { supplied: { entries: { view: string }[] } } } };
+      for (const e of older) expect(entry.details.traceMemory.supplied.entries).toContainEqual(expect.objectContaining({ id: e.id, view: "bounded" }));
     }, undefined],
-  ["the oldest entries survive only as tier-2 views",
-    (h: ReturnType<typeof host>, older: Older) =>
-      h.compaction("secondary views", { details: carrier(h, older.map(e => ({ id: e.id, nativeId: e.nativeId, tier: 2 as const }))) }),
-    (older: Older) => older[0]!],
+  // 30 "Visibility and fork": the tier-2 exclusion is superseded, so a legacy carrier that marked the
+  // whole target as tier-2 views is coverage, and the fork is admitted on it.
+  ["the whole target survives as legacy tier-2 views",
+    (h: ReturnType<typeof host>) => {
+      const head = h.memory.store.listTurns(1).at(-1)!.id;
+      h.compaction("legacy tier-2 views", { details: carrier(h, h.memory.pendingEntries(1, "main", head)
+        .map(e => ({ id: e.id, nativeId: e.nativeId, tier: 2 as const }))) });
+    }, undefined],
   ["a compaction Pi wrote itself: a summary and nothing else", (h: ReturnType<typeof host>) => h.compaction(), (older: Older) => older[0]!],
   ["ids named in the summary text with no supplied entry behind them",
     (h: ReturnType<typeof host>, older: Older) => h.compaction(`covers ${older.map(e => e.nativeId).join(", ")}`, { details: carrier(h, []) }),
     (older: Older) => older[0]!],
-  ["one entry absent from an otherwise tier-1 carrier",
+  ["one entry absent from an otherwise complete carrier",
     (h: ReturnType<typeof host>, older: Older) =>
-      h.compaction("most of it", { details: carrier(h, older.slice(0, -1).map(e => ({ id: e.id, nativeId: e.nativeId, tier: 1 as const }))) }),
+      h.compaction("most of it", { details: carrier(h, older.slice(0, -1).map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const }))) }),
     (older: Older) => older.at(-1)!],
 ])("29: a Noter forks only when its whole target is available in the inherited context (%s)", async (_label, arrange, expected) => {
   const h = host({ "noting.triggerTokens": 100, notingModel: "fake/test-mini" }); // fork is the default mode

@@ -2,7 +2,7 @@ import { expect, test } from "vitest";
 import { DEFAULT_CONFIG, renderEntry, renderEntryWhole, tokens, type EntryProfile, type ResultExtractor, type SourceEntry } from "../../../src/core/api/index.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 
-// Ticket 23 "One entry view, two budgets", in 23c's line format: Pi's own compaction shape
+// Ticket 23 "One entry view", ticket 30's one profile, in 23c's line format: Pi's own compaction shape
 // (`core/compaction/utils.js`) with our addresses as the labels, byte for byte on synthetic entries.
 // Core renders a host-neutral shape — tool name, status, arguments as a JSON object, result as text —
 // so the extractor below stands in for a host's; the Pi one is pinned in tests/hosts/pi/entries.test.ts.
@@ -17,8 +17,10 @@ const call = (ordinal: number, name: string, rest: Partial<SourceEntry["calls"][
 const envelope = (text: string, details?: unknown) => JSON.stringify({ text, ...(details === undefined ? {} : { details }) });
 const view = (source: SourceEntry, profile: EntryProfile = DEFAULT_CONFIG.render) => renderEntry(source, profile, extract).content;
 
-const tier1 = DEFAULT_CONFIG.render;
-const tier2: EntryProfile = { toolCallTokens: DEFAULT_CONFIG.render.secondaryToolCallTokens, entryTokens: DEFAULT_CONFIG.render.secondaryEntryTokens };
+const shipped = DEFAULT_CONFIG.render;
+/** One profile, three independent caps (30): `E`, `C` for a call part, `R` for a result part. */
+const profile = (entryTokens: number, toolInputTokens: number, toolResultTokens = toolInputTokens): EntryProfile =>
+  ({ entryTokens, toolInputTokens, toolResultTokens });
 
 test("23c golden: a user message is its label, a colon and its text, with no native identity and no call id", () => {
   expect(view(entry("user", "看一下最新的导出。"))).toBe("[T7#user]: 看一下最新的导出。");
@@ -54,31 +56,31 @@ test("23c golden: a tool result is label, status, colon and the host's text, non
     .toBe("[T7#t1] read success: line one\n[image omitted]\nline three");
 });
 
-test("23c golden: a result larger than its half of B keeps head and tail with an honest count", () => {
+test("23c golden: a result larger than `R` keeps head and tail with an honest count", () => {
   const body = "HEAD " + "output ".repeat(400) + "TAIL";
   const rendered = view(entry("toolResult", "", [call(1, "bash", { status: "success", result: envelope(body) })]));
-  expect(tokens(rendered)).toBe(150); // one half of B = 300, the result share
+  expect(tokens(rendered)).toBe(100); // `R`, the whole result part
   expect(rendered.startsWith("[T7#t1] bash success: HEAD output output")).toBe(true);
   expect(rendered.endsWith("output output TAIL")).toBe(true);
-  expect(rendered).toContain("\n[... 1903 characters truncated]\n");
+  const marker = /\n\[\.\.\. (\d+) characters truncated\]\n/.exec(rendered)!;
   // Honest: the marker's count is exactly what the head and the tail leave out.
-  const kept = rendered.slice("[T7#t1] bash success: ".length).split("\n[... 1903 characters truncated]\n");
-  expect([...body].length - [...kept[0]!].length - [...kept[1]!].length).toBe(1903);
+  const kept = rendered.slice("[T7#t1] bash success: ".length).split(marker[0]!);
+  expect([...body].length - [...kept[0]!].length - [...kept[1]!].length).toBe(Number(marker[1]));
 });
 
-test("23c golden: an argument value over its share is cut inside its JSON string, the short sibling whole", () => {
+test("23c golden: an argument value over `C` is cut inside its JSON string, the short sibling whole", () => {
   const rendered = view(entry("assistant", "", [call(1, "write", {
     input: JSON.stringify({ content: "章".repeat(400), file_path: "/tmp/target.md", mode: "overwrite" }) })]));
-  expect(rendered).toBe(`[T7#t1] write(content="${"章".repeat(65)}"[... 271 characters truncated]"${"章".repeat(64)}"`
+  expect(rendered).toBe(`[T7#t1] write(content="${"章".repeat(36)}"[... 329 characters truncated]"${"章".repeat(35)}"`
     + `, file_path="/tmp/target.md", mode="overwrite")`);
-  expect(tokens(rendered)).toBeLessThanOrEqual(Math.floor(tier1.toolCallTokens / 2));
+  expect(tokens(rendered)).toBeLessThanOrEqual(shipped.toolInputTokens);
 });
 
 test("23c golden: a sealed call keeps its name, its brackets and one marker for the whole part", () => {
   const source = entry("assistant", "Two calls.", [
     call(1, "bash", { input: JSON.stringify({ command: "echo one" }) }),
     call(2, "read", { input: JSON.stringify({ file_path: "/tmp/x.md" }) })]);
-  const rendered = renderEntry(source, tier1, extract, (address) => address.endsWith("#t2") ? "floor" : "render");
+  const rendered = renderEntry(source, shipped, extract, (address) => address.endsWith("#t2") ? "floor" : "render");
   expect(rendered.content).toBe([
     "[T7#assistant]: Two calls.",
     `[T7#t1] bash(command="echo one")`,
@@ -99,7 +101,7 @@ test("23c golden: an entry over E with tool parts shrinks the tool parts, not th
   expect(view(entry("assistant", "Short note. " + "word ".repeat(30), [
     call(1, "bash", { input: JSON.stringify({ command: "echo " + "a".repeat(300) }) }),
     call(2, "bash", { input: JSON.stringify({ command: "echo " + "b".repeat(300) }) }),
-  ]), { toolCallTokens: 300, entryTokens: 90 })).toBe([
+  ]), profile(90, 300))).toBe([
     "[T7#assistant]: Short note. " + "word ".repeat(30),
     `[T7#t1] bash(command="echo ${"a".repeat(10)}"[... 276 characters truncated]"${"a".repeat(14)}")`,
     `[T7#t2] bash(command="echo ${"b".repeat(10)}"[... 276 characters truncated]"${"b".repeat(14)}")`,
@@ -107,41 +109,55 @@ test("23c golden: an entry over E with tool parts shrinks the tool parts, not th
 });
 
 test("23c golden: an entry over E without tool parts is the text cut head and tail", () => {
-  expect(view(entry("user", "PREFIX " + "字".repeat(200) + " SUFFIX"), { toolCallTokens: 300, entryTokens: 60 })).toBe([
+  expect(view(entry("user", "PREFIX " + "字".repeat(200) + " SUFFIX"), profile(60, 300))).toBe([
     "[T7#user]: PREFIX " + "字".repeat(25),
     "[... 150 characters truncated]",
     "字".repeat(25) + " SUFFIX",
   ].join("\n"));
 });
 
-test("23: the two stages in order — text yields only after every tool part is at its minimum", () => {
+test("23: the stages in order — text yields only after every tool part is at its minimum", () => {
   const source = entry("assistant", "A long reply. " + "word ".repeat(300),
     [call(1, "bash", { input: JSON.stringify({ command: "make build" }) })]);
-  const tight: EntryProfile = { toolCallTokens: 100, entryTokens: 150 }; // tighter than the shipped tier 2, to force the second stage
+  const tight = profile(150, 100); // tighter than the shipped `E`, to force the later stages
   const rendered = view(source, tight);
   expect(tokens(rendered)).toBeLessThanOrEqual(tight.entryTokens);
   // The tool part is at its whole-part floor, and only then is the text cut.
   expect(rendered).toContain("[T7#t1] bash(...)\n[... 10 characters truncated]");
   expect(rendered).toMatch(/\n\[\.\.\. \d+ characters truncated\]\n/);
-  // With room for both, neither yields: the same entry under tier 1 keeps text and arguments whole.
-  expect(view(source, tier1)).toBe(`[T7#assistant]: A long reply. ${"word ".repeat(300)}\n[T7#t1] bash(command="make build")`);
+  // With room for both, neither yields: the same entry under the shipped profile keeps both whole.
+  expect(view(source, shipped)).toBe(`[T7#assistant]: A long reply. ${"word ".repeat(300)}\n[T7#t1] bash(command="make build")`);
 });
 
-test("23c: the half split — a call's arguments and its result each get floor(B / 2)", () => {
-  const long = (character: string) => JSON.stringify({ command: "echo " + character.repeat(5_000) });
-  for (const toolCallTokens of [60, 100, 300, 301, 1_000]) {
-    const profile = { toolCallTokens, entryTokens: 100_000 };
-    const half = Math.floor(toolCallTokens / 2);
-    const args = tokens(view(entry("assistant", "", [call(1, "bash", { input: long("a") })]), profile));
-    const result = tokens(view(entry("toolResult", "", [call(1, "bash", { status: "success", result: envelope("b".repeat(5_000)) })]), profile));
-    // Both fill their own half, within one cut unit of it, and neither takes the other's.
-    for (const [what, size] of [["arguments", args], ["result", result]] as const) {
-      expect([toolCallTokens, what, size <= half && size > half - 5]).toEqual([toolCallTokens, what, true]);
+test("30: one Raw entry view — C and R are independent, E binds the whole entry", () => {
+  const long = (character: string) => JSON.stringify({ command: "echo " + character.repeat(20_000) });
+  const callSize = (p: EntryProfile) => tokens(view(entry("assistant", "", [call(1, "bash", { input: long("a") })]), p));
+  const resultSize = (p: EntryProfile) => tokens(view(entry("toolResult", "", [call(1, "bash", { status: "success", result: envelope("b".repeat(20_000)) })]), p));
+  // Each part fills its own allowance, within one cut unit of it, and neither is half of a shared one.
+  for (const budget of [60, 100, 300, 301, 1_000]) {
+    const p = profile(100_000, budget);
+    for (const [what, size] of [["call", callSize(p)], ["result", resultSize(p)]] as const) {
+      expect([budget, what, size <= budget && size > budget - 5]).toEqual([budget, what, true]);
     }
-    // Not the quarter and three quarters 23a shipped: arguments hold more than a quarter of `B` and
-    // the result less than three quarters of it.
-    expect([toolCallTokens, args > Math.floor(toolCallTokens / 4)]).toEqual([toolCallTokens, true]);
-    expect([toolCallTokens, result < Math.floor(toolCallTokens * 3 / 4)]).toEqual([toolCallTokens, true]);
+  }
+  // Asymmetric: neither allowance is borrowed, swapped or averaged. A call part reads `C` and a
+  // result part reads `R`, so room the other side leaves unused never enlarges it.
+  for (const [c, r] of [[50, 100], [100, 50], [100, 1_000], [1_000, 100]] as const) {
+    const p = profile(100_000, c, r);
+    expect([c, r, callSize(p) <= c && callSize(p) > c - 5]).toEqual([c, r, true]);
+    expect([c, r, resultSize(p) <= r && resultSize(p) > r - 5]).toEqual([c, r, true]);
+  }
+  // The shipped profile: C and R are each 100, not 50 and 50 of one budget of 100.
+  expect([shipped.toolInputTokens, shipped.toolResultTokens]).toEqual([100, 100]);
+  expect([callSize(shipped) > 90, resultSize(shipped) > 90]).toEqual([true, true]);
+  // `E` binds the whole entry however many parts it has: three calls, each within `C`, still fit `E`.
+  const many = entry("assistant", "Three at once.", [1, 2, 3].map((i) => call(i, "bash", { input: long(String(i)) })));
+  for (const entryTokens of [200, 400, 2_000]) {
+    const rendered = view(many, profile(entryTokens, 100));
+    expect([entryTokens, tokens(rendered) <= entryTokens]).toEqual([entryTokens, true]);
+    for (const part of rendered.split(/\n(?=\[T7#t\d+\] )/).slice(1)) {
+      expect([entryTokens, tokens(part) <= 100]).toEqual([entryTokens, true]);
+    }
   }
 });
 
@@ -160,23 +176,24 @@ const scanned: SourceEntry[] = [
   entry("assistant", "", Array.from({ length: 12 }, (_, i) => call(i + 1, "bash", { input: JSON.stringify({ command: "run " + "x".repeat(500) }) }))),
 ];
 
-test("23 budget contract: over a range of B and E every part is within its allocation and no part is empty", () => {
-  for (const toolCallTokens of [60, 100, 300, 1_000]) for (const entryTokens of [40, 150, 1_000, 10_000]) {
-    const profile = { toolCallTokens, entryTokens };
+test("23 budget contract: over a range of C, R and E every part is within its allocation and no part is empty", () => {
+  for (const [toolInputTokens, toolResultTokens] of [[60, 60], [100, 40], [40, 100], [300, 300], [1_000, 1_000]] as const)
+    for (const entryTokens of [40, 150, 1_000, 10_000]) {
+    const scan = profile(entryTokens, toolInputTokens, toolResultTokens);
     for (const source of scanned) {
       let rendered: string;
-      try { rendered = view(source, profile); }
+      try { rendered = view(source, scan); }
       catch (error) { expect(String(error)).toMatch(/capacity/); continue; }
-      const where = `B=${toolCallTokens} E=${entryTokens} ${source.role}`;
+      const where = `C=${toolInputTokens} R=${toolResultTokens} E=${entryTokens} ${source.role}`;
       expect(tokens(rendered), where).toBeLessThanOrEqual(entryTokens);
       const parts = rendered.split(/\n(?=\[T7#t\d+\] )/);
-      const share = Math.floor(toolCallTokens / 2); // 23c: one half for arguments, one half for the result
+      const own = source.role === "toolResult" ? toolResultTokens : toolInputTokens; // 30: no borrowing
       for (const [index, part] of parts.entries()) {
         expect(part.length, where).toBeGreaterThan(0);
         const label = index === 0 && (source.text || source.role === "user") ? "[T7#" : "[T7#t";
         expect(part.startsWith(label), `${where}: ${part.slice(0, 40)}`).toBe(true);
         if (part.startsWith("[T7#t")) {
-          expect(tokens(part), where).toBeLessThanOrEqual(share);
+          expect(tokens(part), where).toBeLessThanOrEqual(own);
           // Never shorter than its minimum: the label line survives, and so does one marker whenever
           // the part had anything to omit.
           expect(part.split("\n")[0]!.length, where).toBeGreaterThan("[T7#t1] x".length - 1);
@@ -188,14 +205,16 @@ test("23 budget contract: over a range of B and E every part is within its alloc
 
 test("23 budget contract: an E below the minima of an entry's parts raises the capacity error", () => {
   const source = scanned[2]!;
-  expect(() => view(source, { toolCallTokens: 300, entryTokens: 20 })).toThrow(/capacity/);
-  // So does a B whose share cannot hold one part's label and marker, whatever E allows.
-  expect(() => view(source, { toolCallTokens: 20, entryTokens: 10_000 })).toThrow(/capacity/);
+  expect(() => view(source, profile(20, 300))).toThrow(/capacity/);
+  // So does a `C` that cannot hold one part's label and marker, whatever E allows.
+  expect(() => view(source, profile(10_000, 10))).toThrow(/capacity/);
+  // And an `R` that cannot hold a result's, with `C` roomy: the two are checked apart (30).
+  expect(() => view(scanned[3]!, profile(10_000, 1_000, 3))).toThrow(/capacity/);
 });
 
 test("23 budget contract: no cut falls inside a surrogate pair", () => {
   for (const entryTokens of [40, 80, 160, 320]) {
-    const rendered = view(entry("user", "😀🧠".repeat(300)), { toolCallTokens: 300, entryTokens });
+    const rendered = view(entry("user", "😀🧠".repeat(300)), profile(entryTokens, 300));
     expect([...rendered].every((character) => {
       const code = character.codePointAt(0)!;
       return code < 0xD800 || code > 0xDFFF;
@@ -218,8 +237,8 @@ const cuts = (input: string, key: string) => {
   const seen: { head: string; tail: string }[] = [];
   // A dense scan of budgets, one token apart: every kept length these budgets can produce, and the
   // count is asserted by each case below so the scan cannot silently degenerate to one cut position.
-  for (let toolCallTokens = 40; toolCallTokens <= 800; toolCallTokens++) {
-    const rendered = view(entry("assistant", "", [call(1, "x", { input })]), { toolCallTokens, entryTokens: 100_000 });
+  for (let toolInputTokens = 40; toolInputTokens <= 800; toolInputTokens++) {
+    const rendered = view(entry("assistant", "", [call(1, "x", { input })]), profile(100_000, toolInputTokens));
     const cut = new RegExp(`^\\[T7#t1\\] x\\(${key}=(.*)\\[\\.\\.\\. (\\d+) characters truncated\\](.*)\\)$`, "s").exec(rendered);
     if (cut) seen.push({ head: cut[1]!, tail: cut[3]! });
   }
@@ -304,17 +323,24 @@ test("23 fidelity: an omitted middle states an honest count and its address fetc
   } finally { memory.close(); }
 });
 
-test("23: the profiles are the two shipped ones, and B is rejected above its ceiling", () => {
-  expect([tier1.toolCallTokens, tier1.entryTokens]).toEqual([300, 10_000]);
-  expect([tier2.toolCallTokens, tier2.entryTokens]).toEqual([100, 1000]);
+test("30: the shipped profile is 2000/100/100, the retired keys fail by name, and each part budget has its ceiling", () => {
+  expect([shipped.entryTokens, shipped.toolInputTokens, shipped.toolResultTokens]).toEqual([2_000, 100, 100]);
   const open = (render: Record<string, number>) => sourceSeededMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { render });
-  expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
-  expect(() => open({ secondaryToolCallTokens: 1_001 })).toThrow("Invalid render.secondaryToolCallTokens: at most 1000");
-  const ceiling = open({ toolCallTokens: 1_000 });
-  try { expect(ceiling.config.render.toolCallTokens).toBe(1_000); } finally { ceiling.close(); }
-  for (const value of [0, -1, 1.5, NaN, Infinity]) for (const key of ["toolCallTokens", "entryTokens", "secondaryToolCallTokens", "secondaryEntryTokens"]) {
+  for (const key of ["toolInputTokens", "toolResultTokens"]) {
+    expect(() => open({ [key]: 1_001 })).toThrow(`Invalid render.${key}: at most 1000`);
+    const ceiling = open({ [key]: 1_000 });
+    try { expect(ceiling.config.render[key as "toolInputTokens"]).toBe(1_000); } finally { ceiling.close(); }
+  }
+  // An explicit `E` is honoured as written, never halved or rewritten (30 "Configuration").
+  const explicit = open({ entryTokens: 10_000 });
+  try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
+  for (const value of [0, -1, 1.5, NaN, Infinity]) for (const key of ["entryTokens", "toolInputTokens", "toolResultTokens"]) {
     expect(() => open({ [key]: value })).toThrow("Invalid render.");
   }
+  // The three retired keys are removed settings, not aliases: each fails by name, naming the new keys.
+  expect(() => open({ toolCallTokens: 300 })).toThrow("Removed setting render.toolCallTokens: use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)");
+  expect(() => open({ secondaryToolCallTokens: 100 })).toThrow(/Removed setting render.secondaryToolCallTokens: removed with the tier-2 view/);
+  expect(() => open({ secondaryEntryTokens: 1_000 })).toThrow("Removed setting render.secondaryEntryTokens: removed with the tier-2 view: use render.entryTokens — one bounded view everywhere");
 });
 
 // ---- 23c ruling 4: `full` is the same renderer with no budget ----
@@ -334,7 +360,7 @@ const splitCalls = (run: () => void): number => {
 
 test("23c full cost: the unbounded path measures no tokens, while the budgeted path does", () => {
   const source = entry("assistant", "a reply", [call(1, "bash", { input: JSON.stringify({ command: "echo " + "x".repeat(200_000) }) })]);
-  expect(splitCalls(() => renderEntry(source, tier1, extract))).toBeGreaterThan(0); // the guard fires
+  expect(splitCalls(() => renderEntry(source, shipped, extract))).toBeGreaterThan(0); // the guard fires
   expect(splitCalls(() => renderEntryWhole(source, extract))).toBe(0); // and is silent here
 });
 
@@ -348,7 +374,7 @@ test("23c full cost: the unbounded path copies a 2 MB result as its label plus t
 });
 
 test("23c: `full` and the budgeted path agree on the bytes when nothing has to yield", () => {
-  const roomy = { toolCallTokens: 100_000, entryTokens: 1_000_000 };
+  const roomy = profile(1_000_000, 100_000);
   for (const source of [scanned[0]!, scanned[2]!, scanned[3]!,
     entry("toolResult", "", [call(1, "edit", { status: "success", result: envelope("Edited /tmp/x.ts", { diff: "-old\n+new" }) })])]) {
     expect(renderEntryWhole(source, extract).content).toBe(view(source, roomy));

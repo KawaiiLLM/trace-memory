@@ -32,7 +32,9 @@ function hold(h: ReturnType<typeof host>) {
 test("17c 2026-09-08: two executor slots prefer own work over several closed tails and never fan out", async () => {
   // 20b: Consolidation is due on rendered fact tokens, so this scheduling test states its own trigger
   // instead of relying on 17b's fifty-fact count.
-  const h = host({ "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
+  // 30: one entry view is capped at `render.entryTokens` (2,000), so the long reply below reaches a
+  // lowered trigger instead of the default 10,000; what this case pins is the scheduling, not a size.
+  const h = host({ "noting.forkModeDefault": false, "consolidation.triggerTokens": 1, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const tails = Array.from({ length: 4 }, () => target(h.memory, { facts: 1 }));
@@ -54,7 +56,9 @@ test("17c 2026-09-08: two executor slots prefer own work over several closed tai
 });
 
 test("17c 2026-09-08: busy borrowed slots are not preempted or chained; later entries take oldest tails with stable branch order", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: one entry view is capped at `render.entryTokens` (2,000), so the long reply below reaches a
+  // lowered trigger instead of the default 10,000; what this case pins is the scheduling, not a size.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const first = target(h.memory, { facts: 1, branch: "z" });
@@ -196,7 +200,9 @@ test("17c 2026-09-08: reopen blocks selection and immediately replaces borrowed 
 });
 
 test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrowed workers even when providers never resolve", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: one entry view is capped at `render.entryTokens` (2,000), so the long reply below reaches a
+  // lowered trigger instead of the default 10,000; what this case pins is the scheduling, not a size.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const t = target(h.memory, { facts: 1, noted: true });
@@ -300,7 +306,9 @@ test.each(["noting", "consolidation"] as const)("17c 2026-09-08: %s cleanup or a
 });
 
 test("17c 2026-09-08: resume takes crashed claims immediately without inventing closure; tree navigation keeps its worker", async () => {
-  const h = host();
+  // 30: one entry view is capped at `render.entryTokens` (2,000), so the long reply below reaches a
+  // lowered trigger instead of the default 10,000; what this case pins is the scheduling, not a size.
+  const h = host({ "noting.triggerTokens": 1_000 });
   try {
     await h.turn();
     const path = { sessionId: 1, branch: "main", headTurnId: 1 };
@@ -384,12 +392,13 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
 
 
 test("17c 2026-09-08: failed own capacity admission leaves the slot free for a smaller closed tail", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   try {
     // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
-    // reserve), so 20,000 leaves 10,000 for input — above the ~4,400 the small closed tail costs and
-    // below the ~14,500 of this session's own 15,000-word entry, which is the split this case needs.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 20000 };
+    // reserve), so 15,000 leaves 5,000 for input — above the ~4,400 the small closed tail costs and
+    // below that plus this session's own entry view, which 30 caps at 2,000 tokens. That is the split
+    // this case needs, at the sizes 30's profile produces.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 15000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

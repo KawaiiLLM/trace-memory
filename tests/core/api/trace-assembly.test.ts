@@ -219,9 +219,26 @@ test("23c: one marker family — no `[omitted ` and no `details omitted` is left
   expect(code).toContain("characters truncated]"); // and Pi's family is what replaced them
 });
 
+test("30: the B split and the second rendering tier are gone from src, and one marker family is left", () => {
+  const code = sourceCode();
+  // The shared call budget and its halves, the tier-2 profile and its block title, and the never-built
+  // short-marker alternatives (a names-only view, a result-hiding switch, a low-budget `...` mode).
+  // The three retired keys survive as removed settings and nowhere else, so what is closed here is
+  // every read of them, the tier-2 title and the profile behind it.
+  for (const gone of ["ARGUMENTS_SHARE", "config.render.toolCallTokens", "config.render.secondaryToolCallTokens",
+    "config.render.secondaryEntryTokens", "secondaryRawTitle", "tier-2 entry views", "namesOnly", "hideResults"]) {
+    expect([gone, code.includes(gone)]).toEqual([gone, false]);
+  }
+  expect(code).toContain("toolInputTokens");
+  expect(code).toContain("toolResultTokens");
+  // One omission marker family, computed while fitting, with a real character count.
+  expect([...code.matchAll(/const truncated = [^\n]*/g)].map(m => m[0]))
+    .toEqual(["const truncated = (characters: number) => `[... ${characters} characters truncated]`;"]);
+});
+
 test("23b 2026-09-09: the three explicit-preview budgets are rejected at load, by name, with the replacement named", () => {
   for (const key of ["commandTokens", "reportHeadTokens", "reportTailTokens"]) {
     expect(() => open({ render: { [key]: 2 } as never }))
-      .toThrow(`Removed setting render.${key}: use render.toolCallTokens (one budget for the whole tool call)`);
+      .toThrow(`Removed setting render.${key}: use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)`);
   }
 });

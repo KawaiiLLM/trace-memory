@@ -65,7 +65,9 @@ export interface EntryAudit {
   branch: string;
   viewVersion: string;
   /** The profile these views were rendered under: `B` and `E` (ticket 23). */
-  viewBudgets: { toolCallTokens: number; entryTokens: number };
+  /** Ticket 30: the one profile this run rendered under. A record written before it keeps its stored
+   * `{toolCallTokens, entryTokens}` shape, with its own `B`/`E` meaning, and is never relabelled. */
+  viewBudgets: { entryTokens: number; toolInputTokens: number; toolResultTokens: number };
 }
 export type NotingResult =
   | { outcome: "empty" }
@@ -268,7 +270,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * task is the whole processing target — chosen by `noting.batchTokens` alone, never by what the child
  * can see — and `initial` is the child's starting point. What is newly supplied is the target minus
  * what that view proves visible at the same identity and representation, and only then does the
- * budget apply: an entry whose native id the view holds as a retained source or as a tier-1 carrier
+ * budget apply: an entry whose native id the view holds as a retained source or as a carrier's bounded
  * view is withheld, a fact the view holds by id is withheld, and the historical facts that remain
  * fill the whole `history` allowance rather than what the visible ones left of it.
  *
@@ -280,8 +282,8 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
-  // A tier-2 view establishes nothing a Noter may extract from, so `visibleView` never records one:
-  // every entry the map holds is either the retained original or a tier-1 view (29a).
+  // Every entry the map holds is either the retained original or a marked bounded view of ours (29a,
+  // 30: one view, and a legacy tier-1 or tier-2 carrier counts as that same view).
   const supplied = entries.filter(entry => !initial.visible.raw.has(entry.nativeId));
   const withheld = entries.length - supplied.length;
   const facts = applicable.filter(fact => !initial.visible.factIds.has(fact.id));
@@ -316,9 +318,9 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   // 20a: core owns the block order, the titles and the separators; 29b: there is one layout, and the
   // host only decides which native message carries it.
   const text = notingText(material, range);
-  // 29a "Renderers return what they kept": every entry in the Raw block is a tier-1 primary view, and
-  // the facts are the ones budgeting actually kept. The Noter emits no knowledge block (25a).
-  const suppliedMaterial: SuppliedMaterial = { entries: supplied.map(e => ({ id: e.id, nativeId: e.nativeId, tier: 1 })),
+  // 29a "Renderers return what they kept": every entry in the Raw block is the one bounded view (30),
+  // and the facts are the ones budgeting actually kept. The Noter emits no knowledge block (25a).
+  const suppliedMaterial: SuppliedMaterial = { entries: supplied.map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const })),
     factIds: budgeted.factIds, knowledgeCommitIds: [] };
   return { range, readKnowledgeCommits, views: new Map(supplied.map((e, i) => [e.id, raw[i]!])),
     material, text, supplied: suppliedMaterial, over: budgeted.over };
@@ -342,7 +344,8 @@ export async function runNoting(
   // not what was injected — but the omission markers are read from the view this run actually sent.
   // A withheld entry sent no view, so it has no markers of ours to record.
   const entryAudit: EntryAudit = { entries: entries.map((e) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: views.get(e.id)?.content.match(OMISSION) ?? [] })),
-    branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
+    branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { entryTokens: config.render.entryTokens,
+      toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);

@@ -49,7 +49,9 @@ async function laterRound(contextWindow: number) {
 }
 
 test("27a 2026-09-10: the input allowance is the context window minus the 10,000-token headroom, and model.maxTokens enters neither it nor the verdict", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: one entry view is capped at 2,000 tokens, so this pending pair no longer reaches the default
+  // trigger on its own; the trigger is lowered, and the allowance below is what the case is about.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));

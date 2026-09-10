@@ -70,7 +70,7 @@ test("19b 2026-09-08: a host stub that receives structured material and declares
     // Everything this stub needs is a part it can place itself.
     expect(input.material.entries.map(e => e.view)).toEqual(memory.pendingEntries(sessionId, "main", t.id).map(e => renderEntry(e, memory.config.render).content));
     expect(input.entryAudit.viewVersion).toBe(ENTRY_VIEW_VERSION);
-    expect(input.entryAudit.viewBudgets).toEqual({ toolCallTokens: 300, entryTokens: 10_000 }); // the tier-1 profile (23)
+    expect(input.entryAudit.viewBudgets).toEqual({ entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 }); // the one profile (30)
     expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
     return { outcome: "success", output: "done", audit: { available: false, reason: "this host cannot expose provider requests" } };
   };

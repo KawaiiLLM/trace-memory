@@ -5,16 +5,27 @@ import { estimateContextTokens } from "@earendil-works/pi-ai/utils/estimate";
 import { conversationOf, host, reply, usage } from "./test-host.ts";
 import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 
+// 30 capped one entry view at `render.entryTokens` (2,000), so the cases below reach a trigger, a
+// batch ceiling or a capacity allowance with several entries or a smaller cap instead of one huge
+// entry. What each pins — the exact threshold, the batch composition, the capacity prefix — is
+// unchanged; only the size one entry may reach is.
 const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [] } as SourceEntry, DEFAULT_CONFIG.render).content;
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nReceipts:")[0]!;
 
 test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed tokens (%s)", async size => {
   const h = host({ "noting.forkModeDefault": false });
   try {
-    const overhead = tokens(view("", "u", "user") + "\n\n" + view("a", "a", "assistant"));
-    let content = "word ".repeat(size - overhead);
-    while (tokens(view(content, "u", "user") + "\n\n" + view("a", "a", "assistant")) < size) content += "word ";
-    while (tokens(view(content, "u", "user") + "\n\n" + view("a", "a", "assistant")) > size) content = content.slice(5);
+    // 30: one entry view is worth at most 2,000 tokens, so the threshold is reached by several
+    // entries; the last one is tuned word by word until the joined estimate is exactly `size`.
+    const bodies = Array.from({ length: 5 }, () => "word ".repeat(1_800));
+    const joined = (last: string) => tokens([...bodies.map((text, i) => view(text, `u${i}`, "user")),
+      view(last, "u", "user"), view("a", "a", "assistant")].join("\n\n"));
+    // Start one estimate away from the target so the loops below take a handful of renderings, not one
+    // per word: every "word " is about one token, and the two loops close the remaining gap exactly.
+    let content = "word ".repeat(Math.max(1, size - joined("word ")));
+    while (joined(content) < size) content += "word ";
+    while (joined(content) > size) content = content.slice(5);
+    bodies.forEach((text, i) => h.persist({ role: "user", content: text, timestamp: 1 }, `u${i}`));
     h.persist({ role: "user", content, timestamp: 1 }, "u");
     h.persist({ ...reply(""), content: [{ type: "thinking", thinking: "private" }] }, "thinking");
     await h.emit("session_start");
@@ -22,10 +33,11 @@ test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed
     await h.emit("message_start", { message: reply("") });
     await h.drain();
     const entries = h.memory.store.listSourceEntries(1);
+    const head = h.memory.store.listTurns(1).at(-1)!.id;
     expect(tokens(entries.map(e => renderEntry(e, h.memory.config.render).content).join("\n\n"))).toBe(size);
     // 26a: a launched Noting run sends two requests — the one that submits the batch and its closing reply.
     expect(h.requests).toHaveLength(size === 10000 ? 2 : 0);
-    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(size === 10000 ? 0 : 2);
+    expect(h.memory.pendingEntries(1, "main", head)).toHaveLength(size === 10000 ? 0 : entries.length);
   } finally { await h.dispose(); }
 });
 
@@ -34,9 +46,11 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
   const cap = DEFAULT_CONFIG.noting.batchTokens; // 20b: 10,000, not 17b's 50,000
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
-    for (let i = 0; i < 8; i++) {
+    // 30: each reply is kept under `render.entryTokens` (2,000) so nothing is cut here, and there are
+    // enough of them to fill three batches of the unchanged 10,000-token ceiling.
+    for (let i = 0; i < 14; i++) {
       if (severalTurns && i) h.persist({ role: "user", content: `turn ${i}`, timestamp: 1 });
-      h.persist(reply(`entry ${i} ` + "word ".repeat(3000)));
+      h.persist(reply(`entry ${i} ` + "word ".repeat(1800)));
     }
     await h.emit("session_start"); // importing history is not a completion trigger
     const head = h.memory.store.listTurns(1).at(-1)!.id;
@@ -64,22 +78,23 @@ test.each([false, true])("17b 2026-09-08 (batch ceiling superseded by 20b): olde
 }, 30000);
 
 test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest entry stays pending with a report", async () => {
-  const h = host({ "noting.forkModeDefault": false });
+  // 30: two 2,000-token views no longer reach the default trigger on their own, so it is lowered.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
     await h.emit("session_start");
-    // 27a: the allowance is 30,000 - 10,000 = 20,000 tokens, which holds the fixed cost (~4,400) and
-    // one 10,000-token entry view — with the headroom the child's own context still needs — but not
-    // two views. `maxTokens` no longer enters the allowance and is not set here.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 30000 };
+    // 27a: the allowance is 17,000 - 10,000 = 7,000 tokens, which holds the fixed cost (~4,400) and
+    // one entry view — 2,000 tokens since 30 — with the headroom the child's own context still needs,
+    // but not two views. `maxTokens` no longer enters the allowance and is not set here.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
     // assistant usage yet on a first round — with the headroom left over.
-    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(30000);
+    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(17000);
     const pending = h.memory.pendingEntries(1, "main", 1);
     // An allowance of 1,000 tokens: under the fixed instruction and tool cost, so nothing is admitted.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 11000 };
@@ -203,7 +218,9 @@ test.each(["user", "toolResult"])("17b 2026-09-08: stale branch capture falls ba
 // `fallback.test.ts`: that batch is no longer left pending but re-admitted once as a subagent.
 // A batch over `noting.batchTokens` still waits, because no model capacity decided it.
 test("17b 2026-09-08: an oldest entry blocked by the batch budget stays pending", async () => {
-  const h = host({ "noting.batchTokens": 9000 });
+  // 30: one entry view is capped at 2,000 tokens, so the ceiling this entry must exceed is smaller,
+  // and the trigger is lowered with it — 2,000 tokens of pending Raw no longer reach the default one.
+  const h = host({ "noting.batchTokens": 1000, "noting.triggerTokens": 20 });
   try {
     h.persist({ role: "user", content: "word ".repeat(20000), timestamp: 1 }); h.persist(reply("tail"));
     await h.emit("session_start");
@@ -283,10 +300,12 @@ test("17b 2026-09-08, on 27a's rule: a round the child's own context cannot hold
 // that fits: an entry that does not fit beside the oldest one is not dropped, and no smaller later
 // entry is pulled forward to fill the space it left.
 test("20b 2026-09-08 scenario 5: a small oldest entry is not joined with a near-ceiling entry, and no smaller later entry jumps the queue", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  // 30: the near-ceiling entry is the one the renderer caps at `render.entryTokens` (2,000), so the
+  // batch ceiling this case needs is that cap — the small oldest cannot fit beside it either way.
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20, "noting.batchTokens": 2000 });
   try {
     h.persist({ role: "user", content: "small oldest", timestamp: 1 });
-    h.persist(reply("BIG " + "word ".repeat(15000))); // the primary renderer bounds this at the 10,000-token entry cap
+    h.persist(reply("BIG " + "word ".repeat(15000))); // the renderer bounds this at the entry cap
     h.persist(reply("small later"));
     await h.emit("session_start");
     const all = h.memory.store.listSourceEntries(1);

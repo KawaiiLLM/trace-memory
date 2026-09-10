@@ -96,15 +96,16 @@ test("category order, chronological ties, whole trailing category omissions; lin
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
 });
 
-test("compaction retains oversized raw with standard tool cuts, in its primary views", () => {
+test("compaction retains oversized raw with standard tool cuts, in its bounded views", () => {
   const { s, t } = populated(), raw = fixture.observation.repeat(1000);
   const next = turn(s.id, raw, t.id);
   memory.store.appendToolCall({ turnId: next.id, name: "Bash", input: "pwd", result: JSON.stringify({ stdout: "x".repeat(10000) }), status: "success" });
-  // 20c: tier 1 applies only while the primary views fit both shared caps. This case is about those
-  // views' own cuts, not about escalation, so it gives them the room; the tiers have their own tests.
+  // 20c/30: a custom replacement applies only while the bounded views fit the shared cap. This case is
+  // about those views' own cuts — `E` on the user text, `R` on the result — not about delegation, so
+  // it gives the enclosing envelope the room; delegation has its own tests.
   memory.config.noting.batchTokens = 100_000; memory.config.render.episodicBlockTokens = 200_000;
   const compaction = memory.compact(s.id, "main", next.id);
-  expect(compaction.tier).toBe("primary");
+  expect("native" in compaction).toBe(false);
   const result = compacted(compaction);
   // 17a supersedes unbounded user Raw: both excerpts retain head, omission count and tail.
   expect(result).not.toContain(raw); expect(result).toMatch(/\[\.\.\. \d+ characters truncated\]/);
@@ -130,16 +131,17 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   expect(memory.store.getTurn(abandoned.id)).not.toBeNull();
 });
 
-// ---- Ticket 20 "Compaction escalation" (20c): the three tiers over one frozen read snapshot ----
+// ---- Ticket 20 "Compaction escalation" (20c), as 30 left it: the one bounded view over a frozen
+// read snapshot, and the native delegation when it does not fit ----
 
-test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts take the remaining shared space, and no worker starts or progress changes", () => {
+test("20c 2026-09-08 scenario 9: all pending bounded views fit, historical facts take the remaining shared space, and no worker starts or progress changes", () => {
   const { s, t } = populated();
   const selected = turn(s.id, "selected raw", t.id);
   const second = noting(s.id, t.id, fixture.interpretation).facts[0]!; // a newer fact on an already-processed turn
   const pending = memory.pendingEntries(s.id, "main", selected.id);
   const runsBefore = memory.store.listRuns(s.id).length;
   const result = memory.compact(s.id, "main", selected.id);
-  expect(result.tier).toBe("primary");
+  expect("native" in result).toBe(false);
   const text = compacted(result);
   // Every pending entry is present in its normal shared view, and both historical facts fit beside them.
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
@@ -158,12 +160,11 @@ test("20c 2026-09-08 scenario 9: all pending primary views fit, historical facts
   expect(limited.indexOf("Receipts:")).toBeGreaterThan(limited.indexOf("</episodic>"));
 });
 
-test("20c/23 2026-09-08 scenario 10, resized by 25c: primary views over the shared envelope become tier-2 views of the same renderer, still every entry, under the tier-2 profile", () => {
+test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under the ordinary Raw title, and an envelope it cannot meet delegates to native compaction", () => {
   const { s, t } = populated();
   const body = "word ".repeat(12_000);
-  // 25c: the cap tier 1 must miss is now `render.episodicBlockTokens` (20,000), and one entry view is
-  // worth at most `render.entryTokens` (10,000), so the backlog that escalates is three long prompts
-  // rather than one. The two ahead of the inspected turn are ordinary pending entries in every tier.
+  // Three long prompts: each entry view is worth at most `render.entryTokens` (2,000 since 30), so
+  // the two ahead of the inspected turn are ordinary pending entries and every one of them is cut.
   let parent = t.id;
   for (const i of [1, 2]) parent = turn(s.id, `FILLER_${i} ${body}`, parent).id;
   const next = turn(s.id, `USER_HEAD ${body} USER_TAIL`, parent);
@@ -171,67 +172,53 @@ test("20c/23 2026-09-08 scenario 10, resized by 25c: primary views over the shar
     result: JSON.stringify({ stdout: "SECRET_RESULT " + "x".repeat(4_000) }), status: "success" });
   const pending = memory.pendingEntries(s.id, "main", next.id);
   const result = memory.compact(s.id, "main", next.id);
-  expect(result.tier).toBe("secondary");
+  expect("native" in result).toBe(false);
   const text = compacted(result);
-  // Explicitly labelled, and named with the view version and the profile that produced these views,
-  // so a reader knows which rule truncated the text in front of them (23, superseding 20c's own view).
-  expect(text).toContain(`Raw (tier-2 entry views, ${ENTRY_VIEW_VERSION}, tool call budget 100 tokens, entry budget 1000 tokens):`);
-  expect(text).not.toContain("\nRaw:\n");
+  // One view, one title: the tier-2 block title 23 introduced is gone with the tier itself (30).
+  expect(text).toContain("\nRaw:\n");
+  expect(text).not.toContain("tier-2 entry views");
   // Every selected entry is represented, in order, by the addresses its labels carry; native identity
   // stays in storage and in the run audit, never in the model-facing text.
-  const profile = { toolCallTokens: 100, entryTokens: 1000 };
   for (const entry of pending) {
-    const view = renderEntry(entry, profile, memory.resultText).content;
+    const view = renderEntry(entry, memory.config.render, memory.resultText).content;
     expect(text).toContain(view);
-    expect(tokens(view)).toBeLessThanOrEqual(1000);
+    expect(tokens(view)).toBeLessThanOrEqual(memory.config.render.entryTokens);
   }
   expect(text).not.toContain(`[entry ${JSON.stringify([pending[0]!.nativeLineage, pending[0]!.nativeId])}]`);
   expect(text.indexOf(`[T${next.id}#user]:`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
-  // Tool identity and status remain, and so does what the tighter budget can hold of the payload.
+  // Tool identity and status remain, and so does what `C` and `R` can hold of the payload.
   expect(text).toContain(`[T${next.id}#t1] Bash(command="SECRET_ARGUMENT")`);
   expect(text).toContain(`[T${next.id}#t1] Bash success: `);
   expect(text).toContain("SECRET_RESULT"); expect(text).not.toContain("x".repeat(4_000));
-  // User text is excerpted, and the omission is marked in the wording the tier-1 view already uses.
+  // User text is excerpted, and the omission is marked in the one wording every view uses.
   expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);
   expect(text).toMatch(/\[\.\.\. \d+ characters truncated\]/);
   // Deterministic local work: the same snapshot renders the same bytes, and no model was called.
   expect(compacted(memory.compact(s.id, "main", next.id))).toBe(text);
   expect(calls).toBe(0);
+  // There is no second, tighter rendering to fall back on (30): an envelope these views cannot meet
+  // is a native delegation naming the cap and the overage, with nothing hidden to force a success.
+  memory.config.render.episodicBlockTokens = 500;
+  const delegated = memory.compact(s.id, "main", next.id);
+  expect("native" in delegated).toBe(true);
+  expect("native" in delegated && delegated.reason).toContain("the episodic budget by");
+  expect("native" in delegated && delegated.reason).toContain(`bounded views of ${pending.length} pending entries`);
+  expect(memory.pendingEntries(s.id, "main", next.id).map(e => e.id)).toEqual(pending.map(e => e.id));
+  memory.config.render.episodicBlockTokens = 20_000;
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
-  // read without `full` (23b) is the same tier-1 view of the same entry, cut only where `E` bites.
+  // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
   expect(memory.trace(`T${next.id}#user`, { full: true })).toContain(body);
   expect(memory.trace(`T${next.id}#user`)).toContain("USER_HEAD");
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_ARGUMENT");
   expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_RESULT");
 });
 
-/** The compact-only secondary view ticket 23 deleted (20c's `renderEntrySecondary`, copied from
- * e7cd633 and kept here alone): the conversation-dense acceptance below compares tier 2's total
- * against the total this retired view produced on the same frozen set. Nothing else uses it. */
-function retiredSecondaryView(entry: { sessionId: number; turnId: number; nativeLineage: string; nativeId: string; role: string; text: string; calls: { ordinal: number; name: string; callId: string; status: string }[] }): string {
-  const excerpt = (label: string, body: string, cap: number) => {
-    const whole = `${label}\n${body}`, characters = [...body];
-    const at = (kept: number) => `${label}\n${characters.slice(0, Math.ceil(kept / 2)).join("")}\n[omitted ${characters.length - kept} characters; middle not inspected]\n${Math.floor(kept / 2) ? characters.slice(-Math.floor(kept / 2)).join("") : ""}`;
-    if (tokens(whole) <= cap) return whole;
-    let low = 0, high = characters.length - 1;
-    while (low < high) { const mid = Math.ceil((low + high) / 2); if (tokens(at(mid)) <= cap) low = mid; else high = mid - 1; }
-    return at(low);
-  };
-  const lines = [`[S${entry.sessionId}/T${entry.turnId}] [entry ${JSON.stringify([entry.nativeLineage, entry.nativeId])}] [compact-only view 20c-v1-bounded-excerpts]`];
-  if (entry.text || entry.role === "user") {
-    const role = entry.role === "user" ? "user" : "assistant";
-    lines.push(excerpt(`[Source entry id: T${entry.turnId}#${role}]`, entry.text || "[non-text content omitted]", role === "user" ? 120 : 60));
-  }
-  for (const call of entry.calls) lines.push(`[T${entry.turnId}#t${call.ordinal}] tool=${call.name} call=${call.callId} status=${call.status} [${entry.role === "toolResult" ? "result" : "arguments"} omitted]`);
-  return lines.join("\n");
-}
-
-/** 25c amends this acceptance on its own terms: the thresholds it names moved from
- * `noting.batchTokens` to `render.episodicBlockTokens`, because compaction no longer applies the
- * Noter's batch ceiling to a foreground backlog (parent amendment 3). The dozen replies the ticket
- * wrote this fixture for are exactly the "above 10,000, below 20,000" case, and they now stay in
- * tier 1; twice as many still escalate all the way, for the same reason and with the same wording. */
-test("23 2026-09-09 conversation-dense acceptance (tier-2 E = 1,000), rescaled by 25c: a dozen long replies now fit tier 1, two dozen escalate to native with the reason, eight longer ones fit tier 2", () => {
+/** 25c amended this acceptance on its own terms — its thresholds moved from `noting.batchTokens` to
+ * `render.episodicBlockTokens`, because compaction no longer applies the Noter's batch ceiling to a
+ * foreground backlog (parent amendment 3) — and 30 amends it again: there is no second rendering to
+ * escalate to, so a backlog the one bounded view cannot fit delegates to native compaction, and the
+ * tighter `E` (2,000) keeps long replies that used to need the tier-2 profile inside the envelope. */
+test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long replies fit, two dozen delegate to native with the reason, eight three times as long still fit under E", () => {
   const dense = (count: number, words: number) => {
     const s = session();
     let parent: number | undefined;
@@ -242,48 +229,46 @@ test("23 2026-09-09 conversation-dense acceptance (tier-2 E = 1,000), rescaled b
     }
     return { s, parent: parent! };
   };
-  const profile = { toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens };
+  const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
   const envelope = memory.config.render.episodicBlockTokens;
-  // Long replies with few tool calls: the shape the retired view handled and tier 1 cannot keep whole
-  // once the backlog passes the envelope.
+  // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
   const pending = memory.pendingEntries(dozen.s.id, "main", dozen.parent);
-  const tier1 = total(pending.map(e => renderEntry(e, memory.config.render).content));
+  const fits = total(pending.map(view));
   // Above the Noter's batch ceiling and below the shared envelope: before 25c the inner cap escalated
-  // this; now tier 1 keeps every entry whole, in its normal view, and no tier-2 title appears.
-  expect(tier1).toBeGreaterThan(memory.config.noting.batchTokens);
-  expect(tier1).toBeLessThan(envelope);
+  // this; the one view keeps every entry, and the ordinary Raw title is the only one there is.
+  expect(fits).toBeGreaterThan(memory.config.noting.batchTokens);
+  expect(fits).toBeLessThan(envelope);
   const kept = memory.compact(dozen.s.id, "main", dozen.parent);
-  expect(kept.tier).toBe("primary");
-  for (const entry of pending) expect(compacted(kept)).toContain(renderEntry(entry, memory.config.render).content);
+  expect("native" in kept).toBe(false);
+  for (const entry of pending) expect(compacted(kept)).toContain(view(entry));
   expect(compacted(kept)).toContain("\nRaw:\n");
-  // Twice the backlog is over the envelope in tier 1 and, because the user raised the tier-2 E from
-  // 150 to 1,000 (2026-09-09), over it in tier 2 as well: a long reply keeps up to a thousand tokens
-  // instead of a label and a few lines, so tier 2 no longer guarantees what the retired view fitted.
-  // Compact says so instead of cutting harder than the profile allows.
+  // Twice the backlog is over the envelope even in the one view, and 30 removed the tighter second
+  // rendering that used to be tried next: compact says so instead of cutting harder than the profile
+  // allows, and starts no recovery worker of its own (28 amendment 9).
   const many = dense(24, 1_000);
   memory.store.appendToolCall({ turnId: many.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
   const overflowing = memory.pendingEntries(many.s.id, "main", many.parent);
-  expect(total(overflowing.map(e => renderEntry(e, memory.config.render).content))).toBeGreaterThan(envelope);
-  expect(total(overflowing.map(e => renderEntry(e, profile, memory.resultText).content))).toBeGreaterThan(envelope);
-  expect(total(overflowing.map(retiredSecondaryView))).toBeLessThan(envelope); // the retired view would have fitted
+  expect(total(overflowing.map(view))).toBeGreaterThan(envelope);
   const result = memory.compact(many.s.id, "main", many.parent);
-  expect(result.tier).toBe("native");
-  expect((result as { reason: string }).reason).toContain("tier-2 views");
-  expect((result as { reason: string }).reason).toContain(`the episodic budget by`);
-  for (const entry of overflowing) expect(tokens(renderEntry(entry, profile, memory.resultText).content)).toBeLessThanOrEqual(profile.entryTokens);
-  // Eight replies three times as long are over the envelope for tier 1 (kept whole) and fit tier 2
-  // (each cut to E), every entry represented under the tier-2 profile.
+  expect("native" in result).toBe(true);
+  expect((result as { reason: string }).reason).toContain("bounded views");
+  expect((result as { reason: string }).reason).toContain("the episodic budget by");
+  expect(calls).toBe(0);
+  // Eight replies three times as long: each is over `E` on its own, so each is cut to it, and the
+  // backlog that needed the tier-2 profile before 30 now fits the one view.
   const longer = dense(8, 3_000);
-  expect(total(memory.pendingEntries(longer.s.id, "main", longer.parent).map(e => renderEntry(e, memory.config.render).content))).toBeGreaterThan(envelope);
+  const longEntries = memory.pendingEntries(longer.s.id, "main", longer.parent);
+  expect(longEntries.some(e => tokens(view(e)) === memory.config.render.entryTokens)).toBe(true);
+  expect(total(longEntries.map(view))).toBeLessThan(envelope);
   const fewer = memory.compact(longer.s.id, "main", longer.parent);
-  expect(fewer.tier).toBe("secondary");
-  for (const entry of memory.pendingEntries(longer.s.id, "main", longer.parent)) expect(compacted(fewer)).toContain(renderEntry(entry, profile, memory.resultText).content);
+  expect("native" in fewer).toBe(false);
+  for (const entry of longEntries) expect(compacted(fewer)).toContain(view(entry));
 });
 
-test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact asks for native compaction with the reason, and changes nothing", () => {
+test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks for native compaction with the reason, and changes nothing", () => {
   const { s, t } = populated();
   let parent = t.id;
   for (let i = 0; i < 40; i++) parent = turn(s.id, `entry ${i}`, parent).id;
@@ -292,22 +277,22 @@ test("20c 2026-09-08 scenario 11: when even secondary views miss a cap compact a
   // Many tiny entries: their identities and labels alone exceed the enclosing budget.
   memory.config.render.episodicBlockTokens = 200;
   const outer = memory.compact(s.id, "main", parent);
-  expect(outer.tier).toBe("native");
-  expect(outer.tier === "native" && outer.reason).toContain("the episodic budget by");
-  expect(outer.tier === "native" && outer.reason).toContain(`tier-2 views of ${pending.length} pending entries`);
+  expect("native" in outer).toBe(true);
+  expect("native" in outer && outer.reason).toContain("the episodic budget by");
+  expect("native" in outer && outer.reason).toContain(`bounded views of ${pending.length} pending entries`);
   expect("text" in outer).toBe(false); // not an empty success, and no oversized block either
   // 25c: there is no second cap to miss. The Noter's batch ceiling is not compact's knob any more —
   // shrinking it to fifty tokens neither escalates this snapshot nor appears in any reason — so the
   // envelope is the only budget a delegation can name.
   memory.config.render.episodicBlockTokens = 200_000; memory.config.noting.batchTokens = 50;
   const inner = memory.compact(s.id, "main", parent);
-  expect(inner.tier).toBe("primary");
+  expect("native" in inner).toBe(false);
   expect(compacted(inner)).not.toContain("raw ceiling");
   for (const id of pending) expect(compacted(inner)).toContain(`T${memory.store.listSourceEntries(s.id).find(e => e.id === id)!.turnId}#`);
   memory.config.render.episodicBlockTokens = 200;
   const named = memory.compact(s.id, "main", parent);
-  expect(named.tier === "native" && named.reason).toContain("the episodic budget by");
-  expect(named.tier === "native" && named.reason).not.toContain("raw ceiling");
+  expect("native" in named && named.reason).toContain("the episodic budget by");
+  expect("native" in named && named.reason).not.toContain("raw ceiling");
   // Delegation is a request, not a summary: nothing was read differently, processed or erased.
   expect(memory.pendingEntries(s.id, "main", parent).map(e => e.id)).toEqual(pending);
   expect(memory.trace(`T${parent}#user`)).toContain("entry 39");
@@ -328,13 +313,14 @@ test("25c 2026-09-09: with nothing pending the historical facts take the whole s
   expect(spare).not.toContain("older facts; expand:");
   expect(tokens(spare)).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens + memory.config.render.knowledgeBlockTokens);
   // Now pending Raw that needs almost all of the envelope. It and its framing are reserved first, so
-  // the same facts receive no space at all — and are named in a receipt, never silently dropped.
-  for (const id of ["big1", "big2"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
-    role: "assistant", text: "word ".repeat(9_700), raw: "", calls: [] });
+  // the same facts receive no space at all — and are named in a receipt, never silently dropped. One
+  // entry is worth at most `render.entryTokens` (2,000 since 30), so ten of them fill the envelope.
+  for (let i = 0; i < 10; i++) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: `big${i}`, turnId: t.id,
+    role: "assistant", text: "word ".repeat(1_940), raw: "", calls: [] });
   const pending = memory.pendingEntries(s.id, "main", t.id);
-  expect(pending).toHaveLength(2);
+  expect(pending).toHaveLength(10);
   const crowded = memory.compact(s.id, "main", t.id);
-  expect(crowded.tier).toBe("primary"); // still tier 1: 19,400 tokens of Raw is inside the 20,000 envelope
+  expect("native" in crowded).toBe(false); // ~19,400 tokens of Raw is inside the 20,000 envelope
   const text = compacted(crowded);
   for (const entry of pending) expect(text).toContain(renderEntry(entry, memory.config.render).content);
   for (const fact of facts) expect(text).not.toContain(`[F${fact.id}]`);
@@ -347,7 +333,7 @@ test("25c 2026-09-09: with nothing pending the historical facts take the whole s
   expect(calls).toBe(0);
 });
 
-test("25c 2026-09-09: pending membership is processing progress inside a Turn, is identical in both tiers, and a native delegation leaves injection alone", () => {
+test("25c 2026-09-09, as 30 left it: pending membership is processing progress inside a Turn, and a native delegation leaves injection alone", () => {
   const { s, t } = populated();
   const noted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: "PARTIAL_NOTED", raw: "", calls: [] });
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PARTIAL_PENDING " + "word ".repeat(1_500), raw: "", calls: [] });
@@ -357,22 +343,19 @@ test("25c 2026-09-09: pending membership is processing progress inside a Turn, i
     entryIds: [noted.id] });
   expect(run.ok).toBe(true);
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
-  const tier1 = compacted(memory.compact(s.id, "main", t.id));
-  expect(tier1).toContain("PARTIAL_PENDING");
-  expect(tier1.split("Raw:")[1]).not.toContain("PARTIAL_NOTED"); // its evidence is a fact now, not pending Raw
-  expect(tier1).toContain("PARTIAL_FACT");
-  // The same membership under tier 2: identical entries, a tighter view, nothing added or dropped.
-  memory.config.render.episodicBlockTokens = 1_200;
-  const escalated = memory.compact(s.id, "main", t.id);
-  expect(escalated.tier).toBe("secondary");
-  const profile = { toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens };
-  const membership = (text: string) => memory.store.listSourceEntries(s.id).filter(e => text.includes(renderEntry(e, profile, memory.resultText).content)).map(e => e.id);
-  expect(membership(compacted(escalated))).toEqual([open.id]);
+  const bounded = compacted(memory.compact(s.id, "main", t.id));
+  expect(bounded).toContain("PARTIAL_PENDING");
+  expect(bounded.split("Raw:")[1]).not.toContain("PARTIAL_NOTED"); // its evidence is a fact now, not pending Raw
+  expect(bounded).toContain("PARTIAL_FACT");
+  // The membership the block carries is exactly the pending entry, in the one bounded view (30).
+  const membership = (text: string) => memory.store.listSourceEntries(s.id)
+    .filter(e => text.includes(renderEntry(e, memory.config.render, memory.resultText).content)).map(e => e.id);
+  expect(membership(bounded)).toEqual([open.id]);
   // Native delegation: the pending set does not shrink to fit, and the injection does not move.
   const injection = memory.inject(s.id);
   memory.config.render.episodicBlockTokens = 10;
   const delegated = memory.compact(s.id, "main", t.id);
-  expect(delegated.tier).toBe("native");
+  expect("native" in delegated).toBe(true);
   expect("text" in delegated).toBe(false); // no custom summary is built, so none can be consumed
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
   memory.config.render.episodicBlockTokens = 20_000;

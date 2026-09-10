@@ -63,10 +63,10 @@ export function recorded(memory: ReturnType<typeof createMemory>, sessionId: num
   if (!result.ok) throw new Error(result.problems.join("; "));
 }
 
-/** 20c: `compact` returns a tier, not a string. A case that asserts the custom replacement's bytes
- * reads it through this, so reaching native delegation instead fails loudly with its reason rather
- * than silently comparing against `undefined`. */
+/** 20c, as 30 left it: `compact` returns the custom replacement or a native delegation, not a string.
+ * A case that asserts the custom replacement's bytes reads it through this, so reaching native
+ * delegation instead fails loudly with its reason rather than silently comparing against `undefined`. */
 export function compacted(result: CompactResult): string {
-  if (result.tier === "native") throw new Error(`compact delegated to native compaction: ${result.reason}`);
+  if ("native" in result) throw new Error(`compact delegated to native compaction: ${result.reason}`);
   return result.text;
 }

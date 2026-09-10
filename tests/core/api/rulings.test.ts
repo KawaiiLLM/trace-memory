@@ -832,19 +832,21 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
   const { s, t } = session();
   const big = (id: string) => memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
     role: "assistant", text: `${id} ` + "word ".repeat(4000), raw: "", calls: [] });
-  big("a"); big("b"); big("c");
-  // About 12,000 view tokens: over `noting.batchTokens`, inside `render.episodicBlockTokens`. Before
-  // 25c this escalated on the inner cap; now tier 1 keeps every entry whole, and the Noter's ceiling
-  // is not a knob compact reads at all — moving it changes nothing here.
+  for (const id of ["a", "b", "c", "d", "e", "f"]) big(id);
+  // Over 12,000 view tokens (30: each entry is worth at most `render.entryTokens`, 2,000): over
+  // `noting.batchTokens`, inside `render.episodicBlockTokens`. Before 25c this escalated on the inner
+  // cap; the bounded views keep every entry, and the Noter's ceiling is not a knob compact reads at
+  // all — moving it changes nothing here.
   expect(tokens(memory.pendingEntries(s.id, "main", t.id).map(e => renderEntry(e, memory.config.render).content).join("\n\n")))
     .toBeGreaterThan(DEFAULT_CONFIG.noting.batchTokens);
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
+  expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   memory.config.noting.batchTokens = 50;
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
+  expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
   memory.config.noting.batchTokens = DEFAULT_CONFIG.noting.batchTokens;
-  // The one budget compact still answers to is the envelope: below the same Raw, tier 1 misses it.
+  // The one budget compact still answers to is the envelope: below the same Raw it is missed, and 30
+  // left one thing to do about that — delegate to the host's native compaction.
   memory.config.render.episodicBlockTokens = 5_000;
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
+  expect("native" in memory.compact(s.id, "main", t.id)).toBe(true);
   memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
   // Noting is unchanged: its batch still stops at 10,000 and leaves the rest pending.
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
@@ -857,33 +859,33 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 
 // The specification's "Compaction is instant and never calls a model" (spec.md; user story 6).
 // Superseded by ticket 20 on 2026-09-08, and superseded ONLY by the native fallback: core still calls
-// no model in any tier, and there is no summarizer inside core. When no complete representation of
-// every selected entry fits, compact returns an explicit request for native compaction, and Pi's own
-// compaction — which may call a model, and may fail or be cancelled — runs under Pi's outcome
-// handling. Neither the secondary views nor any summary becomes a source, a fact or a receipt.
-test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi's native fallback, and no core tier calls one", async () => {
+// no model, and there is no summarizer inside core. When no complete representation of every selected
+// entry fits, compact returns an explicit request for native compaction, and Pi's own compaction —
+// which may call a model, and may fail or be cancelled — runs under Pi's outcome handling. Neither
+// the bounded views nor any summary becomes a source, a fact or a receipt.
+test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi's native fallback, and core calls none", async () => {
   const { s, t } = session();
   const sources = memory.store.listSourceEntries(s.id).length;
   const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("primary");
-  // Over the shared episodic envelope (25c: the one cap compact answers to): the lossier secondary
-  // views, still deterministic local work.
+  expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
+  // Still local, deterministic work with more Raw: every entry is bounded by `render.entryTokens`.
   for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
     role: "assistant", text: `${id} ` + "word ".repeat(8000), raw: "", calls: [] });
-  expect(memory.compact(s.id, "main", t.id).tier).toBe("secondary");
-  // Over the enclosing budget even then: the one route to a model, and it is Pi's, not core's.
+  expect("native" in memory.compact(s.id, "main", t.id)).toBe(false);
+  // Over the enclosing budget: the one route to a model, and it is Pi's, not core's (30 removed the
+  // second rendering that used to stand between them).
   memory.config.render.episodicBlockTokens = 10;
   const delegated = memory.compact(s.id, "main", t.id);
-  expect(delegated.tier).toBe("native");
+  expect("native" in delegated).toBe(true);
   expect(delegated).not.toHaveProperty("text"); // a request, never an empty or manufactured summary
-  expect(delegated.tier === "native" && delegated.reason).toBeTruthy();
-  expect(calls).toHaveLength(0); // no tier reached this façade's runAgent at all
-  // No tier changed the sources, the facts or the processing progress it read.
+  expect("native" in delegated && delegated.reason).toBeTruthy();
+  expect(calls).toHaveLength(0); // nothing reached this façade's runAgent at all
+  // Nothing changed the sources, the facts or the processing progress it read.
   expect(memory.store.listSourceEntries(s.id).length).toBe(sources + 3);
   expect(memory.store.listSessionFacts(s.id)).toHaveLength(0);
   expect(pending.length).toBeGreaterThan(0);
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual(expect.arrayContaining(pending));
-  // Normal Noter input keeps using the primary views; the compact-only view exists nowhere else.
+  // Normal Noter input keeps using the same bounded views; the compact-only view exists nowhere else.
   memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(calls).toHaveLength(1);
@@ -893,51 +895,123 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
 
 // ---- 23 2026-09-09: the entry view's rulings, each recorded by the name it supersedes ----
 
-// 17a, 2026-09-08: "arguments and result permanently reserve half each" of one call budget. Ticket 23a
-// superseded it with a quarter for the arguments and three quarters for the result; ticket 23c (user,
-// 2026-09-09) supersedes that in turn and restores the halves, on the measurement that the quarter cut
-// 218 of 337 bash commands on the real log while three quarters still cut 573 of 835 results, and that
-// at `B = 300` the halves total 286K tokens against 312K. The split is still fixed and never
-// redistributed: arguments are rendered before their result exists and views are immutable.
-test("23c 2026-09-09: 23a's quarter/three-quarter call split is superseded; arguments and result each take one half of B", () => {
+// 17a, 2026-09-08: "arguments and result permanently reserve half each" of one call budget `B`. Ticket
+// 23a superseded it with a quarter and three quarters; 23c (user, 2026-09-09) restored the halves.
+// Ticket 30 supersedes the shared budget itself: a call part and a result part have independent
+// allowances, `render.toolInputTokens` (`C`) and `render.toolResultTokens` (`R`), and neither is ever
+// borrowed, swapped or averaged with the other. `render.entryTokens` (`E`) still binds the whole
+// entry, however many parts it has.
+test("30: one Raw entry view — C and R are independent, E binds the whole entry", () => {
   const { s, t } = session();
-  const long = JSON.stringify({ command: "echo " + "a".repeat(5_000) });
-  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: long, result: "b".repeat(5_000), status: "success" });
+  const long = JSON.stringify({ command: "echo " + "a".repeat(20_000) });
+  memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: long, result: "b".repeat(20_000), status: "success" });
   const entries = memory.store.listSourceEntries(s.id);
-  const size = (role: string) => tokens(renderEntry(entries.filter(e => e.role === role && e.calls.length).at(-1)!, memory.config.render).content);
-  const half = Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 2);
-  // Each fills its own half, within one cut unit of it; neither is a quarter or three quarters of `B`.
-  for (const role of ["assistant", "toolResult"]) expect([role, size(role) <= half && size(role) > half - 5]).toEqual([role, true]);
-  expect(size("assistant")).toBeGreaterThan(Math.floor(DEFAULT_CONFIG.render.toolCallTokens / 4));
-  expect(size("toolResult")).toBeLessThan(Math.floor(DEFAULT_CONFIG.render.toolCallTokens * 3 / 4));
+  const of = (role: string) => entries.filter(e => e.role === role && e.calls.length).at(-1)!;
+  const size = (role: string, profile: api.EntryProfile) => tokens(renderEntry(of(role), profile, memory.resultText).content);
+  const profile = (entryTokens: number, toolInputTokens: number, toolResultTokens: number): api.EntryProfile =>
+    ({ entryTokens, toolInputTokens, toolResultTokens });
+  // The shipped profile gives each part its own 100, not two halves of one budget.
+  expect([DEFAULT_CONFIG.render.toolInputTokens, DEFAULT_CONFIG.render.toolResultTokens]).toEqual([100, 100]);
+  for (const role of ["assistant", "toolResult"]) {
+    const filled = size(role, DEFAULT_CONFIG.render);
+    expect([role, filled <= 100 && filled > 95]).toEqual([role, true]);
+  }
+  // Asymmetric budgets: what the other side does not use never enlarges this one.
+  for (const [c, r] of [[50, 100], [100, 50], [1_000, 100], [100, 1_000]] as const) {
+    const p = profile(100_000, c, r);
+    expect([c, r, size("assistant", p) <= c && size("assistant", p) > c - 5]).toEqual([c, r, true]);
+    expect([c, r, size("toolResult", p) <= r && size("toolResult", p) > r - 5]).toEqual([c, r, true]);
+  }
+  // `E` binds the whole entry: a tighter `E` cuts the same parts further, and every part still fits
+  // its own cap. `C` and `R` are maxima inside `E`, never additions to it.
+  for (const entryTokens of [60, 200, 2_000]) {
+    for (const role of ["assistant", "toolResult"]) {
+      const rendered = renderEntry(of(role), profile(entryTokens, 1_000, 1_000), memory.resultText).content;
+      expect([entryTokens, role, tokens(rendered) <= entryTokens]).toEqual([entryTokens, role, true]);
+    }
+  }
 });
 
-// 17a, 2026-09-08: `toolCallTokens` defaulted to 1,000. Superseded by ticket 23: the default is 300
-// and 1,000 becomes the hard ceiling, rejected above; `entryTokens` keeps its 17a value.
-test("23 2026-09-09: 17a's 1,000-token per-call default becomes 300 with 1,000 as a hard ceiling, and entryTokens is unchanged", () => {
-  expect(DEFAULT_CONFIG.render).toMatchObject({ toolCallTokens: 300, entryTokens: 10_000, secondaryToolCallTokens: 100, secondaryEntryTokens: 1_000 });
+// 17a, 2026-09-08: `toolCallTokens` defaulted to 1,000; ticket 23 made it 300 with 1,000 as a hard
+// ceiling and kept `entryTokens` at 10,000. Superseded by ticket 30: the profile is `entryTokens`
+// 2,000, `toolInputTokens` 100 and `toolResultTokens` 100, the ceiling still applies to each part
+// budget, and the three retired keys fail by name with guidance instead of acquiring new meanings.
+test("30: the shipped profile is 2,000/100/100 and the retired B and secondary keys fail by name", () => {
+  expect(DEFAULT_CONFIG.render).toMatchObject({ entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 });
+  expect(Object.keys(DEFAULT_CONFIG.render)).not.toContain("toolCallTokens");
   const open = (render: Record<string, number>) => sourceSeededMemory(join(directory, "ceiling.sqlite"), async () => ok([]), { render });
-  expect(() => open({ toolCallTokens: 1_001 })).toThrow("Invalid render.toolCallTokens: at most 1000");
-  const ceiling = open({ toolCallTokens: 1_000 });
-  try { expect(ceiling.config.render.toolCallTokens).toBe(1_000); } finally { ceiling.close(); }
+  expect(() => open({ toolInputTokens: 1_001 })).toThrow("Invalid render.toolInputTokens: at most 1000");
+  expect(() => open({ toolResultTokens: 1_001 })).toThrow("Invalid render.toolResultTokens: at most 1000");
+  const ceiling = open({ toolInputTokens: 1_000 });
+  try { expect(ceiling.config.render.toolInputTokens).toBe(1_000); } finally { ceiling.close(); }
+  for (const key of ["toolCallTokens", "secondaryToolCallTokens", "secondaryEntryTokens"]) {
+    expect(REMOVED_SETTINGS[`render.${key}`]).toBeTruthy();
+    expect(() => open({ [key]: 100 })).toThrow(`Removed setting render.${key}`);
+  }
+  // An explicitly configured `E` is honoured as written: nothing is halved, ignored or rewritten.
+  const explicit = open({ entryTokens: 10_000 });
+  try { expect(explicit.config.render.entryTokens).toBe(10_000); } finally { explicit.close(); }
+  // 30 (GPT ruling 2026-09-10): the smaller views change no phase limit. The trigger, the batch
+  // ceilings and the target limits keep their values, and no entry-count cap joins them — the whole
+  // Noting section is still these four keys.
+  expect(DEFAULT_CONFIG.noting).toEqual({ forkModeDefault: true, batchTokens: 10_000, triggerTokens: 10_000, maxToolRounds: 0 });
+  expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5_000, batchTokens: 10_000 });
 });
 
 // 20c, 2026-09-08: compaction's second tier was a separate compact-only renderer with its own version
-// and its own excerpt rules. Superseded by ticket 23: tier 2 is the one entry renderer under the
-// tier-2 profile. The three-tier escalation and the native tier are unchanged.
-test("23 2026-09-09: 20c's separate compact-only renderer is superseded; tier 2 is the one renderer under the tier-2 profile", () => {
+// and its own excerpt rules; ticket 23 made it the one entry renderer under a tier-2 profile.
+// Superseded by ticket 30: there is no second tier at all. Compaction renders the one bounded view of
+// every selected entry, and a set that still does not fit delegates to the host's native compaction
+// (28 amendment 9: no recovery worker here).
+test("30: 23's tier-2 profile is superseded; compaction has one bounded view and the native delegation", () => {
   const { s, t } = session();
-  // 25c raised what tier 1 holds to the whole episodic envelope, so the backlog that escalates is
-  // twice the one this ruling was first written against; the renderer it escalates to is unchanged.
   for (const id of ["a", "b", "c"]) memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: id, turnId: t.id,
     role: "assistant", text: `${id} ` + "word ".repeat(8000), raw: "", calls: [] });
   const result = memory.compact(s.id, "main", t.id);
-  expect(result.tier).toBe("secondary");
+  expect("native" in result).toBe(false);
   const text = compacted(result);
-  const profile = { toolCallTokens: DEFAULT_CONFIG.render.secondaryToolCallTokens, entryTokens: DEFAULT_CONFIG.render.secondaryEntryTokens };
-  for (const entry of memory.pendingEntries(s.id, "main", t.id)) expect(text).toContain(renderEntry(entry, profile, memory.resultText).content);
+  for (const entry of memory.pendingEntries(s.id, "main", t.id)) expect(text).toContain(renderEntry(entry, memory.config.render, memory.resultText).content);
+  expect(text).toContain("\nRaw:\n");
+  expect(text).not.toContain("tier-2 entry views"); // one view, one title
   expect(text).not.toContain("compact-only");
   expect("SECONDARY_VIEW_VERSION" in api).toBe(false); // the version constant went with the renderer
+  expect("secondaryRawTitle" in api).toBe(false); // and the tier-2 block title went with the tier
+  // The remaining escalation is the native one, and it names the cap it missed.
+  memory.config.render.episodicBlockTokens = 100;
+  const delegated = memory.compact(s.id, "main", t.id);
+  expect("native" in delegated && delegated.reason).toContain("the episodic budget by");
+});
+
+// 29a, 2026-09-10: a tier-2 compact view established no coverage, so `visibleView` recorded only
+// tier-1 views. Superseded by ticket 30 "Visibility and fork": a marked compressed view is visible
+// Raw whether or not it was truncated, and a retained view is never compared with the current
+// profile to demand a richer replacement. Unmarked material still counts for nothing.
+test("30: a marked compressed view is visible Raw; a budget change adds no richness gate", () => {
+  const binding = { db: "db", session: 7, pi: "pi-1" };
+  const carrier = (entries: unknown[]) => ({ id: "c", type: "compaction",
+    details: { traceMemory: { ...binding, supplied: { entries, factIds: [], knowledgeCommitIds: [] } } } });
+  // The one representation new writers emit, and both legacy tiers, are all visible Raw.
+  const view = api.visibleView([carrier([
+    { id: 1, nativeId: "e1", view: "bounded" },
+    { id: 2, nativeId: "e2", tier: 1 },
+    { id: 3, nativeId: "e3", tier: 2 },
+  ])], binding);
+  expect([...view.raw.keys()].sort()).toEqual(["e1", "e2", "e3"]);
+  expect([...new Set(view.raw.values())]).toEqual(["view"]);
+  // No richness gate: the same carrier counts under a much tighter and a much wider profile, because
+  // nothing compares what it holds with what the current configuration would render.
+  for (const render of [{ entryTokens: 40, toolInputTokens: 1, toolResultTokens: 1 }, { entryTokens: 100_000, toolInputTokens: 1_000, toolResultTokens: 1_000 }]) {
+    const m = sourceSeededMemory(join(directory, "richness.sqlite"), async () => ok([]), { render });
+    try { expect([...api.visibleView([carrier([{ id: 1, nativeId: "e1", view: "bounded" }])], binding).raw.keys()]).toEqual(["e1"]); }
+    finally { m.close(); }
+  }
+  // Unmarked material still establishes nothing: a bare id, an unknown representation, a foreign
+  // database's carrier, and a native compaction's own details.
+  expect(api.visibleView([carrier([{ id: 4, nativeId: "e4" }, { nativeId: "e5", view: "bounded" }])], binding).raw.has("e4")).toBe(false);
+  expect(api.visibleView([carrier([{ id: 6, nativeId: "e6", tier: 3 }])], binding).raw.has("e6")).toBe(false);
+  expect(api.visibleView([{ id: "c", type: "compaction", details: { traceMemory: { db: "other", session: 7, pi: "pi-1",
+    supplied: { entries: [{ id: 7, nativeId: "e7", view: "bounded" }], factIds: [], knowledgeCommitIds: [] } } } }], binding).raw.size).toBe(0);
+  expect(api.visibleView([{ id: "c", type: "compaction", details: { readFiles: [], modifiedFiles: [] } }], binding).raw.size).toBe(0);
 });
 
 // 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with
@@ -1357,27 +1431,28 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   expect(store.listSessionFacts(s.id).filter(f => store.factOnPath(f, path)).map(f => f.id)).toEqual([onPath, shared]);
   expect(store.listBranchFacts(s.id, "C", selected.id).map(f => f.id)).toEqual([shared, onPath]);
 
-  // --- compaction, tier 1: the applicable facts are carried, the sibling's is not, and the whole
-  // operation answers membership from one snapshot rather than rebuilding it per fact.
+  // --- compaction: the applicable facts are carried, the sibling's is not, and the whole operation
+  // answers membership from one snapshot rather than rebuilding it per fact.
   const snapshots = countPathSnapshots();
   const measure = (run: () => string) => { snapshots.reset(); const text = run(); return { text, snapshots: snapshots.snapshots() }; };
-  const tier1 = measure(() => compacted(memory.compact(s.id, "C", selected.id)));
-  expect(tier1.snapshots).toBe(1);
-  expect(tier1.text).toContain(`[F${shared}]`); expect(tier1.text).toContain(`[F${onPath}]`);
-  expect(tier1.text).not.toContain(`[F${siblingOnly}]`); expect(tier1.text).not.toContain("SIBLING ONLY");
+  const small = measure(() => compacted(memory.compact(s.id, "C", selected.id)));
+  expect(small.snapshots).toBe(1);
+  expect(small.text).toContain(`[F${shared}]`); expect(small.text).toContain(`[F${onPath}]`);
+  expect(small.text).not.toContain(`[F${siblingOnly}]`); expect(small.text).not.toContain("SIBLING ONLY");
 
-  // --- compaction, tier 2: the same block under the tighter profile, the same membership.
+  // --- the same with a long Raw backlog, each entry cut to `render.entryTokens`: same membership,
+  // still one snapshot (30: there is no second rendering pass to charge a second one to).
   const body = "word ".repeat(12_000);
   let head = selected.id;
   for (const i of [1, 2, 3]) head = child("C", head, `FILLER_${i} ${body}`).id;
-  const tier2 = measure(() => {
+  const long = measure(() => {
     const result = memory.compact(s.id, "C", head);
-    expect(result.tier).toBe("secondary");
+    expect("native" in result).toBe(false);
     return compacted(result);
   });
-  expect(tier2.snapshots).toBe(1);
-  expect(tier2.text).toContain(`[F${shared}]`); expect(tier2.text).toContain(`[F${onPath}]`);
-  expect(tier2.text).not.toContain(`[F${siblingOnly}]`); expect(tier2.text).not.toContain("SIBLING ONLY");
+  expect(long.snapshots).toBe(1);
+  expect(long.text).toContain(`[F${shared}]`); expect(long.text).toContain(`[F${onPath}]`);
+  expect(long.text).not.toContain(`[F${siblingOnly}]`); expect(long.text).not.toContain("SIBLING ONLY");
 
   // --- the freshness order survives the filter. Squeezed below one fact group, the block keeps the
   // raw and the receipt enumerates the candidates `budgetFacts` was given, newest first: the sibling's
@@ -1511,7 +1586,7 @@ test("29: one material builder — filter visible, then budget", async () => {
   const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
-  const view = (raw: Map<string, "source" | "tier1">, factIds: number[] = []) =>
+  const view = (raw: Map<string, "source" | "view">, factIds: number[] = []) =>
     ({ raw, factIds: new Set(factIds), knowledgeCommitIds: new Set<number>(), injection: false });
   const freeze = async (visible: ReturnType<typeof view>) => {
     calls.length = 0;
@@ -1520,7 +1595,7 @@ test("29: one material builder — filter visible, then budget", async () => {
   };
   try {
     const none = await freeze(view(new Map()));
-    const carried = await freeze(view(new Map(entries.map(e => [e.nativeId, "tier1" as const]))));
+    const carried = await freeze(view(new Map(entries.map(e => [e.nativeId, "view" as const]))));
     const factSeen = await freeze(view(new Map(entries.map(e => [e.nativeId, "source" as const])), [1]));
     // The processing target is frozen regardless of visibility: three views, one target.
     expect(carried.entryIds).toEqual(none.entryIds);

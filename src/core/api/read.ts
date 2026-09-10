@@ -3,7 +3,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { tokens, budgetKnowledge, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, secondaryRawTitle, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
+import { budgetMaterial, injectionText, compactText, BLOCK, FACTS_TITLE, RAW_TITLE, type SharedMaterial } from "../render/material.ts";
 import type { SuppliedMaterial } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -15,13 +15,6 @@ import type { SuppliedMaterial } from "./visible.ts";
 export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
-/** Ticket 20 "Compaction escalation" (20c): what compact can produce for one frozen read snapshot.
- * `primary` and `secondary` are complete custom replacements the host may hand to Pi — every pending
- * entry is represented in both, and the tier says which view built them. `native` is the explicit
- * ask that the host decline the custom summary and let Pi's own compaction run, with the reason it
- * could not be avoided: which cap the smallest complete representation missed, and by how much.
- * There is no fourth outcome: compact never hides selected entries to make a tier fit, and core
- * never summarizes with a model. */
 /** 21b "Group projection": the topics of the path-selected applicable knowledge, as references to the
  * exact commits they were read from. A commit with several labels is referenced by each of its groups,
  * a commit with none stays available under `unclassified`, and divergent tips remain separate entries:
@@ -31,11 +24,20 @@ export interface TopicGroups {
   unclassified: { knowledgeId: number; commit: number }[];
 }
 
-/** 29a "Renderers return what they kept": beside the replacement text, the identities it actually
- * carries — every selected pending entry with the tier that rendered it, plus the historical facts and
- * knowledge commits that survived budgeting. What a budget dropped is receipted inside the text and
- * absent here. A tier-3 delegation supplies nothing, so it has no `supplied` at all. */
-export type CompactResult = { tier: "primary" | "secondary"; text: string; supplied: SuppliedMaterial } | { tier: "native"; reason: string };
+/** Ticket 20 "Compaction escalation", as ticket 30 left it: what compact can produce for one frozen
+ * read snapshot. The first form is the complete custom replacement the host may hand to Pi — every
+ * pending entry is represented in it, in the one bounded view; the primary/secondary tiers are retired,
+ * so it no longer says which renderer produced it, because there is one. `native` is the explicit ask
+ * that the host decline the custom summary and let Pi's own compaction run, with the reason it could
+ * not be avoided: which cap the complete representation missed, and by how much. There is no third
+ * outcome: compact never hides selected entries to make the block fit, and core never summarizes with
+ * a model.
+ *
+ * 29a "Renderers return what they kept": beside the replacement text, the identities it actually
+ * carries — every selected pending entry, plus the historical facts and knowledge commits that
+ * survived budgeting. What a budget dropped is receipted inside the text and absent here. A native
+ * delegation supplies nothing, so it has no `supplied` at all. */
+export type CompactResult = { text: string; supplied: SuppliedMaterial } | { native: true; reason: string };
 /** 29a: the initial knowledge block and the exact commits it carries. */
 export interface Injection { text: string; knowledgeCommitIds: number[] }
 
@@ -262,12 +264,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // Nothing here waits for, cancels or starts a memory worker, touches a claim or advances any
     // progress: a Noter finishing concurrently may make this snapshot redundant, never incomplete.
     compact: (sessionId: number, branch = "main", headTurnId?: number): CompactResult => {
-      if (!store.enabled(sessionId)) return { tier: "primary", text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
+      if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
       const head = headTurnId ?? store.listTurns(sessionId).at(-1)?.id;
       // 1. Freeze a read snapshot: every pending original entry on this path, selected once. The
-      //    tiers below re-render this same set; none of them may change it.
+      //    rendering below reads this same set; it may not change it.
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
       const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
       // 26 amendment 2: the historical facts are the ones applicable on the selected path, never the
@@ -282,49 +284,41 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       // are still reserved first (`budgetMaterial` charges them before it fills), so historical facts
       // take only what is left, down to none of it; with nothing pending they may take all of it.
       const caps = { knowledge: config.render.knowledgeBlockTokens, episodic: config.render.episodicBlockTokens };
-      // 4. Recheck the whole block: one accounting for both tiers. Identities, labels, retained tool
-      //    names, excerpts and omission markers are charged exactly as normal material is, all of them
-      //    inside the one episodic budget that holds the views and the framing around them.
-      // 29a: `tier` is the representation these views were rendered under (1 = primary, 2 = tier-2), so
-      // the identities go out beside the text and a reader never infers them from the block title.
-      const build = (views: { content: string; receipts: string[] }[], title: string, tier: 1 | 2) => {
+      // 4. Recheck the whole block: identities, labels, retained tool names, excerpts and omission
+      //    markers are charged exactly as normal material is, all of them inside the one episodic
+      //    budget that holds the views and the framing around them.
+      // 29a/30: `view` is the representation these entries were supplied in — the one bounded view —
+      // so the identities go out beside the text and a reader never infers them from the block title.
+      const build = (views: { content: string; receipts: string[] }[]) => {
         const budgeted = budgetMaterial({ knowledge, knowledgeLine, current: views.map((v) => v.content).join(BLOCK),
-          framing: [xmlBlock("episodic", ""), FACTS_TITLE, title], facts, factLine: (f) => factLine(f.id), factTurns, caps });
+          framing: [xmlBlock("episodic", ""), FACTS_TITLE, RAW_TITLE], facts, factLine: (f) => factLine(f.id), factTurns, caps });
         return { over: budgeted.over, text: compactText({ knowledge: budgeted.knowledge, facts: budgeted.facts,
           entries: pending.map((entry, i) => ({ id: entry.id, view: views[i]!.content })),
-          receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }, title),
-          // Every selected entry is represented in both tiers (step 1), so the whole frozen set is
-          // supplied or this tier does not apply — a budget never hides one of them.
-          supplied: { entries: pending.map((entry) => ({ id: entry.id, nativeId: entry.nativeId, tier })),
+          receipts: [...views.flatMap((v) => v.receipts), ...budgeted.receipts] }),
+          // Every selected entry is represented (step 1), so the whole frozen set is supplied or this
+          // replacement does not apply — a budget never hides one of them.
+          supplied: { entries: pending.map((entry) => ({ id: entry.id, nativeId: entry.nativeId, view: "bounded" as const })),
             factIds: budgeted.factIds, knowledgeCommitIds: budgeted.knowledgeCommitIds } };
       };
-      // 2. Try normal views: the shared primary views against the episodic envelope alone. No batch
-      //    selector here — the whole pending set is represented or this tier does not apply — and a
-      //    backlog between `noting.batchTokens` and that envelope now stays in tier 1 (25c).
-      // A primary view that cannot hold its own labels is a capacity failure of tier 1, not of compact:
-      // tier 2 is tried next. Any other rendering error is a data error and is reported (review 2026-09-08).
-      let primaryViews: { content: string; receipts: string[] }[] | undefined;
-      try { primaryViews = pending.map((e) => renderEntry(e, config.render, resultText)); }
+      // 2. Render the one bounded view of every selected entry against the episodic envelope alone.
+      //    No batch selector here — the whole pending set is represented or this replacement does not
+      //    apply — and a backlog between `noting.batchTokens` and that envelope is not reduced (25c).
+      //    A view that cannot hold its own labels is a capacity failure of the profile, and the
+      //    delegation below says so rather than hiding the entry. Any other rendering error is a data
+      //    error and is reported (review 2026-09-08).
+      let views: { content: string; receipts: string[] }[] | undefined;
+      try { views = pending.map((e) => renderEntry(e, config.render, resultText)); }
       catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      const primary = primaryViews && build(primaryViews, RAW_TITLE, 1);
-      if (primary && !primary.over.episodic) return { tier: "primary", text: primary.text, supplied: primary.supplied };
-      // 3. Try tier 2: the same renderer under the tier-2 profile (ticket 23, superseding 20c's
-      //    separate compact-only renderer), still every selected entry, still deterministic and local.
-      //    An entry whose minima that tighter `E` cannot hold is a capacity failure of tier 2, and the
-      //    delegation below says so rather than hiding the entry.
-      const profile = { toolCallTokens: config.render.secondaryToolCallTokens, entryTokens: config.render.secondaryEntryTokens };
-      const title = secondaryRawTitle(profile);
-      let secondary: ReturnType<typeof build> | undefined;
-      try { secondary = build(pending.map((e) => renderEntry(e, profile, resultText)), title, 2); }
-      catch (error) { if (!/capacity/.test(String(error))) throw error; }
-      if (secondary && !secondary.over.episodic) return { tier: "secondary", text: secondary.text, supplied: secondary.supplied };
-      // 5. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
-      //    can miss the cap even here. Ask for native compaction with the reason instead of hiding
-      //    entries, falsifying a receipt or relaxing the cap to force a success. Since 25c there is
-      //    one cap left to miss, so the reason names the envelope or the tier-2 entry budget.
-      const missed = !secondary ? `the tier-2 entry budget: their labels and omission markers exceed ${profile.entryTokens} tokens`
-        : `the episodic budget by ${secondary.over.episodic} tokens (cap ${caps.episodic})`;
-      return { tier: "native", reason: `tier-2 views of ${pending.length} pending entries exceed ${missed}` };
+      const custom = views && build(views);
+      if (custom && !custom.over.episodic) return { text: custom.text, supplied: custom.supplied };
+      // 3. Delegate if necessary: many tiny entries, or one entry with excessive mandatory metadata,
+      //    can miss the cap. Ask for native compaction with the reason instead of hiding entries,
+      //    falsifying a receipt or relaxing the cap to force a success — ticket 30 removed the second
+      //    rendering tier, and 28 amendment 9 leaves any recovery worker to ticket 28, so this is the
+      //    one fallback. The two caps a reason can name are the envelope and the entry budget.
+      const missed = !custom ? `the entry view profile (E ${config.render.entryTokens}, C ${config.render.toolInputTokens}, R ${config.render.toolResultTokens} tokens): their labels and omission markers do not fit it`
+        : `the episodic budget by ${custom.over.episodic} tokens (cap ${caps.episodic})`;
+      return { native: true, reason: `bounded views of ${pending.length} pending entries exceed ${missed}` };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
@@ -376,7 +370,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         return rest.map(address => address.startsWith("F") ? { address, relations: relations.get(record(address))! }
           // The entry-view profile is frozen with the identities (review 2026-09-09): a configuration
           // refresh between two pages changes no excerpt a query already established.
-          : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } }
+          : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { entryTokens: config.render.entryTokens, toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } }
           : { address, marks: marks.get(commitOf(address))! });
       };
       const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
