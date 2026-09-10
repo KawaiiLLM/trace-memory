@@ -658,7 +658,8 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
  * constraints, open items and disputes exceed the budget is gone. Items are retained whole, in that
  * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
  * omitted item is named, never rewritten to fit, and remains stored and traceable. */
-export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge) {
+export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
+  budget = "render.knowledgeBlockTokens") {
   const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
     .filter((e) => e.revision.category === category)
     .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
@@ -678,7 +679,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   while (kept > 0 && cost(kept) > cap) kept--;
   // A hard cap is hard for its receipt too (review 2026-09-08): when even the bounded receipt of the
   // omitted items does not fit, that is a capacity problem to report, not oversized material to emit.
-  if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds render.knowledgeBlockTokens (${cap})`);
+  if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds ${budget} (${cap})`);
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
     text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
     receipts: receipts(kept),

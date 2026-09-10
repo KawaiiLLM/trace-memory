@@ -55,7 +55,7 @@ const envelope = (total: number, knowledge: number) => {
   memory.config.compaction.rawTokens = Math.max(0, Math.floor((total - knowledge) / 2));
 };
 const defaultWindows = () => {
-  memory.config.render.knowledgeBlockTokens = 10_000;
+  memory.config.render.knowledgeBlockTokens = 20_000;
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
 };
@@ -250,7 +250,7 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
  * 2,000 keeps long replies inside the envelope), and 28a makes that envelope the sum of the three
  * windows: Raw over its own 10,000-token baseline borrows the knowledge and facts allowance nothing
  * else is using, which is exactly the lending this acceptance now exercises. */
-test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long replies fit, three dozen delegate to native with the reason, eight three times as long still fit under E", () => {
+test("23 conversation-dense acceptance, rescaled by 25c, 30 and 32a: a dozen long replies fit, four dozen delegate to native with the reason, eight three times as long still fit under E", () => {
   const dense = (count: number, words: number) => {
     const s = session();
     let parent: number | undefined;
@@ -277,11 +277,11 @@ test("23 conversation-dense acceptance, rescaled by 25c and 30: a dozen long rep
   expect("native" in kept).toBe(false);
   for (const entry of pending) expect(compacted(kept)).toContain(view(entry));
   expect(compacted(kept)).toContain("\nRaw:\n");
-  // Three times the backlog is over the 30,000-token envelope even in the one view (28a rescaled this
-  // from twice: the envelope grew from 20,000 to the sum of the three windows), and 30 removed the
+  // Four times the backlog is over the 40,000-token envelope even in the one view (32a raised
+  // the main knowledge window, so this fixture grows with the envelope), and 30 removed the
   // rendering that used to be tried next: compact says so instead of cutting harder than the profile
   // allows, and starts no recovery worker of its own (28 amendment 9).
-  const many = dense(36, 1_000);
+  const many = dense(48, 1_000);
   memory.store.appendToolCall({ turnId: many.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
   const overflowing = memory.pendingEntries(many.s.id, "main", many.parent);
   expect(total(overflowing.map(view))).toBeGreaterThan(capacity);
@@ -584,13 +584,13 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   expect(memory.inject(s.id)).toContain(`[K${own}@${own}]`);
 });
 
-test("default listing caps continue all hits and freeze the remaining search results", () => {
+test("listing line caps still apply with an explicit large search token budget", () => {
   const s = session(), t = turn(s.id);
   const result = memory.store.commitNotingRun({ run: { sessionId: s.id, kind: "noting", createdAt: time },
     facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
       actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
   expect(result.ok).toBe(true);
-  const first = memory.search("needle");
+  const first = memory.search("needle", "all", { maxTokens: 10000 });
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   noting(s.id, t.id, "needle added later");
@@ -705,26 +705,26 @@ function consolidate(sessionId: number, ids: number[], branch = "main") {
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
-test("28a acceptance 1: 8k knowledge, 14k facts and 6k Raw fit at 28k with no delegation, no window clipped to its 10k baseline", () => {
+test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit at 38k through lending without a worker", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
-  for (let i = 0; i < 4; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `202${i}`);
+  for (let i = 0; i < 9; i++) knowledge(s.id, seed.id, "constraint", "project", `K${i} ` + "word ".repeat(1_950), `202${i}`);
   const facts = pendingFacts(s.id, t.id, [...Array(14)].map((_, i) => `FACT_${i} ` + "word ".repeat(990)));
   for (let i = 0; i < 3; i++) entry(s.id, t.id, `raw${i}`, `RAW_${i} ` + "word ".repeat(1_940));
   const result = memory.compact(s.id, "main", t.id);
-  expect("native" in result).toBe(false); // 28k of demand inside the 30k envelope
+  expect("native" in result).toBe(false); // 38k of demand inside the 40k envelope
   const windows = charged(result), text = compacted(result);
-  // Every window is served past the 10,000-token baseline where it needed to be: the facts window
+  // The facts window is served past its 10,000-token baseline:
   // borrowed what knowledge and Raw were not using, and nothing was clipped to a baseline.
   expect(windows.facts).toBeGreaterThan(10_000);
-  expect(windows.knowledge).toBeGreaterThan(7_000);
+  expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(30_000);
+  expect(windows.envelope).toBe(40_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
-  for (let i = 0; i < 4; i++) expect(text).toContain(`K${i} `);
+  for (let i = 0; i < 9; i++) expect(text).toContain(`K${i} `);
   expect(calls).toBe(0);
 });
 

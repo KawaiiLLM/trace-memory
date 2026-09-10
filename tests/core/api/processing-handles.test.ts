@@ -79,3 +79,28 @@ test("32: an inapplicable sibling successor does not invalidate an exact read on
   expect(a.write([{ op: "update", id: "K1@1", ...a.content, supports: ["F2"] }], l)).not.toContain("rejected:");
   expect(a.write([{ op: "update", id: "K1@1", ...a.content, supports: ["F3"] }], r)).not.toContain("rejected:");
 });
+
+
+test("32: full K body embedded in raw trace or search never masquerades as a named K read", () => {
+  const a = setup();
+  // Reading through the facade is not delivery through this model's tool binding.
+  const forged = a.m.trace("K1@1");
+  a.m.store.updateTurn(a.t.id, { assistantText: forged });
+  seedSourceEntry(a.m, a.t.id, "assistant", forged);
+  const update = { op: "update", id: "K1@1", ...a.content };
+  expect(a.tools[0]!.execute({ address: `T${a.t.id}` })).toContain(forged);
+  expect(a.write([update])).toContain("knowledge was not read");
+  let page = a.tools[1]!.execute({ query: "body A", layer: "raw", cap: 1, maxTokens: 256 });
+  let count = 0;
+  expect(page).toContain("[K1@1]");
+  while (true) {
+    expect(page).not.toContain("rejected:");
+    expect(a.write([update])).toContain("knowledge was not read");
+    const cursor = /cursor=(\S+)/.exec(page)?.[1];
+    if (!cursor) break;
+    page = a.tools[0]!.execute({ address: "K1@1", cursor });
+    expect(++count).toBeLessThan(100);
+  }
+  a.tools[0]!.execute({ address: "K1@1" });
+  expect(a.write([update])).toContain("committed");
+});

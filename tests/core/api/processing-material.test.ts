@@ -3,7 +3,7 @@ import { sourceSeededMemory, visibleView, type ConsolidationAgentInput } from ".
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 
 function fixture(agent: (input: ConsolidationAgentInput) => void = () => {}) {
-  const memory = sourceSeededMemory(":memory:", async raw => { agent(raw as ConsolidationAgentInput); return { outcome: "success", output: "done" }; }, { render: { knowledgeBlockTokens: 80 } });
+  const memory = sourceSeededMemory(":memory:", async raw => { agent(raw as ConsolidationAgentInput); return { outcome: "success", output: "done" }; }, { render: { knowledgeBlockTokens: 80 }, consolidation: { knowledgeTokens: 80 } });
   const p = memory.store.createProject({ name: "A", declaredBy: "mark" });
   const s = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use this rule", startedAt: "now" });
@@ -68,6 +68,30 @@ test("32: NEAR full-body read is granted only after the existing requestSeen del
     expect(input.tools[3]!.execute(update)).toContain("feedback has not been read yet");
     input.reportRequest({ feedbackDelivered: true });
     expect(input.tools[3]!.execute(update)).toContain("committed");
+  });
+  try { expect((await f.memory.consolidate(f.target)).outcome).toBe("success"); }
+  finally { f.memory.close(); }
+});
+
+
+test("32: concurrent successor after NEAR rendering is never granted by requestSeen", async () => {
+  const f = fixture(input => {
+    expect(input.readKnowledgeCommits).toEqual([]);
+    const feedback = input.tools[3]!.execute({ operations: [{ op: "create", ...f.content }], skipped: [] });
+    expect(feedback).toContain("K1@1");
+    expect(feedback).toContain(f.content.text);
+    f.tools[0]!.execute({ address: "K1@1" });
+    expect(f.tools[3]!.execute({ operations: [{ op: "update", id: "K1@1", ...f.content, text: "UNREAD CONCURRENT VERSION" }], skipped: [] })).toContain("committed");
+    const update = (id: string) => input.tools[3]!.execute({ operations: [{ op: "update", id, ...f.content }], skipped: [] });
+    expect(update("K1@1")).toContain("feedback has not been read yet");
+    input.reportRequest({ feedbackDelivered: true });
+    // A stale refusal proves the delivered OLD version was granted, not merely no version.
+    expect(update("K1@1")).toContain("current: K1@2");
+    expect(update("K1@2")).toContain("knowledge was not read");
+    input.reportRequest({ anotherRequest: true });
+    expect(update("K1@2")).toContain("knowledge was not read");
+    input.tools[0]!.execute({ address: "K1@2" });
+    expect(update("K1@2")).toContain("committed");
   });
   try { expect((await f.memory.consolidate(f.target)).outcome).toBe("success"); }
   finally { f.memory.close(); }

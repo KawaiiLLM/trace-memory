@@ -628,6 +628,121 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
   expect(other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@2", ...content(other.fact) }]).committed[0].commit).toBe(3);
 });
 
+test("search previews and cursor fragments never refresh a knowledge write base", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  root.write([{ op: "update", topics: [], reason: "A substantive correction.", id: "K1@1",
+    ...content(root.fact, `Unread successor ${"中文😀".repeat(3000)}`) }]);
+  const edit = (id = "K1@1") => other.write([{ op: "update", topics: [], reason: "A substantive correction.", id, ...content(other.fact) }]);
+  let page = other.tools[1]!.execute({ query: "Unread successor", layer: "knowledge", maxTokens: 256 });
+  expect(page).not.toContain("rejected:");
+  expect(edit().results[0]).toContain("current: K1@2");
+  let count = 0;
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    // Even a misleading K address on the final cursor page must not authorize a complete reread.
+    page = other.tools[0]!.execute({ address: "K1", cursor });
+    expect(page).not.toContain("rejected:");
+    expect(++count).toBeLessThan(100);
+  }
+  expect(count).toBeGreaterThan(1);
+  expect(edit().results[0]).toContain("current: K1@2");
+  expect(edit("K1@2").results[0]).toContain("knowledge was not read");
+  other.tools[0]!.execute({ address: "K1" });
+  expect(edit("K1@2").committed[0].commit).toBe(3);
+});
+
+test("trace K1 cap=1 replaces stale read bases only on the final page", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "update", topics: [], reason: "New version.", id: "K1@1", ...content(root.fact) }]).committed[0].commit).toBe(2);
+  const edit = (id = "K1@1") => other.write([{ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address: "K1", cap: 1 }), count = 0;
+  expect(page).toContain("cursor=");
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(edit().results[0]).toContain("current: K1@2");
+    expect(edit("K1@2").results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: `cursor=${cursor}` });
+    expect(page).not.toContain("rejected:");
+    expect(++count).toBeLessThan(100);
+  }
+  expect(edit().results[0]).toContain("knowledge was not read");
+  expect(edit("K1@2").committed[0].commit).toBe(3);
+  expect(memory.store.getKnowledgeRevision(1, 3)?.parentId).toBe(2);
+});
+
+test.each([false, true])("trace cap=1 completes the frozen K read through actual cursors (address form=%s)", addressForm => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "Second knowledge") }]).committed[0].commit).toBe(2);
+  const edit = () => other.write([{ op: "update", topics: [], reason: "Correct rule.", id: "K2@2", ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address: "K2", cap: 1 });
+  let count = 0;
+  while (true) {
+    expect(page).not.toContain("rejected:");
+    const cursor = /cursor=(\S+)/.exec(page)?.[1];
+    if (!cursor) break;
+    expect(edit().results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute(addressForm ? { address: `cursor=${cursor}` } : { address: "K1", cursor });
+    expect(++count).toBeLessThan(100);
+  }
+  expect(count).toBeGreaterThan(1);
+  expect(edit().committed[0]).toMatchObject({ knowledgeId: 2, commit: 3 });
+  expect(memory.store.getKnowledgeRevision(2, 3)?.parentId).toBe(2);
+});
+
+test("a mixed multi-K read authorizes only its completed identities; abandoned cursors authorize nothing", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  const operation = (id: string) => ({ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) });
+  expect(root.write([2, 3].map(id => ({ op: "create", topics: [], reason: "New rule.", ...content(root.fact, `Rule ${id}`) }))).committed.map((k: { commit: number }) => k.commit)).toEqual([2, 3]);
+  expect(root.write([{ ...operation("K1@1"), ...content(root.fact, "Unrelated new rule") }])).toMatchObject({ committed: [{ commit: 4 }] });
+  const abandoned = other.tools[0]!.execute({ address: "K1", cap: 1 });
+  const abandonedCursor = /cursor=(\S+)/.exec(abandoned)![1];
+  // Existing cache eviction drops the unread obligation, never completes it.
+  for (let i = 0; i < 16; i++) other.tools[0]!.execute({ address: "K2", cap: 1 });
+  expect(other.tools[0]!.execute({ address: `cursor=${abandonedCursor}` })).toContain("unknown or expired cursor");
+  let page = other.tools[0]!.execute({ address: "K2,F1-F2,K3@3", cap: 1 }), count = 0;
+  expect(page).toContain("cursor=");
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(++count).toBeLessThan(100);
+    for (const id of ["K2@2", "K3@3"]) expect(other.write([operation(id)]).results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: "K1", cursor });
+    expect(page).not.toContain("rejected:");
+  }
+  expect(other.write([operation("K1@1")]).results[0]).toContain("current: K1@4");
+  expect(other.write([operation("K2@2"), operation("K3@3")]).committed.map((k: { commit: number }) => k.commit)).toEqual([5, 6]);
+  expect(memory.store.getKnowledgeRevision(2, 5)?.parentId).toBe(2);
+  expect(memory.store.getKnowledgeRevision(3, 6)?.parentId).toBe(3);
+});
+
+test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records the delivered old version, never the later successor", address => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "FROZEN-SECOND") }]).committed[0].commit).toBe(2);
+  const edit = (id: string) => other.write([{ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address, cap: 1 });
+  expect(page).toContain("cursor=");
+  expect(edit("K2@2").results[0]).toContain("knowledge was not read");
+  expect(root.write([{ op: "update", topics: [], reason: "Concurrent correction.", id: root.read("K2@2"), ...content(root.fact, "UNREAD-LATEST") }]).committed[0].commit).toBe(3);
+  const pages = [page];
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(edit("K2@2").results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: `cursor=${cursor}` });
+    expect(page).not.toContain("rejected:");
+    pages.push(page); expect(pages.length).toBeLessThan(100);
+  }
+  expect(pages.length).toBeGreaterThan(2);
+  expect(pages.join("\n")).toContain("FROZEN-SECOND");
+  expect(pages.join("\n")).not.toContain("UNREAD-LATEST");
+  // A stale refusal (not a missing-handle refusal) proves the OLD commit was recorded.
+  expect(edit("K2@2").results[0]).toContain("current: K2@3");
+  expect(edit("K2@3").results[0]).toContain("knowledge was not read");
+  expect(edit("K2").results[0]).toContain("exact read K@commit is required; current tips: K2@3");
+  other.tools[0]!.execute({ address: "K2" });
+  expect(edit("K2@3").committed[0].commit).toBe(4);
+  expect(memory.store.getKnowledgeRevision(2, 4)?.parentId).toBe(3);
+});
+
 test("2026-09-07 A: scope applies before supersedence for first-prompt injection and bare path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Shared globally"), scope: "global" }]);
@@ -882,14 +997,14 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 
 // 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
 // episodic envelope, and nothing else". Superseded by ticket 28a: compaction has three material
-// windows with 10,000-token baselines — knowledge (`render.knowledgeBlockTokens`), pending facts
+// windows with 20k/10k/10k baselines (32a) — knowledge (`render.knowledgeBlockTokens`), pending facts
 // (`compaction.factsTokens`) and pending Raw (`compaction.rawTokens`) — over one envelope that is
 // their sum. `render.episodicBlockTokens` is not retired; it stayed the Noter's history envelope, and
 // compaction no longer reads it. Required material is placed first and is never trimmed; what is left
 // refills with recent consolidated facts and then recent already-extracted Raw.
 test("28: three windows, one envelope — required material first, refills into the spare, never a trimmed pending window", () => {
   expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
-  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(10_000);
+  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(20_000);
   expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
   expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
   const { s, t } = session();
@@ -907,10 +1022,10 @@ test("28: three windows, one envelope — required material first, refills into 
     facts: [], entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) }).ok).toBe(true);
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
 
-  // Everything fits: required material and both refills, inside the 30,000-token envelope.
+  // Everything fits: required material and both refills, inside the 40,000-token envelope.
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(30_000);
+  expect(windows.envelope).toBe(40_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const marker of ["PENDING FACT", "PENDING RAW", "CONSOLIDATED HISTORY", "EXTRACTED RAW"]) expect(text).toContain(marker);
   // The Noter's envelope is not compact's: moving it changes not one byte here.
@@ -935,6 +1050,45 @@ test("28: three windows, one envelope — required material first, refills into 
   expect("text" in delegated).toBe(false);
   expect(calls).toHaveLength(0);
   defaultWindows();
+});
+
+test("32a: the Consolidator's knowledge reference is its own key — raising the main knowledge budget changes no worker input", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: t.id, branch: "main" });
+  expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Evidence", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
+  for (let i = 0; i < 12; i++) expect(tools[3]!.execute({ operations: [{ op: "create", topics: [],
+    reason: "Durable rule", text: `Rule ${i}: ` + "word ".repeat(1_500), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
+  const legacy = api.validateConfig({ render: { knowledgeBlockTokens: 10_000 } });
+  expect(memory.config.render.knowledgeBlockTokens).toBe(20_000);
+  expect(memory.config.consolidation.knowledgeTokens).toBe(10_000);
+  const main = memory.injection(s.id);
+  memory.config.render.knowledgeBlockTokens = 10_000;
+  const explicit = memory.injection(s.id);
+  expect(explicit.knowledgeCommitIds.length).toBeLessThan(main.knowledgeCommitIds.length);
+  expect(tokens(explicit.text)).toBeLessThanOrEqual(10_000);
+  memory.config.render.knowledgeBlockTokens = 20_000;
+  const compact = memory.compact(s.id, "main", t.id);
+  for (const mode of ["subagent", "fork"] as const) {
+    const input = { sessionId: s.id, branch: "main", headTurnId: t.id, mode };
+    const before = freezeConsolidation(memory.store, input, legacy).prepared!;
+    const after = freezeConsolidation(memory.store, input, memory.config).prepared!;
+    expect(after).toEqual(before); // text, status/receipts, selection and charges, not just the cap
+    expect(after.material.receipts.join("\n")).toContain("knowledge; expand:");
+    expect(after.supplied.knowledgeCommitIds.length).toBeLessThan(main.knowledgeCommitIds.length);
+    const instructions = tokens(readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8"));
+    const inputTokens = instructions + tokens(before.text) + (mode === "subagent" ? tokens(JSON.stringify(toolDefinitions)) : 0);
+    const admitted = { ...input, capacity: { inputTokens, prefixTokens: 0 } };
+    expect(freezeConsolidation(memory.store, admitted, memory.config).prepared).toEqual(before);
+    expect(freezeConsolidation(memory.store, admitted, legacy).prepared).toEqual(before);
+    memory.config.consolidation.knowledgeTokens = 20_000;
+    const enlarged = freezeConsolidation(memory.store, input, memory.config).prepared!;
+    expect(enlarged.supplied.knowledgeCommitIds.length).toBeGreaterThan(after.supplied.knowledgeCommitIds.length);
+    expect(memory.injection(s.id)).toEqual(main);
+    expect(memory.compact(s.id, "main", t.id)).toEqual(compact);
+    memory.config.consolidation.knowledgeTokens = 1;
+    expect(() => freezeConsolidation(memory.store, input, memory.config)).toThrow(/exceeds consolidation\.knowledgeTokens \(1\)/);
+    memory.config.consolidation.knowledgeTokens = 10_000;
+  }
 });
 
 // ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----

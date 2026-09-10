@@ -85,22 +85,29 @@ test("31: one knowledge supplement after a project change or re-enable, never a 
   } finally { await h.dispose(); }
 });
 
-test("31 one path: the first prompt of a new session is byte for byte the block 29d produced", async () => {
-  const h = host();
+test.each([10_000, 20_000])("31 / 32a one path: initial and supplement produce identical text at the same configured budget (%i)", async budget => {
+  const h = host({ "render.knowledgeBlockTokens": budget });
   try {
     await h.prompt(); await h.answer();
     const f = fact(h, "用 pnpm");
-    create(h, f, "project", "项目用 pnpm。", "项目用 vitest。");
+    create(h, f, "project", ...Array.from({ length: 12 }, (_, i) => `Rule ${i}: ` + "word ".repeat(1_900)));
     // The 29d layout, recomputed here from the applicable set alone: no visible view, no subtraction,
     // no status line. The initial trigger only ever fires on a context with no knowledge commits, so
     // this is what the one selection must still produce.
     const active = budgetKnowledge(h.memory.store.listVisibleKnowledge(1, h.memory.store.getSession(1)!.projectId),
-      h.memory.config.render.knowledgeBlockTokens);
+      budget);
     const expected = finish({ content: knowledgeBlock({ knowledge: active.groups, receipts: [] }), receipts: active.receipts });
-    const injected = (await h.prompt("second"))?.message;
+    const injected = (await h.emit("before_agent_start", { prompt: "second", systemPrompt: "host" }))?.message;
     expect(injected.content).toBe(expected);
     expect(carrierOf(injected).supplied.knowledgeCommitIds).toEqual(active.commits);
     expect(carrierOf(injected).generation).toBeUndefined(); // the initial trigger serves no generation
+    expect(active.receipts.length).toBeGreaterThan(0); // both configured caps bind
+    // The first hand-over is not persisted, so both triggers see exactly the same visible set.
+    await command(h, "on");
+    const supplement = (await h.emit("before_agent_start", { prompt: "supplement", systemPrompt: "host" }))?.message;
+    expect(supplement.content).toBe(injected.content);
+    expect(carrierOf(supplement).supplied.knowledgeCommitIds).toEqual(active.commits);
+    expect(carrierOf(supplement).generation).toBe(1);
   } finally { await h.dispose(); }
 });
 

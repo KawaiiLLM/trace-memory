@@ -295,7 +295,7 @@ The allowance is a ceiling, never a target — fewer needed facts make a smaller
 - **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming
   the whole target. Optional: the current applicable knowledge the view does not hold at that exact
   commit — a visible predecessor covers nothing — plus one status line per inherited commit that is no
-  longer current (superseded, archived or merged), charged inside `render.knowledgeBlockTokens` with
+  longer current (superseded, archived or merged), charged inside `consolidation.knowledgeTokens` with
   the block it corrects. No historical-fact block and no automatic Raw block.
 
 Both builders return `supplied: SuppliedMaterial` beside the text: what the text really carries, after
@@ -351,7 +351,8 @@ charged once, to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| knowledge block, its category tags and its omission receipts (Consolidator, injection, compact) | `render.knowledgeBlockTokens` | 10,000 |
+| main knowledge block, category tags, status lines and omission receipts (initial injection, one-shot supplement, compact window) | `render.knowledgeBlockTokens` | 20,000 |
+| Consolidator knowledge references, category tags, inherited status lines and omission receipts | `consolidation.knowledgeTokens` | 10,000 |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
 | compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
@@ -487,7 +488,7 @@ alone is a capacity problem and stays pending: it is never clipped, skipped for 
 or marked consolidated unpresented. The range freezes those facts, the visible active knowledge
 revisions (including budget omissions), relation lines and reminders before the
 candidate call. Since 25a the automatic material is exactly two blocks: the active knowledge within
-`render.knowledgeBlockTokens`, and the pending facts within `consolidation.batchTokens`, which also
+`consolidation.knowledgeTokens` (default 10,000), and the pending facts within `consolidation.batchTokens`, which also
 carries their review cues, the titles and the range line — required framing is charged to the
 allowance of the material it frames, never to a second budget. **There is no already-consolidated
 history block and no automatic Raw block**; both are reached by explicit `trace`. All range facts are
@@ -594,16 +595,19 @@ add fresh facts before repeat runs; committed knowledge participate in later NEA
 with nonempty category tags in glossary order. Within each category, current
 revision time ascends, with knowledge-id ties. XML text is never escaped (lines stay trace lines byte for byte); shared lines,
 including revision-bound marks, remain the display grammar. Budgets measure
-shared lines before XML escaping and exclude framing and receipts. Protected
-categories survive overage; optional categories form a retained prefix.
+shared lines, including framing and receipts. Every category obeys the hard cap;
+whole items form a retained prefix in category order.
 Pass `null` explicitly for legacy null branches.
 
 31: this is **one selection**, and its two triggers are the host's. `injection(target, visible?)`
 selects the applicable knowledge at the node minus the commit ids `visible` (29a's view of the
 reader's own context) already holds, and annotates the visible commits that are no longer current with
-29b's status lines, inside the same `render.knowledgeBlockTokens` allowance. The default empty view is
-the whole applicable set, which is what a fresh context has always received, byte for byte. An empty
-delta renders no block at all — the status lines annotate a block and never become one on their own,
+29b's status lines, inside `render.knowledgeBlockTokens` (default 20,000 since 32a). Explicit values
+are honored unchanged; Consolidator references use their separate `consolidation.knowledgeTokens`
+allowance (default 10,000). Both keys use the existing positive-safe-integer validation; neither adds
+an interactive Settings item. An empty visible view selects from the whole applicable set under
+that budget. At the same configured budget and visible set, initial injection and the supplement
+produce identical text; the raised default may include more knowledge. An empty delta renders no block at all — the status lines annotate a block and never become one on their own,
 so a re-enable with nothing new to say says nothing.
 
 Successful noting commits record `factIds` in the
@@ -621,9 +625,9 @@ three windows since 28a):
 | `{text, supplied, charged}` | the knowledge block at its own baseline, the pending facts and the pending entries' bounded views fit the envelope | knowledge, `<episodic>` with the facts in chronological Turn groups, then the entry views under `Raw:`, with the spare filled by the two refills |
 | `{native: true, reason}` | a required window overflows after lending, or an entry's minima exceed the profile | an explicit ask that the host decline and let its own native compaction run, naming the overflowing window and its numbers |
 
-**Three windows, one envelope (28a).** Compaction has three material windows with 10,000-token
-baselines — knowledge (`render.knowledgeBlockTokens`), the pending facts (`compaction.factsTokens`)
-and the pending Raw (`compaction.rawTokens`) — and one envelope that is their sum, 30,000 at the
+**Three windows, one envelope (28a, defaults raised by 32a).** Compaction's baseline windows are
+knowledge 20,000 (`render.knowledgeBlockTokens`), pending facts 10,000 (`compaction.factsTokens`)
+and pending Raw 10,000 (`compaction.rawTokens`) — and one envelope that is their sum, 40,000 at the
 defaults. There is no fourth key. Lending is free between them: a window needing less than its
 baseline leaves the difference in the envelope, a window needing more spends it, and the charged total
 never passes the envelope. Two rules make that safe. The fit test measures knowledge **at its own
@@ -666,7 +670,7 @@ the token counters and `trace` use, and no view or summary
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
-`search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
+`search(query, scope = "all", { sessionId?, maxTokens?, cap?, cursor? })` uses literal
 substring matching over fact text, knowledge commits and original Raw. A knowledge
 hit matches the conclusion text or any of the revision's topic labels, under the
 same escaping; matching runs over the label values (SQLite `json_each`), so the
@@ -685,6 +689,25 @@ facade reads remain available to hosts. Raw uses literal substring LIKE
 bound search includes raw as well as facts and knowledge. Each hit is
 one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
 Results order facts by id, then knowledge id/revision; raw orders turns by id.
+Search defaults to **2000 estimated tokens per complete response**, including all
+content and receipts, under the shared `tokens` estimator. `maxTokens` must be a
+positive safe integer; budgets too small for pagination hints and progress are
+rejected. `cap` remains a second limit on output lines (default 100), not tokens.
+Whole hits are preferred; an oversized hit is split at Unicode code-point boundaries,
+with its remaining text carried by the existing cursor rather than truncated. A
+`Hit continues on next page` receipt means concatenate the next page's content
+without a newline; otherwise join page contents with a newline. Receipts are not
+part of the hit content. Search previews and fragments never grant a complete
+knowledge-read permission; use an explicit complete `trace` for that.
+
+Continue with `search({query: "", cursor: "…"})`. The original token budget is
+frozen: omit `maxTokens` or repeat the same value; a different value is rejected
+without consuming the cursor. The same budget applies through `trace` continuation;
+a trace-origin cursor cannot be continued through search. Continue a cursor alone,
+not inside a comma address list. Invalid parameters do not
+consume a valid cursor. Owner isolation and the shared 16-continuation cache remain
+unchanged. Trace's own default remains line-budgeted, with no new token limit.
+
 Every search page states that no hit does not mean absent. A `cursor` continues the
 query that issued it, not the database as it now stands: the hits, the commit labels,
 and the mutable annotations each line prints — a fact's relations, a commit's marks,
@@ -698,9 +721,9 @@ Projects list global/project knowledge and project facts;
 sessions list turns. Listing caps count output lines, default 100 — the unit is
 lines, not facts and not tokens. Tool input is
 `trace({address, tool?, full?, cursor?, cap?})` or
-`search({query, layer?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
+`search({query, layer?, maxTokens?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
 Display options are parameters, never address flags. The per-output cap flag is
-removed; cap is the listing budget. Expansion hints use the trace parameter form.
+removed; cap is the listing line budget. Expansion hints use the trace parameter form.
 `F<n>..` is navigation through later strong negations, including every intermediate
 fact and branching; its terminal sentence is not a current-conclusion claim.
 Cursors freeze rendered output, are single-use, belong to this facade instance

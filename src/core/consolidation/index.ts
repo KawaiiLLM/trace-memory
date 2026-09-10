@@ -167,8 +167,9 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     throw new Error(`${CONSOLIDATION_CAPACITY}the frozen batch of ${applicable.length} facts exceeds consolidation.batchTokens (${config.consolidation.batchTokens}); left pending`);
   // The negated-evidence cues are mandatory material and grow with the selected facts, so they are
   // derived per candidate batch: a smaller batch has fewer cues.
-  const remindersFor = (batch: Fact[]): string[] => {
+  const remindersFor = (batch: Fact[]) => {
     const reminders: string[] = [];
+    const reminderCommits = new Set<number>();
     for (const item of knowledge) for (const fact of batch) {
       for (const edge of relations.get(fact.id)!) {
         if (edge.fromFact !== fact.id || edge.kind !== "negate" || !item.revision.supports.includes(edge.toFact)) continue;
@@ -179,12 +180,13 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
           lines.set(cited.id, renderFact(cited, store.listFactRelations(cited.id)));
           if (!factTurns.has(cited.turnId)) for (const [id, time] of store.factTurnTimes([cited])) factTurns.set(id, time);
         }
+        reminderCommits.add(item.revision.id);
         reminders.push([renderKnowledge(item), `Recorded negation strength: ${edge.strength}`,
           `Cited fact: F${cited.id}; Negating fact: F${fact.id}`,
           ...renderFactGroups([cited, fact], f => lines.get(f.id)!, factTurns)].join("\n"));
       }
     }
-    return reminders;
+    return { reminders, reminderCommits };
   };
   // Ticket 20 "Complete task evidence" and "Capacity negotiation" (review 2026-09-08): the selected
   // facts, their mandatory cues and the framing must fit the pending-fact allowance, and the rendered
@@ -198,7 +200,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   let optionalKnowledge = true;
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
-      knowledge, knowledgeNotes, lines, reminders: remindersFor(rangeFacts),
+      knowledge, knowledgeNotes, lines, ...remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
     const prepared = consolidationMaterial(frozen, config, initial, optionalKnowledge);
     // Priced by the mode that runs (29b's one line, as in Noting): the subagent's instructions, tools
@@ -227,7 +229,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   if (applicable.length) throw new Error(CONSOLIDATION_CAPACITY
     + `${last!.episodic ? `it is ${last!.episodic} tokens over consolidation.batchTokens (${config.consolidation.batchTokens})` : `it costs ${last!.priced} tokens`}`
     + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, knowledgeNotes, lines, factTurns, reminders: [] as string[],
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, knowledgeNotes, lines, factTurns, reminders: [] as string[], reminderCommits: new Set<number>(),
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
 }
@@ -239,11 +241,11 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * hold at that exact commit (a visible predecessor covers nothing), and only then the budgets.
  *
  * The two allowances are unchanged (ticket 20, as 25a corrected it): the knowledge within
- * `render.knowledgeBlockTokens` — which 29b's status lines are charged inside — and the pending facts
+ * `consolidation.knowledgeTokens` — which 29b's status lines are charged inside — and the pending facts
  * within `consolidation.batchTokens`, which also carries their review cues, the titles and the range,
  * because required framing belongs to the allowance of the material it frames. There is no automatic
  * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns; reminders: string[] }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns; reminders: string[]; reminderCommits: Set<number> }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
   const { rangeFacts, knowledge: applicable, knowledgeNotes, lines, factTurns, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   // The addresses name the whole frozen target — that is what this run must integrate — while the
@@ -258,7 +260,8 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
     ? [`omitted all ${knowledge.length} current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>`] : [];
   const budgeted = budgetMaterial({ ...(optionalKnowledge ? { knowledge } : {}), knowledgeNotes, current: grouped.join("\n"),
     framing: [RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
+    knowledgeBudget: "consolidation.knowledgeTokens",
+    caps: { knowledge: config.consolidation.knowledgeTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: grouped,
@@ -272,10 +275,10 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
   // this text carries, and the commits are the ones the knowledge block kept after its cap.
   const keptIdentities: SuppliedMaterial = { entries: [], factIds: supplied.map(f => f.id), knowledgeCommitIds: budgeted.knowledgeCommitIds };
   // One authoritative list for write eligibility and the run audit. A reminder grants a read
-  // only when its emitted material contains the full canonical body, not an address or summary.
+  // only from the builder that emitted its complete body, never by parsing an address or summary.
   const readKnowledgeCommits = applicable.filter(item => initial.visible.knowledgeCommitIds.has(item.revision.id)
     || keptIdentities.knowledgeCommitIds.includes(item.revision.id)
-    || material.reminders.some(reminder => reminder.startsWith(renderKnowledge(item))))
+    || frozen.reminderCommits.has(item.revision.id))
     .map(item => ({ knowledgeId: item.knowledge.id, commit: item.revision.id }));
   return { range, material, text, supplied: keptIdentities, readKnowledgeCommits, over: budgeted.over };
 }
@@ -315,18 +318,23 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   const near: NearPair[] = candidates(batch).flatMap((c) => knowledge
     .map(item => ({ candidate: c.id, knowledge: label(item), score: similarity(c.text, item.revision.text) }))
     .filter((p) => p.knowledge !== c.id && p.score >= threshold).sort((a, b) => b.score - a.score));
-  const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderKnowledge(knowledge.find((e) => label(e) === p.knowledge)!)}`);
+  const completed: import("../api/read.ts").KnowledgeRead[] = [];
+  const renderFeedbackKnowledge = (item: typeof knowledge[number]) => {
+    completed.push({ knowledgeId: item.knowledge.id, commits: [item.revision.id], replace: false });
+    return renderKnowledge(item);
+  };
+  const nearText = near.map((p) => `${p.candidate} -> ${p.knowledge} (Jaccard ${p.score})\n${renderFeedbackKnowledge(knowledge.find((e) => label(e) === p.knowledge)!)}`);
   const closer = knowledge.filter(({ revision }) => revision.category === "open" || revision.category === "goal").flatMap((knowledge) => {
     const matches = rangeFacts.map(fact => ({ fact, score: similarity(knowledge.revision.text, fact.text) }))
       .filter(p => p.score >= threshold);
     if (!matches.length) return [];
     const scores = new Map(matches.map(p => [p.fact.id, p.score]));
-    return [[renderKnowledge(knowledge), ...renderFactGroups(matches.map(p => p.fact),
+    return [[renderFeedbackKnowledge(knowledge), ...renderFactGroups(matches.map(p => p.fact),
       f => `Jaccard ${scores.get(f.id)}\n${lines.get(f.id)!}`, factTurns)].join("\n")];
   });
   const feedback = ["System-generated review guidance; not a human ruling or adoption evidence.",
     "NEAR:", nearText.join("\n\n") || "none", "CLOSER:", closer.join("\n\n") || "none"].join("\n\n") + "\n" + checklist;
-    return { text: feedback, near };
+    return { text: feedback, near, completed };
   } });
   let result: RunAgentResult;
   try { result = await runAgent({ ...structuredClone(base), material, text, supplied: structuredClone(supplied), reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }

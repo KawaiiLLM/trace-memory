@@ -370,11 +370,11 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
   try {
     h.persist({ role: "user", content: "start", timestamp: 1 });
     // 30: each entry view is capped at `render.entryTokens` (2,000), so it takes more of them to pass
-    // the carry budget (`render.episodicBlockTokens`, 20,000) that this case is about.
-    for (let i = 0; i < 15; i++) h.persist(reply(`chunk ${i}: ` + "word ".repeat(15000)));
+    // the carry budget (20,000) and 32a's compaction envelope (40,000).
+    for (let i = 0; i < 21; i++) h.persist(reply(`chunk ${i}: ` + "word ".repeat(15000)));
     h.persist(reply("LAST_PENDING_SENTINEL"));
     await h.emit("session_start");
-    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(17);
+    expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(23);
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
     expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries beyond the carry budget truncated/);

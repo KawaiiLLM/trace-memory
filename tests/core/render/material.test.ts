@@ -156,7 +156,7 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   memory.config.render.episodicBlockTokens = 20_000;
   // The Consolidator still leads with knowledge, so its receipt is still the knowledge one.
   const receipt = "omitted 1 constraint knowledge; expand: K1";
-  memory.config.render.knowledgeBlockTokens = tokens(receipt) + 1 + tokens("Receipts:") + 1; // the receipt, its separator and the heading `finish` adds
+  memory.config.consolidation.knowledgeTokens = tokens(receipt) + 1 + tokens("Receipts:") + 1; // the receipt, its separator and the heading `finish` adds
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
@@ -255,7 +255,7 @@ test("25a 2026-09-09: at the default limits the Consolidator sends knowledge wit
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(knowledgeReceipts.length).toBeGreaterThan(0); // the knowledge cap really binds
-  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(memory.config.render.knowledgeBlockTokens);
+  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(memory.config.consolidation.knowledgeTokens);
   // The pending facts, their review cues and the framing around them share one allowance; there is
   // no episodic budget beside it any more, and no historical-fact block inside it.
   expect(charge([`Range: ${input.range.from}..${input.range.to}`, "Range facts:", ...material.rangeFacts,
@@ -576,10 +576,18 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   // Charged inside the knowledge allowance: an allowance that the status line fills leaves the block
   // nothing, and the omission is receipted rather than emitted over budget.
   const note = `K1@${current} is archived`;
-  const tight = { ...memory.config, render: { ...memory.config.render, knowledgeBlockTokens: charge([KNOWLEDGE_STATUS_TITLE, note]) } };
+  const tight = { ...memory.config, consolidation: { ...memory.config.consolidation, knowledgeTokens: charge([KNOWLEDGE_STATUS_TITLE, note]) } };
   const squeezed = freeze([current], tight);
   expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
   expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
+});
+
+test("32a: omitted inherited status names and stays inside the owning knowledge budget", () => {
+  const budgeted = budgetMaterial({ knowledge: [], knowledgeNotes: ["word ".repeat(200)],
+    knowledgeBudget: "consolidation.knowledgeTokens", current: "", framing: [], caps: { knowledge: 100, episodic: 100 } });
+  expect(budgeted.knowledgeNotes).toEqual([]);
+  expect(budgeted.receipts).toEqual(["omitted 1 inherited knowledge status lines; consolidation.knowledgeTokens is full"]);
+  expect(charge(["Receipts:", ...budgeted.receipts])).toBeLessThanOrEqual(100);
 });
 
 /** Case 14. The Consolidator's processing target is the whole pending prefix, whether or not the

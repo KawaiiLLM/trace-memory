@@ -268,14 +268,14 @@ test("20b 2026-09-08 scenario 4, on the Consolidator since 25a: no knowledge cat
   const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
   // A cap of one token holds nothing at all — not even the first-priority constraint (17b kept three)
   // and not even the receipt naming the omissions, so the task stays pending (review 2026-09-08).
-  memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
+  memory.close(); open({ consolidation: { knowledgeTokens: 1 } });
   await expect(consolidate()).rejects.toThrow(/Knowledge capacity/);
   for (const [i] of categories.entries()) expect(memory.trace(`K${i + 1}`)).toContain(`[K${i + 1}@`); // omitted, not deleted
   expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([1]); // still pending
   // A binding cap keeps a whole prefix of the priority order, and the block, its category tags and its
   // own omission receipts all stay inside it — the receipts are charged, not free.
   const cap = 200;
-  memory.close(); open({ render: { knowledgeBlockTokens: cap } });
+  memory.close(); open({ consolidation: { knowledgeTokens: cap } });
   script.push(async () => ({ outcome: "success", output: "Done.", request }));
   expect((await consolidate()).outcome).toBe("success");
   const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };

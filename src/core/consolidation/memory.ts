@@ -1,11 +1,11 @@
 import { prepareMemory, accounting } from "./commit.ts";
 import type { MemoryBatch } from "../model/index.ts";
 import type { Store, RunInput, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
-import { renderKnowledge } from "../render/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
+import type { KnowledgeRead } from "../api/read.ts";
 export interface MemoryReview {
   frozen: ReturnType<typeof freezeConsolidation>;
-  feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
+  feedback(batch: MemoryBatch): { text: string; near: NearPair[]; completed: KnowledgeRead[] };
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId),
   reads = new Map<number, KnowledgeWithRevision>()) {
@@ -13,20 +13,19 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit)!;
     reads.set(handle.commit, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
   }
-  const supplied = (content: string) => {
-    for (const match of content.matchAll(/\[K([1-9]\d*)@([1-9]\d*)\]/g)) {
-      const revision = store.getKnowledgeRevision(Number(match[1]), Number(match[2]));
-      if (!revision || revision.op === "archive") continue;
-      const value = { knowledge: store.getKnowledge(revision.knowledgeId)!, revision };
-      // Pagination/search labels alone never grant a handle; the entire rendered body must occur.
-      if (content.includes(renderKnowledge(value, store.listKnowledgeMarks(revision.knowledgeId).filter(m => m.commitId === revision.id))))
-        reads.set(revision.id, value);
+  const reread = (completed: KnowledgeRead[]) => {
+    for (const { knowledgeId, commits, replace } of completed) {
+      if (replace) for (const [commit, item] of reads) if (item.knowledge.id === knowledgeId) reads.delete(commit);
+      for (const commit of commits) {
+        const revision = store.getKnowledgeRevision(knowledgeId, commit);
+        if (revision) reads.set(commit, { knowledge: store.getKnowledge(knowledgeId)!, revision });
+      }
     }
   };
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
-  let requests = 0, candidateRequest = -1, pendingFeedback: string | undefined;
+  let requests = 0, candidateRequest = -1, pendingFeedback: KnowledgeRead[] | undefined;
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
@@ -39,7 +38,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (review && !candidate) {
       candidate = structuredClone(prepared.batch); candidateRequest = requests;
       const feedback = review.feedback(candidate); near = feedback.near;
-      pendingFeedback = feedback.text; // Grant only when the next provider request confirms delivery.
+      pendingFeedback = structuredClone(feedback.completed); // Grant only when the next provider request confirms delivery.
       problems = ["first batch requires a second submission"];
       return JSON.stringify({ results: prepared.results, feedback: { role: "user", content: feedback.text } });
     }
@@ -60,5 +59,5 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, supplied, sequence, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { supplied(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, reread, sequence, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }
