@@ -41,8 +41,9 @@ test("17c 2026-09-08: two executor slots prefer own work over several closed tai
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
       Array.from({ length: 50 }, (_, i) => ({ category: "observation", actor: "user", text: `Own claim ${i}`, source: ["T1#user"] })) });
     const release = hold(h);
-    h.persist(reply("word ".repeat(15000))); await h.emit("agent_end"); await h.drain();
-    expect(h.requests).toHaveLength(2);
+    h.persist(reply("word ".repeat(15000))); await h.emit("agent_end");
+    // drain can return after 150ms with one held request, before both native children reach the wire.
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2), { timeout: 5000 });
     for (const phase of ["noting", "consolidation"] as const) {
       expect(h.memory.store.getClaim(1, phase)?.borrowed).toBe(false);
       for (const tail of tails) expect(h.memory.store.getClaim(tail.sessionId, phase)).toBeNull();
