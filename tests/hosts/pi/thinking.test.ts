@@ -18,6 +18,12 @@ const at = "2026-09-08T00:00:00.000Z";
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("### Second-round user message") ? "consolidation" : "noting";
 const thinkingOf = (run: { response?: string | null }) => JSON.parse(run.response!).thinking;
+/** 27d: the fallback case at the end tells the fresh child's own body from the fork attempt's — a
+ * fresh child's system prompt is the Noter's, which a fork's never is — and rejects a fork body the
+ * way a provider rejects one it cannot hold. */
+const freshChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Noting (fact extraction)");
+const overflow = () => new Response(JSON.stringify({ error: { message: "prompt is too long: 213462 tokens > 200000 maximum" } }),
+  { status: 400, headers: { "content-type": "application/json" } });
 const settle = async (h: ReturnType<typeof host>, rounds = 40) => {
   let last = -1;
   for (let i = 0; i < rounds && last !== h.requests.length; i++) { last = h.requests.length; await h.drain(); }
@@ -272,3 +278,49 @@ test("26d: the configured level is frozen at admission — a preference saved wh
     expect(thinkingOf(h.memory.store.listRuns(1).filter(r => r.kind === "noting").at(-1)!)).toEqual({ requested: "off", effective: "off" });
   } finally { await h.dispose(); }
 });
+
+test("27/26d: the levels frozen at admission survive fallback", async () => {
+  // The review's reproduction: a fork admitted at `high` whose provider rejects the body for context
+  // capacity. While that request is pending the foreground switches to `low` AND the Noter's own
+  // preference is saved as `low`; the re-admission must read neither — it reuses the pair frozen with
+  // the task. Before 27d both fresh requests and the audit said `low`.
+  // The preference under edit has to be the Global layer the menu writes, so this fixture's
+  // environment layer carries neither the model nor the level.
+  const f = await fixture({}, "fake", { model: "test-thinking", thinkingLevel: "high" });
+  try {
+    const file = join(f.h.dir, "agent", "settings.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")),
+      "trace-memory": { notingModel: "fake/test-thinking", notingThinking: "high" } }));
+    await f.h.emit("session_start");
+    f.h.setThinkingLevel("high");
+    let switched = false;
+    f.script(async (body: Body) => {
+      if (!worker(body)) return say("好的。");
+      if (freshChild(body)) return toolResults(body) ? say("Done.") : call("t1", "note", noteBatch);
+      if (!switched) {
+        switched = true;
+        f.h.setThinkingLevel("low");           // the foreground level moves
+        f.h.ctx.hasUI = true;                  // and the user saves the preference as well
+        f.h.answers.push("Settings", "Noter thinking: high (Global); fork mode inherits the foreground thinking level", "low");
+        await command(f.h, "");
+        f.h.ctx.hasUI = false;
+      }
+      return overflow();
+    });
+    await f.turn();
+    const runs = await vi.waitFor(() => {
+      const found = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response).sort((a, b) => a.id - b.id);
+      expect(found).toHaveLength(2); // 27d: the refused attempt and the re-admitted run
+      return found;
+    }, { timeout: 5000 });
+    expect(f.h.notices.some(n => n.includes("saved notingThinking"))).toBe(true); // the edit really happened
+    expect(runs[0]!.mode).toBe("fork");
+    expect(thinkingOf(runs[0]!)).toEqual({ requested: "high", effective: "high" });
+    expect(runs[1]!.mode).toBe("subagent");
+    expect(runs[1]!.model).toBe("fake/test-thinking");
+    expect(thinkingOf(runs[1]!)).toEqual({ requested: "high", effective: "high" });
+    const freshBodies = f.sent.filter(body => worker(body) && freshChild(body));
+    expect(freshBodies.length).toBeGreaterThan(0);
+    expect(freshBodies.every(body => body.reasoning_effort === "high")).toBe(true);
+  } finally { await f.dispose(); }
+}, 30000);

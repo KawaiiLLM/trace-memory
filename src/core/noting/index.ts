@@ -65,8 +65,12 @@ export interface EntryAudit {
 export type NotingResult =
   | { outcome: "empty" }
   /** 27c: `refused` is the host's own refusal value, returned unread when the host declined to run
-   * this task in the mode it was admitted for and admits it once more itself. No run was recorded. */
-  | { outcome: "dropped"; refused?: unknown }
+   * this task in the mode it was admitted for and admits it once more itself.
+   * 27d: `runId` is the run core recorded for that refused attempt, present exactly when the attempt
+   * sent a provider request; the host names it in the re-admitted run's `fallbackReason`. `reason`
+   * says why a task that never ran dropped — cancelled before the fallback, or evidence another
+   * executor already processed. */
+  | { outcome: "dropped"; refused?: unknown; runId?: number; reason?: string }
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
       /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
@@ -81,6 +85,12 @@ export type NotingResult =
  * with its own capacity (parent 27 amendment 5). A batch over `noting.batchTokens` is not one of
  * these: no model capacity decided it and no fresh child would change it. */
 export const NOTING_CAPACITY = "Noting capacity: oldest entry cannot fit the episodic budget or the model context: ";
+
+/** 27d (parent 27 amendment 6): the opening of the diagnostic a `boundary.entryIds` freeze raises
+ * when its exact membership is no longer pending in full. The evidence was processed elsewhere —
+ * another executor's claim completed it — so the task is dropped rather than retried and nothing is
+ * re-processed. The façade matches this one string to tell it from an admission failure. */
+export const NOTING_MEMBERSHIP = "Noting membership: the frozen batch is no longer pending in full: ";
 
 /** 26a: the diagnostic of a Noting run that ended without a submission. A batch is completed only by
  * a `note` call, `note({facts: []})` included; final prose is never read as an implicit empty
@@ -107,7 +117,15 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
   const pendingAll = store.pendingEntries(session.id, input.branch, input.headTurnId);
   // A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
-  const pending = input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!);
+  // 27d (parent 27 amendment 6): `entryIds` is exact membership instead — the frozen batch of a fork
+  // attempt the host is re-admitting. It is taken whole or not at all: a member no longer pending was
+  // processed by another executor under its own claim, which drops this task here instead of
+  // re-processing the rest of the batch as though it were a fresh one.
+  const exact = input.boundary?.entryIds;
+  const pending = exact ? pendingAll.filter(e => exact.includes(e.id))
+    : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!);
+  if (exact && pending.length !== exact.length)
+    throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter(id => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
   // 22d, hotspot family 6: the instructions, the tool definitions and — for a fork — the inherited
   // prefix are unavoidable; no batch, however small, is priced below them. An allowance under that
@@ -132,6 +150,11 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     entries.push(entry); views.push(view.content); rendered.set(entry.id, view);
   }
   if (pending.length && !entries.length) throw new Error("Noting capacity: oldest entry exceeds noting.batchTokens; left pending");
+  // 27d: the same whole-or-nothing rule against the batch ceiling the selection loop above stops at.
+  // A membership selected under that ceiling once can only fail this on a configuration change, and
+  // then its entries wait together rather than half of them running.
+  if (exact && entries.length !== pending.length)
+    throw new Error(`${NOTING_CAPACITY}the frozen batch of ${pending.length} entries exceeds noting.batchTokens (${config.noting.batchTokens}); left pending`);
   // 25a: neither Noter mode receives a knowledge block, but a run still records which commits its
   // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId); // entry-aware (review 2026-09-08)
@@ -193,10 +216,16 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     // Optional history goes first (review 2026-09-08): trim the historical facts by the excess before
     // a selected entry is given up; only when none are left does the batch shrink.
     if (capacity && !prepared.over.episodic && prepared.material.facts.length) { history = Math.max(0, charge(prepared.material.facts) - (priced - capacity.inputTokens)); continue; }
+    // 27d (parent 27 amendment 6): under exact membership the batch never shrinks. Optional history
+    // is trimmed above, as in any freeze; a batch that still does not fit leaves every frozen entry
+    // pending under the diagnostic below, because a smaller batch is a membership change made after
+    // execution had already started.
+    if (exact) break;
     entries.pop(); history = historyCap;
   }
   // 27a: the diagnostic says what the numbers were — the last candidate the loop priced was the
-  // smallest one, the oldest entry alone.
+  // smallest one it was allowed to reach: the oldest entry alone, or, under 27d's exact membership,
+  // the whole frozen batch.
   if (pending.length) throw new Error(NOTING_CAPACITY
     + `${last!.episodic ? `it is ${last!.episodic} tokens over render.episodicBlockTokens (${config.render.episodicBlockTokens})` : `it costs ${last!.priced} tokens`}`
     + `${input.capacity ? ` against the ${input.capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
@@ -271,9 +300,21 @@ export async function runNoting(
   if (store.closed) return binding.committed ? { outcome: "success", ...binding.committed } : { outcome: "dropped" };
   // 27c: the host would not run this frozen task in the mode it was admitted for (its fork was
   // refused at the launch, by the host's gate or by the provider's context limit) and admits it once
-  // more itself. Nothing was committed, so no run is recorded for an attempt that becomes part of the
-  // next one: the refusal — with what the attempt spent — goes back to the host unread.
-  if (result.refused !== undefined) return { outcome: "dropped", refused: result.refused };
+  // more itself. Nothing was committed, so the refusal goes back to the host unread.
+  // 27d (user ruling 2026-09-10, superseding 27c's "one run record for both attempts"): each attempt
+  // is its own run record. An attempt that really sent a request is finalized here, before the
+  // refusal leaves — requested mode `fork`, outcome `failure`, the refusal reason among its problems,
+  // and exactly the usage, retries, request and native log it reported — so the spend is accounted
+  // whatever becomes of the re-admission, and the re-admitted run charges only itself. A refusal
+  // that sent nothing is not an attempt and records nothing; its gate result travels in the refusal.
+  // "Sent a request" is the reported request itself: the host reports one on its way out, and every
+  // refusal that sends nothing — a launch that never started, a gate that rejects inside the payload
+  // hook, before the body leaves — reports none.
+  if (result.refused !== undefined) {
+    if (result.request == null) return { outcome: "dropped", refused: result.refused };
+    recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched, problems: [String(result.output)] });
+    return { outcome: "dropped", refused: result.refused, runId: store.recordRun({ ...run, outcome: "failure" }).id };
+  }
   // 26a: the run ended normally, committed nothing and had nothing rejected. That is incomplete, not
   // an implicit empty submission: the attempt and its usage are recorded under the existing `failure`
   // outcome and no entry is marked processed. A provider failure or a cancellation keeps its own.

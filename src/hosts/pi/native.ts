@@ -112,15 +112,17 @@ export function placeholderUsage(usage: unknown): boolean {
   return Object.values(usage as Record<string, unknown>).every(value => !value || (typeof value === "object" && placeholderUsage(value)));
 }
 
-/** Adds one response's reported usage into a running total, counter by counter. Exported for 27b:
- * a run whose fork attempt fell back keeps what that attempt really spent beside the fresh child's
- * own usage, in the one run record both attempts share. */
+/** Adds one response's reported usage into a running total, counter by counter, over the UNION of
+ * both operands' keys (27d repair 5, review 2026-09-10): a counter only one side reports survives.
+ * A response that omits `reasoning` or `cacheWrite1h` reported nothing about it, and an unreported
+ * counter is never a reason to drop what the other response really counted. */
 export function addUsage(total: unknown, usage: unknown): unknown {
   if (usage === undefined || usage === null) return total;
   if (typeof usage === "number") return (typeof total === "number" ? total : 0) + usage;
   if (typeof usage !== "object") return usage;
   const left = (total && typeof total === "object" ? total : {}) as Record<string, unknown>;
-  return Object.fromEntries(Object.keys(usage as object).map(key => [key, addUsage(left[key], (usage as Record<string, unknown>)[key])]));
+  const right = usage as Record<string, unknown>;
+  return Object.fromEntries([...new Set([...Object.keys(left), ...Object.keys(right)])].map(key => [key, addUsage(left[key], right[key])]));
 }
 
 /** Reject a checkpoint whose ancestry ends in an assistant tool-call group with missing results. */

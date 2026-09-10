@@ -64,8 +64,11 @@ test("27c: the host's fork refusal arrives as a value, and the run comes back to
       onCache: () => {}, onRetry: () => {}, onRetryEnd: () => {} });
     // 27c: the adapter runs the task in the mode it was admitted for, and no other. The refusal names
     // the reason for the audit and the frozen batch the host must re-admit on; nothing was sent, so it
-    // carries no usage and no gate result, and no fresh child ran here on the frozen model.
-    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { maxEntryId: 8 } });
+    // carries no gate result, and no fresh child ran here on the frozen model.
+    // 27d: the batch is the exact entry ids, never an upper bound; the refusal carries no usage and
+    // no retries at all, because an attempt that spent something is its own run record.
+    expect(result.refused).toEqual({ reason: "native runner: No current-branch provider payload captured", boundary: { entryIds: [7, 8] } });
+    expect(result.request).toBeNull(); // which is how core tells an attempt from a refusal that never left
     expect(f.sent.length).toBe(before);
   } finally { await f.dispose(); }
 });

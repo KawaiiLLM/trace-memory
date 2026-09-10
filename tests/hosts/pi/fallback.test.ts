@@ -37,6 +37,14 @@ const OVERFLOW = "prompt is too long: 213462 tokens > 200000 maximum";
  * inherits the parent's system prompt and carries the Noter instructions in its appended message). */
 const fresh = (body: Body) => body.messages?.[0]?.role === "system" && String(body.messages[0].content).includes("Noting (fact extraction)");
 const forkAttempt = (body: Body) => worker(body) && !fresh(body);
+/** 27d (user ruling 2026-09-10, superseding 27c's "one run record for both attempts"): a fallback
+ * task leaves one record per attempt that sent a request — the refused fork first, then the
+ * re-admitted run. Waits for exactly `count` finished Noting records, oldest first. */
+const records = async (f: Awaited<ReturnType<typeof fixture>>, count: number) => await vi.waitFor(() => {
+  const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.response).sort((a, b) => a.id - b.id);
+  expect(runs).toHaveLength(count);
+  return runs;
+}, { timeout: 5000 });
 
 test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as a subagent, on the configured Noter model and its capacity", async () => {
   // The session model's window is 50,000, so the 40,000-token measure plus the Noter instructions
@@ -112,19 +120,28 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
       return submitted(body) ? say("Done.", wireUsage(7, 2)) : call("t1", "note", noteBatch, wireUsage(11, 3));
     });
     await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
+    // 27d: two records, one per attempt. The first is the fork attempt's own.
+    const [attempt, run] = await records(f, 2);
+    const first = JSON.parse(attempt!.response!), response = JSON.parse(run!.response!);
     expect(f.sent.filter(forkAttempt)).toHaveLength(1); // one fork attempt, and only one
-    expect(run.mode).toBe("subagent");
+    expect(attempt!.mode).toBe("fork");
+    expect(attempt!.outcome).toBe("failure");
+    expect(attempt!.model).toBe("fake/test"); // the session model it really ran on
+    expect(first.requestedMode).toBe("fork");
+    expect(first.problems.join(" ")).toContain(OVERFLOW);
+    expect(first.fallbackReason).toBeUndefined(); // the reason belongs to the run that fell back
+    expect(String(first.nativeLog).startsWith(`${f.runsDir}/`)).toBe(true);
+    expect(first.verification.passed).toBe(true); // the attempt really went out: its gate result is kept
+    expect(run!.mode).toBe("subagent");
     expect(response.requestedMode).toBe("fork");
     // 27c: the fork attempt ran on the session model; the re-admission runs — and is charged — on the
     // configured Noter model, priced by that model's own capacity.
     expect(f.sent.filter(forkAttempt)[0]!.model).toBe("test");
     expect(f.sent.filter(fresh).map((body: Body) => body.model)).toEqual(["test-mini", "test-mini"]);
-    expect(run.model).toBe("fake/test-mini");
+    expect(run!.model).toBe("fake/test-mini");
     expect(response.fallbackReason).toContain("context overflow");
     expect(response.fallbackReason).toContain(OVERFLOW);
-    expect(response.verification.passed).toBe(true); // the attempt really went out: its gate result is kept
+    expect(response.fallbackReason).toContain(`R${attempt!.id}`); // and names the attempt's own record
     // The same frozen membership, and the evidence committed once.
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId))
       .toEqual(f.h.memory.store.listSourceEntries(1).map(e => e.nativeId));
@@ -133,9 +150,11 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     // the SDK's placeholder zeros, which are unknown, never a paid successful generation.
     expect(response.usage.input).toBe(18);
     expect(response.usage.output).toBe(5);
+    expect(first.usage).toBeNull(); // and the attempt's record reports its own unknown, not the fresh child's spend
     // One submission across both attempts: the rejected attempt executed no tool, and its child was
     // disposed before the fresh one started, so nothing of it could still write.
     expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["note"]);
+    expect(first.toolCalls).toEqual([]);
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
   } finally { await f.dispose(); }
 }, 30000);
@@ -224,7 +243,13 @@ test("27c 2026-09-10: a fresh rebuild the re-admission cannot fit leaves the fro
     expect(f.sent.filter(fresh)).toEqual([]); // the fresh child never started: nothing fit its window
     expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1); // the transition happened
     expect(f.h.notices.some(n => n.includes("already cost"))).toBe(true); // and its own refusal is the diagnostic
-    expect(f.h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toEqual([]); // neither attempt recorded a run
+    // 27d (the review's zero-record case): the attempt that really sent a request is recorded even
+    // though the re-admission never ran. Its spend is accounted, and only it — nothing was committed.
+    const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.mode).toBe("fork");
+    expect(runs[0]!.outcome).toBe("failure");
+    expect(JSON.parse(runs[0]!.response!).problems.join(" ")).toContain(OVERFLOW);
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
     expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0); // the evidence waits
   } finally { await f.dispose(); }
@@ -237,14 +262,17 @@ test("27b 2026-09-10: at most one transition per task — the fresh child's own 
     // nothing falls back again: its failure is the run's failure.
     f.script((body: Body) => !worker(body) ? say("好的。") : rejected(OVERFLOW));
     await f.turn();
-    const run = await settled(f);
-    const response = JSON.parse(run.response!);
+    const [attempt, run] = await records(f, 2);
+    const response = JSON.parse(run!.response!);
     expect(f.sent.filter(forkAttempt)).toHaveLength(1);
     expect(f.sent.filter(fresh)).toHaveLength(1);
-    expect(run.mode).toBe("subagent");
-    expect(run.outcome).toBe("failure");
+    expect(attempt!.mode).toBe("fork");   // 27d: the refused attempt is its own record
+    expect(attempt!.outcome).toBe("failure");
+    expect(run!.mode).toBe("subagent");
+    expect(run!.outcome).toBe("failure");
     expect(response.problems.join(" ")).toContain(OVERFLOW);
     // Neither attempt reported usage, and unknown stays unknown rather than a fabricated zero.
+    expect(JSON.parse(attempt!.response!).usage).toBeNull();
     expect(response.usage).toBeNull();
     expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
     expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
@@ -414,5 +442,102 @@ test("27c 2026-09-10: the re-admission keeps the frozen entry membership — evi
     expect(response.entryAudit.entries.map((e: { nativeId: string }) => e.nativeId)).toEqual(frozen);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     expect(f.h.memory.pendingEntries(1, "main", f.h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
+  } finally { await f.dispose(); }
+}, 30000);
+
+
+// ------------------------------------------- 27d: one run record per attempt, exact membership
+
+test("27d 2026-09-10 (user ruling): a fork attempt that sent a round is its own run record, and the re-admitted run charges only itself", async () => {
+  // The attempt spends one paid tool round and is then rejected for capacity. Before 27d both
+  // attempts shared one record and the attempt's usage was merged into the fresh child's.
+  const f = await fixture({ notingModel: "fake/test-mini" });
+  try {
+    let forks = 0;
+    f.script((body: Body) => {
+      if (!worker(body)) return say("好的。");
+      if (!fresh(body)) return ++forks === 1 ? call("r1", "search", { query: "pnpm" }, wireUsage(1234, 7)) : rejected(OVERFLOW);
+      return submitted(body) ? say("Done.", wireUsage(7, 2)) : call("t1", "note", noteBatch, wireUsage(11, 3));
+    });
+    await f.turn();
+    const [attempt, run] = await records(f, 2);
+    const first = JSON.parse(attempt!.response!), second = JSON.parse(run!.response!);
+    expect(forks).toBe(2); // one tool round, then the overflow
+    // The attempt's own record: the mode and model it ran in, its own usage, its tool call and its log.
+    expect(attempt!.mode).toBe("fork");
+    expect(attempt!.outcome).toBe("failure");
+    expect(attempt!.model).toBe("fake/test");
+    expect(first.requestedMode).toBe("fork");
+    expect(first.usage.input).toBe(1234);
+    expect(first.usage.output).toBe(7);
+    expect(first.toolCalls.map((c: { name: string }) => c.name)).toEqual(["search"]);
+    expect(String(first.nativeLog).startsWith(`${f.runsDir}/`)).toBe(true);
+    expect(first.fallbackReason).toBeUndefined();
+    expect(first.problems.join(" ")).toContain(OVERFLOW);
+    // The re-admitted run records what IT spent — the fresh child's two responses, never 1234 more —
+    // and names the record of the attempt it followed, so the two read as the one task they are.
+    expect(run!.mode).toBe("subagent");
+    expect(run!.model).toBe("fake/test-mini");
+    expect(run!.outcome).toBe("success");
+    expect(second.usage.input).toBe(18);
+    expect(second.usage.output).toBe(5);
+    expect(second.fallbackReason).toContain("context overflow");
+    expect(second.fallbackReason).toContain(`R${attempt!.id}`);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
+    expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+  } finally { await f.dispose(); }
+}, 30000);
+
+test("27d 2026-09-10: an unavailable fallback model leaves the paid attempt's own record — never a task with two requests and no accounting", async () => {
+  // The review's zero-record case, with a fallback model that does not exist at all.
+  const f = await fixture({ notingModel: "absent/mini" });
+  try {
+    let forks = 0;
+    f.script((body: Body) => {
+      if (!worker(body)) return say("好的。");
+      if (fresh(body)) throw new Error("an unavailable fallback model must send nothing");
+      return ++forks === 1 ? call("r1", "search", { query: "pnpm" }, wireUsage(1234, 7)) : rejected(OVERFLOW);
+    });
+    await f.turn();
+    await vi.waitFor(() => expect(f.h.notices.some(n => n.includes("unavailable model context window"))).toBe(true), { timeout: 5000 });
+    const [attempt] = await records(f, 1);
+    expect(forks).toBe(2);
+    expect(attempt!.mode).toBe("fork");
+    expect(attempt!.outcome).toBe("failure");
+    expect(JSON.parse(attempt!.response!).usage.input).toBe(1234); // the spend is accounted, not lost
+    expect(f.sent.filter(fresh)).toEqual([]);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0); // and the evidence waits
+  } finally { await f.dispose(); }
+}, 30000);
+
+test("27d 2026-09-10 (parent 27 amendment 6): a fallback model that cannot hold the whole frozen batch leaves it pending, never a smaller batch", async () => {
+  // The review's membership case: the fork froze two entries, and the configured Noter model's own
+  // window holds only one. Before 27d the fallback reported success on the subset it could fit.
+  const f = await fixture({ notingModel: "fake/test-mini" });
+  try {
+    const find = f.h.ctx.modelRegistry.find.bind(f.h.ctx.modelRegistry);
+    f.h.ctx.modelRegistry.find = ((provider: string, id: string) => {
+      const model = find(provider, id);
+      return id === "test-mini" && model ? { ...model, contextWindow: 18_000 } : model;
+    }) as typeof f.h.ctx.modelRegistry.find;
+    let frozen: number[] = [];
+    f.script((body: Body) => {
+      if (!worker(body)) return say("word ".repeat(3000));
+      if (fresh(body)) throw new Error("a batch that does not fit whole must send nothing");
+      frozen = f.h.memory.store.listSourceEntries(1).map(e => e.id);
+      return rejected(OVERFLOW);
+    });
+    await f.turn("word ".repeat(3000));
+    await vi.waitFor(() => expect(f.h.notices.some(n => n.includes("left pending"))).toBe(true), { timeout: 5000 });
+    expect(frozen.length).toBeGreaterThan(1);
+    // The refusal is the capacity loop's own — the batch was priced whole and did not fit — not the
+    // preflight floor, which would have refused before any entry was selected.
+    expect(f.h.notices.some(n => n.includes("it costs"))).toBe(true);
+    // Only the attempt's own record exists: no subagent run took a subset of the frozen evidence.
+    const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "noting");
+    expect(runs.map(r => r.mode)).toEqual(["fork"]);
+    expect(f.h.memory.store.listSessionFacts(1)).toEqual([]);
+    expect(f.h.memory.pendingEntries(1, "main", f.h.memory.store.listTurns(1).at(-1)!.id).map(e => e.id)).toEqual(frozen);
   } finally { await f.dispose(); }
 }, 30000);

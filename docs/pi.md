@@ -546,8 +546,9 @@ chaining happens only inside this host-local controller (`driveCatchup`), which
 is the sole exception to 17b/17c's no-completion-chaining rule; ordinary entry
 events never expand the frozen target or start a second scheduling loop. The
 core façade enforces the same boundary through an optional `boundary:
-{maxEntryId, factIds}` on `noting`/`consolidate` input, so a host bug cannot
-silently widen what a bounded call is allowed to see.
+{maxEntryId, entryIds, factIds}` on `noting`/`consolidate` input (`entryIds` is
+27d's exact-membership form, used by the fork fallback, not by this drain), so a
+host bug cannot silently widen what a bounded call is allowed to see.
 
 The drain reuses 17c's one Noter slot, one Consolidator slot and one target
 phase claim per executor — no second queue, worker pool or claim table. An
@@ -868,17 +869,38 @@ The reasons, and where each is decided:
 **One transition per task, structurally.** A re-admitted task carries its reason, and a task
 carrying one is not offered a fork at all, so it cannot be refused one — its own failure is the
 run's failure, never hidden by the warning. A task that already ran keeps its frozen evidence
-membership across the re-admission through 18b's task boundary (`maxEntryId` = the frozen batch's
-last entry id), so evidence that arrived while the attempt was in flight waits for the next batch.
-If the re-admission cannot fit the batch either, that refusal is what is reported and the evidence
-stays pending.
+membership across the re-admission through the task boundary — **27d: `entryIds`, the frozen
+batch's exact ids, never `maxEntryId`'s upper bound** (parent 27 amendment 6). The freeze takes
+those entries whole: it trims optional history if that is what makes them fit, never pops one, and
+leaves the whole batch pending under the existing `NOTING_CAPACITY` diagnostic when the fallback
+model cannot hold it. A member that is no longer pending was completed by another executor under
+its own claim, and drops this task with the `NOTING_MEMBERSHIP` reason instead of re-processing the
+rest. Evidence that arrived while the attempt was in flight waits for the next batch either way.
 
-**One run record per task.** No run is recorded for a refused attempt: core hands the refusal back
-to the host unread (`RunAgentResult.refused`, `outcome: "dropped"`), and what the attempt produced
-— its usage, its retries and its gate result — travels into the re-admission
-(`TaskOptions.forkAttempt`) and is recorded there, beside the fork child's log named in the reason.
-A rejected request reports the SDK's placeholder zeros, which stay unknown: never a paid successful
-generation, never a zero.
+**One run record per attempt** (user ruling 2026-09-10; it supersedes 27c's "one run record for
+both attempts", which was ticket text and never a ruling). An attempt that **sent a provider
+request** and was then refused is finalized by core before the refusal goes back to the host:
+requested mode `fork`, outcome `failure`, the refusal reason among its `problems`, and exactly the
+usage, retries, request and `nativeLog` it reported — no `fallbackReason`, which belongs to the run
+that fell back. Core returns that record's id with the refusal (`NotingResult.runId`), and the
+re-admitted run names it in its own reason (`… (fork attempt recorded as R<n>)`) while charging
+only what it spent itself. A refusal that **sent nothing** — a launch-time refusal, the native
+gate's rejection inside `onPayload` — is not an attempt: it records no run, and its rejected gate
+result travels in `TaskOptions.forkAttempt` into the re-admitted run's record. So a task whose
+fallback never runs (an unavailable fallback model, a batch the fallback cannot hold) still leaves
+the attempt's own accounting behind. A rejected request reports the SDK's placeholder zeros, which
+stay unknown: never a paid successful generation, never a zero.
+
+**The levels and the cancellation fence travel with the refusal** (27d). The `thinkingLevel` and
+`subagentThinkingLevel` frozen at the first admission are reused by the re-admission, which reads
+neither `pi.getThinkingLevel()` nor the phase's `…Thinking` preference again — repricing fresh
+material is not permission to reread a frozen policy choice (parent 27 line 96; 26d's freeze rule).
+The subagent *model* is still selected by the configured preference at re-admission: that is its
+first selection, not a reread. Core keeps a cancellation generation that `cancelTasks()` advances
+whether or not it is stopping; admission freezes it with the task and the refusal carries it, so a
+re-admission that arrives after a `/trace stop`, a shutdown or a disabled enrollment is dropped
+with `reason: "cancelled before fallback"` — it launches nothing and warns nothing (parent 27
+line 83).
 
 Every one of these is a warning, not an error: none sets the cache-miss latch, changes a setting, a
 default mode or a persisted mode, and a later task may request fork again. One warning per Pi

@@ -129,9 +129,16 @@ model can see. If the oldest entry alone does not fit, core raises a capacity pr
 once more without an inherited prefix — the Pi host does, on its subagent model (27b) — which is an
 ordinary second `noting(...)` call, freezing its own material: core neither loops nor retries. The
 same is true of a task the host refuses *after* admission (`refused`, 27c): the re-admission is one
-more ordinary call, bounded to the frozen batch by the existing `boundary` if the host wants the same
-entries. All core carries for either is opaque and unread — `fallbackReason` and `forkAttempt`,
-handed back with the frozen task beside `thinkingLevel`.
+more ordinary call, bounded to the frozen batch by `boundary.entryIds` — exact membership, 27d — if
+the host wants the same entries. Most of what core carries for either is opaque and unread —
+`fallbackReason` and `forkAttempt`, handed back with the frozen task beside `thinkingLevel`.
+`cancellation` is not: it is core's own generation, frozen at admission, handed to the run and
+compared when the host admits the task again (27d, parent 27 line 83), so a task cancelled while its
+attempt was in flight is dropped with `reason: "cancelled before fallback"` instead of launching a
+fallback. 27d also made each attempt its own run record: a refusal whose result carries a `request`
+really sent one, so core finalizes that attempt (`fork`/`failure`, its own usage, retries, request
+and `nativeLog`) and returns its id as `NotingResult.runId`; a refusal with no request recorded
+nothing, and the run the re-admission makes charges only itself.
 
 ## Rendering decisions
 
@@ -659,12 +666,19 @@ usage; closed tools and rejection handlers prevent late store access.
 ## Manual catchup boundary (18b)
 
 `TaskOptions` (shared by `NotingInput` and `ConsolidateInput`) gains an optional
-`boundary: { maxEntryId?: number; factIds?: number[] }`. Absent, selection is
-the ordinary unbounded pending set; nothing about existing automatic callers
-changes. When present, `freezeNoting` filters `pendingEntries` to ids no later
-than `maxEntryId` before its usual batch-token loop, and `freezeConsolidation`
-filters `consolidationBatch` to exactly `factIds` before building its range;
-both reuse the same store readers rather than adding a second selection query.
+`boundary: { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }`.
+Absent, selection is the ordinary unbounded pending set; nothing about existing
+automatic callers changes. When present, `freezeNoting` filters `pendingEntries`
+to ids no later than `maxEntryId` before its usual batch-token loop, and
+`freezeConsolidation` filters `consolidationBatch` to exactly `factIds` before
+building its range; both reuse the same store readers rather than adding a second
+selection query. `entryIds` (27d, parent 27 amendment 6) is Noting's *exact*
+membership form, the same shape `factIds` already is, and it is what a fork
+fallback re-admits on: the freeze selects exactly those pending entries, trims
+optional history to fit them, never pops one, raises `NOTING_CAPACITY` when they
+do not fit whole, and raises `NOTING_MEMBERSHIP` — which `execute` turns into
+`{ outcome: "dropped", reason }` — when one of them is no longer pending, because
+another executor's claim already completed it.
 `execute`'s pre-freeze emptiness check applies the identical filter so a target
 that is empty within its frozen boundary reports `"empty"` without acquiring a
 claim, even while unrelated later entries or facts remain pending outside it.

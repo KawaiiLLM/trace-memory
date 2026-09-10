@@ -251,9 +251,14 @@ test("26c revision 3 (b): a cancelled and a failed attempt append no compaction,
   try {
     f.script(() => say("好的。"));
     await f.session.prompt("first"); await f.session.prompt("second");
+    // 27d repair 6 (review 2026-09-10): P, the ORIGINAL point both retries are made at — the leaf the
+    // first compaction was prepared from, as the sibling case (c) saves it. Rewinding to the first
+    // attempt's preparation entry instead would have retried from a different point, which is not the
+    // proof the ruling asks for: a retry at the same original point.
+    const point = f.manager.getLeafId()!;
     await f.session.compact();
     const c1 = compactions(f.manager)[0]!;
-    const point = c1.parentId!; // the first attempt's preparation entry
+    expect(custom(f.manager, c1.parentId!).parentId).toBe(point); // its preparation entry hangs from P
 
     // A cancelled attempt: the hook prepares, then the compaction is aborted through
     // `session.abortCompaction()`. Pi's abort check (agent-session.js:1536-1538) throws before
@@ -266,15 +271,16 @@ test("26c revision 3 (b): a cancelled and a failed attempt append no compaction,
     expect(f.manager.getLeafId()).toBe(cancelled); // the orphaned preparation entry is the leaf
     expect(custom(f.manager, cancelled).data).toEqual({ considered: [1, 2] });
 
-    // A failed attempt: declined to Pi, whose own summary call fails. Same outcome — a preparation
-    // entry with no compaction under it, and no entry of Pi's at all.
+    // A failed attempt, at that same original point: declined to Pi, whose own summary call fails.
+    // Same outcome — a preparation entry with no compaction under it, and no entry of Pi's at all.
+    f.manager.branch(point);
     plan = { data: { considered: [1, 2, 3] }, decline: true };
     f.script(() => failed());
     await expect(f.session.compact()).rejects.toThrow(/exploded|failed/i);
     const orphan = record.preps[2]!;
     expect(compactions(f.manager)).toHaveLength(1);
     expect(f.manager.getLeafId()).toBe(orphan);
-    expect(custom(f.manager, orphan).parentId).toBe(cancelled); // it hangs from the cancelled attempt's entry
+    expect(custom(f.manager, orphan).parentId).toBe(point); // a third sibling under P, not a chain
 
     // The first compaction's baseline is exactly what it was: nothing was overwritten or recomputed.
     expect(compactions(f.manager)[0]!.id).toBe(c1.id);
@@ -414,4 +420,3 @@ test("26c revision 3 (b): the preparation entry is invisible to the model and tr
     expect(f.h.memory.store.listSourceEntries(1).map(e => e.nativeId)).not.toContain(prep);
   } finally { await f.dispose(); }
 }, 30000);
-

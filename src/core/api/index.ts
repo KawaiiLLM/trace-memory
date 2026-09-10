@@ -5,7 +5,7 @@ import { readFacade, type ListingOptions, type SearchScope, type CompactResult, 
 export type { ListingOptions, SearchScope, CompactResult, TopicGroups } from "./read.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
-import { freezeNoting, runNoting, type NotingInput, type NotingResult } from "../noting/index.ts";
+import { freezeNoting, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
 export { tokens, renderEntry, renderEntryWhole, rawResultText, finish, runMode, ENTRY_VIEW_VERSION } from "../render/index.ts";
@@ -18,7 +18,7 @@ export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry } from "../store/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
-export { NOTING_CAPACITY, NOTING_INCOMPLETE } from "../noting/index.ts";
+export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
 import { freezeConsolidation, runConsolidation, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
@@ -241,10 +241,20 @@ export interface RunAgentResult {
 
 }
 
-/** A manual catchup's frozen target: `maxEntryId` bounds Noting to entries allocated no later than
- * the freeze instant; `factIds` bounds Consolidation to the frozen pending-plus-produced fact set.
- * Absent, selection is the ordinary unbounded pending set (18b). */
-export interface TaskBoundary { maxEntryId?: number; factIds?: number[] }
+/** 27d repair 4: the reason a re-admission cancelled between its refusal and this call is dropped
+ * with. It launches nothing, records nothing and — the host reads this value for exactly that —
+ * warns nothing, because the user who cancelled asked for no further work, not for a notice. */
+export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
+
+/** A frozen target: `maxEntryId` bounds Noting to entries allocated no later than a manual catchup's
+ * freeze instant; `factIds` bounds Consolidation to the frozen pending-plus-produced fact set.
+ * Absent, selection is the ordinary unbounded pending set (18b).
+ *
+ * 27d (parent 27 amendment 6): `entryIds` is Noting's *exact membership* form — the same shape
+ * `factIds` already is — and it is what a fork fallback re-admits on. An upper bound prevents later
+ * arrivals from joining but permits a smaller batch, which is a membership change after execution
+ * started; under `entryIds` the freeze takes exactly those entries or the task stays pending. */
+export interface TaskBoundary { maxEntryId?: number; entryIds?: number[]; factIds?: number[] }
 export interface TaskOptions {
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
@@ -265,9 +275,14 @@ export interface TaskOptions {
    * it back with the frozen task and it becomes the run's `fallbackReason`. */
   fallbackReason?: string;
   /** 27c: the refusal of this task's previous attempt, handed back by the host on the re-admission so
-   * the run that does happen keeps what that attempt produced — its usage, its retries and its gate
-   * result. Opaque to core, like `fallbackReason`: carried to the frozen task and never read. */
+   * the run that does happen keeps the gate result of an attempt that recorded no run of its own.
+   * Opaque to core, like `fallbackReason`: carried to the frozen task and never read. */
   forkAttempt?: unknown;
+  /** 27d repair 4 (parent 27 line 83): the cancellation generation this task was first admitted
+   * under, as core handed it to the host with that task. Core's own value, not an opaque one: a
+   * re-admission carrying a generation older than the current one was cancelled between the refusal
+   * and this call, and is dropped without launching anything. */
+  cancellation?: number;
 }
 export interface AgentControl {
   signal?: AbortSignal;
@@ -281,8 +296,12 @@ export interface AgentControl {
    * the frozen task so this run launches no fork whatever the host's live state says now. */
   fallbackReason?: string;
   /** 27c: the previous attempt's refusal (`TaskOptions.forkAttempt`), returned with the frozen task
-   * so this run's record keeps what that attempt produced. */
+   * so this run's record keeps the gate result of an attempt that recorded no run of its own. */
   forkAttempt?: unknown;
+  /** 27d: core's cancellation generation, frozen at this admission. A host that returns a refusal
+   * carries it back with the re-admission (`TaskOptions.cancellation`), which is what fences a task
+   * cancelled while its attempt was in flight. */
+  cancellation?: number;
 }
 
 export type RunAgent = (input: unknown) => Promise<RunAgentResult>;
@@ -352,8 +371,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const executorId = randomUUID();
   let stopping = false;
   const tasks = new Set<{ controller: AbortController; force(): void; close(): void }>();
+  // 27d repair 4 (parent 27 line 83): the cancellation generation. Every cancellation advances it,
+  // stop or not — `/trace stop` cancels without stopping, and a task cancelled that way must not
+  // come back through a fork fallback either. Admission freezes it with the task, the host carries
+  // it in the refusal, and the re-admission below compares. It fences the window `stopping` cannot:
+  // a task whose attempt was already in flight, whose abort raced the provider's own answer.
+  let cancellation = 0;
   const cancelTasks = (stop = false) => {
     stopping ||= stop;
+    cancellation++;
     try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
     finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
   };
@@ -498,6 +524,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (phase === "consolidation" && (input.mode === "fork" || input.effectiveMode === "fork"))
       throw new Error(`Invalid consolidation mode fork: ${CONSOLIDATION_SUBAGENT_ONLY}`);
     if (stopping || store.closed || !store.enabled(input.sessionId)) return { outcome: "dropped" };
+    // 27d repair 4 (parent 27 line 83): "User cancellation, stop, shutdown, claim loss or disabled
+    // enrollment must not launch fallback work." A task cancelled between its refusal and this
+    // re-admission carries a generation older than the current one: it launches nothing, records
+    // nothing and warns nothing. The generation frozen below is what its own refusal would carry.
+    if (input.cancellation !== undefined && input.cancellation < cancellation)
+      return { outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK };
+    const generation = cancellation;
     const target = { sessionId: input.sessionId, branch: input.branch,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
     const closedSessionScope = cfg.closedSessionScope;
@@ -513,8 +546,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
       // do not turn "empty within the target" into "dropped", nor expand what a batch may take.
+      // 27d: `entryIds` is read here exactly as `factIds` already is — none of the frozen members
+      // still pending is "empty within the target"; a partial survivor is the drop `freezeNoting`
+      // diagnoses below, never a silently smaller batch.
       empty = !boundary ? !pendingNow.length
-        : phase === "noting" ? !pendingNow.some(e => boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId)
+        : phase === "noting" ? !pendingNow.some(e => (!boundary.entryIds || boundary.entryIds.includes((e as { id: number }).id))
+            && (boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId))
         : !pendingNow.some(f => !boundary.factIds || boundary.factIds.includes((f as { id: number }).id));
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
@@ -531,6 +568,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
       return phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
     }); } catch (error) {
+      // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
+      // processed is not an admission failure and not work to retry — the claim that completed it
+      // has already been honoured, so this task simply drops, carrying the diagnostic that says so.
+      if (error instanceof Error && error.message.startsWith(NOTING_MEMBERSHIP)) return { outcome: "dropped", reason: error.message };
       throw new Error(error instanceof Error ? error.message : String(error), { cause: "task admission" });
     }
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
@@ -549,7 +590,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     const agent: RunAgent = raw => {
       controller.signal.throwIfAborted();
-      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt,
+      return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
     let result: NotingResult | ConsolidateResult | undefined;
@@ -561,7 +602,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       task.close(); tasks.delete(task);
       try { if (!store.closed) store.releaseClaim(claim); }
       catch (error) {
-        if (result && "runId" in result) result.problems = [...(result.problems ?? []), `claim release failed: ${String(error)}`];
+        // 27d: a dropped result may now carry the `runId` of a refused attempt's own record, so the
+        // variants that own a `problems` list are selected by outcome rather than by that key.
+        if (result && result.outcome !== "dropped" && result.outcome !== "empty") result.problems = [...(result.problems ?? []), `claim release failed: ${String(error)}`];
         else throw error;
       }
     }

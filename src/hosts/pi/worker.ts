@@ -11,7 +11,7 @@
 // extension (tests/package-smoke.mjs catches it). No pattern list of ours, and no error string
 // rebuilt from the terminal message.
 import { isContextOverflow } from "@earendil-works/pi-ai";
-import { addUsage, NotForkable, runNative, type CacheObservation, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
+import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
 import type { ConsolidationAgentInput, NotingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 
@@ -24,20 +24,38 @@ export interface ForkLaunch { parentFile: string; parentSessionId: string; check
  * `native` — the rejected one a fallback still records, with both hashes and the differing path. */
 type RunVerification = Partial<NativeVerification> & { rounds: NativeVerification["rounds"]; native?: NativeVerification };
 
-/** 27c (parent 27 "Per-task fork fallback"): why this task did not run with inherited context, and
- * what the refused attempt already produced. `runWorker` returns it instead of rerunning the frozen
- * task itself: the host admits the task once more — the configured subagent model, that model's
- * capacity, fresh material — and hands this back with the re-admission, so the one run that happens
- * keeps the attempt's usage, its retries and its gate result. */
+/** 27c (parent 27 "Per-task fork fallback"): why this task did not run with inherited context.
+ * `runWorker` returns it instead of rerunning the frozen task itself: the host admits the task once
+ * more — the configured subagent model, that model's capacity, fresh material — and hands this back
+ * with the re-admission.
+ *
+ * 27d (user ruling 2026-09-10, "each attempt is its own run record"): it carries no usage and no
+ * retries any more. An attempt that really sent a request is recorded by core as its own `fork`
+ * run before this value goes back to the host, and the re-admitted run records only its own spend.
+ * What stays here is what the NEXT admission needs and could not derive: why, on which entries, at
+ * which frozen levels, under which cancellation generation, and — for a refusal that sent nothing —
+ * the rejected gate result, which has no run record of its own to live on. */
 export interface ForkRefusal {
   /** The run's recorded `fallbackReason` and the text of the one warning. */
   reason: string;
   /** Noting's frozen batch, so the re-admission selects the same entries: 18b's task boundary, the
-   * mechanism a manual catchup already freezes its target with. */
-  boundary?: { maxEntryId?: number };
-  usage?: unknown;
-  retries?: { attempt: number; error: string }[];
+   * mechanism a manual catchup already freezes its target with. 27d (parent 27 amendment 6): the
+   * exact ids, never an upper bound — an upper bound prevents additions but permits a smaller batch. */
+  boundary?: { entryIds?: number[] };
+  /** The rejected gate result of a refusal that sent nothing, which the re-admitted run records
+   * (a refused attempt that did send one records its own gate result on its own run). */
   verification?: RunVerification;
+  /** 27d repair 3 (parent 27 line 96; 26d's freeze rule): the two levels this task was admitted at.
+   * The re-admission reuses them and reads neither the foreground level nor the phase's preference
+   * again — repricing fresh material is not permission to reread a frozen policy choice. */
+  thinkingLevel?: string;
+  subagentThinkingLevel?: string;
+  /** 27d repair 4 (parent 27 line 83): core's cancellation generation, frozen at this task's
+   * admission. A re-admission whose carried generation is older than core's current one is dropped. */
+  cancellation?: number;
+  /** The run core recorded for the refused attempt, when that attempt sent a request. The
+   * re-admitted run names it in its own `fallbackReason`, so the two records read as one task. */
+  runId?: number;
 }
 
 /** What the host hands one run. Values, not the host's live state; the callbacks are the only way
@@ -82,20 +100,18 @@ function overflowFallback(native: NativeResult, model: WorkerModel, signal?: Abo
 export async function runWorker(task: Task, binding: WorkerBinding): Promise<RunAgentResult> {
   const { model } = binding;
   let request: unknown = null;
-  // 27b/27c: what the fork attempt this task was already refused for had produced — its usage, its
-  // retries and its gate result — handed back by the host with the re-admission, so both attempts
-  // stay in the one run record this task produces. A rejected request reports the SDK's placeholder
-  // zeros, which `runNative` never counts, so unknown stays unknown rather than becoming a free
-  // request.
-  const carried = task.forkAttempt as ForkRefusal | undefined;
-  let verification = carried?.verification;
+  // 27c/27d: the gate result of a refusal that sent nothing — the only evidence of the previous
+  // attempt this run still records, because a refusal that sent nothing has no run record of its
+  // own. Usage and retries are not carried any more: each attempt is its own run record (27d), so
+  // this run reports only what it spends itself.
+  let verification = (task.forkAttempt as ForkRefusal | undefined)?.verification;
   // 27c: the reason frozen with this task at the admission that decided it runs fresh; the run this
   // adapter is running now is the one that records it.
   let fallbackReason: string | undefined = task.fallbackReason;
   let mode: "fork" | "subagent" = "subagent";
-  let usage: unknown = carried?.usage;
+  let usage: unknown;
   let thinking: RunAgentResult["thinking"]; // reported by the runner as soon as the child exists (review 2026-09-10 P2)
-  const retries: { attempt: number; error: string }[] = [...(carried?.retries ?? [])];
+  const retries: { attempt: number; error: string }[] = [];
   const progress = () => task.reportProgress?.({ usage, retries: [...retries], request, mode, verification, fallbackReason, thinking });
   try {
     task.signal?.throwIfAborted();
@@ -121,20 +137,25 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {
         if (state.thinking) thinking = state.thinking;
-        usage = carried ? addUsage(carried.usage, state.usage) : state.usage;
-        retries.splice(0, retries.length, ...(carried?.retries ?? []), ...state.retries); progress(); },
+        usage = state.usage;
+        retries.splice(0, retries.length, ...state.retries); progress(); },
       onRetry: binding.onRetry, onRetryEnd: binding.onRetryEnd,
     };
     if (task.mode === "fork" && binding.fork) {
       // 27c: whatever refuses this fork, the answer is the same one — the task comes back to the host,
       // which admits it once more on the configured subagent model and its capacity. Nothing is rerun
-      // here on the model this task was frozen with, and no run is recorded for the refused attempt:
-      // what it produced travels in the refusal and is charged to the run the re-admission makes.
-      // The outcome beside it is what a caller that ignored `refused` would have to record, and it is
-      // the honest one: nothing was committed and the evidence stays pending.
-      const refused = (reason: string, attempt: Partial<ForkRefusal> = {}): RunAgentResult =>
-        ({ outcome: "failure", output: reason, request,
-          refused: { reason, ...(task.kind === "noting" ? { boundary: { maxEntryId: task.entryIds.at(-1) } } : {}), ...attempt } satisfies ForkRefusal });
+      // here on the model this task was frozen with.
+      // 27d: the result beside the refusal is this attempt's own run record, as core writes it when
+      // the attempt sent a request (`request != null`; the gate rejects inside `onPayload`, before a
+      // body leaves, so a refusal that sent nothing reports none). It is the honest outcome either
+      // way: nothing was committed and the evidence stays pending.
+      const refused = (reason: string, attempt: Partial<RunAgentResult> = {}, gate?: RunVerification): RunAgentResult =>
+        ({ outcome: "failure", output: reason, request, ...attempt,
+          refused: { reason, ...(task.kind === "noting" ? { boundary: { entryIds: [...task.entryIds] } } : {}),
+            ...(task.thinkingLevel !== undefined ? { thinkingLevel: task.thinkingLevel } : {}),
+            ...(task.subagentThinkingLevel !== undefined ? { subagentThinkingLevel: task.subagentThinkingLevel } : {}),
+            ...(task.cancellation !== undefined ? { cancellation: task.cancellation } : {}),
+            ...(gate ? { verification: gate } : {}) } satisfies ForkRefusal });
       try {
         // Every host-side precondition — the cache-miss latch, post-compaction evidence, the branch,
         // the captured payload, the parent file and its leaf — was decided before this run started
@@ -150,8 +171,12 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         // usage, retries and log go with it. Every other ending — success, an authentication or
         // rate-limit failure, a cancellation, a failure after a commit — is this run's outcome.
         if (overflowFallback(native, model, task.signal))
+          // 27d: this attempt sent a request, so it is its own `fork`/`failure` run — its usage, its
+          // retries, its gate result, its log and the level it really ran at go on THAT record, and
+          // none of them is carried into the re-admitted run.
           return refused(`context overflow: ${native.output}${native.nativeLog ? ` (fork attempt log: ${native.nativeLog})` : ""}`,
-            { usage: native.usage, retries: native.retries, verification });
+            { mode: "fork", usage: native.usage, retries: native.retries, verification, thinking: native.thinking,
+              ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}) });
         mode = "fork";
         usage = native.usage;
         retries.splice(0, retries.length, ...native.retries);
@@ -161,7 +186,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         if (!(error instanceof NotForkable)) throw error;
         // Nothing was sent and nothing was committed. A rejected gate travels with the refusal, so
         // the run the re-admission makes still records both hashes and the differing path.
-        return refused(`native runner: ${error.message}`, error.verification ? { verification: { rounds: [], native: error.verification } } : {});
+        return refused(`native runner: ${error.message}`, {}, error.verification ? { rounds: [], native: error.verification } : undefined);
       }
     }
     // Native subagent parity (19b): explicit subagent mode, a task re-admitted after a fork refusal
@@ -175,9 +200,9 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     const native = await runNative({ ...common, thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
       mode: "subagent", systemPrompt: task.prompt, task: task.text.fresh });
     mode = "subagent";
-    usage = carried ? addUsage(carried.usage, native.usage) : native.usage;
+    usage = native.usage;
     request = native.request ?? request;
-    retries.splice(0, retries.length, ...(carried?.retries ?? []), ...native.retries);
+    retries.splice(0, retries.length, ...native.retries);
     return { outcome: native.outcome, output: native.output, usage, request, mode, verification, fallbackReason, thinking: native.thinking,
       ...(native.nativeLog ? { nativeLog: native.nativeLog } : {}), ...(retries.length ? { retries } : {}) };
   } catch (error) {
