@@ -584,13 +584,13 @@ test("project mark merges an undeclared own project, relabels facts and knowledg
   expect(memory.inject(s.id)).toContain(`[K${own}@${own}]`);
 });
 
-test("default listing caps continue all hits and freeze the remaining search results", () => {
+test("listing line caps still apply with an explicit large search token budget", () => {
   const s = session(), t = turn(s.id);
   const result = memory.store.commitNotingRun({ run: { sessionId: s.id, kind: "noting", createdAt: time },
     facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
       actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
   expect(result.ok).toBe(true);
-  const first = memory.search("needle");
+  const first = memory.search("needle", "all", { maxTokens: 10000 });
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   noting(s.id, t.id, "needle added later");

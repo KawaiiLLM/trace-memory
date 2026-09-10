@@ -622,6 +622,28 @@ test("2026-09-07 B: reading a historical commit never refreshes the base to an u
   expect(other.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@2", ...content(other.fact) }]).committed[0].commit).toBe(3);
 });
 
+test("search previews and cursor fragments never refresh a knowledge write base", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  root.write([{ op: "update", topics: [], reason: "A substantive correction.", id: "K1",
+    ...content(root.fact, `Unread successor ${"中文😀".repeat(3000)}`) }]);
+  const edit = () => other.write([{ op: "update", topics: [], reason: "A substantive correction.", id: "K1", ...content(other.fact) }]);
+  let page = other.tools[1]!.execute({ query: "Unread successor", layer: "knowledge", maxTokens: 256 });
+  expect(page).not.toContain("rejected:");
+  expect(edit().results[0]).toContain("current: K1@2");
+  let count = 0;
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    // Even a misleading K address on the final cursor page must not authorize a complete reread.
+    page = other.tools[0]!.execute({ address: "K1", cursor });
+    expect(page).not.toContain("rejected:");
+    expect(++count).toBeLessThan(100);
+  }
+  expect(count).toBeGreaterThan(1);
+  expect(edit().results[0]).toContain("current: K1@2");
+  other.tools[0]!.execute({ address: "K1" });
+  expect(edit().committed[0].commit).toBe(3);
+});
+
 test("2026-09-07 A: scope applies before supersedence for first-prompt injection and bare path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Shared globally"), scope: "global" }]);

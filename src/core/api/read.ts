@@ -12,7 +12,7 @@ import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible
  * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
-export interface ListingOptions { cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** 21b "Group projection": the topics of the path-selected applicable knowledge, as references to the
@@ -106,8 +106,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     capture?: (deferred: readonly unknown[]) => readonly unknown[] }
   /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
    * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
-   * crossed the page edge — `cap` counts output lines, so one record may straddle two pages. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string };
+   * crossed the page edge — `cap` counts output lines. Search also freezes `maxTokens`; an
+   * oversized line leaves its unsent suffix in the same queue, without a second fragment cache. */
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -124,26 +125,56 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) footer = saved.footer;
-    const receipts = footer ? [footer] : [];
-    // Only the hits this page prints are formatted: the rest are identities until a page asks for
-    // them. One record at a time, because a record's line count is not known before it is rendered.
-    const lines = [...(saved?.pending ?? [])];
-    let at = saved?.offset ?? 0;
-    while (lines.length < cap && at < items.length) lines.push(...format([items[at++]]));
-    const pending = lines.splice(cap);
-    if (options.cursor) cursors.delete(options.cursor);
-    if (pending.length || at < items.length) {
-      const cursor = randomUUID();
-      // The snapshot is taken here, once, at the moment this query first defers hits. Later pages of
-      // the same query re-use that one frozen array and move an offset through it; nothing is copied
-      // again, and the stored remainder carries no `capture` because its items already hold it.
-      cursors.set(cursor, saved ? { ...saved, offset: at, pending }
-        : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner }
-        : { items, offset: at, pending, format, footer, cap, owner });
-      for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
-      receipts.push(`cursor=${cursor}`);
+    if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1))
+      throw new Error("search maxTokens must be a positive safe integer");
+    if (saved && options.maxTokens !== undefined && options.maxTokens !== saved.maxTokens)
+      throw new Error("cursor maxTokens is frozen; omit it or use the original budget");
+    const maxTokens = saved?.maxTokens ?? options.maxTokens;
+    const cursor = randomUUID();
+    const fragmentNote = "Hit continues on next page; concatenate without a newline.";
+    const output = (lines: string[], more: boolean, fragment = false) => finish({ content: lines.join("\n"),
+      receipts: [...(footer ? [footer] : []), ...(fragment ? [fragmentNote] : []), ...(more ? [`cursor=${cursor}`] : [])] });
+    const fits = (lines: string[], more: boolean, fragment = false) => maxTokens === undefined || tokens(output(lines, more, fragment)) <= maxTokens;
+    // Alternating letters/digits bound the UUID's estimate, so an admitted tiny budget still
+    // permits progress when the next page generates a more expensive cursor spelling.
+    const minimum = output(["😀"], true, true).replace(cursor, "a1a1a1a1-a1a1-4a1a-a1a1-a1a1a1a1a1a1");
+    if (maxTokens !== undefined && tokens(minimum) > maxTokens) throw new Error("search maxTokens is too small for pagination hints and content");
+    const lines: string[] = [], pending = [...(saved?.pending ?? [])];
+    let at = saved?.offset ?? 0, fragment = false;
+    while (lines.length < cap && (pending.length || at < items.length)) {
+      // One-hit lookahead only. Unrendered hits retain the existing frozen identity snapshot.
+      if (!pending.length) pending.push(...format([items[at++]]));
+      if (!pending.length) continue;
+      const line = pending[0]!;
+      const more = pending.length > 1 || at < items.length;
+      if (maxTokens === undefined || fits([...lines, line], more)) { lines.push(pending.shift()!); continue; }
+      // Prefer a whole hit on the next page to splitting it into the current page's spare space.
+      if (lines.length) break;
+      // Search lines can contain a whole Raw Turn. Keep the suffix in the SAME pending queue,
+      // splitting only at code-point boundaries (never inside a UTF-16 surrogate pair).
+      let low = 0, high = line.length;
+      while (low < high) {
+        const mid = Math.ceil((low + high) / 2);
+        if (fits([line.slice(0, mid)], true, true)) low = mid; else high = mid - 1;
+      }
+      if (low > 0 && /[\uD800-\uDBFF]/.test(line[low - 1]!) && /[\uDC00-\uDFFF]/.test(line[low] ?? "")) low--;
+      if (!low || !fits([line.slice(0, low)], true, true)) throw new Error("search maxTokens is too small for this hit and pagination hints");
+      lines.push(line.slice(0, low)); pending[0] = line.slice(low); fragment = true;
+      break;
     }
-    return finish({ content: lines.join("\n"), receipts });
+    const more = pending.length > 0 || at < items.length;
+    const result = output(lines, more, fragment);
+    if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("search maxTokens is too small for pagination hints");
+    // Snapshot and validate first: a rejected request must leave the input cursor usable.
+    const remainder = more ? saved ? { ...saved, offset: at, pending }
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens } : undefined;
+    if (options.cursor) cursors.delete(options.cursor);
+    if (remainder) {
+      cursors.set(cursor, remainder);
+      for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
+    }
+    return result;
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -223,6 +254,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     const targets = address.split(",").map((a) => a.trim());
+    // A continuation is already one bounded response, not a component to unwrap into a new
+    // unbudgeted comma listing. Refuse before any child can consume its cursor.
+    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     const intervals = targets.map(factInterval);
     // A comma list and an interval are the same read: every component contributes its lines in request
     // order, repeats included. An interval contributes its facts as identities — one range query, no
@@ -475,7 +509,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
     },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
-      if (options.cursor) return page([], options);
+      if (options.cursor) {
+        // Shared trace cursors cannot turn a search continuation into an unbudgeted read.
+        return page([], { ...options, maxTokens: options.maxTokens === undefined ? cursors.get(options.cursor)?.maxTokens ?? 2000 : options.maxTokens });
+      }
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       const addresses = store.searchAddresses(query, scope);
       // 22c: the path, the applicable set, the current tips and the commit ancestry are resolved once,
@@ -521,7 +558,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
         return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}`;
       }).map(listingLine);
-      return page({ items: addresses, format, capture }, options, "Search uses literal substring search. No hit does not mean absent.");
+      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? 2000 : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.");
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

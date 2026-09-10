@@ -670,7 +670,7 @@ the token counters and `trace` use, and no view or summary
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
-`search(query, scope = "all", { sessionId?, cap?, cursor? })` uses literal
+`search(query, scope = "all", { sessionId?, maxTokens?, cap?, cursor? })` uses literal
 substring matching over fact text, knowledge commits and original Raw. A knowledge
 hit matches the conclusion text or any of the revision's topic labels, under the
 same escaping; matching runs over the label values (SQLite `json_each`), so the
@@ -689,6 +689,25 @@ facade reads remain available to hosts. Raw uses literal substring LIKE
 bound search includes raw as well as facts and knowledge. Each hit is
 one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
 Results order facts by id, then knowledge id/revision; raw orders turns by id.
+Search defaults to **2000 estimated tokens per complete response**, including all
+content and receipts, under the shared `tokens` estimator. `maxTokens` must be a
+positive safe integer; budgets too small for pagination hints and progress are
+rejected. `cap` remains a second limit on output lines (default 100), not tokens.
+Whole hits are preferred; an oversized hit is split at Unicode code-point boundaries,
+with its remaining text carried by the existing cursor rather than truncated. A
+`Hit continues on next page` receipt means concatenate the next page's content
+without a newline; otherwise join page contents with a newline. Receipts are not
+part of the hit content. Search previews and fragments never grant a complete
+knowledge-read permission; use an explicit complete `trace` for that.
+
+Continue with `search({query: "", cursor: "…"})`. The original token budget is
+frozen: omit `maxTokens` or repeat the same value; a different value is rejected
+without consuming the cursor. The same budget applies through `trace` continuation;
+a trace-origin cursor cannot be continued through search. Continue a cursor alone,
+not inside a comma address list. Invalid parameters do not
+consume a valid cursor. Owner isolation and the shared 16-continuation cache remain
+unchanged. Trace's own default remains line-budgeted, with no new token limit.
+
 Every search page states that no hit does not mean absent. A `cursor` continues the
 query that issued it, not the database as it now stands: the hits, the commit labels,
 and the mutable annotations each line prints — a fact's relations, a commit's marks,
@@ -702,9 +721,9 @@ Projects list global/project knowledge and project facts;
 sessions list turns. Listing caps count output lines, default 100 — the unit is
 lines, not facts and not tokens. Tool input is
 `trace({address, tool?, full?, cursor?, cap?})` or
-`search({query, layer?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
+`search({query, layer?, maxTokens?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
 Display options are parameters, never address flags. The per-output cap flag is
-removed; cap is the listing budget. Expansion hints use the trace parameter form.
+removed; cap is the listing line budget. Expansion hints use the trace parameter form.
 `F<n>..` is navigation through later strong negations, including every intermediate
 fact and branching; its terminal sentence is not a current-conclusion claim.
 Cursors freeze rendered output, are single-use, belong to this facade instance
