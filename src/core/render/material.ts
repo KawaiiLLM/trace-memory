@@ -156,11 +156,15 @@ export interface MaterialBudget {
 }
 
 export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGroup[]; facts: string[]; receipts: string[];
+  /** 29a "Renderers return what they kept": the identities of the historical facts and the knowledge
+   * commits this budgeting actually kept. What a cap dropped is receipted above and absent here, so a
+   * consumer that persists these as coverage can only understate it. */
+  factIds: number[]; knowledgeCommitIds: number[];
   /** How far past each cap this material is, in tokens; zero when it fits. Every consumer receipts an
    * overage; only compact escalates on it (ticket 20 "Compaction escalation", steps 2 and 4). */
   over: { current: number; episodic: number } } {
   const active = input.knowledge ? budgetKnowledge(input.knowledge, input.caps.knowledge!, input.knowledgeLine)
-    : { groups: [] as KnowledgeGroup[], receipts: [] as string[] };
+    : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
   const ceiling = input.caps.current; // absent: this consumer's current material has no inner cap (25c)
@@ -176,13 +180,14 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   // negotiating a smaller model window trims this optional material before it drops selected evidence.
   const room = () => Math.min(input.history ?? Infinity, input.caps.episodic - reserved());
   const fill = (cap: number) => input.facts?.length
-    ? budgetFacts(input.facts, input.factLine!, cap, input.factTurns!) : { recent: [] as string[], receipts: [] as string[] };
+    ? budgetFacts(input.facts, input.factLine!, cap, input.factTurns!) : { recent: [] as string[], receipts: [] as string[], factIds: [] as number[] };
   let filled = fill(room());
   if (filled.receipts.length) filled = fill(room() - charge(filled.receipts) - (receipts.length ? 0 : charge(["Receipts:"])));
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
   return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts],
+    factIds: filled.factIds, knowledgeCommitIds: active.commits,
     over: { current: ceiling === undefined ? 0 : Math.max(0, current - ceiling), episodic: Math.max(0, over) } };
 }
 

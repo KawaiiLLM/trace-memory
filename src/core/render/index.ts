@@ -658,7 +658,7 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
     .filter((e) => e.revision.category === category)
     .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
-    .map((value) => ({ category, text: line(value), id: value.knowledge.id })));
+    .map((value) => ({ category, text: line(value), id: value.knowledge.id, commit: value.revision.id })));
   const sizes = ordered.map((item) => tokens(item.text) + 1);
   const receipts = (kept: number) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
     const omitted = ordered.slice(kept).filter((item) => item.category === category);
@@ -677,7 +677,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds render.knowledgeBlockTokens (${cap})`);
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
     text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
-    receipts: receipts(kept) };
+    receipts: receipts(kept),
+    // 29a "Renderers return what they kept": the exact commits this block carries, in render order.
+    // What the cap above cut is receipted, never listed here — a carrier states what was supplied.
+    commits: ordered.slice(0, kept).map((item) => item.commit) };
 }
 
 /** Turn start times for the facts being displayed, read once without loading Turn bodies. */
@@ -724,7 +727,9 @@ export function budgetFacts(facts: Fact[], line: (fact: Fact) => string, remaini
     selected.pop(); recent = renderFactGroups(selected, fact => lines.get(fact.id)!, turns);
   }
   const dropped = facts.length - selected.length;
-  return { recent, receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `F${f.id}`))}`] : [] };
+  // 29a: `factIds` is read after the trim loop above, so it is what this block really carries.
+  return { recent, factIds: selected.map((f) => f.id),
+    receipts: dropped ? [`omitted ${dropped} older facts; expand: ${expandList(facts.slice(selected.length).map((f) => `F${f.id}`))}`] : [] };
 }
 
 // Tags delimit blocks for the model; the lines inside are trace lines byte for byte, never escaped.
