@@ -13,6 +13,10 @@ import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
 export interface ListingOptions { maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export const DEFAULT_SEARCH_TOKENS = 2000;
+/** Exact versions resolved by a named K read; bare reads replace that identity's prior bases. */
+export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean }
+export interface TraceRead { text: string; completed: KnowledgeRead[] }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
 /** 21b "Group projection": the topics of the path-selected applicable knowledge, as references to the
@@ -93,7 +97,7 @@ export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWi
   });
 }
 
-export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions) => string,
+export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions, reads?: KnowledgeRead[]) => string,
   resultText: ResultExtractor = rawResultText) {
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
   // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
@@ -107,8 +111,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
    * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
    * crossed the page edge — `cap` counts output lines. Search also freezes `maxTokens`; an
-   * oversized line leaves its unsent suffix in the same queue, without a second fragment cache. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number };
+   * oversized line leaves its unsent suffix in the same queue, without a second fragment cache.
+   * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
+   * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[] };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -116,7 +122,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // ever becomes large enough that sixteen of them matter.
   const CURSORS = 16;
   const cursors = new Map<string, Remainder>();
-  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = ""): string => {
+  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", reads: KnowledgeRead[] = []): TraceRead => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
@@ -124,7 +130,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
-    if (saved) footer = saved.footer;
+    if (saved) { footer = saved.footer; reads = saved.reads; }
     if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1))
       throw new Error("search maxTokens must be a positive safe integer");
     if (saved && options.maxTokens !== undefined && options.maxTokens !== saved.maxTokens)
@@ -167,14 +173,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("search maxTokens is too small for pagination hints");
     // Snapshot and validate first: a rejected request must leave the input cursor usable.
     const remainder = more ? saved ? { ...saved, offset: at, pending }
-      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens }
-      : { items, offset: at, pending, format, footer, cap, owner, maxTokens } : undefined;
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
       cursors.set(cursor, remainder);
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
-    return result;
+    return { text: result, completed: more ? [] : reads };
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -250,7 +256,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (first > last) reject("endpoints ascend, as F81-F90");
     return { from: first, to: last };
   };
-  const trace = (address: string, options: ListingOptions = {}): string => {
+  const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     const targets = address.split(",").map((a) => a.trim());
@@ -258,6 +264,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // unbudgeted comma listing. Refuse before any child can consume its cursor.
     if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     const intervals = targets.map(factInterval);
+    const reads: KnowledgeRead[] = [];
     // A comma list and an interval are the same read: every component contributes its lines in request
     // order, repeats included. An interval contributes its facts as identities — one range query, no
     // record read — so the first page costs the page, not the interval; only the components the reader
@@ -267,7 +274,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     if (targets.length > 1 || intervals.some(Boolean)) {
       const items = targets.flatMap((target, index): TraceUnit[] => {
         const range = intervals[index];
-        if (!range) return [{ text: trace(target, { ...options, cap: Number.MAX_SAFE_INTEGER }) }];
+        if (!range) {
+          const child = traceRead(target, { ...options, cap: Number.MAX_SAFE_INTEGER });
+          reads.push(...child.completed);
+          return [{ text: child.text }];
+        }
         const ids = store.listFactIdsInRange(range.from, range.to);
         return ids.length ? ids.map((fact) => ({ fact })) : [{ text: `${target}: no facts exist in this range` }];
       });
@@ -278,7 +289,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         const relations = store.listFactRelationsOf(units.flatMap((unit) => "fact" in unit ? [unit.fact] : []));
         return units.map((unit) => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
       };
-      return page({ items, format, capture }, options);
+      return page({ items, format, capture }, options, "", reads);
     }
     const s = /^S([1-9]\d*)$/.exec(address);
     if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
@@ -286,8 +297,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
     if (project) return page([...store.listVisibleKnowledge(0, project.id).map((k) => knowledgeLine(k)),
       ...store.listProjectFacts(project.id).map((f) => factLine(f.id))].map(listingLine), options);
-    const result = expand(address, options);
-    return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined ? page(result.split("\n"), options) : result;
+    const result = expand(address, options, reads);
+    return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined
+      ? page(result.split("\n"), options, "", reads) : { text: result, completed: reads };
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
   // 22d: the usage is projected out of the stored response by the store; the request and response
@@ -338,7 +350,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   return {
     spend,
     progress,
-    trace,
+    trace: (address: string, options?: ListingOptions) => traceRead(address, options).text,
+    traceRead,
     // 21b: a read organization projection over the same selected set the automatic material uses; it
     // changes no injection order, no scope and no applicability.
     topicGroups: (sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups => {
@@ -509,11 +522,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
     },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
+      if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if (options.cursor) {
         // Shared trace cursors cannot turn a search continuation into an unbudgeted read.
-        return page([], { ...options, maxTokens: options.maxTokens === undefined ? cursors.get(options.cursor)?.maxTokens ?? 2000 : options.maxTokens });
+        return page([], { ...options, maxTokens: options.maxTokens === undefined ? cursors.get(options.cursor)?.maxTokens ?? DEFAULT_SEARCH_TOKENS : options.maxTokens }).text;
       }
-      if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       const addresses = store.searchAddresses(query, scope);
       // 22c: the path, the applicable set, the current tips and the commit ancestry are resolved once,
       // before the first page, and every page this query ever formats is labelled from them: a commit
@@ -558,7 +571,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
         return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}`;
       }).map(listingLine);
-      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? 2000 : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.");
+      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_SEARCH_TOKENS : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.").text;
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

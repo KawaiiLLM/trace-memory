@@ -1,7 +1,7 @@
 export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups } from "./read.ts";
+import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
 // 29a "One derived view": the pure visibility projection over a host's own retained context entries.
 import type { VisibleView } from "./visible.ts";
@@ -442,7 +442,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
     finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
   };
-  const trace = (address: string, display: ListingOptions = {}): string => {
+  const trace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): string => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
     const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.K([1-9]\d*)@([1-9]\d*))?|(\.\.))?$/.exec(target ?? "");
@@ -473,11 +473,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const left = ancestors(a), right = ancestors(b);
         return renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)));
       }
-      if (from !== undefined) return describe(commit(from));
+      if (from !== undefined) {
+        const revision = commit(from);
+        reads?.push({ knowledgeId: id!, commits: [revision.id], replace: false });
+        return describe(revision);
+      }
       if (knowledgeMatch[5]) return `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, undefined, display.headTurnId);
       const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
       const tips = store.currentCommit(id!, path);
+      reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
       const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
       const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path, snapshot)) : [];
       return [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`

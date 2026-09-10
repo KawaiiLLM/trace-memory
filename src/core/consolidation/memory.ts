@@ -2,22 +2,20 @@ import { prepareMemory, accounting } from "./commit.ts";
 import type { MemoryBatch } from "../model/index.ts";
 import type { Store, RunInput, KnowledgePath } from "../store/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
+import type { KnowledgeRead } from "../api/read.ts";
 export interface MemoryReview {
   frozen: ReturnType<typeof freezeConsolidation>;
   feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId)) {
   const reads = new Map((review?.frozen.knowledge ?? store.listCurrentKnowledge(path)).map(k => [k.revision.id, k]));
-  const reread = (addresses: string) => {
-    for (const address of addresses.split(",").map(a => a.trim())) {
-      const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(address);
-      if (!match) continue;
-      const id = Number(match[1]);
-      if (!match[2]) for (const [commit, item] of reads) if (item.knowledge.id === id) reads.delete(commit);
-      if (match[2]) {
-        const revision = store.getKnowledgeRevision(id, Number(match[2]));
-        if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(id)!, revision });
-      } else for (const item of store.listCurrentKnowledge(path).filter(k => k.knowledge.id === id)) reads.set(item.revision.id, item);
+  const reread = (completed: KnowledgeRead[]) => {
+    for (const { knowledgeId, commits, replace } of completed) {
+      if (replace) for (const [commit, item] of reads) if (item.knowledge.id === knowledgeId) reads.delete(commit);
+      for (const commit of commits) {
+        const revision = store.getKnowledgeRevision(knowledgeId, commit);
+        if (revision) reads.set(commit, { knowledge: store.getKnowledge(knowledgeId)!, revision });
+      }
     }
   };
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
@@ -52,7 +50,8 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
-    for (const item of result.committed) reread(`K${item.knowledgeId}`);
+    reread(result.committed.map(item => ({ knowledgeId: item.knowledgeId,
+      commits: store.currentCommit(item.knowledgeId, path).filter(r => r.op !== "archive").map(r => r.id), replace: true })));
     problems = []; failure = undefined;
     return receipt(result.committed);
   };

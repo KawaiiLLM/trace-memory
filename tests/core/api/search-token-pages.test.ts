@@ -90,6 +90,7 @@ test("invalid budgets and cap do not consume a valid cursor; budgets cannot chan
   expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: 10000 })).toThrow(/frozen/);
   expect(() => memory.trace(`K1,cursor=${cursor}`, { sessionId })).toThrow(/alone/);
   expect(() => memory.search("", "raw", { sessionId, cursor, cap: 0 })).toThrow(/cap/);
+  expect(() => memory.search("", "bogus" as never, { sessionId, cursor })).toThrow("invalid search scope");
   expect(() => memory.search("", "raw", { sessionId: sessionId + 1, cursor })).toThrow(/unknown or expired/);
   expect(drain(first, 300, sessionId).pages).toBeGreaterThan(1);
   for (const maxTokens of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "300", 1]) {

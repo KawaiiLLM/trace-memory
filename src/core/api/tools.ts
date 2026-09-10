@@ -2,7 +2,7 @@ import { sourceAddresses } from "../render/index.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput } from "../store/index.ts";
-import type { ListingOptions, SearchScope } from "./read.ts";
+import { DEFAULT_SEARCH_TOKENS, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
 
 export interface ToolDefinition {
   name: "trace" | "search" | "note" | "memory";
@@ -13,7 +13,7 @@ export interface ToolDefinition {
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number }
   | { kind: "noting" | "consolidation"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
       readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
-type Reads = { trace(address: string, options?: ListingOptions): string;
+type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
 const string = { type: "string" };
@@ -37,7 +37,7 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. cap counts output lines (default 100); cursor continues that same read alone, retaining a search cursor's token budget.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
-  { name: "search", description: "Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to 2000 estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.", parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 2000 }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
+  { name: "search", description: `Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to ${DEFAULT_SEARCH_TOKENS} estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.`, parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_SEARCH_TOKENS }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
   { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Bare K1 is rejected with several tips; use explicit K1@57 bases.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
@@ -191,9 +191,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     } });
   const tools = [
     definition("trace", (input) => {
-      const content = read.trace(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
-      // A caller may supply a K address beside a search cursor; that fragment is not a K read.
-      if (!input.cursor && !/\ncursor=[0-9a-f-]{36}$/.test(content)) memory.reread(input.address as string);
+      const { text: content, completed } = read.traceRead(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
+      memory.reread(completed);
       fetched.push({ address: input.address as string, input: structuredClone(input), content }); return content;
     }),
     definition("search", (input) => {

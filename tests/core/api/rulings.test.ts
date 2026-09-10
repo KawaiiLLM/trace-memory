@@ -644,6 +644,96 @@ test("search previews and cursor fragments never refresh a knowledge write base"
   expect(edit().committed[0].commit).toBe(3);
 });
 
+test("trace K1 cap=1 refreshes its stale bare handle only on the final page", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "update", topics: [], reason: "New version.", id: "K1", ...content(root.fact) }]).committed[0].commit).toBe(2);
+  const edit = () => other.write([{ op: "update", topics: [], reason: "Correct rule.", id: "K1", ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address: "K1", cap: 1 }), count = 0;
+  expect(page).toContain("cursor=");
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(edit().results[0]).toContain("current: K1@2");
+    page = other.tools[0]!.execute({ address: `cursor=${cursor}` });
+    expect(page).not.toContain("rejected:");
+    expect(++count).toBeLessThan(100);
+  }
+  expect(edit().committed[0].commit).toBe(3);
+  expect(memory.store.getKnowledgeRevision(1, 3)?.parentId).toBe(2);
+});
+
+test.each([false, true])("trace cap=1 completes the frozen K read through actual cursors (address form=%s)", addressForm => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "Second knowledge") }]).committed[0].commit).toBe(2);
+  const edit = () => other.write([{ op: "update", topics: [], reason: "Correct rule.", id: "K2@2", ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address: "K2", cap: 1 });
+  let count = 0;
+  while (true) {
+    expect(page).not.toContain("rejected:");
+    const cursor = /cursor=(\S+)/.exec(page)?.[1];
+    if (!cursor) break;
+    expect(edit().results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute(addressForm ? { address: `cursor=${cursor}` } : { address: "K1", cursor });
+    expect(++count).toBeLessThan(100);
+  }
+  expect(count).toBeGreaterThan(1);
+  expect(edit().committed[0]).toMatchObject({ knowledgeId: 2, commit: 3 });
+  expect(memory.store.getKnowledgeRevision(2, 3)?.parentId).toBe(2);
+});
+
+test("a mixed multi-K read authorizes only its completed identities; abandoned cursors authorize nothing", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  const operation = (id: string) => ({ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) });
+  expect(root.write([2, 3].map(id => ({ op: "create", topics: [], reason: "New rule.", ...content(root.fact, `Rule ${id}`) }))).committed.map((k: { commit: number }) => k.commit)).toEqual([2, 3]);
+  expect(root.write([{ ...operation("K1"), ...content(root.fact, "Unrelated new rule") }])).toMatchObject({ committed: [{ commit: 4 }] });
+  const abandoned = other.tools[0]!.execute({ address: "K1", cap: 1 });
+  const abandonedCursor = /cursor=(\S+)/.exec(abandoned)![1];
+  // Existing cache eviction drops the unread obligation, never completes it.
+  for (let i = 0; i < 16; i++) other.tools[0]!.execute({ address: "K2", cap: 1 });
+  expect(other.tools[0]!.execute({ address: `cursor=${abandonedCursor}` })).toContain("unknown or expired cursor");
+  let page = other.tools[0]!.execute({ address: "K2,F1-F2,K3@3", cap: 1 }), count = 0;
+  expect(page).toContain("cursor=");
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(++count).toBeLessThan(100);
+    for (const id of ["K2@2", "K3@3"]) expect(other.write([operation(id)]).results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: "K1", cursor });
+    expect(page).not.toContain("rejected:");
+  }
+  expect(other.write([operation("K1")]).results[0]).toContain("current: K1@4");
+  expect(other.write([operation("K2@2"), operation("K3@3")]).committed.map((k: { commit: number }) => k.commit)).toEqual([5, 6]);
+  expect(memory.store.getKnowledgeRevision(2, 5)?.parentId).toBe(2);
+  expect(memory.store.getKnowledgeRevision(3, 6)?.parentId).toBe(3);
+});
+
+test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records the delivered old version, never the later successor", address => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  expect(root.write([{ op: "create", topics: [], reason: "New rule.", ...content(root.fact, "FROZEN-SECOND") }]).committed[0].commit).toBe(2);
+  const edit = (id: string) => other.write([{ op: "update", topics: [], reason: "Correct rule.", id, ...content(other.fact) }]);
+  let page = other.tools[0]!.execute({ address, cap: 1 });
+  expect(page).toContain("cursor=");
+  expect(edit("K2@2").results[0]).toContain("knowledge was not read");
+  expect(root.write([{ op: "update", topics: [], reason: "Concurrent correction.", id: "K2", ...content(root.fact, "UNREAD-LATEST") }]).committed[0].commit).toBe(3);
+  const pages = [page];
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(edit("K2@2").results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: `cursor=${cursor}` });
+    expect(page).not.toContain("rejected:");
+    pages.push(page); expect(pages.length).toBeLessThan(100);
+  }
+  expect(pages.length).toBeGreaterThan(2);
+  expect(pages.join("\n")).toContain("FROZEN-SECOND");
+  expect(pages.join("\n")).not.toContain("UNREAD-LATEST");
+  // A stale refusal (not a missing-handle refusal) proves the OLD commit was recorded.
+  expect(edit("K2@2").results[0]).toContain("current: K2@3");
+  expect(edit("K2@3").results[0]).toContain("knowledge was not read");
+  expect(edit("K2").results[0]).toContain("current: K2@3");
+  other.tools[0]!.execute({ address: "K2" });
+  expect(edit("K2@3").committed[0].commit).toBe(4);
+  expect(memory.store.getKnowledgeRevision(2, 4)?.parentId).toBe(3);
+});
+
 test("2026-09-07 A: scope applies before supersedence for first-prompt injection and bare path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(root.fact, "Shared globally"), scope: "global" }]);
