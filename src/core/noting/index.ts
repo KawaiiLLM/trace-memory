@@ -91,7 +91,7 @@ export type NotingResult =
  * these: no model capacity decided it and no fresh child would change it. */
 export const NOTING_CAPACITY = "Noting capacity: oldest entry cannot fit the episodic budget or the model context: ";
 
-/** 27d (parent 27 amendment 6): the opening of the diagnostic a `boundary.entryIds` freeze raises
+/** 27d (parent 27 amendment 6): the opening of the diagnostic a `boundary.exactEntryIds` freeze raises
  * when its exact membership is no longer pending in full. The evidence was processed elsewhere —
  * another executor's claim completed it — so the task is dropped rather than retried and nothing is
  * re-processed. The façade matches this one string to tell it from an admission failure. */
@@ -105,14 +105,14 @@ export const NOTING_INCOMPLETE = "incomplete Noting: the run ended without calli
 
 /** The pending entries one task's boundary admits, and the exact-membership form when it has one.
  * A manual catchup (18b) freezes an entry-id boundary so later arrivals never join this target.
- * 27d (parent 27 amendment 6): `entryIds` is exact membership instead — the frozen batch of a fork
+ * 27d (parent 27 amendment 6; renamed in 29e): `exactEntryIds` is exact membership instead — the frozen batch of a fork
  * attempt the host is re-admitting. It is taken whole or not at all: a member no longer pending was
  * processed by another executor under its own claim, which drops the task at the freeze below instead
  * of re-processing the rest of the batch as though it were a fresh one. Selection only: the freeze
  * owns every diagnostic, so a caller that merely asks what would be selected raises none of them. */
 export const notingPending = (store: Store, input: { sessionId: number; branch: string; headTurnId: number; boundary?: TaskBoundary }) => {
   const pendingAll = store.pendingEntries(input.sessionId, input.branch, input.headTurnId);
-  const exact = input.boundary?.entryIds;
+  const exact = input.boundary?.exactEntryIds;
   return { exact, pending: exact ? pendingAll.filter(e => exact.includes(e.id))
     : input.boundary?.maxEntryId === undefined ? pendingAll : pendingAll.filter(e => e.id <= input.boundary!.maxEntryId!) };
 };
@@ -152,7 +152,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     !Number.isSafeInteger(input.capacity.prefixTokens) || input.capacity.prefixTokens < 0)) throw new Error("Invalid Noting capacity: expected nonnegative safe integers");
   const { exact, pending } = notingPending(store, { ...input, sessionId: session.id });
   if (exact && pending.length !== exact.length)
-    throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter(id => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
+    throw new Error(`${NOTING_MEMBERSHIP}entries ${exact.filter((id: number) => !pending.some(e => e.id === id)).join(", ")} of the frozen batch ${exact.join(", ")} are no longer pending; nothing was re-processed`);
   const mode = input.mode ?? (config.noting.forkModeDefault ? "fork" : "subagent");
   // 22d, hotspot family 6: the instructions, the tool definitions and — for a fork — the inherited
   // prefix are unavoidable; no batch, however small, is priced below them. An allowance under that

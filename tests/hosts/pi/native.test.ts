@@ -172,8 +172,11 @@ test("19a 2026-09-08: a provider error after the commit keeps the commit and rec
   } finally { await f.dispose(); }
 });
 
-test("19a 2026-09-08: Consolidation's two submissions and its review round run natively, in the one mode 25b left it", async () => {
-  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1 });
+test("19a/29e (case 16): Consolidation's two submissions and its review round run natively in a fork", async () => {
+  // 29e restored the mode 25b removed. The two-submission protocol is core's either way: the candidate
+  // is answered with review guidance as a native user message — here inside the forked conversation —
+  // and only the second submission commits.
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1, "consolidation.forkModeDefault": true });
   try {
     f.script(body => !worker(body, "Consolidation") ? say("好的。")
       : toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch));
@@ -184,6 +187,7 @@ test("19a 2026-09-08: Consolidation's two submissions and its review round run n
     await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
     const run = await settled(f, "consolidation");
     expect(run.outcome, run.response ?? "").toBe("success");
+    expect(run.mode).toBe("fork"); // 29e: the mode really ran, inherited context and all
     const response = JSON.parse(run.response!);
     expect(response.toolCalls).toHaveLength(2); // candidate, then the answered resubmission
     expect(response.output).toBe("Integrated.");

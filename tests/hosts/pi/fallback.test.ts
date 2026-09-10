@@ -24,7 +24,8 @@ import { readFileSync } from "node:fs";
 import { expect, test, vi } from "vitest";
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { host, reply } from "./test-host.ts";
-import { fixture, say, call, worker, submitted, noteBatch, settled, usage as wireUsage, type Body } from "./native-fixture.ts";
+import { fixture, say, call, worker, submitted, memoryBatch, noteBatch, settled, toolResults, usage as wireUsage, type Body } from "./native-fixture.ts";
+import { recorded } from "../../source-fixture.ts";
 import { runWorker, type WorkerBinding } from "../../../src/hosts/pi/worker.ts";
 import { forkable, runNative } from "../../../src/hosts/pi/native.ts";
 import { toolDefinitions, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -673,3 +674,87 @@ test("29: an incomplete tool-call group is not availability (the native gate, un
   ] as never;
   expect(() => forkable(entries)).toThrow("checkpoint tool call call-1 has no result");
 });
+
+// ------------------------------- 29e: the same fallback path for a Consolidation fork (cases 16/21)
+//
+// 25b removed this phase's mode; 29e restored it, and deliberately added no second fallback
+// mechanism. Everything below is the Noting path above, entered by a Consolidation task: one
+// transition per task, one run record per attempt sent, and the frozen fact target unchanged.
+
+/** A fresh Consolidation child's own body: its system prompt is the Consolidator's, which a fork's
+ * never is (a fork inherits the parent's and carries the instructions in its appended message). */
+const freshConsolidation = (body: Body) => body.messages?.[0]?.role === "system" && String(body.messages[0].content).includes("Consolidation (knowledge extraction)");
+/** Finished Consolidation records, oldest first. */
+const consolidationRecords = async (f: Awaited<ReturnType<typeof fixture>>, count: number) => await vi.waitFor(() => {
+  const runs = f.h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.response).sort((a, b) => a.id - b.id);
+  expect(runs).toHaveLength(count);
+  return runs;
+}, { timeout: 5000 });
+/** One pending fact for the Consolidator, written manually so these cases drive one phase. */
+const seedFact = (f: Awaited<ReturnType<typeof fixture>>) => {
+  f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
+    .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+  recorded(f.h.memory, 1, "main", 1); // T1 recorded: F1 may enter the Consolidation batch
+};
+
+test("29e 2026-09-10 (cases 16/21): a Consolidation fork that overflows after its candidate restarts candidate and review on the same fact target, and each attempt keeps its own run record", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1,
+    "consolidation.forkModeDefault": true, consolidationModel: "fake/test-mini" });
+  try {
+    f.script((body: Body) => {
+      if (!worker(body, "Consolidation")) return say("好的。");
+      // The fork attempt: a candidate accepted for review, then the provider rejects the resubmission.
+      // Parent 29 "Preserve two submissions": that candidate is not a business commit, so this is a
+      // capacity refusal the host may re-admit — and the re-admitted run starts its review over.
+      if (!freshConsolidation(body)) return toolResults(body) ? rejected(OVERFLOW) : call("t1", "memory", memoryBatch, wireUsage(11, 3));
+      return toolResults(body) >= 2 ? say("Integrated.", wireUsage(7, 2)) : call(`t${toolResults(body)}`, "memory", memoryBatch, wireUsage(9, 4));
+    });
+    await f.turn();
+    seedFact(f);
+    await f.turn("tick"); // a second real parent turn is the opportunity that admits the phase
+    const [attempt, run] = await consolidationRecords(f, 2);
+    const first = JSON.parse(attempt!.response!), response = JSON.parse(run!.response!);
+    // 27d, for this phase: the attempt is its own record, on the model it really ran on, and its
+    // candidate is audited there — a submission that committed nothing is still a sent round.
+    expect([attempt!.mode, attempt!.outcome, attempt!.model]).toEqual(["fork", "failure", "fake/test"]);
+    expect(first.requestedMode).toBe("fork");
+    expect(first.problems.join(" ")).toContain(OVERFLOW);
+    expect(first.candidate).toBeTruthy();
+    expect(first.toolCalls.map((c: { name: string }) => c.name)).toEqual(["memory"]);
+    expect(first.committed).toBeUndefined(); // nothing was committed, which is why the fallback was allowed
+    // 27c/29e: the re-admission runs fresh, on the CONFIGURED Consolidator model and its capacity.
+    expect([run!.mode, run!.model]).toEqual(["subagent", "fake/test-mini"]);
+    expect(response.requestedMode).toBe("fork");
+    expect(response.fallbackReason).toContain("context overflow");
+    expect(response.fallbackReason).toContain(`R${attempt!.id}`); // and names the attempt's own record
+    // The review really started over: candidate, guidance, then the answered resubmission.
+    expect(response.toolCalls.map((c: { name: string }) => c.name)).toEqual(["memory", "memory"]);
+    expect(JSON.stringify(f.sent.at(-2)!.messages.filter((m: Body) => m.role === "user").at(-1))).toContain("NEAR:");
+    // The same frozen fact target across both attempts, and the batch is consolidated once.
+    expect([run!.rangeFrom, run!.rangeTo]).toEqual([attempt!.rangeFrom, attempt!.rangeTo]);
+    expect(f.h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
+    expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toHaveLength(1);
+  } finally { await f.dispose(); }
+}, 30000);
+
+test("29e 2026-09-10 (case 16): a committed Consolidation batch followed by an overflow never starts a second execution", async () => {
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1,
+    "consolidation.forkModeDefault": true, consolidationModel: "fake/test-mini" });
+  try {
+    f.script((body: Body) => {
+      if (!worker(body, "Consolidation")) return say("好的。");
+      if (freshConsolidation(body)) throw new Error("a committed batch must never be consolidated a second time");
+      // Candidate, answered resubmission — the business commit — and only then the overflow.
+      return toolResults(body) >= 2 ? rejected(OVERFLOW) : call(`t${toolResults(body)}`, "memory", memoryBatch);
+    });
+    await f.turn();
+    seedFact(f);
+    await f.turn("tick");
+    const [run] = await consolidationRecords(f, 1);
+    expect([run!.mode, run!.outcome]).toEqual(["fork", "success"]);
+    expect(JSON.parse(run!.response!).problems.join(" ")).toContain(OVERFLOW); // the failure is this run's own
+    expect(f.sent.filter(freshConsolidation)).toEqual([]);
+    expect(f.h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]); // committed once, and advanced
+    expect(f.h.notices.filter(n => n.includes("fell back to subagent mode"))).toEqual([]);
+  } finally { await f.dispose(); }
+}, 30000);

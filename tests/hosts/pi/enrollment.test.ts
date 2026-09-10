@@ -163,15 +163,16 @@ test.each([true, false])("29d: automatic material ignores the Noter mode (%s); d
   expect((await h.prompt("again"))?.message).toBeUndefined();
 });
 
-test("18a/24b, as 25b left it: Settings shows the three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
-  // 24b supersedes 18a's read-only view of every key: the menu edits exactly three preferences and
-  // the borrowing scope, while advanced values keep living in the settings files (and keep being
-  // validated — the case below). 25 amendment 2 withdrew the fourth, the Consolidator mode.
+test("18a/24b, as 29e left it: Settings shows each phase's three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {
+  // 24b supersedes 18a's read-only view of every key: the menu edits each phase's mode, model and
+  // thinking level plus the borrowing scope, while advanced values keep living in the settings files
+  // (and keep being validated — the case below). 25 amendment 2 withdrew the Consolidator mode; 29e
+  // restored it on the same select-and-write path, so the two phases show the same three lines.
   const h = setup({ "noting.triggerTokens": 33 });
   const globalPath = join(h.dir, "agent", "settings.json"), projectPath = join(h.dir, ".pi", "settings.json");
   mkdirSync(join(h.dir, ".pi"));
-  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
-  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "render.entryTokens": 333 } }));
+  writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": false, "consolidation.forkModeDefault": true, consolidationModel: "fake/test", "render.entryTokens": 222 } }));
+  writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "noting.forkModeDefault": true, "consolidation.forkModeDefault": false, "render.entryTokens": 333 } }));
   const before = [readFileSync(globalPath), readFileSync(projectPath)];
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, ""); // opened, then cancelled: inert
@@ -182,8 +183,10 @@ test("18a/24b, as 25b left it: Settings shows the three preferences with their e
     // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here
     // for the same reason the model line does.
     "Noter thinking: inherit (Default); fork mode inherits the foreground thinking level",
-    // The Consolidator runs as a subagent, so neither its model nor its level is ever annotated
-    // with an inheriting mode.
+    // 29e: the Consolidator's own mode line honours the layers exactly as the Noter's does — the
+    // Project layer decides and the Global value it masks is named. It resolves to subagent here, so
+    // neither its model nor its level is annotated with an inheriting mode.
+    "Consolidator mode: subagent (Project); Global=fork masked",
     "Consolidator model: fake/test (Global)",
     "Consolidator thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
@@ -194,12 +197,13 @@ test("18a/24b, as 25b left it: Settings shows the three preferences with their e
   // The advanced keys the menu no longer displays are still loaded and still validated by name.
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": "not a number" } }));
   await expect(h.emit("session_start")).rejects.toThrow("Invalid render.entryTokens");
-  // 25 amendment 2: a settings file that still carries the retired Consolidator-mode key fails the
-  // load by name — either value — instead of being read as a mode this build can run.
+  // 25 amendment 2 / 29e: a settings file that still carries the retired inverse Consolidator-mode key
+  // fails the load by name — either value — instead of being read as the restored key, whose polarity
+  // is the opposite one.
   for (const saved of [true, false]) {
     writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "consolidation.subagentModeDefault": saved } }));
     await expect(h.emit("session_start")).rejects
-      .toThrow("Removed setting consolidation.subagentModeDefault: Consolidation always runs as a subagent; delete the key");
+      .toThrow("Removed setting consolidation.subagentModeDefault: use consolidation.forkModeDefault (the inverse boolean: true means fork)");
     expect(JSON.parse(readFileSync(projectPath, "utf8"))["trace-memory"]).toEqual({ "consolidation.subagentModeDefault": saved }); // refused, never rewritten
   }
   writeFileSync(projectPath, JSON.stringify({ "trace-memory": { "render.entryTokens": DEFAULT_CONFIG.render.entryTokens } }));

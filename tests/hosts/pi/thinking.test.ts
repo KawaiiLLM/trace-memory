@@ -11,7 +11,8 @@ import { expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { host, reply, notingFact, consolidationReply } from "./test-host.ts";
-import { call, fixture, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { call, fixture, memoryBatch, noteBatch, say, settled, toolResults, worker, type Body } from "./native-fixture.ts";
+import { recorded } from "../../source-fixture.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 
 const at = "2026-09-08T00:00:00.000Z";
@@ -22,6 +23,8 @@ const thinkingOf = (run: { response?: string | null }) => JSON.parse(run.respons
  * fresh child's system prompt is the Noter's, which a fork's never is — and rejects a fork body the
  * way a provider rejects one it cannot hold. */
 const freshChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Noting (fact extraction)");
+/** 29e: the same distinction for the phase whose mode was restored. */
+const freshConsolidationChild = (body: Body) => ["system", "developer"].includes(body.messages?.[0]?.role) && String(body.messages[0]!.content).includes("Consolidation (knowledge extraction)");
 const overflow = () => new Response(JSON.stringify({ error: { message: "prompt is too long: 213462 tokens > 200000 maximum" } }),
   { status: 400, headers: { "content-type": "application/json" } });
 const settle = async (h: ReturnType<typeof host>, rounds = 40) => {
@@ -320,6 +323,44 @@ test("27/26d: the levels frozen at admission survive fallback", async () => {
     expect(runs[1]!.model).toBe("fake/test-thinking");
     expect(thinkingOf(runs[1]!)).toEqual({ requested: "high", effective: "high" });
     const freshBodies = f.sent.filter(body => worker(body) && freshChild(body));
+    expect(freshBodies.length).toBeGreaterThan(0);
+    expect(freshBodies.every(body => body.reasoning_effort === "high")).toBe(true);
+  } finally { await f.dispose(); }
+}, 30000);
+
+test("27/26d/29e (case 18): a Consolidation fork's fallback takes the configured Consolidator model and the frozen phase level", async () => {
+  // The same freeze rule for the phase 29e restored the mode to: the fork inherits the foreground
+  // level (26b), and its fallback child thinks at this phase's own configured level — the pair frozen
+  // at admission, never the level or the preference as they stand when the fallback is admitted.
+  const f = await fixture({ "noting.triggerTokens": 1000000000, "consolidation.triggerTokens": 1,
+    "consolidation.forkModeDefault": true, consolidationModel: "fake/test-thinking", consolidationThinking: "high" },
+    "fake", { model: "test-thinking", thinkingLevel: "low" });
+  try {
+    await f.h.emit("session_start");
+    f.h.setThinkingLevel("low");
+    let switched = false;
+    f.script(async (body: Body) => {
+      if (!worker(body, "Consolidation")) return say("好的。");
+      if (freshConsolidationChild(body)) return toolResults(body) >= 2 ? say("Integrated.") : call(`t${toolResults(body)}`, "memory", memoryBatch);
+      if (!switched) { switched = true; f.h.setThinkingLevel("off"); } // the foreground level moves mid-attempt
+      return overflow();
+    });
+    await f.turn();
+    f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })
+      .find(t => t.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] });
+    recorded(f.h.memory, 1, "main", 1);
+    await f.turn("tick");
+    const runs = await vi.waitFor(() => {
+      const found = f.h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.response).sort((a, b) => a.id - b.id);
+      expect(found).toHaveLength(2); // 27d: the refused attempt and the re-admitted run
+      return found;
+    }, { timeout: 5000 });
+    expect(runs[0]!.mode).toBe("fork");
+    expect(thinkingOf(runs[0]!)).toEqual({ requested: "low", effective: "low" }); // the inherited level, frozen
+    expect(runs[1]!.mode).toBe("subagent");
+    expect(runs[1]!.model).toBe("fake/test-thinking"); // the configured Consolidator model, not the session's
+    expect(thinkingOf(runs[1]!)).toEqual({ requested: "high", effective: "high" }); // `consolidationThinking`
+    const freshBodies = f.sent.filter(body => worker(body, "Consolidation") && freshConsolidationChild(body));
     expect(freshBodies.length).toBeGreaterThan(0);
     expect(freshBodies.every(body => body.reasoning_effort === "high")).toBe(true);
   } finally { await f.dispose(); }
