@@ -371,8 +371,10 @@ export interface TraceMemory {
   /** A session id after the first reply; before it exists (first prompt), the project alone: global + project knowledge. */
   inject(target: number | { projectId: number } | KnowledgePath): string;
   /** 29a: the same block with the commit ids it kept, for the carrier the host writes on the message
-   * it persists. `inject` is this call read for its text alone. */
-  injection(target: number | { projectId: number } | KnowledgePath): Injection;
+   * it persists. `inject` is this call read for its text alone. 31: `visible` is the reader's own
+   * context (29a's view), whose commits are subtracted and whose stale commits get a status line; the
+   * default empty view is the whole applicable set, which is what a fresh context always got. */
+  injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView): Injection;
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;

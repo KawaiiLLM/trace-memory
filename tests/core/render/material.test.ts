@@ -552,7 +552,7 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
 
   const freeze = (commits: number[], config = memory.config) => freezeConsolidation(memory.store,
     { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
-      visible: { raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(commits), injection: false } }, config);
+      visible: { raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(commits), injection: false, suppliedGeneration: 0 } }, config);
   // The visible predecessor covers nothing: the current commit is supplied and its predecessor named.
   const stale = freeze([1]);
   expect(stale.prepared!.material.knowledge.map(g => g.text).join("\n")).toContain(`[K1@${current}]`);
@@ -590,7 +590,7 @@ test("29e 2026-09-10 (case 14): a Consolidation fork's target is the union; only
   const pending = memory.store.consolidationBatch(s.id, "main", t.id).map(f => f.id);
   expect(pending).toHaveLength(3); // `seeded`'s F1 (committed knowledge does not consolidate it) and the two above
   const frozen = freezeConsolidation(memory.store, { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
-    visible: { raw: new Map(), factIds: new Set(pending.slice(0, 2)), knowledgeCommitIds: new Set(), injection: false } }, memory.config);
+    visible: { raw: new Map(), factIds: new Set(pending.slice(0, 2)), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 } }, memory.config);
   const prepared = frozen.prepared!;
   // The exact target is the union: both facts are integrated and both are addressed.
   expect(frozen.rangeFacts.map(f => f.id)).toEqual(pending);

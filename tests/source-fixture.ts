@@ -7,7 +7,7 @@ export * from "../src/core/api/index.ts";
  * else is claimed: no fact and no knowledge commit, so the optional material is still supplied. */
 export function visibleTarget(memory: TraceMemory, sessionId: number, branch: string, headTurnId: number): VisibleView {
   return { raw: new Map(memory.pendingEntries(sessionId, branch, headTurnId).map(e => [e.nativeId, "source" as const])),
-    factIds: new Set<number>(), knowledgeCommitIds: new Set<number>(), injection: false };
+    factIds: new Set<number>(), knowledgeCommitIds: new Set<number>(), injection: false, suppliedGeneration: 0 };
 }
 
 /** Seed one completed source entry — the record a host writes when a native message is finished, and

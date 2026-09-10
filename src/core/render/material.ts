@@ -226,10 +226,18 @@ const leading = (material: SharedMaterial): string[] => {
   return knowledge ? [knowledge] : [];
 };
 
-/** Main-agent initial injection: knowledge, then receipts. Knowledge-only by construction — the
- * shared type carries facts and Raw for other consumers, and injection renders neither. */
-export const injectionText = (material: SharedMaterial): string =>
-  finish({ content: knowledgeBlock(material), receipts: material.receipts });
+/** 29b's status block, emitted only when there is a status line: the commits the reader's context
+ * already holds that are no longer this path's current authority. Shared by the Consolidator's
+ * layout and, since 31, the main agent's knowledge block, which are now the same selection. */
+const statusBlock = (notes: readonly string[]): string[] =>
+  notes.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${notes.join("\n")}`] : [];
+
+/** Main-agent knowledge block: knowledge, the status of the visible commits that are no longer
+ * current (31), then receipts. Knowledge-only by construction — the shared type carries facts and Raw
+ * for other consumers, and this renders neither. Ticket 31 "One selection, two triggers": with an
+ * empty visible view there is no status line and this is byte for byte the initial block 29d had. */
+export const injectionText = (material: SharedMaterial, knowledgeNotes: readonly string[] = []): string =>
+  finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes)]), receipts: material.receipts });
 
 /** Main-agent compact: knowledge, then historical facts, then the pending Raw, then receipts. Ticket
  * 30: there is one bounded view and therefore one Raw title — the second tier that renamed this block
@@ -255,7 +263,6 @@ export const notingText = (material: NotingMaterial, range: TaskRange): string =
  * the negation reminders, then receipts. 25a: no already-consolidated history block — those facts are
  * read by address. With an empty visible view this is the layout a fresh Consolidator has always had. */
 export const consolidationText = (material: ConsolidationMaterial, range: TaskRange): string =>
-  finish({ content: block([...leading(material),
-    ...(material.knowledgeNotes.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${material.knowledgeNotes.join("\n")}`] : []),
+  finish({ content: block([...leading(material), ...statusBlock(material.knowledgeNotes),
     rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n"),
     REMINDER_TITLE, material.reminders.join(BLOCK) || "none"]), receipts: material.receipts });

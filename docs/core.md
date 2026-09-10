@@ -256,7 +256,7 @@ corrected it):
 | --- | --- |
 | Noter (`notingText`) | historical facts → range → selected Raw → receipts |
 | Consolidator (`consolidationText`) | knowledge → range → selected pending facts → negation reminders → receipts |
-| Main-agent injection (`injectionText`) | knowledge → receipts |
+| Main-agent knowledge block (`injectionText`) | knowledge → inherited-knowledge status (31) → receipts |
 | Main-agent compact (`compactText`) | knowledge → historical facts → pending Raw (the one bounded entry view) → receipts |
 
 25a supersedes ticket 20 on two blocks of that table: the Noter's leading knowledge block, in both
@@ -555,8 +555,9 @@ The survivor revision, merged status and links, run record and frozen Consolidat
 fact membership commit together; absorbed items retain their own last revision.
 Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
 unconditional: a commit is delivered to no conversation, in either worker mode. The foreground learns
-a background result through a later compaction or an explicit read, and a child receiving material
-does not mean the parent received it. Supports cite project facts available at start.
+a background result through a later compaction, an explicit read, or — ticket 31, the one exception —
+the single knowledge supplement its host asks for after a project change or a re-enable; a child
+receiving material does not mean the parent received it. Supports cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
 transaction, including concurrent changes to untouched knowledge. A range fact cited
@@ -590,7 +591,17 @@ revision time ascends, with knowledge-id ties. XML text is never escaped (lines 
 including revision-bound marks, remain the display grammar. Budgets measure
 shared lines before XML escaping and exclude framing and receipts. Protected
 categories survive overage; optional categories form a retained prefix.
-Pass `null` explicitly for legacy null branches. Successful noting commits record `factIds` in the
+Pass `null` explicitly for legacy null branches.
+
+31: this is **one selection**, and its two triggers are the host's. `injection(target, visible?)`
+selects the applicable knowledge at the node minus the commit ids `visible` (29a's view of the
+reader's own context) already holds, and annotates the visible commits that are no longer current with
+29b's status lines, inside the same `render.knowledgeBlockTokens` allowance. The default empty view is
+the whole applicable set, which is what a fresh context has always received, byte for byte. An empty
+delta renders no block at all — the status lines annotate a block and never become one on their own,
+so a re-enable with nothing new to say says nothing.
+
+Successful noting commits record `factIds` in the
 existing response envelope; this identifies a run's own facts even when runs overlap in their source
 turns. (29d: the `<noted>` block that used to follow knowledge on every prompt is gone. The
 `pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
@@ -681,7 +692,7 @@ by 17b; the pending-delivery count went with the queue in 29d.
 ## Kept identities and the visible view (29a)
 
 Renderers return what they kept beside their text, so nothing is recovered by parsing
-rendered prose. `injection(target)` is the initial knowledge block plus the exact
+rendered prose. `injection(target, visible?)` is the main agent's knowledge block plus the exact
 `knowledgeCommitIds` inside it (`inject` is the same call read for its text alone), and a custom
 `compact` result carries `supplied: {entries, factIds, knowledgeCommitIds}` —
 every selected pending entry as `{id, nativeId, view: "bounded"}`, plus the historical facts and
