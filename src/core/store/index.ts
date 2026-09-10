@@ -19,7 +19,6 @@ import type {
   FactRelation,
   KnowledgeMark,
   KnowledgeMarkKind,
-  PendingDelivery,
   Project,
   Run,
   RunKind,
@@ -179,6 +178,10 @@ CREATE TABLE IF NOT EXISTS knowledge_marks (
   FOREIGN KEY (knowledge_id, commit_id) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
+-- 29d: retired. Automatic foreground receipt delivery is gone; nothing writes or reads this table
+-- any more. It is created and left as it is so a published Beta database opens unchanged, and its
+-- timestamps are never interpreted as visibility (parent 29, "Retire automatic foreground receipt
+-- delivery": historical tables may remain, the new version does not drain or interpret them).
 CREATE TABLE IF NOT EXISTS pending_deliveries (
   run_id INTEGER NOT NULL REFERENCES runs(id),
   session_id INTEGER NOT NULL REFERENCES sessions(id),
@@ -329,11 +332,10 @@ export interface FactCommitInput {
 }
 
 export interface CommitNotingRunInput {
-  run: RunInput; // sessionId required: every turn, watermark, and delivery must belong to it
+  run: RunInput; // sessionId required: every turn and watermark must belong to it
   facts: FactCommitInput[];
   responseForFacts?: (ids: number[]) => string;
   entryIds?: number[];
-  pendingDelivery?: { sessionId: number; branch: string | null };
 }
 
 export type CommitNotingResult =
@@ -426,7 +428,6 @@ export interface CommitConsolidationRunInput {
   // Runs inside the transaction after application, so diagnostics observe the committed knowledge set.
   finalizeResponse?: (result: { committed: CommittedKnowledgeOp[] }) => string;
   consolidated?: number[]; // the batch's fact ids, marked as taken by this run
-  pendingDelivery?: { sessionId: number; branch: string | null }; // knowledge changes awaiting injection
 }
 
 export interface CommittedKnowledgeOp {
@@ -896,7 +897,7 @@ export class Store {
   }
 
   /** The session a run was run for, as metadata: one column, never the request and response bodies.
-   * Scope checks and delivery confirmation need only this (review 2026-09-09: a footer refresh with
+   * Scope checks need only this (review 2026-09-09: a footer refresh with
    * scoped knowledge was loading whole audit bodies through `getRun` to read one id). */
   runSessionId(runId: number): number | null {
     return (this.db.prepare("SELECT session_id FROM runs WHERE id = ?").get(runId) as { session_id: number } | undefined)?.session_id ?? null;
@@ -934,10 +935,6 @@ export class Store {
         const sessionId = this.requireRunSession(input.run);
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
-        const branch = input.run.branch ?? null;
-        if (input.pendingDelivery && (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== branch)) {
-          throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${branch})`);
-        }
         const runId = this.insertRun({ ...input.run, outcome: "success" });
         const batchIds: number[] = [];
         for (const f of input.facts) {
@@ -981,9 +978,6 @@ export class Store {
         for (const id of input.entryIds ?? []) {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
-        }
-        if (input.pendingDelivery && batchIds.length) {
-          this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
         }
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
@@ -1286,12 +1280,6 @@ export class Store {
           else throw new Error(outcome.reason);
         }
         for (const factId of input.consolidated ?? []) this.markConsolidated(factId, runId, projectId);
-        if (input.pendingDelivery && committed.length) {
-          if (input.pendingDelivery.sessionId !== sessionId || (input.pendingDelivery.branch ?? null) !== (input.run.branch ?? null)) {
-            throw new Error(`pending delivery S${input.pendingDelivery.sessionId}/${input.pendingDelivery.branch} does not belong to this run (S${sessionId}/${input.run.branch ?? null})`);
-          }
-          this.addPendingDelivery(runId, input.pendingDelivery.sessionId, input.pendingDelivery.branch);
-        }
         if (input.finalizeResponse) {
           this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
         }
@@ -1370,27 +1358,6 @@ export class Store {
     return marks;
   }
 
-  // -- pending deliveries --
-
-  addPendingDelivery(runId: number, sessionId: number, branch: string | null): void {
-    this.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, ?, NULL)").run(
-      runId,
-      sessionId,
-      branch,
-    );
-  }
-
-  listPendingDeliveries(sessionId: number, branch: string | null): PendingDelivery[] {
-    return this.db
-      .prepare("SELECT * FROM pending_deliveries WHERE session_id = ? AND branch IS ? AND delivered_at IS NULL")
-      .all(sessionId, branch)
-      .map((row: any) => ({ runId: row.run_id, sessionId: row.session_id, branch: row.branch, deliveredAt: row.delivered_at }));
-  }
-
-  clearPendingDelivery(runId: number, deliveredAt: string): void {
-    this.db.prepare("UPDATE pending_deliveries SET delivered_at = ? WHERE run_id = ?").run(deliveredAt, runId);
-  }
-
   listTurns(sessionId: number): Turn[] {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
@@ -1456,22 +1423,6 @@ export class Store {
       if (kind !== "clear") this.addKnowledgeMark(revision.knowledgeId, commitId, kind, time);
       return commitId;
     });
-  }
-
-  /** Renders the pending deliveries without consuming them; the host confirms the run ids it persisted. */
-  /** A Noting run delivers its facts, an Consolidation run its knowledge commits: what each fork-mode consumer reads out of the conversation. */
-  deliver(sessionId: number, branch: string | null, render: (facts: Fact[], commits: KnowledgeRevision[]) => string): { text: string; runIds: number[] } {
-    return this.transaction(() => {
-      if (!this.enabled(sessionId)) return { text: "", runIds: [] };
-      const pending = this.listPendingDeliveries(sessionId, branch);
-      const facts = pending.flatMap((p) => this.listFactsByRun(p.runId));
-      const commits = pending.flatMap((p) => this.listCommitsByRun(p.runId));
-      return { text: render(facts, commits), runIds: pending.map((p) => p.runId) };
-    });
-  }
-  confirmDeliveries(runIds: number[]): void {
-    const at = new Date().toISOString();
-    this.transaction(() => { for (const runId of runIds) { const id = this.runSessionId(runId); if (id && this.enabled(id)) this.clearPendingDelivery(runId, at); } });
   }
 
   searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {

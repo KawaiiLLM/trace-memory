@@ -49,6 +49,13 @@ export interface VisibleView {
   raw: Map<string, "source" | "tier1">;
   factIds: Set<number>;
   knowledgeCommitIds: Set<number>;
+  /** 29d: whether this context holds a carrier of ours on an injected message — the `custom_message`
+   * the host's `before_agent_start` handler had persisted — whatever that message supplied. The
+   * initial-knowledge lifecycle asks this rather than counting commits, so a knowledge block that
+   * fitted only its omission receipt still counts as supplied instead of being re-offered on every
+   * prompt. A compaction carrier is deliberately not an injection: what it covers is stated by
+   * `knowledgeCommitIds` alone, so a compaction that carried no knowledge fabricates no earlier supply. */
+  injection: boolean;
 }
 
 /** The carrier this entry holds for this binding, or nothing. Fails closed on every mismatch: a
@@ -71,15 +78,17 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): SuppliedMateri
 export function visibleView(entries: readonly ContextEntry[], binding: VisibleBinding): VisibleView {
   const raw = new Map<string, "source" | "tier1">();
   const factIds = new Set<number>(), knowledgeCommitIds = new Set<number>();
+  let injection = false;
   for (const entry of entries) {
     // An ordinary retained conversation entry is the strongest evidence there is, and the only kind
     // that needs no metadata. Our own injections are `custom_message`, so they are never Raw sources.
     if (entry.type === "message") { raw.set(entry.id, "source"); continue; }
     const supplied = carrierOf(entry, binding);
     if (!supplied) continue; // a free summary, a native compaction, a foreign carrier: nothing at all
+    if (entry.type === "custom_message") injection = true; // 29d: a marked injection of ours, whatever it supplied
     for (const item of supplied.entries ?? []) if (item.tier === 1 && !raw.has(item.nativeId)) raw.set(item.nativeId, "tier1");
     for (const id of supplied.factIds ?? []) factIds.add(id);
     for (const id of supplied.knowledgeCommitIds ?? []) knowledgeCommitIds.add(id);
   }
-  return { raw, factIds, knowledgeCommitIds };
+  return { raw, factIds, knowledgeCommitIds, injection };
 }

@@ -19,11 +19,10 @@ function session(projectId?: number, declaration: "marker" | "undeclared" = "mar
 function turn(sessionId: number, text = fixture.base, parentTurnId?: number) {
   return memory.store.appendTurn({ sessionId, userPrompt: text, assistantText: null, parentTurnId, kind: "turn", startedAt: time });
 }
-function noting(sessionId: number, turnId: number, text = fixture.base, branch = "main", pending = false) {
+function noting(sessionId: number, turnId: number, text = fixture.base, branch = "main") {
   const result = memory.store.commitNotingRun({ run: { sessionId, branch, kind: "noting", createdAt: time },
     facts: [{ turnId, text, category: "decision", actor: "user", source: [`T${turnId}#user`], createdAt: time }],
-    entryIds: memory.store.sourcePath(sessionId, branch, turnId).map(e => e.id),
-    ...(pending ? { pendingDelivery: { sessionId, branch } } : {}) });
+    entryIds: memory.store.sourcePath(sessionId, branch, turnId).map(e => e.id) });
   if (!result.ok) throw new Error(result.problems.join("\n"));
   return result;
 }
@@ -54,9 +53,6 @@ test("injection stays byte-identical across a zero-fact noting and has no XML at
   const { s, t } = populated();
   const before = memory.inject(s.id), next = turn(s.id, fixture.observation, t.id);
   expect((await memory.noting({ sessionId: s.id, branch: "main", headTurnId: next.id })).outcome).toBe("success");
-  expect(memory.inject(s.id)).toBe(before);
-  const empty = memory.deliver(s.id, "main"); expect(empty.text).toBe(""); // the zero-fact noting wrote no facts
-  memory.confirmDelivery(empty.runIds); expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual([]);
   expect(memory.inject(s.id)).toBe(before);
   for (const tag of before.match(/<[^>]+>/g)!) expect(tag).toMatch(/^<\/?[a-z_]+>$/);
 });
@@ -351,14 +347,14 @@ test("25c 2026-09-09: with nothing pending the historical facts take the whole s
   expect(calls).toBe(0);
 });
 
-test("25c 2026-09-09: pending membership is processing progress inside a Turn, is identical in both tiers, and a native delegation leaves delivery and injection alone", () => {
+test("25c 2026-09-09: pending membership is processing progress inside a Turn, is identical in both tiers, and a native delegation leaves injection alone", () => {
   const { s, t } = populated();
   const noted = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "done", turnId: t.id, role: "assistant", text: "PARTIAL_NOTED", raw: "", calls: [] });
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PARTIAL_PENDING " + "word ".repeat(1_500), raw: "", calls: [] });
   // One Turn, two entries, one of them processed: progress is per entry, never a Turn watermark.
   const run = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time },
     facts: [{ turnId: t.id, text: "PARTIAL_FACT", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time }],
-    entryIds: [noted.id], pendingDelivery: { sessionId: s.id, branch: "main" } });
+    entryIds: [noted.id] });
   expect(run.ok).toBe(true);
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
   const tier1 = compacted(memory.compact(s.id, "main", t.id));
@@ -372,47 +368,41 @@ test("25c 2026-09-09: pending membership is processing progress inside a Turn, i
   const profile = { toolCallTokens: memory.config.render.secondaryToolCallTokens, entryTokens: memory.config.render.secondaryEntryTokens };
   const membership = (text: string) => memory.store.listSourceEntries(s.id).filter(e => text.includes(renderEntry(e, profile, memory.resultText).content)).map(e => e.id);
   expect(membership(compacted(escalated))).toEqual([open.id]);
-  // Native delegation: the pending set does not shrink to fit, and no delivery or injection moves.
-  const deliveries = memory.store.listPendingDeliveries(s.id, "main");
+  // Native delegation: the pending set does not shrink to fit, and the injection does not move.
   const injection = memory.inject(s.id);
   memory.config.render.episodicBlockTokens = 10;
   const delegated = memory.compact(s.id, "main", t.id);
   expect(delegated.tier).toBe("native");
   expect("text" in delegated).toBe(false); // no custom summary is built, so none can be consumed
   expect(memory.pendingEntries(s.id, "main", t.id).map(e => e.id)).toEqual([open.id]);
-  expect(memory.store.listPendingDeliveries(s.id, "main")).toEqual(deliveries);
-  expect(memory.deliver(s.id, "main").text).toContain("PARTIAL_FACT");
   memory.config.render.episodicBlockTokens = 20_000;
   expect(memory.inject(s.id)).toBe(injection);
   expect(calls).toBe(0);
 });
 
-test("pending delivery is exact to its run and branch, consumed once, including after later commits", () => {
+// 29d (ticket 29, "Retire automatic foreground receipt delivery") supersedes the ruling this file
+// pinned as "pending delivery is exact to its run and branch, consumed once, including after later
+// commits": commits create no delivery intents at all now, so exactness and single consumption have
+// no subject. What survives of it is the part that was never about delivery — a run owns its facts —
+// and that is asserted by the test below and by "commits leave no delivery intent behind".
+test("29d: a noting commit records its facts and leaves no delivery intent behind", () => {
   const s = session(), t = turn(s.id);
-  const first = noting(s.id, t.id, "first delivery", "main", true);
-  const second = noting(s.id, t.id, "second delivery", "other", true);
-  expect(memory.deliver(s.id, "unrelated").text).toBe("");
-  const delivery = memory.deliver(s.id, "main");
-  expect(delivery.text).toContain("first delivery"); expect(delivery.text).not.toContain("second delivery");
-  expect(memory.deliver(s.id, "main").text).toContain("first delivery"); // unconfirmed: delivered again, never silently lost
-  memory.confirmDelivery(delivery.runIds);
-  expect(memory.deliver(s.id, "main").text).toBe("");
+  const first = noting(s.id, t.id, "first fact", "main");
+  noting(s.id, t.id, "second fact", "other");
   expect(memory.inject(s.id)).not.toContain("noted");
-  expect(memory.store.listPendingDeliveries(s.id, "other").map((p) => p.runId)).toEqual([second.runId]);
-  expect(memory.deliver(s.id, "other").text).toContain("second delivery");
+  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
 });
 
-test("delivery and branch facts use run ownership independently of audit JSON", () => {
+test("branch facts use run ownership independently of audit JSON", () => {
   const s = session(), t = turn(s.id);
-  const first = noting(s.id, t.id, "noted", "main", true);
+  const first = noting(s.id, t.id, "noted", "main");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "other", currentTurnId: t.id })[2]!.execute({
     facts: [{ category: "decision", actor: "user", text: "manual", source: [`T${t.id}#user`] }] });
   const manual = memory.store.listRuns(s.id).at(-1)!;
   memory.store.db.exec("UPDATE runs SET response = 'not JSON'");
   expect(memory.store.listBranchFacts(s.id, "main").map(f => f.text)).toEqual(["noted", "manual"]); // facts belong to their turn, whichever branch wrote them
   expect(memory.store.listBranchFacts(s.id, "other").map(f => f.text)).toEqual(["noted", "manual"]); // same turn, same path
-  expect(memory.deliver(s.id).text).toContain("noted");
   for (const run of [memory.store.getRun(first.runId)!, manual]) {
     memory.store.updateRun(run.id, { ...run, response: "{}" });
     const ids = (memory.store.db.prepare("SELECT id FROM facts WHERE run_id = ? ORDER BY id").all(run.id) as { id: number }[]).map(f => f.id);
@@ -532,11 +522,12 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
   expect(() => memory.trace(`S${s.id}`, { cap: 0 })).toThrow("positive integer");
 });
 
-test("status reports attribution, counts, every watermark, last runs and pending deliveries", () => {
-  const { s, t } = populated(); noting(s.id, t.id, fixture.observation, "side", true);
+test("status reports attribution, counts, every watermark and last runs, and no delivery queue (29d)", () => {
+  const { s, t } = populated(); noting(s.id, t.id, fixture.observation, "side");
   const status = memory.status(s.id);
   expect(status).not.toContain("Watermark");
-  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last consolidation: run 2 success", "Pending deliveries: 1"]) expect(status).toContain(text);
+  expect(status).not.toContain("Pending deliveries"); // 29d: the queue-only status field went with the queue
+  for (const text of ["Project: mapC (marker)", "Facts: 2 session; 2 project", "Knowledge: 1 visible active", "Last noting: run 3 success", "Last consolidation: run 2 success"]) expect(status).toContain(text);
 });
 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
@@ -573,15 +564,7 @@ test("default listing caps continue all hits and freeze the remaining search res
   expect(last).not.toContain("cursor=");
 });
 
-test("a delivery is preserved on render failure", () => {
-  const s = session(), t = turn(s.id);
-  noting(s.id, t.id, "pending fact", "main", true);
-  expect(() => memory.store.deliver(s.id, "main", () => { throw new Error("render failed"); })).toThrow("render failed");
-  expect(memory.store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
-  expect(memory.deliver(s.id).text).toContain("pending fact");
-});
-
-test("first-prompt injection by project needs no session: global and project knowledge, no deliveries", () => {
+test("first-prompt injection by project needs no session: global and project knowledge", () => {
   const { s, f } = populated();
   const p = memory.store.getSession(s.id)!.projectId;
   knowledge(s.id, f.id, "constraint", "session", "session-only");

@@ -237,22 +237,23 @@ test("19c 2026-09-08: the latch survives reopen and clears only through the menu
   } finally { await h.dispose(); }
 });
 
-test("review 2026-09-08: a downgraded session's next task is admitted as a subagent although a fork-only delivery is pending", async () => {
+// 29d retired the fork-only delivery pause this case was built around, so the "although" clause has
+// no subject. The downgrade itself -- a latched session admits its next task as a subagent, keeping
+// the requested mode for the audit -- is unchanged and is what this case still pins.
+test("review 2026-09-08: a downgraded session's next task is admitted as a subagent, with the requested fork kept for the audit", async () => {
   const f = await fixture();
   try {
-    // R1 writes a fact (a pending delivery); its two responses read 0% and 25% of their input: two misses, the latch sets.
+    // R1 writes a fact; its two responses read 0% and 25% of their input: two misses, the latch sets.
     f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? say("Done.", usage(40000, 2, 10000)) : call("n", "note", noteBatch, usage(40000, 2, 0)));
     await f.turn();
     await settled(f);
     expect(f.h.memory.store.forkSuppression(1)).toBeTruthy();
-    expect(f.h.memory.store.listPendingDeliveries(1, "main").length).toBeGreaterThan(0);
-    // New entries make the backlog due again. A fork would wait for the delivery it reads from the
-    // conversation; the subagent that will actually run reads nothing from it, so it starts now.
+    // New entries make the backlog due again, and the subagent the latch selected runs it.
     f.manager().appendMessage(reply("new source A " + "word ".repeat(6000)) as never);
     f.manager().appendMessage(reply("new source B " + "word ".repeat(6000)) as never);
     await f.h.emit("agent_end"); await f.h.drain();
     const target = { sessionId: 1, branch: "main", headTurnId: 1 };
-    expect(f.h.memory.taskEligibility("noting", target, "fork").paused).toBe(true); // the fork rule itself is unchanged
+    expect(f.h.memory.taskEligibility("noting", target).due).toBe(true); // 29d: due is the whole answer; no mode pauses it
     const second = await vi.waitFor(() => { const runs = notingRuns(f.h); expect(runs).toHaveLength(2); expect(runs[1]!.response).toBeTruthy(); return runs[1]!; }, { timeout: 5000 });
     expect(second.mode).toBe("subagent");
     expect(JSON.parse(second.response!).requestedMode).toBe("fork"); // requested fork is kept for the audit

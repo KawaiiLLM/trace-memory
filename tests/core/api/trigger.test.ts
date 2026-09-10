@@ -60,7 +60,7 @@ test("22b: the trigger fires at the boundary the whole-backlog estimate fired at
     expect(whole).toBeGreaterThan(10_000);
     const due = (trigger: number) => {
       counter.reset();
-      const answer = own.facade(trigger).taskEligibility("noting", own.target, "subagent").due;
+      const answer = own.facade(trigger).taskEligibility("noting", own.target).due;
       return { answer, reads: counter.reads() };
     };
     expect(due(10_000).answer).toBe(true);
@@ -80,10 +80,10 @@ test("22b: the trigger costs the threshold, not the backlog", () => {
     expect(small.store.pendingEntries(1, "main", small.head)).toHaveLength(200);
     expect(large.store.pendingEntries(1, "main", large.head)).toHaveLength(2_000);
     counter.reset();
-    expect(small.memory.taskEligibility("noting", small.target, "subagent").due).toBe(true);
+    expect(small.memory.taskEligibility("noting", small.target).due).toBe(true);
     const cheap = counter.reads();
     counter.reset();
-    expect(large.memory.taskEligibility("noting", large.target, "subagent").due).toBe(true);
+    expect(large.memory.taskEligibility("noting", large.target).due).toBe(true);
     // Ten times the backlog, the same evidence read: the threshold decides how far the check goes.
     expect(counter.reads()).toBe(cheap);
     expect(cheap).toBeLessThan(200);

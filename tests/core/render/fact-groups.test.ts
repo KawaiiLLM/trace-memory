@@ -55,7 +55,7 @@ test("history selection keeps its priority prefix, charges a heading once, then 
   }
 });
 
-test("delivery, carry, compact, Noter history and the Consolidator range share the one fact-group renderer", async () => {
+test("carry, compact, Noter history and the Consolidator range share the one fact-group renderer", async () => {
   const calls: (NotingAgentInput | ConsolidationAgentInput)[] = [];
   const m = sourceSeededMemory(":memory:", async input => {
     calls.push(input as NotingAgentInput | ConsolidationAgentInput);
@@ -66,8 +66,7 @@ test("delivery, carry, compact, Noter history and the Consolidator range share t
     const s = m.store.createSession({ host: "fake", projectId, startedAt: early, firstReplyAt: early, enrollmentChoice: true });
     const a = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "early", assistantText: "early reply", startedAt: early });
     const b = m.store.appendTurn({ sessionId: s.id, parentTurnId: a.id, kind: "turn", userPrompt: "late", assistantText: "late reply", startedAt: late });
-    const write = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: late },
-      pendingDelivery: { sessionId: s.id, branch: "main" }, facts: [
+    const write = m.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: late }, facts: [
         { ...fact(1, b.id, "late fact"), createdAt: late },
         { ...fact(2, a.id, "early fact"), createdAt: early },
         { ...fact(3, a.id, "multi-source fact"), source: [`T${a.id}#user`, `T${b.id}#assistant`], createdAt: early },
@@ -75,7 +74,8 @@ test("delivery, carry, compact, Noter history and the Consolidator range share t
     if (!write.ok) throw new Error(write.problems.join("; "));
     const expected = renderFactGroups(write.facts, f => m.trace(`F${f.id}`), m.store.factTurnTimes(write.facts)).join("\n");
     expect([...expected.matchAll(/\[F(\d+)\]/g)].map(match => Number(match[1]))).toEqual([2, 3, 1]);
-    expect(m.deliver(s.id).text).toBe(`<noted>\n${expected}\n</noted>`);
+    // 29d retired the fifth consumer this list used to open with, the per-prompt `<noted>` delivery;
+    // the remaining four still share the one renderer, which is what the ruling is about.
     expect(m.branchSummary(s.id, "main", b.id)).toContain(`Facts:\n${expected}\nCommits`);
     const compact = m.compact(s.id, "main", b.id);
     expect(compact.tier).toBe("primary");

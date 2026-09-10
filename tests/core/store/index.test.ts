@@ -378,7 +378,7 @@ describe("visibility rule", () => {
   });
 });
 
-describe("marks and pending deliveries", () => {
+describe("marks", () => {
   test("records a mark on a knowledge item revision", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
@@ -401,15 +401,9 @@ describe("marks and pending deliveries", () => {
     expect(store.listKnowledgeMarks(knowledgeId)[0]!.kind).toBe("verified");
   });
 
-  test("queues and clears a pending delivery bound to a branch", () => {
-    const p = store.createProject({ name: "proj", declaredBy: "mark" });
-    const s = makeSession(p.id);
-    const run = store.recordRun({ kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z", outcome: "success" });
-    store.addPendingDelivery(run.id, s.id, "main");
-    expect(store.listPendingDeliveries(s.id, "main")).toHaveLength(1);
-    store.clearPendingDelivery(run.id, "2026-01-01T00:03:00Z");
-    expect(store.listPendingDeliveries(s.id, "main")).toHaveLength(0);
-  });
+  // 29d supersedes "queues and clears a pending delivery bound to a branch": the queue and both of its
+  // operations are retired. The table itself is still created for published Beta databases, which the
+  // schema test above pins by name, and 29d's own test opens such a database read-only.
 });
 
 describe("commit boundaries (ticket 01 review repairs)", () => {
@@ -536,7 +530,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 1 });
   });
 
-  test("a noting commit rejects turns, watermarks, and deliveries outside its own session and branch", () => {
+  test("a noting commit rejects turns and watermarks outside its own session and branch", () => {
     const { s, t } = seed();
     const p2 = store.createProject({ name: "other", declaredBy: "mark" });
     const s2 = makeSession(p2.id);
@@ -551,14 +545,8 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
       entryIds: [999999],
     });
     expect(foreignEntry.ok).toBe(false);
-    const foreignDelivery = store.commitNotingRun({
-      run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: consolidationAt },
-      facts: [{ ...fact, turnId: t.id }],
-      pendingDelivery: { sessionId: s.id, branch: "other" },
-    });
-    expect(foreignDelivery.ok).toBe(false);
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM facts").get()).toEqual({ n: 1 });
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome = 'failure'").get()).toEqual({ n: 3 });
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM runs WHERE outcome = 'failure'").get()).toEqual({ n: 2 });
   });
 
   test("a local handle may only point at an earlier fact of the batch", () => {

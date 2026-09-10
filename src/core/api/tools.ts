@@ -161,8 +161,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "noting" ? context.readKnowledgeCommits : [] }) }, facts: commits,
       responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
-      ...(context.kind === "noting" ? { entryIds: frozenEntries,
-        pendingDelivery: { sessionId: session.id, branch: context.branch } } : {}) });
+      ...(context.kind === "noting" ? { entryIds: frozenEntries } : {}) });
     // 26a: an empty submission has no per-item slot to carry a refused commit, so it is refused as a
     // plain `rejected:` receipt — the same refusal the reader and `toolRejected` already classify.
     if (!committedRun.ok) { problems = committedRun.problems;

@@ -53,10 +53,9 @@ function deferred() {
   script.push(async () => promise);
   return resolve;
 }
-function unchanged(branch = "main") {
+function unchanged(_branch = "main") {
   expect(memory.store.listSessionFacts(sessionId)).toEqual([]);
   expect(memory.store.listSourceEntries(sessionId).some(e => memory.store.entryNoted(e.id))).toBe(false);
-  expect(memory.store.listPendingDeliveries(sessionId, branch)).toEqual([]);
 }
 
 test("a turn arriving during the model call waits for the next trigger", async () => {
@@ -82,7 +81,7 @@ test("a turn arriving during the model call waits for the next trigger", async (
   expect(calls).toHaveLength(2);
 });
 
-test("switching branch while pending preserves the old delivery and excludes the sibling", async () => {
+test("switching branch while pending keeps the old branch's progress and excludes the sibling", async () => {
   const root = turn(), old = turn(root.id, 1), resolve = deferred();
   const selection = { sessionId, branch: "old", headTurnId: old.id };
   const pending = memory.noting(selection);
@@ -98,8 +97,6 @@ test("switching branch while pending preserves the old delivery and excludes the
   expect(memory.store.sourcePath(sessionId, "old", old.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "new", sibling.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.listPendingDeliveries(sessionId, "old").map((d) => d.branch)).toEqual(["old"]);
-  expect(memory.store.listPendingDeliveries(sessionId, "new")).toEqual([]);
   expect(calls[1]!.text.fresh).not.toContain(`[S${sessionId}/T${old.id}]`);
   expect(memory.store.getRun(1)?.branch).toBe("old");
 });
@@ -182,7 +179,6 @@ test("an explicit empty submission notings the range; compactions cannot acquire
   expect(calls).toHaveLength(0);
   const raw = turn(t.id); script.push(async () => success([])); await noting(raw.id);
   expect(memory.pendingEntries(sessionId, "main", raw.id)).toEqual([]);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(0);
 });
 
 test("read knowledge revisions and exact provider request are recorded, even when a knowledge item moves", async () => {
@@ -302,13 +298,12 @@ test("selected historical facts display by Turn time rather than insertion id", 
   expect(calls[1]!.text.fresh.indexOf("[F2]")).toBeLessThan(calls[1]!.text.fresh.indexOf("[F1]"));
 });
 
-test("reopening the database preserves the run, facts, watermark and delivery", async () => {
+test("reopening the database preserves the run, facts and watermark", async () => {
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const traced = memory.trace("F1"); memory.close(); open();
   expect(memory.trace("F1")).toBe(traced);
   expect(memory.store.sourcePath(sessionId, "main", first.id).length).toBeGreaterThan(0);
   expect(memory.store.sourcePath(sessionId, "main", first.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.listPendingDeliveries(sessionId, "main")).toHaveLength(1);
   expect(memory.store.getRun(1)?.outcome).toBe("success");
 });
 

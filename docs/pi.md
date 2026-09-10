@@ -123,24 +123,28 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   any assistant reply; a Trace Memory session cannot. The first prompt is buffered
   until that reply permits its turn row to be appended. Later prompts append
   immediately. Stored project declarations persist across resume and tree navigation.
-- `before_agent_start` injects the knowledge block once per session (by project
-  before allocation, by session afterward; after compaction the compaction block
-  already carries the knowledge) and, on every prompt, the pending deliveries for
-  this branch: a Noting's facts as `<noted>`, an Consolidation's knowledge
-  changes as `<consolidated>`. It performs no search. The facade controls category
-  order, chronological ordering, constraints first, and atomic delivery consumption.
+- `before_agent_start` injects the knowledge block, and nothing else. Ticket 29d retired the
+  automatic per-prompt delivery that used to ride beside it — a Noting's facts as `<noted>`, a
+  Consolidation's knowledge changes as `<consolidated>` — together with its settle-time confirmation
+  and the fork wait keyed on it. **The foreground does not receive a background result because a
+  worker finished; it learns that result through a later compaction or an explicit read. A child
+  receiving material does not establish that the parent received it.** Worker `note`/`memory` tool
+  receipts, manual foreground tool results, explicit reads and compaction content are unchanged.
 
-  Enabled sessions receive both delivery kinds whichever mode the Noter runs in
-  (2026-09-08 supersedes the 2026-09-07 consumer matrix). A fork run still waits
-  while a delivery it would read is pending; mode controls execution, not delivery.
-  Only a fork waits: a Consolidation, which since 25b is always a fresh child, reads
-  its pending facts from storage and is never held back by an undelivered receipt.
+  The block is offered on a prompt exactly when the *selected context's* visible view (29a) holds
+  neither a marked injection of ours nor a custom compaction carrying knowledge commit ids. Empty or
+  unknown coverage — a native compaction, a foreign carrier, a turn Pi never persisted — fabricates no
+  earlier supply, so the block is offered again: duplicates over silent loss. It is a baseline test,
+  not a delta, so a newer commit does not reopen it prompt by prompt; there is no `injected` flag in
+  the host's persisted state any more (an old state file still loads, and its field is not read). It
+  performs no search. The facade controls category order, chronological ordering and constraints
+  first.
 
   A fork Noting appends control material only (25a): the range, the head turn's
   final reply and the source-address index. It adds no knowledge block, no
   historical-fact block, no fact index and no Raw view — the foreground it inherits
-  already carries the injected knowledge and the `<noted>` receipts of earlier runs,
-  and those receipts are the same bytes a subagent's history block would show. A
+  already carries the injected knowledge (29d: not the facts of earlier runs, which are no longer
+  delivered to it; a fork that needs one reads it by address). A
   fork that falls back to a subagent sends the complete subagent material — history
   within 10,000 tokens and tier-1 Raw within 10,000, independently capped — and is
   priced on it.
@@ -249,8 +253,8 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 Each enabled active Pi runtime is an executor with one Noting slot and one
 Consolidation slot, including borrowed tasks. Each eligible entry completion checks
-free slots. Own eligible work has priority under the normal thresholds and branch
-pending-delivery gates. If no own task can be claimed, one enabled normally closed
+free slots. Own eligible work has priority under the normal trigger thresholds (29d removed the
+branch delivery gate). If no own task can be claimed, one enabled normally closed
 target with a nonempty phase queue may use that slot, even for one entry or one
 fact. `closedSessionScope` controls both phases: `project` (default) requires matching
 project ids, `global` permits any project, and `off` leaves closed tails pending.
@@ -260,7 +264,7 @@ session id and branch name; sibling paths never combine into one writable range.
 Failed claims may try another target. Completion only releases capacity; it never
 launches another batch. New own work does not preempt a borrowed worker.
 
-The facade shares the threshold/delivery predicate with host preselection and
+The facade shares the trigger threshold with host preselection and
 rechecks eligibility during atomic admission. A SQLite claim excludes other
 workers of the same target phase across branches, hosts and processes. It records
 executor id, a random token and a thirty-minute expiry; no transaction spans a
@@ -274,7 +278,8 @@ admission and commit as well.
 Borrowed work uses subagent mode and the configured phase model, with `session`
 resolved from the executor's model. Its target project, branch and evidence freeze
 before launch; a later project change rejects the commit. All business results,
-usage, run records and deliveries remain attributed to that target.
+usage and run records remain attributed to that target, and (29d) its results are delivered to no
+conversation at all — neither the executor's nor the target's own.
 
 Normal shutdown marks only the executor's own memory session closed. Restore clears
 the mark and immediately reserves new tokens for that executor in place of another
@@ -346,7 +351,7 @@ Disabled sessions ingest nothing, inject nothing and start neither worker. Manua
 available even before allocation. Compaction and tree hooks return no plugin
 override so Pi proceeds with native context handling. Stored Raw, facts, knowledge,
 runs and knowledge scope stay intact; other sessions still see shared knowledge.
-Already-injected text remains in context. Unseen deliveries remain unconfirmed.
+Already-injected text remains in context.
 The transactional commit checks reject late business writes and leave their batch
 pending; a batch committed before disable remains successful. Disabling this
 executor invalidates its tokens and cancels active model calls and retry waits.
@@ -374,8 +379,8 @@ the same operations the menu performs, not hidden aliases of a menu entry.
 
 Bare `/trace` opens four native dialogs:
 
-- **Current session:** the status text (enrollment, 24a's pending counts, deliveries,
-  runs, spend, catchup state, fork suppression) as the dialog's own title, then
+- **Current session:** the status text (enrollment, 24a's pending counts, runs, spend, catchup
+  state, fork suppression) as the dialog's own title, then
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
   `Project` with a name input, `Mark` with an address input and a kind selection, and
   `Retry fork` only while this session is automatically downgraded.
@@ -500,7 +505,7 @@ Tier 3 is the one place where compaction reaches a model, and the call is Pi's: 
 adapter declines the custom replacement and Pi's own compaction runs, succeeds, fails or
 is cancelled under its own outcome handling. The adapter manufactures no summary, appends
 no oversized block to Pi's result and starts no extraction flush; an unused custom summary
-prepared before the fallback confirms no delivery and no initial injection. The tier used
+prepared before the fallback confirms no injection. The tier used
 and its reason go to a `ui.notify` info line and to a `Compaction:` line in the status text
 (the menu's Current session, or headless bare `/trace`).
 
@@ -658,9 +663,9 @@ npm run typecheck
 The registration test imports the default extension with a stub ExtensionAPI, checks
 registration, runs `/trace`, and asserts that it created no session or model
 request. The host suite also checks trigger boundaries, request-body capture,
-consolidation continuation, incremental raw, compaction, explicit project attribution, deliveries
-on branch return, frozen in-flight ranges, duplicate noting/consolidation calls, provider
-failures, and absence of Pi imports in core.
+consolidation continuation, incremental raw, compaction, explicit project attribution, the absence of
+any receipt on branch return (29d), frozen in-flight ranges, duplicate noting/consolidation calls,
+provider failures, and absence of Pi imports in core.
 
 ## Manual verification in a real Pi session
 
@@ -682,8 +687,9 @@ node /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/bundle/
 3. Read the status again after the replies. Short exchanges below 10,000 compressed-view
    tokens produce no Noting. Continue with substantial conversation material
    until an eligible completion reaches the threshold; inspect the resulting run's
-   entry audit and exact progress. Deliveries are confirmed only after a prompt
-   takes them and settles. Invalid model output may bounce; inspect the run result.
+   entry audit and exact progress. The reply after it carries no receipt of that run (29d): read the
+   new facts with `trace` if you want to see them. Invalid model output may bounce; inspect the run
+   result.
 4. Run `/compact`. Expect immediate compaction with `<knowledge>` and `<episodic>`,
    pending compressed Raw views, recent facts, and no compaction model request. The
    notice names the tier that was used. To see the other two tiers, set
@@ -781,9 +787,9 @@ were deleted with the layout that lived in them):
 - **Inherited context (`fork`)**: `${input.prompt}\n\n${input.text.inherited}` as the appended
   user message. A fork has no system slot of its own, so the instructions ride in that message;
   core's increment is the range, the head turn's final reply and the source index (Noting) or the
-  range, the exact fact list and the review cues (Consolidation), because the raw turns, the
-  delivered facts and the injected knowledge are already in that conversation (user ruling
-  2026-09-06 08:53).
+  range, the exact fact list and the review cues (Consolidation), because the raw turns and the
+  injected knowledge are already in that conversation (user ruling 2026-09-06 08:53; 29d removed that
+  ruling's third item, the delivered facts, with automatic delivery itself).
 - **Fresh context (`subagent`)**: `input.prompt` becomes the child's system prompt and
   `input.text.fresh` its first user message.
 
@@ -1204,7 +1210,7 @@ This is a human-run check, not an automated claim of live cache hits.
 Consolidation, and does not await a worker. Committed lineage facts and evidence-selected
 knowledge commits precede the same pending compressed entry views used by Noting.
 Entries arriving during a frozen run remain in the summary. Reading it never
-consumes a delivery or calls a provider. Compaction and shutdown also launch nothing;
+calls a provider. Compaction and shutdown also launch nothing;
 pending work remains durable; shutdown cancels and fences in-flight runs under one
 shared five-second cleanup deadline.
 
@@ -1242,7 +1248,7 @@ The host tests cover ignored files/directories at cwd and ancestors, private
 sessions in a shared directory, explicit same-name project sharing, persisted
 project assignments, retroactive merge and immediate
 injection, session-knowledge isolation, shared duplicate visibility, deferred noting
-completion with later raw and branch-only delivery, fresh subagent notings,
+completion with later raw, fresh subagent notings,
 failure/unavailable models, sibling exclusion, and empty/tool-only replies.
 
 ## Retries
@@ -1349,8 +1355,8 @@ no extraction usage to Pi totals.
 ## Fact presentation
 
 All newly composed fact injections use the same chronological Turn groups: Noter history,
-Consolidator history/current facts and review cues, `<noted>` deliveries, compaction, and branch
-carry. A heading such as `[T42] 2026-09-09T10:30:00Z (selected facts)` is followed by facts in
+Consolidator history/current facts and review cues, compaction, and branch carry (29d removed the
+`<noted>` delivery from this list). A heading such as `[T42] 2026-09-09T10:30:00Z (selected facts)` is followed by facts in
 ascending F-id order. Multi-Turn citations remain intact on a single fact under its owning Turn.
 
 Grouping happens after priority selection: recent historical facts still get the available space
@@ -1369,9 +1375,9 @@ reads and search listings are unchanged. See [Fact groups](core.md#fact-groups) 
 - Cancellation requests cannot guarantee that a remote provider stops billing.
   Available usage is retained; missing cancelled usage is unknown, never free.
 
-- A queued (steering or follow-up) user message bypasses `before_agent_start`, so
-  noting results that finish during such a message are delivered at the next
-  ordinary prompt. Confirmation state is kept per agent run, so nothing is lost.
+- A queued (steering or follow-up) user message bypasses `before_agent_start`. Since 29d there is
+  nothing for it to miss: no result is delivered at any prompt, and what a prompt did supply is
+  stated on the entry Pi persisted for it rather than on a settle-time confirmation.
 - Pi's `--fork` and clone continue the same Trace Memory session on a new branch;
   redeclaring the project there changes the shared session's project.
 - On `anthropic-messages` the gate passes only with the ruled `cache_control` normalization
@@ -1524,7 +1530,7 @@ entry set. A later matching source occurrence makes that address ineligible for
 the earlier writer, even if an unrestricted trace fetch can read it. Run records
 include `entryAudit`: native identities, owning Turns, frozen branch, view-budget
 version and values, and the exact omission markers. Entry processing, facts, run
-audit and applicable deliveries commit atomically. Rejected or failed work remains
+audit commit atomically. Rejected or failed work remains
 pending. A fork inherits processed shared entries and keeps its sibling entries
 out of the selected ancestry.
 

@@ -124,12 +124,18 @@ test("26c0 native fixture: the message the hook returned is persisted through th
   try {
     f.script(body => !worker(body) ? say("好的。") : submitted(body) ? say("Done.") : call("t1", "note", noteBatch));
     await f.turn();
-    await settled(f); // the Noter committed a fact, so the next prompt delivers it
+    await settled(f); // the Noter committed a fact
+    // 29d: that commit reaches no prompt on its own, so the message this case needs is the one
+    // automatic carrier that is left — the initial knowledge block.
+    const store = f.h.memory.store, fact = store.listSessionFacts(1)[0]!;
+    store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "now" }, operations: [{
+      op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
+      text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
     await f.turn("第二个问题");
     const manager = f.manager();
     const receipt = manager.getEntries().find(e => e.type === "custom_message") as CustomMessageEntry | undefined;
     expect(receipt?.customType).toBe(tag);
-    expect(String(receipt!.content)).toContain("<noted>");
+    expect(String(receipt!.content)).toContain("Carried knowledge");
     expect(receipt!.display).toBe(false);
     // Real entry, on the real ancestry, inside the real compaction-aware view.
     expect(ids(manager.getBranch())).toContain(receipt!.id);

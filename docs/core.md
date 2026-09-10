@@ -45,7 +45,7 @@ Hosts pass completed source identities/content through `appendEntry(SourceInput)
 and select the persisted ancestry with `selectEntries(sessionId, branch, entryIds)`.
 The exposed store's transaction groups ingestion with Turn/tool projections.
 `pendingEntries(sessionId, branch, headTurnId)` derives work from native path
-membership and committed entry processing; it is not a second delivery queue.
+membership and committed entry processing; it is not a queue of results for the foreground.
 Call `noting({ sessionId, branch, headTurnId, model?, mode? })` at the existing
 trigger boundary. The core freezes exact pending entries, owning Turns, rendered
 views, recent facts and applicable knowledge before calling the model. A fork
@@ -58,7 +58,7 @@ a run record. A duplicate is dropped per target session and phase across branche
 hosts and processes by a thirty-minute SQLite claim. No automatic retry or feedback call follows a bounce.
 A batch is completed only by a `note` call (26a). `note({facts: []})` is the explicit
 empty submission: it commits a successful zero-fact run, processes exactly the frozen
-entries and creates no delivery, and it closes the batch to later `note` calls.
+entries, and closes the batch to later `note` calls.
 Stopping normally without submitting is **incomplete**: outcome `failure` with the
 exported `NOTING_INCOMPLETE` diagnostic and the oldest frozen entry on
 `incompleteHeadEntryId`, the attempt and its usage recorded, and no business progress —
@@ -89,7 +89,7 @@ on any rejection; a corrected whole batch may be resubmitted. Success returns
 `rejected: <reason>`. An accepted empty batch returns `results: []`, `factIds: []` and
 `committed: "zero facts; this batch is complete"`; a refused one, having no item slot to
 carry the reason, returns a plain `rejected: <reason>`. A Noting binding commits at most one batch. The batch,
-run record, frozen entry progress and applicable nonempty delivery commit in one transaction.
+run record and frozen entry progress commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Consolidation range. They do not
 advance Noting. `memory` writes knowledge with the uniform batch contract below.
@@ -199,9 +199,10 @@ memory writers are gone (ticket 23b), and so are their budgets. The host records
 tool status; the renderer does not infer completion from text.
 
 In fork mode the run sends core's inherited increment — the range, the head reply and the frozen
-source index: the raw turns and the facts delivered after earlier notings are already in the
-conversation the host appends to, and 25a adds no historical-fact block, no fact index and no Raw
-view on top of them. The native prefix remains uncompressed; fork Noting gains nothing from the
+source index: the raw turns are already in the conversation the host appends to, and 25a adds no
+historical-fact block, no fact index and no Raw view on top of them (29d: the facts of earlier
+notings are no longer delivered into that conversation either — a fork that needs one reads it by
+address). The native prefix remains uncompressed; fork Noting gains nothing from the
 compressed view (accepted 2026-09-08). Subagent Noting and fallback send the shared entry views
 below. Core freezes one material for both, and a fork downgraded to subagent is priced on that
 complete subagent material (22d).
@@ -272,11 +273,11 @@ blocks (pinned by a source check in `tests/core/api/boundary.test.ts`).
 
 ## Fact groups
 
-Newly injected fact lists share `renderFactGroups`: Noter history, the Consolidator range facts,
-delivery (`<noted>`), compaction, branch carry, and the facts in review reminders/feedback. It is
-the one full-fact renderer of ticket 25: the same selected facts and annotation snapshot give the
-same bytes in a foreground `<noted>` receipt and in a Noter subagent history block; only the
-enclosing title differs.
+Rendered fact lists share `renderFactGroups`: Noter history, the Consolidator range facts,
+compaction, branch carry, and the facts in review reminders/feedback. It is the one full-fact
+renderer of ticket 25: the same selected facts and annotation snapshot give the same bytes in a
+branch carry and in a Noter subagent history block; only the enclosing title differs. (29d removed
+its fifth consumer, the `<noted>` foreground receipt, with automatic delivery itself.)
 Groups use the owning Turn's start time in ascending chronological order, with Turn id as a tie-break;
 within a group, facts use ascending F ids. Unknown Turn times remain explicit and sort last by id.
 A group heading looks like `[T42] 2026-09-09T10:30:00Z (selected facts)`: it identifies a selected
@@ -497,9 +498,11 @@ Targets must match the visible active revisions frozen at run start; manual call
 use current revisions. Every item is checked before writing and every participant
 is rechecked in the immediate transaction. Any rejection writes no operations.
 The survivor revision, merged status and links, run record and frozen Consolidation
-fact membership and a nonempty knowledge-change delivery commit together; absorbed
-items retain their own last revision. Enabled sessions receive both delivery kinds
-regardless of worker mode (2026-09-08 supersession). Supports cite project facts available at start.
+fact membership commit together; absorbed items retain their own last revision.
+Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
+unconditional: a commit is delivered to no conversation, in either worker mode. The foreground learns
+a background result through a later compaction or an explicit read, and a child receiving material
+does not mean the parent received it. Supports cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
 transaction, including concurrent changes to untouched knowledge. A range fact cited
@@ -533,12 +536,11 @@ revision time ascends, with knowledge-id ties. XML text is never escaped (lines 
 including revision-bound marks, remain the display grammar. Budgets measure
 shared lines before XML escaping and exclude framing and receipts. Protected
 categories survive overage; optional categories form a retained prefix.
-`<noted>` follows knowledge, without a budget, and is consumed atomically
-only after rendering succeeds. Pass `null` explicitly for legacy null branches.
-Successful noting commits now record `factIds` in the existing response envelope;
-this identifies exact deliveries even when runs overlap in their source turns.
-Legacy pending runs without this metadata raise an error and remain pending;
-the core cannot safely reconstruct their ownership from turn ranges alone.
+Pass `null` explicitly for legacy null branches. Successful noting commits record `factIds` in the
+existing response envelope; this identifies a run's own facts even when runs overlap in their source
+turns. (29d: the `<noted>` block that used to follow knowledge on every prompt is gone. The
+`pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
+writes, reads, drains or migrates it, and its timestamps are never read as visibility.)
 
 `compact(sessionId, branch = "main", headTurnId?)` escalates over one frozen read snapshot of every
 pending entry on the path and returns a tier, not a string (ticket 20c):
@@ -559,10 +561,10 @@ the Noter's batch ceiling and compact does not read it — and both tiers are re
 `budgetMaterial` accounting as normal material. A backlog above 10,000 and below 20,000 tokens
 therefore stays in tier 1 instead of escalating, and the reason a delegation gives names the envelope
 or the tier-2 entry budget, the only two caps left to miss. Tier changes re-render one frozen
-membership: they never select a smaller pending set, advance extraction progress or touch delivery and
-injection state, and a native delegation builds no custom summary at all.
+membership: they never select a smaller pending set, advance extraction progress or touch injection
+state, and a native delegation builds no custom summary at all.
 No tier hides a selected entry to fit, falsifies an omission count or relaxes a cap;
-no tier calls a provider or consumes a delivery, and core contains no summarizer — reaching a model
+no tier calls a provider, and core contains no summarizer — reaching a model
 is the host's native fallback alone. Tier 2 is `renderEntry` under the tier-2 profile
 (`render.secondaryToolCallTokens`, `render.secondaryEntryTokens`; ticket 23 superseded 20c's separate
 compact-only renderer and its version constant): the same parts, the same markers and the same
@@ -621,8 +623,8 @@ projects must use `createSession({ …, projectDeclaration: "undeclared" })`.
 Only undeclared projects merge via `mergeProject`; leaving a
 named project moves the declaring session and its session knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
-count, latest attempts by run id, and pending delivery count. The derived Turn
-watermark readers and status line were removed by 17b.
+count and latest attempts by run id. The derived Turn watermark readers and status line were removed
+by 17b; the pending-delivery count went with the queue in 29d.
 
 
 ## Kept identities and the visible view (29a)
@@ -654,8 +656,8 @@ without changing this view. The carrier format itself is host-side (see `docs/pi
 `branchSummary(sessionId, branch, headTurnId)` returns one `<branch_carry>` XML
 block with the fixed other-branch reminder, facts whose raw evidence lies on the
 leaving path, commits selected by that evidence, and shared pending entry views.
-As in every block, tags delimit and content lines remain byte-identical. There is no fact budget or delivery
-consumption. The host passes the block immediately as Pi's summary, launching
+As in every block, tags delimit and content lines remain byte-identical. There is no fact budget.
+The host passes the block immediately as Pi's summary, launching
 neither phase and awaiting no Noting; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.
 
@@ -669,11 +671,12 @@ derives Enabled; missing metadata derives Disabled. Test fixtures opt in explici
 from explicit intent. Source mutations and automatic facade admission check this
 state; both run commits reread it inside their immediate transaction. Failure audits
 remain possible, but disabled business writes/progress cannot commit. Reads and pending
-queue inspection remain available; automatic blocks and confirmation are gated.
+queue inspection remain available; automatic blocks are gated.
 No Pi SDK or migration enters core. The facade owns an executor id, atomic task
-admission, cancellation signals and conditional claim release. `taskEligibility`
-shares the threshold/delivery predicate with host preselection; `automatic: true`
-rechecks it in admission. `borrowed: true` requires a closed target and an enabled,
+admission, cancellation signals and conditional claim release. `taskEligibility(phase, target)`
+shares the trigger threshold with host preselection; `automatic: true` rechecks it in admission. Since
+29d it answers `{due}` alone: the delivery pause that used to hold a fork-mode Noting task until its
+predecessor's facts had reached the foreground is gone, so the worker mode no longer changes it. `borrowed: true` requires a closed target and an enabled,
 open `executorSessionId`, and forces subagent mode. `closedSessionScope` defaults to
 `project` (matching project ids); `global` allows any project and `off` leaves closed
 tails pending. Hosts pass `memory.config.closedSessionScope` to `store.closedTasks`;

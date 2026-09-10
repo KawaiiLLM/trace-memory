@@ -133,9 +133,14 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
-// 25b: Consolidation has no mode to vary any more, so the delivery rule is exercised over the one
-// worker mode that is still configurable.
-test.each([true, false])("18a 2026-09-08: enabled delivery ignores the Noter mode (%s) and disable preserves unseen deliveries", async (noting) => {
+// 25b: Consolidation has no mode to vary any more, so the rule is exercised over the one worker mode
+// that is still configurable. 29d supersedes the delivery half of the 18a ruling this test pinned
+// ("enabled delivery ignores the Noter mode and disable preserves unseen deliveries"): there is no
+// delivery to ignore a mode or to preserve across a disable. What the ruling was protecting -- that
+// disabling stops automatic material without losing committed work, and that enabling restores the
+// automatic material that is left -- is retargeted onto the initial knowledge block, which is that
+// material now.
+test.each([true, false])("29d: automatic material ignores the Noter mode (%s); disable stops it and preserves committed work", async (noting) => {
   const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
@@ -144,18 +149,18 @@ test.each([true, false])("18a 2026-09-08: enabled delivery ignores the Noter mod
   writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { "noting.triggerTokens": 1, "consolidation.triggerTokens": 1 } }));
   await h.emit("session_start");
   await h.answer("tick"); await h.drain();
-  const delivered = await h.prompt("deliver facts"); expect(delivered.message.content).toContain("<noted>");
+  expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
-  const pending = h.memory.store.listPendingDeliveries(1, "main");
-  expect(pending.length).toBeGreaterThan(0);
+  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
   await command(h, "off");
   expect(await h.prompt("unseen")).toBeUndefined(); await h.answer(); await h.emit("agent_settled");
-  h.memory.confirmDelivery(pending.map(p => p.runId));
-  expect(h.memory.store.listPendingDeliveries(1, "main")).toEqual(pending);
   expect(h.memory.store.listVisibleKnowledge(0, 1).some(k => k.revision.text === "Retained shared knowledge")).toBe(true);
   await command(h, "on");
-  expect((await h.prompt("resume delivery")).message.content).toContain("<consolidated>");
+  // The knowledge committed while this conversation was enabled is the automatic material that is
+  // left, and it is still injected once, on the first prompt after the switch.
+  expect((await h.prompt("resume")).message.content).toContain("Retained shared knowledge");
+  expect((await h.prompt("again"))?.message).toBeUndefined();
 });
 
 test("18a/24b, as 25b left it: Settings shows the three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {

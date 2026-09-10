@@ -170,13 +170,6 @@ export interface KnowledgeMark {
   createdAt: string;
 }
 
-export interface PendingDelivery {
-  runId: number;
-  sessionId: number;
-  branch: string | null;
-  deliveredAt: string | null;
-}
-
 // ---- Shared validation plumbing ----
 
 const LOCAL_FACT_HANDLE_RE = /^\$\d+$/; // $n, noting.md

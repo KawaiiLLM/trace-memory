@@ -124,7 +124,7 @@ test("17c 2026-09-08: two active executors share target claims and the loser sel
   } finally { await b.dispose(); await a.dispose(); }
 });
 
-test("17c 2026-09-08: borrowed requests freeze target project and branch; costs, commits and deliveries stay with target", async () => {
+test("17c 2026-09-08: borrowed requests freeze target project and branch; costs and commits stay with target (29d: and reach no conversation)", async () => {
   // Borrowed work is fresh-context for both phases; since 25b Consolidation has no other mode to ask for.
   const h = host();
   try {
@@ -139,9 +139,10 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs,
     expect(runs).toHaveLength(2); expect(runs.every(r => r.branch === t.branch && r.mode === "subagent" && r.outcome === "success")).toBe(true);
     expect(h.memory.store.listVisibleKnowledge(t.sessionId, t.projectId).map(k => k.knowledge.originSessionId)).toEqual([t.sessionId]);
     expect(h.memory.spend(t.sessionId).input).toBeGreaterThan(0); expect(h.memory.spend(1).input).toBe(0);
-    expect(h.memory.deliver(1, "main").runIds).toEqual([]);
-    expect(h.memory.deliver(t.sessionId, t.branch).text).toContain("<noted>");
-    expect(h.memory.deliver(t.sessionId, t.branch).text).toContain("<consolidated>");
+    // 29d: the borrowed target's facts and commits stay attributed to it and are delivered to no
+    // conversation at all -- neither this executor's nor the target's own.
+    expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+    expect((await h.prompt("after borrowed work"))?.message?.content ?? "").not.toContain("<noted>");
   } finally { await h.dispose(); }
 });
 

@@ -46,8 +46,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (unansweredNear.length) diagnostics.push({ kind: "unanswered_near", pairs: unansweredNear });
     const receipt = (items: import("../store/index.ts").CommittedKnowledgeOp[]) => JSON.stringify({ results: prepared.results, committed: items, diagnostics });
     const result = store.commitConsolidationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
-      ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id),
-        pendingDelivery: { sessionId, branch: run.branch ?? null } } : {}),
+      ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id) } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path, committed));
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });
