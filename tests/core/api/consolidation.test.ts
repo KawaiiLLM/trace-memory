@@ -274,7 +274,7 @@ test("already-consolidated facts are not supplied while the range remains comple
   // 20b: the knowledge cap is hard — not even the three categories 17b's exemption protected survive a
   // one-token budget — and, since the review of 2026-09-08, hard for its receipt too: a budget that
   // holds neither an item nor the receipt naming it leaves the batch pending rather than running.
-  memory.close(); open({ render: { knowledgeBlockTokens: 1 } });
+  memory.close(); open({ consolidation: { knowledgeTokens: 1 } });
   fact(memories.interpretation);
   const runs = memory.store.listRuns(sessionId).length;
   await expect(consolidation()).rejects.toThrow(/capacity/);

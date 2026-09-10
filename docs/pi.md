@@ -52,6 +52,8 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
     "consolidation.batchTokens": 10000,
+    "consolidation.knowledgeTokens": 10000,
+    "render.knowledgeBlockTokens": 20000,
     "compaction.factsTokens": 10000,
     "compaction.rawTokens": 10000
   }
@@ -60,7 +62,11 @@ For example, either settings file can contain:
 
 `compaction.factsTokens` and `compaction.rawTokens` are 28a's two compaction material windows;
 the third is `render.knowledgeBlockTokens`, and the envelope one custom compaction may charge is
-the sum of the three (see "Compaction and the post-compaction boundary").
+the sum of the three: 20,000 + 10,000 + 10,000 = 40,000 at defaults (see "Compaction and the
+post-compaction boundary"). `render.knowledgeBlockTokens` also caps initial knowledge injection and
+the one-shot supplement. Consolidator references, including inherited status lines, instead use
+`consolidation.knowledgeTokens` (default 10,000). Both keys accept positive safe integers through the
+existing configuration layers; explicit values are retained. Neither appears in interactive Settings.
 
 Environment override example:
 
@@ -154,7 +160,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   current node — the existing scope and commit-graph rules — minus the commit ids the selected
   context's visible view (29a) already holds, with 29b's status lines for the visible commits that are
   no longer current, rendered as the knowledge block and its receipts within
-  `render.knowledgeBlockTokens`. A commit visible at the same version is never repeated, so the delta
+  `render.knowledgeBlockTokens` (default 20,000). A commit visible at the same version is never repeated, so the delta
   is empty exactly when every candidate is visible; a commit an earlier budget omitted, a newer
   revision and a commit a compaction did not keep are candidates again.
 
@@ -533,10 +539,10 @@ rather than a string:
 | `{text, supplied, charged}` | the knowledge block at its baseline, the pending facts and every pending entry's bounded view fit the envelope | the text, as `compaction.summary` |
 | `{native: true, reason, over?}` | a required window overflows after lending, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
 
-Ticket 28a replaced 25c's "knowledge plus one shared 20,000-token envelope" with three
-material windows of 10,000 tokens each — knowledge (`render.knowledgeBlockTokens`), the
-pending facts (`compaction.factsTokens`) and the pending Raw (`compaction.rawTokens`) — over
-one envelope that is their sum (30,000 at the defaults). Unused allowance is lent freely
+Ticket 28a introduced three material windows; 32a raises only the main knowledge default:
+knowledge 20,000 (`render.knowledgeBlockTokens`), pending facts 10,000 (`compaction.factsTokens`)
+and pending Raw 10,000 (`compaction.rawTokens`) — over
+one envelope that is their sum (40,000 at the defaults), not a fourth configuration key. Unused allowance is lent freely
 between them and the charged total never passes the envelope; optional knowledge above its
 own baseline yields before a required window can be declared over; a required window is never
 trimmed to fit. Whatever is left after the required material is filled first by the knowledge

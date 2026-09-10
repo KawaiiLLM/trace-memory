@@ -62,6 +62,8 @@ export interface TraceMemoryConfig {
     triggerTokens: number;
     /** Ticket 20: the most rendered fact tokens one batch may select. */
     batchTokens: number;
+    /** Knowledge references and inherited status lines, independent of the main-agent allowance. */
+    knowledgeTokens: number;
     nearThreshold: number;
     maxToolRounds: number;
   };
@@ -86,7 +88,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     entryTokens: 2_000,
     toolInputTokens: 100,
     toolResultTokens: 100,
-    knowledgeBlockTokens: 10_000,
+    knowledgeBlockTokens: 20_000,
     episodicBlockTokens: 20_000,
   },
   noting: {
@@ -99,6 +101,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     forkModeDefault: false,
     triggerTokens: 5_000,
     batchTokens: 10_000,
+    knowledgeTokens: 10_000,
     nearThreshold: 0.28,
     maxToolRounds: 0,
   },

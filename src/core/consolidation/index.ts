@@ -239,7 +239,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * hold at that exact commit (a visible predecessor covers nothing), and only then the budgets.
  *
  * The two allowances are unchanged (ticket 20, as 25a corrected it): the knowledge within
- * `render.knowledgeBlockTokens` — which 29b's status lines are charged inside — and the pending facts
+ * `consolidation.knowledgeTokens` — which 29b's status lines are charged inside — and the pending facts
  * within `consolidation.batchTokens`, which also carries their review cues, the titles and the range,
  * because required framing belongs to the allowance of the material it frames. There is no automatic
  * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read. */
@@ -258,7 +258,8 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
     ? [`omitted all ${knowledge.length} current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>`] : [];
   const budgeted = budgetMaterial({ ...(optionalKnowledge ? { knowledge } : {}), knowledgeNotes, current: grouped.join("\n"),
     framing: [RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    caps: { knowledge: config.render.knowledgeBlockTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
+    knowledgeBudget: "consolidation.knowledgeTokens",
+    caps: { knowledge: config.consolidation.knowledgeTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: grouped,

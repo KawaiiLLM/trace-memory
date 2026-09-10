@@ -136,6 +136,8 @@ export interface MaterialBudget {
   knowledge?: KnowledgeWithRevision[];
   /** How one knowledge item renders; the read facade adds its marks. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
+  /** The owning configuration key, used only in capacity diagnostics and omission receipts. */
+  knowledgeBudget?: string;
   /** 29b: the status lines of inherited commits that are no longer current. They are reserved out of
    * `caps.knowledge` before the block fills what is left, because a stale-authority warning is worth
    * more than one more current item; anything past the cap is receipted like any other omission. */
@@ -185,8 +187,8 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
     notes.push(note); noteCost = next;
   }
   const noteReceipts = (input.knowledgeNotes ?? []).length > notes.length
-    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; render.knowledgeBlockTokens is full`] : [];
-  const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine)
+    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "render.knowledgeBlockTokens"} is full`] : [];
+  const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine, input.knowledgeBudget)
     : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);

@@ -8,7 +8,8 @@ import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
-import { thinkingChoices } from "../../../src/hosts/pi/settings.ts";
+import { parseLayer, preferences, thinkingChoices } from "../../../src/hosts/pi/settings.ts";
+import { validateConfig } from "../../../src/core/api/index.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); hosts.push(h); return h; };
@@ -30,6 +31,18 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   h.answers.push("Settings", line, value);
   await command(h, "");
 };
+
+test("32a: knowledge budgets use the existing core and flat validators, not Settings preferences", () => {
+  expect(validateConfig({}).consolidation.knowledgeTokens).toBe(10_000);
+  expect(parseLayer({ "consolidation.knowledgeTokens": 1234 }).consolidation!.knowledgeTokens).toBe(1234);
+  expect(validateConfig({ consolidation: { knowledgeTokens: 1234 } }).consolidation.knowledgeTokens).toBe(1234);
+  for (const value of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "10000", true, null]) {
+    expect(() => validateConfig({ consolidation: { knowledgeTokens: value as number } })).toThrow(/consolidation.knowledgeTokens/);
+    expect(() => parseLayer({ "consolidation.knowledgeTokens": value as number })).toThrow(/consolidation.knowledgeTokens/);
+  }
+  expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
+    "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "closedSessionScope"]);
+});
 
 test("both modes default to subagent in Settings and ordinary execution; saving fork changes only that phase", async () => {
   const h = setup({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });

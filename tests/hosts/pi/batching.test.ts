@@ -164,8 +164,8 @@ test("17b 2026-09-08 (batch default superseded by 20b): configuration rejects re
 // tokens through the alias table, and it is shown nowhere, because the menu is built from the defaults.
 test("20b 2026-09-08 scenario 17: the new token settings validate and layer, and the removed fact-count key errors by name", () => {
   expect(DEFAULT_CONFIG.consolidation).toMatchObject({ triggerTokens: 5000, batchTokens: 10000 });
-  // The ruled ceiling of fresh material: 10,000 knowledge plus 20,000 shared episodic.
-  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens + DEFAULT_CONFIG.render.episodicBlockTokens).toBe(30_000);
+  // 32a raises main knowledge to 20,000; the separate Noter history envelope stays 20,000.
+  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens + DEFAULT_CONFIG.render.episodicBlockTokens).toBe(40_000);
   for (const key of ["triggerTokens", "batchTokens"]) for (const value of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
     expect(() => TraceMemory(":memory:", async () => ({ outcome: "success", output: "", request: {} }), { consolidation: { [key]: value } })).toThrow(`Invalid consolidation.${key}`);
     expect(() => host({ [`consolidation.${key}`]: value })).toThrow(`consolidation.${key}`);

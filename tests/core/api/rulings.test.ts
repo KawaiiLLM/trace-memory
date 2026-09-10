@@ -875,14 +875,14 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 
 // 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
 // episodic envelope, and nothing else". Superseded by ticket 28a: compaction has three material
-// windows with 10,000-token baselines — knowledge (`render.knowledgeBlockTokens`), pending facts
+// windows with 20k/10k/10k baselines (32a) — knowledge (`render.knowledgeBlockTokens`), pending facts
 // (`compaction.factsTokens`) and pending Raw (`compaction.rawTokens`) — over one envelope that is
 // their sum. `render.episodicBlockTokens` is not retired; it stayed the Noter's history envelope, and
 // compaction no longer reads it. Required material is placed first and is never trimmed; what is left
 // refills with recent consolidated facts and then recent already-extracted Raw.
 test("28: three windows, one envelope — required material first, refills into the spare, never a trimmed pending window", () => {
   expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
-  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(10_000);
+  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(20_000);
   expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
   expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
   const { s, t } = session();
@@ -900,10 +900,10 @@ test("28: three windows, one envelope — required material first, refills into 
     facts: [], entryIds: memory.store.sourcePath(s.id, "main", t.id).map(e => e.id) }).ok).toBe(true);
   const open = memory.appendEntry({ sessionId: s.id, nativeLineage: "x", nativeId: "open", turnId: t.id, role: "assistant", text: "PENDING RAW", raw: "", calls: [] });
 
-  // Everything fits: required material and both refills, inside the 30,000-token envelope.
+  // Everything fits: required material and both refills, inside the 40,000-token envelope.
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(30_000);
+  expect(windows.envelope).toBe(40_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const marker of ["PENDING FACT", "PENDING RAW", "CONSOLIDATED HISTORY", "EXTRACTED RAW"]) expect(text).toContain(marker);
   // The Noter's envelope is not compact's: moving it changes not one byte here.
@@ -928,6 +928,45 @@ test("28: three windows, one envelope — required material first, refills into 
   expect("text" in delegated).toBe(false);
   expect(calls).toHaveLength(0);
   defaultWindows();
+});
+
+test("32a: the Consolidator's knowledge reference is its own key — raising the main knowledge budget changes no worker input", () => {
+  const { s, t } = session();
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: t.id, branch: "main" });
+  expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Evidence", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
+  for (let i = 0; i < 12; i++) expect(tools[3]!.execute({ operations: [{ op: "create", topics: [],
+    reason: "Durable rule", text: `Rule ${i}: ` + "word ".repeat(1_500), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
+  const legacy = api.validateConfig({ render: { knowledgeBlockTokens: 10_000 } });
+  expect(memory.config.render.knowledgeBlockTokens).toBe(20_000);
+  expect(memory.config.consolidation.knowledgeTokens).toBe(10_000);
+  const main = memory.injection(s.id);
+  memory.config.render.knowledgeBlockTokens = 10_000;
+  const explicit = memory.injection(s.id);
+  expect(explicit.knowledgeCommitIds.length).toBeLessThan(main.knowledgeCommitIds.length);
+  expect(tokens(explicit.text)).toBeLessThanOrEqual(10_000);
+  memory.config.render.knowledgeBlockTokens = 20_000;
+  const compact = memory.compact(s.id, "main", t.id);
+  for (const mode of ["subagent", "fork"] as const) {
+    const input = { sessionId: s.id, branch: "main", headTurnId: t.id, mode };
+    const before = freezeConsolidation(memory.store, input, legacy).prepared!;
+    const after = freezeConsolidation(memory.store, input, memory.config).prepared!;
+    expect(after).toEqual(before); // text, status/receipts, selection and charges, not just the cap
+    expect(after.material.receipts.join("\n")).toContain("knowledge; expand:");
+    expect(after.supplied.knowledgeCommitIds.length).toBeLessThan(main.knowledgeCommitIds.length);
+    const instructions = tokens(readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8"));
+    const inputTokens = instructions + tokens(before.text) + (mode === "subagent" ? tokens(JSON.stringify(toolDefinitions)) : 0);
+    const admitted = { ...input, capacity: { inputTokens, prefixTokens: 0 } };
+    expect(freezeConsolidation(memory.store, admitted, memory.config).prepared).toEqual(before);
+    expect(freezeConsolidation(memory.store, admitted, legacy).prepared).toEqual(before);
+    memory.config.consolidation.knowledgeTokens = 20_000;
+    const enlarged = freezeConsolidation(memory.store, input, memory.config).prepared!;
+    expect(enlarged.supplied.knowledgeCommitIds.length).toBeGreaterThan(after.supplied.knowledgeCommitIds.length);
+    expect(memory.injection(s.id)).toEqual(main);
+    expect(memory.compact(s.id, "main", t.id)).toEqual(compact);
+    memory.config.consolidation.knowledgeTokens = 1;
+    expect(() => freezeConsolidation(memory.store, input, memory.config)).toThrow(/exceeds consolidation\.knowledgeTokens \(1\)/);
+    memory.config.consolidation.knowledgeTokens = 10_000;
+  }
 });
 
 // ---- 20c 2026-09-08: the compaction rule is superseded, recorded here by its own name ----
