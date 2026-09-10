@@ -50,8 +50,7 @@ function assertNoProviderMessage(input: NotingAgentInput | ConsolidationAgentInp
   for (const key of ["subagentInput", "messages", "system", "conversation", "body"])
     expect(key in record).toBe(false);
   expect(Array.isArray(record.input)).toBe(false); // no provider message array under any name
-  expect(typeof input.text.fresh).toBe("string");
-  expect(["string", "undefined"]).toContain(typeof input.text.inherited); // Noting prepares both; Consolidation only fresh (25b)
+  expect(typeof input.text).toBe("string"); // 29b: one prepared text per task, whatever mode runs it
   // The parts stay parts: core's assembled blocks live in `text`, never smuggled into a material field.
   const parts = Object.values(input.material).flat().filter((part): part is string => typeof part === "string");
   for (const part of parts) {
@@ -143,6 +142,9 @@ test("19b 2026-09-08: a Consolidation stub with unavailable audit runs the two s
 
 /** Cost of everything core adds to the material of a Noting run in an empty database. */
 const overhead = () => tokens(notingPrompt) + tokens(JSON.stringify(toolDefinitions));
+/** 29b: what a fork pays before its material — its inherited measure and the instructions. The tool
+ * definitions are not in it: a fork inherits them with the context its measure already covers. */
+const forkOverhead = (prefix: number) => tokens(notingPrompt) + prefix;
 
 test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the only model call, and the excluded tail stays pending and unwritable", async () => {
   const sessionId = session();
@@ -155,7 +157,7 @@ test("19b 2026-09-08 gate 4: the supplied budget shrinks the batch before the on
   // slack covers what 20b charges beyond the entry views themselves: the block titles, the range line
   // and the joining separators of the fresh text core prices.
   expect(tokens(views.join("\n\n"))).toBeLessThan(10_000);
-  const inputTokens = overhead() + views.slice(0, 2).reduce((total, view) => total + tokens(view), 0) + 80;
+  const inputTokens = forkOverhead(50) + views.slice(0, 2).reduce((total, view) => total + tokens(view), 0) + 80;
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     expect(input.material.entries.map(e => e.id)).toEqual(owned.map(e => e.id)); // oldest first, one Turn
@@ -184,7 +186,7 @@ test("19b 2026-09-08 gate 4: an oldest entry that does not fit the supplied budg
   const before = memory.pendingEntries(sessionId, "main", t.id);
   runAgent = async () => { throw new Error("no model call may happen"); };
   await expect(memory.noting({ sessionId, branch: "main", headTurnId: t.id, mode: "fork",
-    capacity: { inputTokens: overhead(), prefixTokens: 50 } })).rejects.toThrow("oldest entry cannot fit");
+    capacity: { inputTokens: forkOverhead(50), prefixTokens: 50 } })).rejects.toThrow("oldest entry cannot fit");
   expect(calls).toEqual([]);
   expect(memory.store.listRuns(sessionId)).toEqual([]);
   expect(memory.pendingEntries(sessionId, "main", t.id)).toEqual(before);
@@ -196,7 +198,7 @@ test("19b 2026-09-08: the frozen material carries the whole batch, and core's fr
   const t = turn(sessionId, null, "用 pnpm", "好的。");
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
-    expect(input.text.fresh).toContain("用 pnpm");
+    expect(input.text).toContain("用 pnpm");
     input.tools.find(t => t.name === "note")!.execute({ facts: [] }); // 26a: a batch is completed by a submission
     return { outcome: "success", output: "", request: { fake: true } };
   };
@@ -214,7 +216,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   runAgent = async raw => {
     const input = raw as NotingAgentInput;
     assertNoProviderMessage(input);
-    noted = input.text.fresh; // the whole task, as text: instructions stay a separate field
+    noted = input.text; // the whole task, as text: instructions stay a separate field
     expect(input.prompt).toContain("Noting (fact extraction)");
     expect(noted).toContain(input.material.entries[0]!.view);
     expect(input.tools.find(tool => tool.name === "note")!.execute({ facts: [fact(`T${t.id}#user`)] })).toContain("ok: F1");
@@ -227,7 +229,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   runAgent = async raw => {
     const input = raw as ConsolidationAgentInput;
     assertNoProviderMessage(input);
-    integrated = input.text.fresh;
+    integrated = input.text;
     expect(integrated).toContain(input.material.rangeFacts[0]!);
     const tool = input.tools.find(t => t.name === "memory")!;
     // Two submissions: core's review guidance is text this stub relays, not a provider message.
@@ -247,7 +249,7 @@ test("20a 2026-09-08 scenario 1: a host stub with no provider message types runs
   expect(injected).not.toContain(FACTS_TITLE);
   expect(injected).not.toContain("\nRaw:");
   // A later Noting task carries no knowledge at all (25a) and starts with its own first block.
-  runAgent = async raw => { noted = (raw as NotingAgentInput).text.fresh; return { outcome: "success", output: "", request: { fake: true } }; };
+  runAgent = async raw => { noted = (raw as NotingAgentInput).text; return { outcome: "success", output: "", request: { fake: true } }; };
   const next = turn(sessionId, t.id, "再来一次", "好。");
   await memory.noting({ sessionId, branch: "main", headTurnId: next.id, mode: "subagent" });
   expect(noted.startsWith(FACTS_TITLE)).toBe(true);
@@ -299,12 +301,12 @@ test("20b 2026-09-08 scenario 15: a smaller host window reduces and re-freezes t
   if (result.outcome !== "success") throw new Error("expected success");
   expect(calls).toHaveLength(1); // one reduction, one freeze, one model call
   // What core priced is what it sends, and it fits the window the host reported.
-  expect(overhead() + tokens(sent.text.fresh)).toBeLessThanOrEqual(inputTokens);
+  expect(overhead() + tokens(sent.text)).toBeLessThanOrEqual(inputTokens);
   // Evidence, frozen material, audit membership and the recorded range are the same reduced set.
   expect(sent.entryIds).toEqual(owned);
   expect(sent.material.entries.map(e => e.id)).toEqual(owned);
-  expect(sent.text.fresh).toContain(views[0]!);
-  expect(sent.text.fresh).not.toContain(views[2]!);
+  expect(sent.text).toContain(views[0]!);
+  expect(sent.text).not.toContain(views[2]!);
   const run = memory.store.getRun(result.runId)!;
   expect(JSON.parse(run.response!).entryAudit.entries.map((e: { id: number }) => e.id)).toEqual(owned);
   expect([run.rangeFrom, run.rangeTo]).toEqual([`S${sessionId}/T${first.id}`, `S${sessionId}/T${first.id}`]);

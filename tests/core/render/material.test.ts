@@ -6,10 +6,11 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sourceSeededMemory, compacted, renderEntry, tokens, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
-import { budgetKnowledge, charge } from "../../../src/core/render/index.ts";
-import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
+import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
+import { budgetFacts, budgetKnowledge, charge, renderFact } from "../../../src/core/render/index.ts";
+import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
 const time = "2026-09-08T00:00:00Z";
@@ -48,25 +49,35 @@ test("25a 2026-09-09: the Noter's fresh order is historical facts, range, the se
   const raw = views(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text.fresh).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
+  expect(input.text).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
     `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, "Raw:", raw].join("\n\n"));
   // 25a supersedes ticket 20's leading knowledge block for this consumer, in both modes. The
   // knowledge itself is untouched — the injection still carries it, and the run still froze it.
-  expect(input.text.fresh).not.toContain("<knowledge>");
-  expect(input.text.fresh).not.toContain("The project uses pnpm");
+  expect(input.text).not.toContain("<knowledge>");
+  expect(input.text).not.toContain("The project uses pnpm");
   expect(memory.inject(s.id)).toBe(knowledgeBlock);
   expect(input.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
 });
 
-test("20a 2026-09-08 for ruling 08:53: the Noter's inherited increment is the range, the head reply and the source index alone", async () => {
+/** 29b (case 12) supersedes 20a's fixed inherited layout and 25a's "a Noter fork never adds
+ * historical facts": the same builder produces this text, and the only reason it has no Raw block is
+ * that the view proves every target entry visible. The optional history is still supplied, because
+ * nothing proves the child can see F1 — a receipt in prose is not coverage. */
+test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and keeps the range, head reply and source index", async () => {
   const { s, t } = seeded();
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
+    visible: visibleTarget(memory, s.id, "main", t.id) });
   const input = calls[0]! as NotingAgentInput;
-  expect(input.text.inherited).toBe(`Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}\n\n[T${t.id}#assistant]: 好的。\n\nSources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`);
-  // The raw turns, the delivered facts and the injected knowledge are already in that conversation.
-  expect(input.text.inherited).not.toContain("Raw:");
-  expect(input.text.inherited).not.toContain("<knowledge>");
-  expect(input.text.inherited).not.toContain("Recent facts");
+  expect(input.text).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
+    `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, `[T${t.id}#assistant]: 好的。`,
+    `Sources:\nT${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`].join("\n\n"));
+  // The raw turns and the injected knowledge are already in that conversation.
+  expect(input.text).not.toContain("Raw:");
+  expect(input.text).not.toContain("<knowledge>");
+  expect(input.material.entries).toEqual([]); // nothing newly supplied, and the whole target still frozen
+  expect(input.entryIds.length).toBeGreaterThan(0);
+  expect(input.supplied.entries).toEqual([]);
+  expect(input.supplied.factIds).toEqual([1]);
 });
 
 test("25a 2026-09-09: the Consolidator's fresh order is knowledge, range, the pending facts, the reminders, then receipts — and no already-consolidated block", async () => {
@@ -74,26 +85,26 @@ test("25a 2026-09-09: the Consolidator's fresh order is knowledge, range, the pe
   await first;
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const input = calls[1]! as ConsolidationAgentInput;
-  expect(input.text.fresh).toBe([knowledgeBlock,
+  expect(input.text).toBe([knowledgeBlock,
     "Range: F2..F2", "Range facts:", `[T1] ${time} (selected facts)\n${memory.trace("F2")}`,
     "Negated-evidence reminder (review cues only; no status derived):", "none"].join("\n\n"));
   // F1 was consolidated before this task was frozen and is exactly what the removed history block
   // used to carry; it is still stored, still readable, and no longer supplied.
   expect(memory.store.listConsolidatedProjectFacts(memory.store.getSession(s.id)!.projectId).map(f => f.id)).toContain(1);
   expect("facts" in input.material).toBe(false);
-  expect(input.text.fresh).not.toContain("Already-consolidated");
-  expect(input.text.fresh).not.toContain(memory.trace("F1"));
+  expect(input.text).not.toContain("Already-consolidated");
+  expect(input.text).not.toContain(memory.trace("F1"));
 });
 
-test("20a for ruling 08:53, as 25b left it: the Consolidator prepares its fresh text alone, no inherited increment", async () => {
+test("20a for ruling 08:53, as 25b and 29b left it: the Consolidator prepares one text, and it carries the range facts", async () => {
   const { s, first } = consolidated();
   await first;
   await memory.consolidate({ sessionId: s.id, branch: "main" });
-  // 25b: this phase runs one mode, so core prepares one representation; the fresh text carries the range facts.
+  // 29b: one prepared text per task in both phases; with an empty initial view it is the whole material.
   const input = calls[1]! as ConsolidationAgentInput;
-  expect(input.text.inherited).toBeUndefined();
-  expect(input.text.fresh).toContain("Range: F2..F2");
-  expect(input.text.fresh).toContain("Range facts:");
+  expect(typeof input.text).toBe("string");
+  expect(input.text).toContain("Range: F2..F2");
+  expect(input.text).toContain("Range facts:");
   expect(input.material.factAddresses).toEqual(["F2"]); // the exact membership stays available to the host
 });
 
@@ -115,11 +126,11 @@ test("20a 2026-09-08 scenario 2, retargeted by 25a: two Consolidator tasks with 
   // A byte-layout test, not a provider-cache test: identical selected knowledge renders identically
   // when only the range and the pending facts change. The Noter is no longer a consumer of this
   // block at all (25a), so the pin moved to the phase that still leads with one.
-  expect(earlier!.text.fresh.startsWith(knowledgeBlock)).toBe(true);
-  expect(later!.text.fresh.startsWith(knowledgeBlock)).toBe(true);
+  expect(earlier!.text.startsWith(knowledgeBlock)).toBe(true);
+  expect(later!.text.startsWith(knowledgeBlock)).toBe(true);
   expect(later!.range.facts.map(f => f.id)).not.toEqual(earlier!.range.facts.map(f => f.id));
   // The range precedes this task's own facts, which precede the review cues.
-  const order = ["Range: ", "Range facts:", "Negated-evidence reminder"].map(part => later!.text.fresh.indexOf(part));
+  const order = ["Range: ", "Range facts:", "Negated-evidence reminder"].map(part => later!.text.indexOf(part));
   expect(order).toEqual([...order].sort((a, b) => a - b));
   expect(order[0]).toBeGreaterThan(knowledgeBlock.length - 1);
   // Nothing task-specific is inside the leading block.
@@ -141,7 +152,7 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   expect(noting.material.knowledge).toBeUndefined();
   expect(noting.material.facts).toEqual([]);
   expect(noting.material.receipts).toEqual([factReceipt]);
-  expect(noting.text.fresh.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${factReceipt}`)).toBe(true);
+  expect(noting.text.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${factReceipt}`)).toBe(true);
   memory.config.render.episodicBlockTokens = 20_000;
   // The Consolidator still leads with knowledge, so its receipt is still the knowledge one.
   const receipt = "omitted 1 constraint knowledge; expand: K1";
@@ -151,7 +162,7 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
   expect(consolidation.material.receipts).toEqual([receipt]);
-  expect(consolidation.text.fresh.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${receipt}`)).toBe(true);
+  expect(consolidation.text.endsWith(`Negated-evidence reminder (review cues only; no status derived):\n\nnone\n\nReceipts:\n${receipt}`)).toBe(true);
 });
 
 // ---------------------------------------------------------------- 20b: the shared material budgets
@@ -227,14 +238,14 @@ test("25a 2026-09-09: at the default limits the Noter sends history within 10,00
   expect(factReceipts).toHaveLength(1); // the history cap really binds
   expect(material.receipts.some(r => r.includes(" knowledge; expand: "))).toBe(false); // nothing knowledge is budgeted here
   expect(knowledgeBlockOf(material)).toBe("");
-  expect(calls.at(-1)!.text.fresh).not.toContain("<knowledge>");
+  expect(calls.at(-1)!.text).not.toContain("<knowledge>");
   const historyCap = memory.config.render.episodicBlockTokens - memory.config.noting.batchTokens;
   expect(historyCap).toBe(10_000);
   expect(charge([FACTS_TITLE, ...material.facts, ...factReceipts])).toBeLessThanOrEqual(historyCap);
   expect(tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.noting.batchTokens);
   expect(charge([FACTS_TITLE, RAW_TITLE, `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, ...material.facts, ...factReceipts])
     + tokens(material.entries.map(e => e.view).join(BLOCK))).toBeLessThanOrEqual(memory.config.render.episodicBlockTokens);
-  expect(tokens(calls.at(-1)!.text.fresh)).toBeLessThanOrEqual(20_000);
+  expect(tokens(calls.at(-1)!.text)).toBeLessThanOrEqual(20_000);
 });
 
 test("25a 2026-09-09: at the default limits the Consolidator sends knowledge within 10,000 and its facts, cues and framing within 10,000", async () => {
@@ -251,7 +262,7 @@ test("25a 2026-09-09: at the default limits the Consolidator sends knowledge wit
     "Negated-evidence reminder (review cues only; no status derived):", ...material.reminders]))
     .toBeLessThanOrEqual(memory.config.consolidation.batchTokens);
   expect(material.receipts.some(r => r.includes(" older facts; expand: "))).toBe(false);
-  expect(input.text.fresh).not.toContain("Already-consolidated");
+  expect(input.text).not.toContain("Already-consolidated");
   expect(memory.store.consolidationBatch(s.id, "main", t.id).length).toBeGreaterThan(0); // the rest stays pending
 });
 
@@ -267,14 +278,14 @@ test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topi
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   // The Noter is the fourth consumer no longer: 25a gives it no knowledge block in either mode.
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  expect((calls.at(-1)! as NotingAgentInput).text.fresh).not.toContain("topics:");
+  expect((calls.at(-1)! as NotingAgentInput).text).not.toContain("topics:");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
-  expect(consolidation.text.fresh.startsWith(labelled)).toBe(true);
+  expect(consolidation.text.startsWith(labelled)).toBe(true);
   // Two subjects, one automatic copy: grouping is a read projection, never a second injected line.
-  for (const text of [memory.inject(s.id), consolidation.text.fresh]) expect(text.match(/\[K1@2\]/g)).toHaveLength(1);
+  for (const text of [memory.inject(s.id), consolidation.text]) expect(text.match(/\[K1@2\]/g)).toHaveLength(1);
 });
 
 test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
@@ -379,20 +390,187 @@ test("25a 2026-09-09: the <noted> receipt payload and the Noter's history block 
   expect(delivered.text).toBe(`<noted>\n${history.join("\n")}\n</noted>`);
 });
 
-/** Ticket 25 "Noter material contract": a fork is priced on the subagent material too, so the
- * fallback that may run it as a subagent can never be a task the window cannot hold. */
-test("25a 2026-09-09: a fork freeze prices the complete subagent material, not only its inherited increment", async () => {
+/** 29b (capacity) supersedes ticket 25's "a fork is priced on the subagent material too": a fork pays
+ * its inherited measure, the instructions and the text it actually sends, and never the cost of a
+ * fresh representation it does not build. The fallback is not left unguarded — a re-admitted subagent
+ * re-freezes with the empty initial state and refuses the batch on its own terms, which is the second
+ * half of this case. */
+test("29b 2026-09-10: a fork is priced as its inherited measure plus the instructions plus the text it supplies", async () => {
   const { s, t } = seeded();
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  const bare = calls[0]! as NotingAgentInput;
-  const fixed = tokens(bare.prompt) + tokens(JSON.stringify(bare.tools));
-  const forkPrice = tokens(bare.prompt) + tokens(bare.text.inherited!);
-  const subagentPrice = fixed + tokens(bare.text.fresh);
-  expect(forkPrice).toBeLessThan(subagentPrice); // the increment alone is the cheaper representation
-  memory.appendEntry({ sessionId: s.id, nativeLineage: "fixture", nativeId: "second", turnId: t.id, role: "assistant", text: "another entry", raw: "", calls: [] });
-  // An allowance that the inherited increment fits and the subagent material does not: a fork task is
-  // still rejected, because the fallback would have to send the subagent material.
-  await expect(memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
-    capacity: { inputTokens: forkPrice, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
+  const prefix = 5_000;
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", effectiveMode: "fork",
+    visible: visibleTarget(memory, s.id, "main", t.id), capacity: { inputTokens: 60_000, prefixTokens: prefix } });
+  const fork = calls[0]! as NotingAgentInput;
+  const forkPrice = prefix + tokens(fork.prompt) + tokens(fork.text);
+  expect(fork.material.entries).toEqual([]); // the Raw the child can already see is not in that price
+  // The run above ended without calling note, so the whole batch is still pending (26a) and can be
+  // frozen again: at exactly its own price it fits whole.
+  calls.length = 0;
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", effectiveMode: "fork",
+    visible: visibleTarget(memory, s.id, "main", t.id), capacity: { inputTokens: forkPrice, prefixTokens: prefix } });
+  expect((calls[0]! as NotingAgentInput).entryIds).toEqual(fork.entryIds);
+  // The same batch as a fresh child is priced by its own terms — instructions, tool definitions and
+  // the full material — and the fork's allowance minus its inherited measure does not cover them.
+  await expect(memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent",
+    capacity: { inputTokens: forkPrice - prefix, prefixTokens: 0 } })).rejects.toThrow(/Noting capacity/);
   expect(memory.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+});
+
+// ---- 29b 2026-09-10: one material builder, two initial states (parent 29, cases 10, 12, 13, 15) ----
+
+/** `count` extra facts on the seeded Turn, oldest first, each long enough to be worth budgeting. */
+function history(sessionId: number, turnId: number, count: number) {
+  const note = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turnId }).find(tool => tool.name === "note")!;
+  for (let i = 0; i < count; i++)
+    note.execute({ facts: [{ category: "observation", actor: "user", text: `Older claim ${i} ` + "detail ".repeat(20), source: [`T${turnId}#user`] }] });
+}
+
+/** Case 10. The allowance is set to hold exactly three fact lines. With the newest facts visible, the
+ * three the child cannot see fill it — a budget applied first and visibility subtracted afterwards
+ * would leave one. Filtering first is also never filling: fewer needed facts make a smaller block. */
+test("29b 2026-09-10 (case 10): visible facts leave the history allowance before it is filled, and the missing ones get all of it", async () => {
+  const { s, t } = seeded();
+  history(s.id, t.id, 5); // F2..F6 beside the seeded F1
+  const facts = memory.store.listSessionFacts(s.id);
+  const line = (fact: Fact) => renderFact(fact, memory.store.listFactRelations(fact.id));
+  const turns = memory.store.factTurnTimes(facts);
+  // An allowance around three fact lines, so the block is really bound by it.
+  const room = charge(budgetFacts(facts, line, Number.MAX_SAFE_INTEGER, turns).recent.slice(0, 3));
+  memory.close();
+  open({ render: { episodicBlockTokens: DEFAULT_CONFIG.noting.batchTokens + room } });
+  const seen = visibleTarget(memory, s.id, "main", t.id);
+  const supplied = async (factIds: number[]) => {
+    await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
+      visible: { ...seen, factIds: new Set(factIds) } });
+    return (calls.at(-1)! as NotingAgentInput).material.facts;
+  };
+  // Nothing proven visible: the allowance goes to the newest facts, and it really binds.
+  const all = await supplied([]);
+  expect(all.length).toBeGreaterThan(0);
+  expect(all.length).toBeLessThan(facts.length);
+  expect(all.join("\n")).toContain("[F6]");
+  // The two newest are visible: the same number of facts still fits, and they are the older ones the
+  // child cannot see. A budget applied first and visibility subtracted afterwards would leave fewer.
+  const older = await supplied([5, 6]);
+  expect(older).toHaveLength(all.length);
+  expect(older.join("\n")).not.toContain("[F6]");
+  expect(older.join("\n")).not.toContain("[F5]");
+  expect(older.join("\n")).toContain("[F4]");
+  // Never filler: with one fact missing the block holds one, not the three the allowance would take.
+  const one = await supplied([1, 2, 3, 4, 5]);
+  expect(one).toHaveLength(1);
+  expect(one.join("\n")).toContain("[F6]");
+  expect(charge(one)).toBeLessThan(charge(older));
+});
+
+/** Case 12. The frozen target is the processing target, not the injection: a fork that repeats no Raw
+ * still writes for every entry of it, and ending without a submission is still incomplete. */
+test("29b 2026-09-10 (case 12): a fork with no newly supplied Raw still commits its whole frozen target, and no call is still incomplete", async () => {
+  const { s, t } = seeded();
+  const seen = visibleTarget(memory, s.id, "main", t.id);
+  const pending = memory.pendingEntries(s.id, "main", t.id).map(e => e.id);
+  let committed: string | undefined;
+  memory.close(); open();
+  calls.length = 0;
+  const noter = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput;
+    calls.push(input);
+    committed = input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user", text: "Noted from the inherited context", source: [`T${t.id}#user`] }] }) as string;
+    return { outcome: "success", output: "", request: { fake: true } };
+  });
+  try {
+    const result = await noter.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen });
+    expect(result.outcome).toBe("success");
+    const input = calls[0]! as NotingAgentInput;
+    expect(input.material.entries).toEqual([]); // nothing repeated
+    expect(input.entryIds).toEqual(pending); // the whole frozen target all the same
+    expect(committed).toContain("ok: F");
+    expect(noter.pendingEntries(s.id, "main", t.id)).toEqual([]); // every frozen entry advanced
+  } finally { noter.close(); }
+  // The other half: the same fork that ends without calling note is incomplete, not an empty success.
+  const silent = sourceSeededMemory(join(directory, "test.sqlite"), async () => ({ outcome: "success", output: "nothing to record", request: { fake: true } }));
+  try {
+    memory.appendEntry({ sessionId: s.id, nativeLineage: "fixture", nativeId: "later", turnId: t.id, role: "assistant", text: "later entry", raw: "", calls: [] });
+    const result = await silent.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
+      visible: visibleTarget(silent, s.id, "main", t.id) });
+    expect(result.outcome).toBe("failure");
+    expect((result as { problems: string[] }).problems).toEqual([NOTING_INCOMPLETE]);
+    expect(silent.pendingEntries(s.id, "main", t.id).length).toBeGreaterThan(0);
+  } finally { silent.close(); }
+});
+
+/** Case 13. The empty initial state is not a special path: it produces the whole selected target and
+ * the bounded optional material for both phases, and the run sends that text once. */
+test("29b 2026-09-10 (case 13): an empty view and zero inherited cost produce the full material for both phases, sent once", async () => {
+  const { s, t, first } = consolidated();
+  await first;
+  calls.length = 0;
+  let rounds = 0;
+  const worker = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    calls.push(input);
+    if (input.kind === "noting") {
+      // Two tool rounds inside one run: the child keeps its own messages and nothing is resent.
+      input.tools.find(tool => tool.name === "trace")!.execute({ address: `T${t.id}#user` }); rounds++;
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [] }); rounds++;
+    }
+    return { outcome: "success", output: "", request: { fake: true } };
+  });
+  try {
+    await worker.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
+    const noting = calls[0]! as NotingAgentInput;
+    expect(noting.material.entries.map(e => e.id)).toEqual(noting.entryIds); // the whole selected target
+    expect(noting.material.head).toBe(null); // no repair parts: nothing was withheld
+    expect(noting.material.sources).toEqual([]);
+    expect(noting.text).toContain("Raw:");
+    expect(noting.supplied.entries.map(e => e.id)).toEqual(noting.entryIds);
+    expect(rounds).toBe(2);
+    expect(calls).toHaveLength(1); // one prepared material, one dispatch: the second round adds nothing
+    await worker.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
+    const consolidation = calls[1]! as ConsolidationAgentInput;
+    expect(consolidation.material.rangeFacts.join("\n")).toContain(consolidation.material.factAddresses[0]!);
+    expect(consolidation.material.knowledgeNotes).toEqual([]);
+    expect(consolidation.text).toContain("<knowledge>");
+    expect(consolidation.supplied.factIds.length).toBeGreaterThan(0);
+    expect(calls).toHaveLength(2);
+  } finally { worker.close(); }
+});
+
+/** Case 15. Knowledge is compared by exact commit: an unchanged visible commit is omitted, a visible
+ * predecessor covers nothing, and what happened to a stale inherited commit is said inside the same
+ * knowledge allowance rather than in an unbounded block of its own. */
+test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and stale inherited commits are explained inside its allowance", async () => {
+  const { s, t } = seeded();
+  const memoryTool = () => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
+  memoryTool().execute({ operations: [{ op: "update", id: "K1@1", topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  const current = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!.revision.id;
+  expect(current).toBe(2);
+
+  const freeze = (commits: number[], config = memory.config) => freezeConsolidation(memory.store,
+    { sessionId: s.id, branch: "main", mode: "fork", effectiveMode: "fork",
+      visible: { raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(commits) } }, config);
+  // The visible predecessor covers nothing: the current commit is supplied and its predecessor named.
+  const stale = freeze([1]);
+  expect(stale.prepared!.material.knowledge.map(g => g.text).join("\n")).toContain(`[K1@${current}]`);
+  expect(stale.prepared!.material.knowledgeNotes).toEqual([`K1@1 is superseded by K1@${current} above`]);
+  expect(stale.prepared!.text).toContain("Inherited knowledge status");
+  expect(stale.prepared!.supplied.knowledgeCommitIds).toEqual([current]);
+  // The same commit, unchanged and visible: omitted, with nothing to explain.
+  const unchanged = freeze([current]);
+  expect(unchanged.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
+  expect(unchanged.prepared!.material.knowledgeNotes).toEqual([]);
+  expect(unchanged.prepared!.text).not.toContain("Inherited knowledge status");
+  expect(unchanged.prepared!.supplied.knowledgeCommitIds).toEqual([]);
+  // An archived revision is not current authority, and the status says so where the block cannot.
+  memoryTool().execute({ operations: [{ op: "archive", id: `K1@${current}`, reason: "Withdrawn by the user.", supports: ["F1"] }], skipped: [] });
+  expect(freeze([current]).prepared!.material.knowledgeNotes).toEqual([`K1@${current} is archived`]);
+  // Charged inside the knowledge allowance: an allowance that the status line fills leaves the block
+  // nothing, and the omission is receipted rather than emitted over budget.
+  const note = `K1@${current} is archived`;
+  const tight = { ...memory.config, render: { ...memory.config.render, knowledgeBlockTokens: charge([KNOWLEDGE_STATUS_TITLE, note]) } };
+  const squeezed = freeze([current], tight);
+  expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
+  expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
 });

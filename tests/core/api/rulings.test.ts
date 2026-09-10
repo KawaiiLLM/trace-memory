@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
+import { CONSOLIDATION_SUBAGENT_ONLY, DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
@@ -71,7 +71,8 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
-  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
+  const seen = visibleTarget(probe, s.id, "main", t.id);
+  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen }); }
   finally { probe.close(); }
   await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
@@ -79,12 +80,18 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   // The premise repair supplies the missing final reply and the source index as their own parts.
   expect(branch!.material.head).toBe(`[T${t.id}#assistant]: 好的。`);
   expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
-  // One frozen material serves both modes; no field of it is a provider message, and the block layout
-  // of each mode is core's own since 20a, pinned in core/render/material.test.ts.
-  expect(branch!.material).toEqual(subagent!.material);
+  // 29b: one builder, not one material. The frozen target is the same in both modes; the parts differ
+  // by exactly what the child could already see, so the fresh child gets the Raw and no repair parts.
+  expect(subagent!.material.head).toBe(null);
+  expect(subagent!.material.sources).toEqual([]);
+  expect(subagent!.material.entries.map(e => e.id)).toEqual(branch!.entryIds);
+  expect(branch!.material.entries).toEqual([]);
+  expect(branch!.entryIds).toEqual(subagent!.entryIds);
+  // No field of the material is a provider message, and the block layout is core's own since 20a
+  // (pinned in core/render/material.test.ts).
   expect(Object.values(branch!.material).some(part => typeof part === "string" && part.includes("Range: "))).toBe(false);
   expect(branch!.prompt).toContain("already in this conversation");
-  expect(subagent!.text.fresh).toContain("用 pnpm，不要 npm");
+  expect(subagent!.text).toContain("用 pnpm，不要 npm");
 });
 
 /** Knowledge to lead the block with: one manually written fact, consolidated by hand into K1. */
@@ -104,10 +111,10 @@ test("20a 2026-09-08: core owns the host-neutral domain text and still builds no
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls[0]!;
   // Domain text, from core, in core's own order — instructions stay their own field, not a system message.
-  expect(input.text.fresh).toContain(input.material.entries[0]!.view);
-  expect(input.text.fresh.startsWith("Recent facts (by Turn):")).toBe(true); // 25a: no leading knowledge block
+  expect(input.text).toContain(input.material.entries[0]!.view);
+  expect(input.text.startsWith("Recent facts (by Turn):")).toBe(true); // 25a: no leading knowledge block
   expect(input.prompt).toContain("Noting (fact extraction)");
-  expect(input.text.fresh).not.toContain(input.prompt);
+  expect(input.text).not.toContain(input.prompt);
   // What core still does not build: a message sequence, a system slot, a provider body.
   const record = input as unknown as Record<string, unknown>;
   for (const key of ["messages", "system", "conversation", "body", "subagentInput"]) expect(key in record).toBe(false);
@@ -124,20 +131,20 @@ test("20a 2026-09-08: the full text and the inherited increment come from one fr
   const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
     calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
   });
-  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork" }); }
+  const seen = visibleTarget(probe, s.id, "main", t.id);
+  try { await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible: seen }); }
   finally { probe.close(); }
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const [fork, fresh] = calls;
   expect(fork!.mode).toBe("fork"); expect(fresh!.mode).toBe("subagent");
-  expect(fork!.material).toEqual(fresh!.material);
   expect(fork!.entryIds).toEqual(fresh!.entryIds); // one writable range, whatever the execution mode
   expect(fork!.range).toEqual(fresh!.range);
   expect(fork!.readKnowledgeCommits).toEqual(fresh!.readKnowledgeCommits);
-  // Both representations are prepared for both modes, from that one frozen task.
-  expect(fork!.text).toEqual(fresh!.text);
-  // The increment is what an inherited conversation lacks, not a second copy of the full text.
-  expect(fork!.text.inherited).not.toContain(fork!.material.entries[0]!.view);
-  expect(fork!.text.fresh).not.toContain(fork!.text.inherited);
+  // 29b: one builder over one frozen task, two initial states. What the fork does not send is exactly
+  // what its own context already holds, and it is never a second copy of the full text.
+  expect(fork!.text).not.toEqual(fresh!.text);
+  expect(fork!.text).not.toContain(fresh!.material.entries[0]!.view);
+  expect(fresh!.text).not.toContain(fork!.text);
 });
 
 // Ticket 20 "Stable prefix": keep task ranges, entry ids belonging only to the new batch, timestamps,
@@ -149,12 +156,12 @@ test("20a 2026-09-08, narrowed by 25a: nothing task-specific enters the leading 
   const { s, t } = session();
   seededKnowledge(s.id, t.id);
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
-  expect(calls[0]!.text.fresh).not.toContain("<knowledge>"); // the fourth consumer no longer
+  expect(calls[0]!.text).not.toContain("<knowledge>"); // the fourth consumer no longer
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const consolidation = calls.at(-1)! as unknown as import("../../../src/core/api/index.ts").ConsolidationAgentInput;
-  const block = consolidation.text.fresh.split("\n\nRange: ")[0]!;
+  const block = consolidation.text.split("\n\nRange: ")[0]!;
   expect(block).toBe(memory.inject(s.id)); // the initial injection and the Consolidator share one block
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(`${block}\n\n<episodic>`)).toBe(true);
   expect(block).not.toContain("Range: ");
@@ -344,7 +351,8 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
   const head = memory.store.appendTurn({ sessionId: s.id, parentTurnId: first.id, kind: "turn",
     userPrompt: "Check it", assistantText: "Final-only finding: " + "result ".repeat(10) + "verified.", startedAt: time });
   memory.store.appendToolCall({ turnId: head.id, name: "Bash", input: '{"command":"check"}', result: "PRIVATE TOOL RESULT", status: "success" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: head.id,
+    visible: visibleTarget(memory, s.id, "main", head.id) });
   const input = calls[0]!;
   expect(input.mode).toBe("fork");
   expect(input.material.head).toBe(`[T${head.id}#assistant]: ${head.assistantText}`);
@@ -360,7 +368,8 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
   const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
-  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id });
+  await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id,
+    visible: visibleTarget(memory, s.id, "main", t.id) });
   expect(calls[0]!.material.head).toBe(null);
   expect(calls[0]!.material.sources).toEqual([`T2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`]);
 });
@@ -880,7 +889,7 @@ test("20c 2026-09-08: 'compaction never calls a model' is superseded only by Pi'
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   expect(calls).toHaveLength(1);
   expect(calls[0]!.material.entries.every(e => !e.view.includes("compact-only"))).toBe(true);
-  expect(calls[0]!.text.fresh).not.toContain("compact-only");
+  expect(calls[0]!.text).not.toContain("compact-only");
 });
 
 // ---- 23 2026-09-09: the entry view's rulings, each recorded by the name it supersedes ----
@@ -1367,7 +1376,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   const history = material.material.facts.join("\n");
   expect(history).toContain(`[F${shared}] `); expect(history).toContain(`[F${onPath}] `);
   expect(history).not.toContain(`[F${siblingOnly}]`); expect(history).not.toContain("SIBLING ONLY");
-  expect(material.text.fresh).not.toContain("SIBLING ONLY");
+  expect(material.text).not.toContain("SIBLING ONLY");
 });
 
 // ---- 27 review 2026-09-10: one run record per attempt, exact membership, the cancellation fence ----
@@ -1431,7 +1440,7 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   const instructions = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
   const priced = (entryIds: number[]) => {
     const frozen = freezeNoting(memory.store, { ...target, boundary: { entryIds } }, memory.config);
-    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text.fresh);
+    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text);
   };
   const capacity = { inputTokens: priced([e1.id]), prefixTokens: 0 };
   expect(priced([e1.id, e2.id])).toBeGreaterThan(capacity.inputTokens);
@@ -1458,6 +1467,53 @@ test("27 amendment 6: frozen membership survives fallback or the task stays pend
   expect(dropped.reason).toContain(`entries ${e2.id} of the frozen batch`);
   expect(calls).toHaveLength(before); // no model call, and no run
   expect(memory.pendingEntries(s.id, "main", t3.id).map(e => e.id)).toEqual([e3.id]);
+});
+
+/** Ticket 29 "One material-selection mechanism" (2026-09-10), as 29b implements it. A task has two
+ * different sets: the processing target, frozen regardless of what the child can see, and the material
+ * that must be newly supplied — the target minus what the view proves visible at the same identity and
+ * the same representation, and only then the injection budget. Never a budget-limited prefix with
+ * visibility subtracted afterwards. */
+test("29: one material builder — filter visible, then budget", async () => {
+  const { s, t } = session();
+  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
+    .execute({ facts: [{ category: "observation", actor: "user", text: "Recorded earlier", source: [`T${t.id}#user`] }] });
+  const entries = memory.pendingEntries(s.id, "main", t.id);
+  // A failing probe leaves the same evidence pending, so every view below freezes the same task.
+  const probe = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {
+    calls.push(raw as NotingAgentInput); return { ...ok([]), outcome: "failure" };
+  });
+  const view = (raw: Map<string, "source" | "tier1">, factIds: number[] = []) =>
+    ({ raw, factIds: new Set(factIds), knowledgeCommitIds: new Set<number>() });
+  const freeze = async (visible: ReturnType<typeof view>) => {
+    calls.length = 0;
+    await probe.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork", visible });
+    return calls[0]!;
+  };
+  try {
+    const none = await freeze(view(new Map()));
+    const carried = await freeze(view(new Map(entries.map(e => [e.nativeId, "tier1" as const]))));
+    const factSeen = await freeze(view(new Map(entries.map(e => [e.nativeId, "source" as const])), [1]));
+    // The processing target is frozen regardless of visibility: three views, one target.
+    expect(carried.entryIds).toEqual(none.entryIds);
+    expect(factSeen.entryIds).toEqual(none.entryIds);
+    // Same identity, permitted representation: a tier-1 carrier view withholds the body exactly as a
+    // retained source entry does, and an empty data delta keeps the mandatory framing.
+    expect(none.material.entries.map(e => e.id)).toEqual(none.entryIds);
+    expect(carried.material.entries).toEqual([]);
+    expect(carried.text).toContain(`Range: ${carried.range.from}..${carried.range.to}`);
+    expect(carried.material.sources.length).toBeGreaterThan(0);
+    // Filter, then budget: the visible fact leaves the optional block, and the block gets smaller
+    // rather than refilled — the allowance is a ceiling, never a target.
+    expect(none.material.facts.join("\n")).toContain("[F1]");
+    expect(factSeen.material.facts).toEqual([]);
+    expect(tokens(factSeen.text)).toBeLessThan(tokens(carried.text));
+    // What the text really carries is what a carrier may state — never what the task considered.
+    expect(none.supplied.entries.map(e => e.id)).toEqual(none.entryIds);
+    expect(none.supplied.factIds).toEqual([1]);
+    expect(carried.supplied.entries).toEqual([]);
+    expect(factSeen.supplied.factIds).toEqual([]);
+  } finally { probe.close(); }
 });
 
 test("27: cancellation between refusal and re-admission launches no fallback", async () => {

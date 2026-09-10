@@ -89,6 +89,11 @@ export default function (pi: ExtensionAPI) {
   const runsOutsideScan = () => { const configured = configuredRunsDir(); return configured !== undefined && configured !== sessionsRoot; };
   let ctx: ExtensionContext;
   let closed = false;
+  /** Ticket 29b: the 29a memo, held for this session. It is created with the session's own
+   * `sessionManager` in `restore` (which `ensure` runs on every hook before anything reads it) and
+   * invalidated by its own key — the leaf, the entry count and the binding — so nothing here decides
+   * when to recompute it and no stale read survives a rewind, a compaction or the session allocation. */
+  let visible: ((binding: VisibleBinding) => VisibleView) | undefined;
   type Capture = { payload: Body; model: string; provider: string; branch: string };
   // One extension instance serves one Pi session: Pi tears the runtime down and re-runs the
   // factory on new/resume/fork, so the capture state is a single object.
@@ -481,7 +486,14 @@ export default function (pi: ExtensionAPI) {
     if (base && typeof measure?.tokens !== "number")
       return reroute({ reason: `${phase} capacity: Pi reports an unknown context measure for this session, so this task has no fork base` });
     const capacity = { inputTokens: model.contextWindow - CONTEXT_HEADROOM, prefixTokens: measure?.tokens ?? 0 };
+    // 29b: the second half of a fork's initial state, beside the measure above — what this session's
+    // selected context actually holds, read through the 29a memo and frozen with the task. Only a task
+    // that will run with an inherited context gets one: an explicit subagent and a fork re-admitted as
+    // a subagent (`fallbackReason` makes `effective` subagent above) pass none, so core builds the
+    // complete fresh material for them, exactly as before.
+    const inherited = effective === "fork" ? visible?.({ db: dbPath, session: state.sessionId ?? null, pi: state.piId }) : undefined;
     const common = { ...target, ...selection, effectiveMode: effective, thinkingLevel: inheritedThinking,
+      ...(inherited ? { visible: inherited } : {}),
       subagentThinkingLevel: subagentThinking,
       borrowed: options.borrowed, automatic: options.automatic, executorSessionId: state.sessionId!, capacity,
       ...(options.boundary ? { boundary: options.boundary } : {}),
@@ -514,6 +526,7 @@ export default function (pi: ExtensionAPI) {
   const save = () => { pi.appendEntry(tag, { ...state, dbPath }); savedSourceHead = state.sourceHead; };
   const restore = (context: ExtensionContext, fork = false) => {
     ctx = context;
+    visible = visibility(context.sessionManager);
     const loaded = configuration(ctx.cwd, environment, agentDir);
     if (loaded.flat.dbPath !== flat.dbPath) throw new Error("dbPath changed; reload the extension to reopen the database");
     ({ flat, core, sources, layers } = loaded);

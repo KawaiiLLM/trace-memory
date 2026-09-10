@@ -7,7 +7,8 @@ import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/t
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
-import { budgetMaterial, notingText, notingIncrement, BLOCK, FACTS_TITLE, RAW_TITLE, type MaterialText, type NotingMaterial } from "../render/material.ts";
+import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, type NotingMaterial } from "../render/material.ts";
+import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -47,9 +48,13 @@ export interface NotingAgentInput extends AgentControl {
   prompt: string;
   promptHash: string;
   material: NotingMaterial;
-  /** Core's prepared domain text, both representations from this one frozen task (20a). The host
-   * chooses one by the native context capability it has, and places it in its own messages. */
-  text: MaterialText;
+  /** Core's prepared domain text: the one material this task supplies, whatever mode runs it (29b).
+   * The host places it in its own messages and never chooses between two representations. */
+  text: string;
+  /** 29a/29b: the identities this text actually carries, so the host can persist a carrier for the
+   * entry it puts the text in and a later context can prove what it holds. Budget omissions are
+   * absent from it: a carrier can only understate coverage. */
+  supplied: SuppliedMaterial;
   /** The view versions, budgets and omissions core records for this batch. */
   entryAudit: EntryAudit;
   tools: ToolDefinition[];
@@ -135,10 +140,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // (parent 22: "A fast preflight supplements the final guard; it does not replace it").
   const { instructions, tools } = fixedCost();
   const inheriting = (input.effectiveMode ?? mode) === "fork";
-  const mandatory = Math.max(instructions + tools, inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : 0);
+  // 29b: the floor is the price of the mode that will run, as the loop below prices it — a fork pays
+  // its inherited measure and the instructions, a fresh child the instructions and the tools. Keeping
+  // the subagent's floor over a fork would reject batches the loop would then admit.
+  const mandatory = inheriting ? (input.capacity?.prefixTokens ?? 0) + instructions : instructions + tools;
   if (input.capacity && pending.length && mandatory > input.capacity.inputTokens)
-    throw new Error(`${NOTING_CAPACITY}instructions ${instructions}, tools ${tools}`
-      + `${inheriting ? ` and the inherited context ${input.capacity.prefixTokens}` : ""} already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
+    throw new Error(`${NOTING_CAPACITY}${inheriting ? `instructions ${instructions} and the inherited context ${input.capacity.prefixTokens}` : `instructions ${instructions}, tools ${tools}`}`
+      + ` already cost ${mandatory} of the ${input.capacity.inputTokens} tokens allowed for input; left pending`);
   const entries: typeof pending = [];
   const views: string[] = [];
   // 22d: an entry's view is immutable within one freeze — the same stored entry, the same profile,
@@ -184,6 +192,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // the defaults — and an under-budget Raw batch never enlarges the history block, nor the reverse.
   const historyCap = Math.max(0, config.render.episodicBlockTokens - config.noting.batchTokens);
   let history = historyCap; // lowered further by the capacity negotiation below
+  // 29b "Same builder, different initial state": the one input that separates a fork's material from
+  // a fresh child's. The host supplies the view only for a task it will really fork (hosts/pi/index.ts
+  // at admission); everything else — an explicit subagent, a fork re-admitted as one after a refusal
+  // (27c) — arrives without it and gets the fresh child's empty start, so the fallback still sends
+  // complete material. `inheritedTokens` is the measure the fork price below is built on.
+  const initial: InitialContext = { visible: inheriting && input.visible ? input.visible : noVisibility(),
+    inheritedTokens: inheriting ? input.capacity?.prefixTokens ?? 0 : 0 };
   let last: { priced: number; episodic: number } | undefined; // what the smallest candidate cost, for the diagnostic
   while (entries.length) {
     const ids = new Set(entries.map(e => e.turnId));
@@ -196,18 +211,22 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history);
+    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history, initial);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
     // frozen task — labels, titles, the range and receipts included — and never a message the host
     // composed. Popping the newest entry re-freezes the material, the write eligibility and the audit
     // membership together, so the reduced task and its progress range can never disagree.
-    const subagentTokens = instructions + tools + tokens(prepared.text.fresh);
-    const forkTokens = (capacity?.prefixTokens ?? 0) + instructions + tokens(prepared.text.inherited!)  /* Noting always prepares the increment */;
-    // Capacity is priced by the mode that will actually run (review 2026-09-08): a requested fork the
-    // host resolves to subagent sends fresh material, not the inherited increment.
-    const priced = Math.max(subagentTokens, inheriting ? forkTokens : 0);
+    // Capacity is priced by the mode that will actually run (review 2026-09-08), on the one material
+    // this freeze prepared for it. 29b (parent 29 "Capacity, fallback and audit"): a fork pays its
+    // inherited measure plus the instructions plus the text it newly supplies — the full fresh
+    // representation it does not send is neither built nor charged, so a fork whose target is already
+    // visible is not refused for a cost nothing would have paid. Its fallback is not left unguarded:
+    // a re-admitted subagent (27b/27c) re-freezes with the empty initial state and is priced by this
+    // same line at the fresh child's own model capacity, and refuses the batch there if it must.
+    const priced = inheriting ? initial.inheritedTokens + instructions + tokens(prepared.text)
+      : instructions + tools + tokens(prepared.text);
     last = { priced, episodic: prepared.over.episodic };
     // Ticket 20 "Complete task evidence" (review 2026-09-08): the domain episodic budget is a reduction
     // signal too, never a receipt that lets the task run over it.
@@ -232,15 +251,28 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   return { sessionId: session.id, branch: input.branch, entries, turns: [], knowledge, facts, model: input.model ?? "session", mode, prepared: undefined };
 }
 
-/** The material of one candidate batch. The entry views and the fact lines are supplied by the
- * freeze, which renders each of them once for the whole negotiation (22d): re-freezing a smaller
- * batch changes which of them are used, never what any one of them says. */
-function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity) {
-  const { sessionId, entries, turns, knowledge, facts } = frozen;
+/** The one Noting material builder (29b, parent 29 "One material-selection mechanism"). The frozen
+ * task is the whole processing target — chosen by `noting.batchTokens` alone, never by what the child
+ * can see — and `initial` is the child's starting point. What is newly supplied is the target minus
+ * what that view proves visible at the same identity and representation, and only then does the
+ * budget apply: an entry whose native id the view holds as a retained source or as a tier-1 carrier
+ * view is withheld, a fact the view holds by id is withheld, and the historical facts that remain
+ * fill the whole `history` allowance rather than what the visible ones left of it.
+ *
+ * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
+ * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
+ * any one of them says. */
+function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+  const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
   const readKnowledgeCommits = knowledge.map(({ knowledge, revision }) => ({ knowledgeId: knowledge.id, commit: revision.id }));
-  const raw = entries.map(view);
+  // A tier-2 view establishes nothing a Noter may extract from, so `visibleView` never records one:
+  // every entry the map holds is either the retained original or a tier-1 view (29a).
+  const supplied = entries.filter(entry => !initial.visible.raw.has(entry.nativeId));
+  const withheld = entries.length - supplied.length;
+  const facts = applicable.filter(fact => !initial.visible.factIds.has(fact.id));
+  const raw = supplied.map(view);
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
   // against this phase's own batch ceiling — `noting.batchTokens` — and the titles, the range and the
   // historical facts against the episodic budget. 25c stopped compact from applying that ceiling to a
@@ -252,22 +284,31 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
     caps: { episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
   const head = turns.at(-1)!.turn;
-  // Every part of the run's material, rendered and budgeted once. An inherited-context run does not
-  // need the raw, the delivered facts or the knowledge again (ruling 08:53); core lays both
-  // representations out below, and the host only decides which native message carries the text.
+  // The head turn's own assistant entries, and whether this run withheld one of them. The captured
+  // request a fork inherits stops before the reply it produced, so a withheld head entry is the one
+  // body the view cannot be trusted for and the reply is restated (ruling 08:53's head reply, now
+  // conditional). When the Raw block below carries that entry, its reply is already in it.
+  const headWithheld = entries.some(entry => entry.turnId === head.id && entry.role === "assistant"
+    && initial.visible.raw.has(entry.nativeId));
   const material: NotingMaterial = {
-    entries: entries.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
-    // The captured request precedes the head's final reply; that missing raw and the source index
-    // are what an inherited-context run still needs.
-    head: head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
-    sources: turns.map(({ turn, calls }) => renderSources(turn, calls)),
+    entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
+    head: headWithheld && head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
+    // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index
+    // is what identifies the target entries exactly and maps them to addresses the child must find in
+    // its own context. It covers the whole frozen range, not only what was supplied.
+    sources: withheld ? turns.map(({ turn, calls }) => renderSources(turn, calls)) : [],
     facts: budgeted.facts,
     receipts,
   };
-  // 20a: core owns the block order, the titles and the separators of both representations, from this
-  // one frozen material. Which one a run sends is the host's choice of native context capability.
-  const text: MaterialText = { fresh: notingText(material, range), inherited: notingIncrement(material, range) };
-  return { range, readKnowledgeCommits, raw, material, text, over: budgeted.over };
+  // 20a: core owns the block order, the titles and the separators; 29b: there is one layout, and the
+  // host only decides which native message carries it.
+  const text = notingText(material, range);
+  // 29a "Renderers return what they kept": every entry in the Raw block is a tier-1 primary view, and
+  // the facts are the ones budgeting actually kept. The Noter emits no knowledge block (25a).
+  const suppliedMaterial: SuppliedMaterial = { entries: supplied.map(e => ({ id: e.id, nativeId: e.nativeId, tier: 1 })),
+    factIds: budgeted.factIds, knowledgeCommitIds: [] };
+  return { range, readKnowledgeCommits, views: new Map(supplied.map((e, i) => [e.id, raw[i]!])),
+    material, text, supplied: suppliedMaterial, over: budgeted.over };
 }
 
 /** The run audit records every omission marker of every entry it sent (17a). 23c ruling 3 replaced the
@@ -283,15 +324,18 @@ export async function runNoting(
   if (!turns.length || !frozen.prepared) return { outcome: "empty" };
   // The material the freeze priced is the material that runs (review 2026-09-08): re-rendering here
   // would restore the historical facts the capacity negotiation trimmed.
-  const { range, readKnowledgeCommits, raw, material, text } = frozen.prepared;
-  const entryAudit: EntryAudit = { entries: entries.map((e, i) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: raw[i]!.content.match(OMISSION) ?? [] })),
+  const { range, readKnowledgeCommits, views, material, text, supplied } = frozen.prepared;
+  // 29b: the audit still lists every entry of the frozen target — membership is the processing target,
+  // not what was injected — but the omission markers are read from the view this run actually sent.
+  // A withheld entry sent no view, so it has no markers of ours to record.
+  const entryAudit: EntryAudit = { entries: entries.map((e) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: views.get(e.id)?.content.match(OMISSION) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { toolCallTokens: config.render.toolCallTokens, entryTokens: config.render.entryTokens } };
   const run: RunInput = { kind: "noting", sessionId, branch, rangeFrom: range.from, rangeTo: range.to,
     promptHash, model, mode, entryAudit, createdAt: new Date().toISOString() };
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
-    material, text, entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
+    material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) { result = agentException(error); }

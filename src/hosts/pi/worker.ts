@@ -161,10 +161,9 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
         // the captured payload, the parent file and its leaf — was decided before this run started
         // and arrives as one refusal reason.
         if ("refused" in binding.fork) throw new NotForkable(binding.fork.refused);
-        if (task.text.inherited === undefined) throw new NotForkable("this phase prepares no inherited-context material");
         const native = await runNative({ ...common, mode: "fork", parentFile: binding.fork.parentFile,
           parentSessionId: binding.fork.parentSessionId, checkpoint: binding.fork.checkpoint, captured: binding.fork.captured,
-          task: `${task.prompt}\n\n${task.text.inherited}`, onCache: binding.onCache });
+          task: `${task.prompt}\n\n${task.text}`, onCache: binding.onCache });
         request = native.request ?? request; verification = native.verification;
         // 27b: the one post-attempt refusal. A request the provider rejected for context capacity, in
         // a run that submitted nothing, is re-admitted on the same frozen evidence; the attempt's own
@@ -198,7 +197,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
     // when it is not `inherit`, the inherited foreground level otherwise (the host resolves that at
     // admission; a host that froze only one level keeps 26b's single-level behaviour here).
     const native = await runNative({ ...common, thinkingLevel: (task.subagentThinkingLevel ?? task.thinkingLevel) as ThinkingLevel | undefined,
-      mode: "subagent", systemPrompt: task.prompt, task: task.text.fresh });
+      mode: "subagent", systemPrompt: task.prompt, task: task.text });
     mode = "subagent";
     usage = native.usage;
     request = native.request ?? request;

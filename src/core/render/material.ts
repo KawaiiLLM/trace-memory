@@ -31,6 +31,13 @@
 // head reply and the frozen source index, because the raw turns, the facts delivered after earlier
 // runs and the injected knowledge are already in that conversation. That is the domain increment,
 // and it comes from the same frozen task as the full text.
+//
+// Ticket 29b ("One material-selection mechanism") replaces that pair of fixed layouts with ONE per
+// phase. There is no `fresh`/`inherited` choice any more: a task carries the material its child does
+// not already hold, and a fresh child — whose visible view is empty — is the case where that is the
+// whole thing. What a fork used to get by layout (no Raw, no history, a source index) it now gets by
+// subtraction: every block below renders exactly what the phase's builder kept after removing what
+// the child's own context proves visible, and the mandatory framing stays whatever the data delta is.
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, ENTRY_VIEW_VERSION, type EntryProfile, type FactTurns } from "./index.ts";
@@ -59,11 +66,19 @@ export interface SharedMaterial {
 /** The frozen task material of one Noting run. Task-specific parts: the head reply and the source
  * index an inherited-context run needs. No field is a composed message. */
 export interface NotingMaterial extends SharedMaterial {
+  /** The target entries this run must newly supply: 29b removed the ones the child can already see,
+   * so this is a subset of the frozen target and is empty when the whole target is visible. */
   entries: { id: number; view: string }[];
   facts: string[];
-  /** The head turn's final assistant reply, rendered; null when the head turn has none. */
+  /** The head turn's final assistant reply, rendered; null when this run does not restate it. 29b:
+   * it is restated only when the head entry's own body was withheld as visible, because the captured
+   * request a fork inherits stops before that reply. When the Raw block carries the head entry, the
+   * reply is in it already and a second copy is the duplicate parent 29 forbids. */
   head: string | null;
-  /** One source-index line per turn of the frozen range, in range order. */
+  /** One source-index line per turn of the frozen range, in range order. 29b: emitted only when some
+   * target entry's body was withheld — the mandatory source mapping that identifies a body the child
+   * must find in its own context. With the whole target supplied, the Raw block carries those
+   * addresses itself and the index would be a second copy of them. */
   sources: string[];
 }
 
@@ -79,16 +94,11 @@ export interface ConsolidationMaterial extends SharedMaterial {
   rangeFacts: string[];
   /** Visible knowledge whose supports a range fact negates, with both facts: review cues only. */
   reminders: string[];
-}
-
-/** The prepared domain text of one run, both representations from the same frozen task. The host
- * picks one by the native context capability it actually has. */
-export interface MaterialText {
-  /** Fresh context: the whole ruled order, receipts last. */
-  fresh: string;
-  /** Inherited context: only what that conversation does not already carry (ruling 08:53). Noting
-   * only — Consolidation runs as a subagent alone (25b) and prepares no increment. */
-  inherited?: string;
+  /** 29b (parent 29 "Version-aware knowledge"): one line per knowledge commit the child inherited
+   * that is no longer this path's current authority — superseded, archived or merged. The block above
+   * carries only what is current, so without these lines stale inherited text would read as current
+   * knowledge. Charged inside the knowledge allowance like everything else in that block. */
+  knowledgeNotes: string[];
 }
 
 export const FACTS_TITLE = "Recent facts (by Turn):";
@@ -102,6 +112,8 @@ export const secondaryRawTitle = (profile: EntryProfile): string =>
 export const RANGE_FACTS_TITLE = "Range facts:";
 export const SOURCES_TITLE = "Sources:";
 export const REMINDER_TITLE = "Negated-evidence reminder (review cues only; no status derived):";
+/** 29b: the title of `ConsolidationMaterial.knowledgeNotes`, emitted only when there are notes. */
+export const KNOWLEDGE_STATUS_TITLE = "Inherited knowledge status (these commits are not current authority):";
 /** Between blocks, and between a block's title and its body. Entry views use the same separator. */
 export const BLOCK = "\n\n";
 
@@ -130,6 +142,10 @@ export interface MaterialBudget {
   knowledge?: KnowledgeWithRevision[];
   /** How one knowledge item renders; the read facade adds its marks. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
+  /** 29b: the status lines of inherited commits that are no longer current. They are reserved out of
+   * `caps.knowledge` before the block fills what is left, because a stale-authority warning is worth
+   * more than one more current item; anything past the cap is receipted like any other omission. */
+  knowledgeNotes?: string[];
   /** The selected current material, already joined with the separator this consumer emits. */
   current: string;
   /** The block titles and mandatory cues this consumer emits around it. */
@@ -156,6 +172,8 @@ export interface MaterialBudget {
 }
 
 export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGroup[]; facts: string[]; receipts: string[];
+  /** 29b: the status lines that fit `caps.knowledge`, in the order they were given. */
+  knowledgeNotes: string[];
   /** 29a "Renderers return what they kept": the identities of the historical facts and the knowledge
    * commits this budgeting actually kept. What a cap dropped is receipted above and absent here, so a
    * consumer that persists these as coverage can only understate it. */
@@ -163,7 +181,18 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   /** How far past each cap this material is, in tokens; zero when it fits. Every consumer receipts an
    * overage; only compact escalates on it (ticket 20 "Compaction escalation", steps 2 and 4). */
   over: { current: number; episodic: number } } {
-  const active = input.knowledge ? budgetKnowledge(input.knowledge, input.caps.knowledge!, input.knowledgeLine)
+  // 29b: the notes come out of the knowledge allowance first, whole lines only, and what does not fit
+  // is receipted rather than cut mid-line — a truncated "this is archived" is worse than a counted one.
+  const notes: string[] = [];
+  let noteCost = 0;
+  for (const note of input.knowledgeNotes ?? []) {
+    const next = charge([KNOWLEDGE_STATUS_TITLE, ...notes, note]); // the block's own title is charged with it
+    if (next > (input.caps.knowledge ?? 0)) break;
+    notes.push(note); noteCost = next;
+  }
+  const noteReceipts = (input.knowledgeNotes ?? []).length > notes.length
+    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; render.knowledgeBlockTokens is full`] : [];
+  const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine)
     : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
@@ -186,8 +215,8 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   receipts.push(...filled.receipts);
   const over = reserved() - input.caps.episodic;
   if (over > 0) receipts.unshift(`${label} overage: ${over} tokens; all ${kept} kept`);
-  return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts],
-    factIds: filled.factIds, knowledgeCommitIds: active.commits,
+  return { knowledge: active.groups, facts: filled.recent, receipts: [...receipts, ...active.receipts, ...noteReceipts],
+    knowledgeNotes: notes, factIds: filled.factIds, knowledgeCommitIds: active.commits,
     over: { current: ceiling === undefined ? 0 : Math.max(0, current - ceiling), episodic: Math.max(0, over) } };
 }
 
@@ -215,22 +244,24 @@ export const compactText = (material: SharedMaterial, rawTitle: string = RAW_TIT
   finish({ content: block([...leading(material), xmlBlock("episodic",
     block([FACTS_TITLE, (material.facts ?? []).join("\n"), rawTitle, rawText(material)]))]), receipts: material.receipts });
 
-/** Noter, fresh context: historical facts, range, the selected Raw, then receipts. 25a: no knowledge
- * block in either Noter mode — a Noter that needs knowledge reads it by address. */
+/** The Noter's one layout (29b): the missing historical facts, the range, the head reply when this
+ * run restates it, the Raw of the target entries this run supplies, the source index when some body
+ * was withheld, then receipts. 25a: no knowledge block in either Noter mode — a Noter that needs
+ * knowledge reads it by address. With an empty visible view every target entry is supplied, `head`
+ * is null and `sources` is empty, which is byte for byte the layout a fresh Noter has always had. */
 export const notingText = (material: NotingMaterial, range: TaskRange): string =>
-  finish({ content: block([FACTS_TITLE, material.facts.join("\n"),
-    rangeLine(range), RAW_TITLE, rawText(material)]), receipts: material.receipts });
+  finish({ content: block([FACTS_TITLE, material.facts.join("\n"), rangeLine(range),
+    ...(material.head ? [material.head] : []),
+    ...(material.entries.length ? [RAW_TITLE, rawText(material)] : []),
+    ...(material.sources.length ? [`${SOURCES_TITLE}\n${material.sources.join("\n")}`] : []),
+  ]), receipts: material.receipts });
 
-/** Noter, inherited context: the range, the head reply and the frozen source index (ruling 08:53).
- * The captured request precedes the head's final reply, so that reply is appended; the index
- * supplies addresses and previews, never a second copy of the raw. */
-export const notingIncrement = (material: NotingMaterial, range: TaskRange): string =>
-  block([rangeLine(range), ...(material.head ? [material.head] : []),
-    `${SOURCES_TITLE}\n${material.sources.join("\n")}`]);
-
-/** Consolidator, fresh context: knowledge, range, the selected pending facts, the negation reminders,
- * then receipts. 25a: no already-consolidated history block — those facts are read by address. */
+/** The Consolidator's one layout (29b): the current knowledge this run supplies, the status of the
+ * inherited commits that are no longer current, the range, the pending fact bodies this run supplies,
+ * the negation reminders, then receipts. 25a: no already-consolidated history block — those facts are
+ * read by address. With an empty visible view this is the layout a fresh Consolidator has always had. */
 export const consolidationText = (material: ConsolidationMaterial, range: TaskRange): string =>
   finish({ content: block([...leading(material),
+    ...(material.knowledgeNotes.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${material.knowledgeNotes.join("\n")}`] : []),
     rangeLine(range), RANGE_FACTS_TITLE, material.rangeFacts.join("\n"),
     REMINDER_TITLE, material.reminders.join(BLOCK) || "none"]), receipts: material.receipts });

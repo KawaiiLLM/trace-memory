@@ -44,24 +44,25 @@ async function thirdPrompt(f: Fixture, options: { capture?: boolean } = {}) {
   return { run, child: f.sent.slice(before).find(body => worker(body))! };
 }
 
-test("25a 2026-09-09: the Noter fork's captured request carries the increment alone — no knowledge, no history, no index, no Raw", async () => {
+/** 29b (cases 10 and 12), superseding 25a's "no history in a fork": the fork's material is built by
+ * the same builder as a fresh child's, from the visible view this host really derived from its own
+ * selected context. Every target entry is a retained conversation entry there, so no Raw body is
+ * repeated; the earlier run's facts are NOT proven visible by anything structural — a `<noted>`
+ * receipt is prose — so the missing applicable history is supplied inside its own allowance. */
+test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw and carries the missing history", async () => {
   const f = await fixture({ "noting.triggerTokens": 1 });
   try {
     const { run, child } = await thirdPrompt(f);
     expect(run.mode).toBe("fork");
     const increment = task(child);
-    // Control material only (ruling 2026-09-06 08:53, kept by 25a): instruction, range, head reply,
-    // source-address index.
+    // Mandatory framing, whatever the data delta is: instruction, range, head reply, source index.
     expect(increment).toContain("Noting (fact extraction)");
     expect(increment).toContain("Range: ");
     expect(increment).toContain("Sources:");
-    expect(increment).not.toContain("<knowledge>");
-    expect(increment).not.toContain("Recent facts (by Turn):");
-    expect(increment).not.toContain("Raw:");
-    expect(increment).not.toContain("[F1]"); // no fact block and no fact index of any kind
-    // The inheritance is not a claim: the earlier run really delivered its facts as a foreground
-    // `<noted>` receipt, and that delivery was confirmed before this task was admitted.
-    expect(f.h.memory.store.listPendingDeliveries(1, "main")).toEqual([]);
+    expect(increment).not.toContain("<knowledge>"); // 25a: no knowledge block in either Noter mode
+    expect(increment).not.toContain("Raw:"); // the target entries are visible in the inherited context
+    expect(increment).toContain("Recent facts (by Turn):");
+    expect(increment).toContain("[F1]"); // the history the child cannot prove it holds
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.id)).toEqual([1]);
   } finally { await f.dispose(); }
 });

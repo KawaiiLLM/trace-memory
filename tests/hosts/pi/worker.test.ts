@@ -16,7 +16,7 @@ const note = (): ToolDefinition => ({ name: "note", description: "Record facts."
 /** One frozen core task, as the façade prepares it. */
 const task = (mode: "fork" | "subagent"): NotingAgentInput => ({
   kind: "noting", mode, model: "fake/test", sessionId: 1, branch: "main", entryIds: [7, 8],
-  prompt: "You are the Noter.", text: { fresh: "note what happened", inherited: "the increment" },
+  prompt: "You are the Noter.", text: "note what happened",
   reportRequest: () => {}, reportProgress: () => {},
 } as unknown as NotingAgentInput);
 
