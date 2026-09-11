@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
 import { formatSkillsForPrompt, SessionManager, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
-import { tokens } from "../../../src/core/api/index.ts";
+import { memoryBodyHash, tokens } from "../../../src/core/api/index.ts";
+import { tracePage } from "../../trace-pages.ts";
 import { compactText, measuredMemory } from "../../../src/core/render/material.ts";
 import { contextComposition, type ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { allocateCells, compositionMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
@@ -276,6 +277,39 @@ test("initial and on/project supplement carriers share assembly measurement; ret
     expect(compact.details.traceMemory.composition.bodyHash).toHaveLength(64);
     expect(compact.details.traceMemory.composition.knowledge).toBeGreaterThan(0);
     expect(compact.details.traceMemory.composition.raw).toBeGreaterThan(0);
+    // Integration: persist the actual core/host replacement, not a hand-built material fixture.
+    expect(compact.details.traceMemory.composition.bodyHash).toBe(memoryBodyHash(compact.summary));
+    const retained = fixture();
+    retained.sm.appendCompaction(compact.summary, "", 10000, compact.details, true);
+    const before = retained.read();
+    expect(before.memory.Knowledge).toBe(compact.details.traceMemory.composition.knowledge);
+    expect(before.memory.Facts).toBe(compact.details.traceMemory.composition.facts);
+    expect(before.memory.Raw).toBe(compact.details.traceMemory.composition.raw);
+    const saved = JSON.stringify(retained.sm.getEntries());
+    const tools = h.memory.tools({ kind: "manual", sessionId: 1, currentTurnId: 1, branch: "main" });
+    const trace = tools.find(t => t.name === "trace")!, write = tools.find(t => t.name === "memory")!;
+    const edit = () => JSON.parse(write.execute({ operations: [{ op: "update", id: "K2@2", text: "Rule updated",
+      category: "constraint", scope: "global", supports: ["F1"], topics: [], reason: "integration" }], skipped: [] }));
+    // A retained carrier and raw trace supply no named-K write handle.
+    expect(edit().results[0]).toContain("knowledge was not read");
+    for (const address of ["T1", "K2@2"]) {
+      let page = trace.execute({ address, cap: 1 }), pages = 0;
+      for (;;) {
+        expect(page).not.toContain("rejected:");
+        expect(tokens(page)).toBeLessThanOrEqual(2000);
+        expect(retained.read()).toEqual(before);
+        expect(JSON.stringify(retained.sm.getEntries())).toBe(saved);
+        const cursor = tracePage(page).cursor;
+        if (!cursor) break;
+        expect(edit().results[0]).toContain("knowledge was not read");
+        page = trace.execute({ address: `cursor=${cursor}` });
+        expect(++pages).toBeLessThan(100);
+      }
+      expect(pages).toBeGreaterThan(0);
+      if (address === "T1") expect(edit().results[0]).toContain("knowledge was not read");
+    }
+    expect(edit().committed[0]).toMatchObject({ knowledgeId: 2 });
+    expect(retained.read()).toEqual(before); // Live DB changes never remeasure a saved carrier.
     expect(h.requests).toEqual([]);
   } finally { await h.dispose(); }
 });

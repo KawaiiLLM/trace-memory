@@ -264,12 +264,23 @@ native result occurrences shows each occurrence, and a sibling branch's entries 
 not appear when the reader's branch is known — an unbound read stays unrestricted.
 `trace("T1", {tool: 2})` renders that call's parts within their budgets and seals
 every other call at its label line and omission marker, with the receipt that
-fetches it whole. `trace("T1", {tool: 2, full: true})` removes every cut and
-returns the stored arguments and result text under the same labels, with no budget
-machinery at all; its read scope stays unrestricted, so when a shared call has results
-on several forks, a full trace shows each original occurrence as its own entry. The
-optional listing cap paginates the rendered lines; it never becomes a tool-output
-token cap.
+fetches it whole via `trace("T1#t2", {full: true})`, without repeating user/assistant
+text or other calls' omission labels. `trace("T1", {tool: 2, full: true})` keeps its
+existing selection semantics. Full rendering removes content compression, not
+pagination; its read scope stays unrestricted, so when a shared call has results
+on several forks, a full trace shows each original occurrence as its own entry.
+
+Trace uses search's shared paginator and token estimator: every response defaults
+to at most 2,000 estimated tokens, including pagination receipts, and `cap` also
+limits output lines (default 100). A long single line continues through the same
+cursor, split only at Unicode code-point boundaries; concatenate fragments without
+a newline as the receipt directs, before interpreting any JSON escapes. Nothing is
+permanently truncated by pagination. The query freezes its material, scope and
+rendering profile; later writes or branch changes cannot alter its continuation.
+Named components resolve once without child cursors; fact intervals retain lazy
+record rendering and batched relation snapshots. A knowledge read refreshes handles
+only after the entire expression's final page. Rejected continuation requests do
+not consume a valid cursor. No new tool parameter is introduced.
 
 `renderEntry` is the one view, under one profile of three independent budgets (ticket 30,
 superseding 23c's single `B` split in half): a tool-call part is worth at most `C`
@@ -284,8 +295,9 @@ excerpts. One marker family says what was left out: `[... N characters truncated
 `[<type> omitted]` for a non-text block; the honesty clause "the omitted middle was not
 inspected" is stated once in the Noter prompt instead of in every marker. Every consumer
 — Noting material, compaction, branch carry and the assembled `trace` — uses
-identical entry bytes, and `full` is the same renderer with no budget. The shared
-segment-based token estimator remains unchanged (ruling 2026-09-07).
+identical entry bytes, and `full` is the same renderer without content compression;
+the outer trace paginator still applies its default 2,000 estimated-token budget and
+line cap. The shared segment-based token estimator remains unchanged (ruling 2026-09-07).
 
 Hosts may store plain strings or JSON in tool input/result; no rule names a tool.
 Arguments render as `key=JSON.stringify(value)`, concatenated on the call's one line, so
@@ -543,12 +555,17 @@ state behind. Interval grammar is recognized only for address-shaped components
 (an uppercase letter and digits on both sides), so a hyphenated project name such
 as `trace-memory` still resolves as a project.
 
-A batch is one read: its components are rendered at query time, in request order,
-and `cap`/`cursor` page that one line stream — no child cursor is nested inside a
-page and no remainder of an address is dropped. Because the whole batch exists
-before the first page returns, the annotations 22c freezes for a search (a fact's
-relations, a commit's marks, a Turn's occurrences and Raw profile) cannot move
-under a later page either. A read through a run's tools is recorded and audited as
+A batch is one read: named components resolve at query time, in request order,
+while intervals keep fact identities and render only the page plus one lookahead.
+The shared token budget and `cap`/`cursor` page that one line stream — no child
+cursor is nested inside a page and no remainder of an address is dropped. Deferred
+interval relations are frozen in one batched read, not by rendering all facts.
+A short transaction freezes the necessary values, relations and annotations for the
+request snapshot. Named rendering and page estimation happen after it exits; immutable
+interval fact bodies remain lazy. No transaction stays open between pages. The
+annotations 22c freezes for a search (a fact's relations, a commit's marks, a Turn's
+occurrences and Raw profile) cannot move under a later page either. A read through
+a run's tools is recorded and audited as
 the expression the model wrote, and the knowledge components of a mixed expression
 still update that run's knowledge read base.
 
@@ -809,7 +826,8 @@ without consuming the cursor. The same budget applies through `trace` continuati
 a trace-origin cursor cannot be continued through search. Continue a cursor alone,
 not inside a comma address list. Invalid parameters do not
 consume a valid cursor. Owner isolation and the shared 16-continuation cache remain
-unchanged. Trace's own default remains line-budgeted, with no new token limit.
+unchanged. Trace shares the default 2,000 estimated-token response budget and line
+cap; `full` preserves uncompressed content through lossless cursor pagination.
 
 Every search page states that no hit does not mean absent. A `cursor` continues the
 query that issued it, not the database as it now stands: the hits, the commit labels,

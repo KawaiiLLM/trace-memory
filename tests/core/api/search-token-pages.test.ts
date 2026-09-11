@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { listingLine, tokens } from "../../../src/core/render/index.ts";
+import { wholeTrace } from "../../trace-pages.ts";
 
 const time = "2026-09-10T00:00:00Z";
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -9,6 +10,7 @@ afterEach(() => { memory.close(); });
 const cursorOf = (text: string) => /cursor=(\S+)/.exec(text)?.[1];
 const body = (text: string) => text.slice(0, text.lastIndexOf("\n\nReceipts:"));
 const split = (text: string) => text.includes("\nHit continues on next page; concatenate without a newline.\n");
+const traceWhole = (address: string) => wholeTrace(memory, address);
 function corpus(texts: string[]) {
   const store = memory.store;
   const projectId = store.createProject({ name: "test", declaredBy: "mark" }).id;
@@ -42,7 +44,7 @@ function drain(first: string, budget: number, sessionId?: number, cap = 100) {
 
 test.each([undefined, 256, 777, 2000])("Chinese long Raw hit is lossless across pages, budget %s", maxTokens => {
   const { turns } = corpus(["中文😀𠮷资料 abc123 。".repeat(1800) + "UNIQUE-END"]);
-  const whole = listingLine(memory.trace(`T${turns[0]!.id}`));
+  const whole = listingLine(traceWhole(`T${turns[0]!.id}`));
   const first = memory.search("needle", "raw", { maxTokens });
   const result = drain(first, maxTokens ?? 2000);
   expect(result.pages).toBeGreaterThan(1);
@@ -52,7 +54,7 @@ test.each([undefined, 256, 777, 2000])("Chinese long Raw hit is lossless across 
 
 test.each([1, 2, 100])("multiple hits and fragments preserve order with cap %s", cap => {
   const { sessionId, turns } = corpus(["short", "中文😀".repeat(4000), "short second", "末尾𠮷".repeat(2000)]);
-  const expected = turns.map(t => listingLine(memory.trace(`T${t.id}`))).join("\n");
+  const expected = turns.map(t => listingLine(traceWhole(`T${t.id}`))).join("\n");
   const result = drain(memory.search("needle", "raw", { sessionId, cap, maxTokens: 320 }), 320, sessionId, cap);
   expect(result.joined).toBe(expected);
 });
@@ -64,7 +66,7 @@ test("default multi-hit pages and explicit identical continuation budgets stay b
   const second = memory.search("", "raw", { cursor, maxTokens: 2000 });
   const rest = drain(second, 2000);
   expect(tokens(first)).toBeLessThanOrEqual(2000);
-  expect(body(first) + (split(first) ? "" : "\n") + rest.joined).toBe(turns.map(t => listingLine(memory.trace(`T${t.id}`))).join("\n"));
+  expect(body(first) + (split(first) ? "" : "\n") + rest.joined).toBe(turns.map(t => listingLine(traceWhole(`T${t.id}`))).join("\n"));
   expect(tokens(memory.search("absent", "all"))).toBeLessThanOrEqual(2000);
 });
 
@@ -73,11 +75,11 @@ test("whole hits defer without fragments, and formatting never walks the remaini
   const reads = vi.spyOn(memory.store, "getSourceEntry");
   const first = memory.search("needle", "raw", { maxTokens: 400 });
   expect(split(first)).toBe(false);
-  expect(body(first)).toBe(listingLine(memory.trace(`T${turns[0]!.id}`)));
+  expect(body(first)).toBe(listingLine(traceWhole(`T${turns[0]!.id}`)));
   // At most one lookahead hit, plus the expected-value trace above.
   expect(reads.mock.calls.length).toBeLessThanOrEqual(3);
   reads.mockRestore();
-  expect(drain(first, 400).joined).toBe(turns.map(t => listingLine(memory.trace(`T${t.id}`))).join("\n"));
+  expect(drain(first, 400).joined).toBe(turns.map(t => listingLine(traceWhole(`T${t.id}`))).join("\n"));
 });
 
 test("invalid budgets and cap do not consume a valid cursor; budgets cannot change via trace", () => {
@@ -101,7 +103,7 @@ test("invalid budgets and cap do not consume a valid cursor; budgets cannot chan
 test("pending text and deferred profile/entry membership remain frozen", () => {
   const { sessionId, turns } = corpus(["中文😀".repeat(2500), "second"]);
   memory.store.appendToolCall({ turnId: turns[1]!.id, name: "read", input: "{}", result: "工具结果".repeat(4000), status: "success" });
-  const whole = turns.map(t => listingLine(memory.trace(`T${t.id}`))).join("\n");
+  const whole = turns.map(t => listingLine(traceWhole(`T${t.id}`))).join("\n");
   const first = memory.search("needle", "raw", { sessionId, maxTokens: 350 });
   memory.config.render.entryTokens = 200;
   memory.config.render.toolResultTokens = 100;
@@ -115,7 +117,7 @@ test.each([64, 80, 96, 128])("tiny budget %s either rejects explicitly or keeps 
   let first: string;
   try { first = memory.search("needle", "raw", { maxTokens }); }
   catch (error) { expect(String(error)).toMatch(/maxTokens is too small/); return; }
-  expect(drain(first, maxTokens).joined).toBe(listingLine(memory.trace(`T${turns[0]!.id}`)));
+  expect(drain(first, maxTokens).joined).toBe(listingLine(traceWhole(`T${turns[0]!.id}`)));
 });
 
 test("model-facing schema and execution expose only search's token budget", () => {
@@ -130,12 +132,13 @@ test("model-facing schema and execution expose only search's token budget", () =
   expect(search!.execute({ query: "", cursor, maxTokens: 256 })).not.toContain("rejected:");
 });
 
-test("trace remains line-budgeted and a trace cursor cannot bypass search budgeting", () => {
+test("search rejects trace-origin cursors without consumption; trace retains its default budget", () => {
   const { sessionId, turns } = corpus(["中文".repeat(4000), "second"]);
-  const trace = memory.trace(`T${turns[0]!.id}`);
-  expect(tokens(trace)).toBeGreaterThan(2000);
+  expect(tokens(memory.trace(`T${turns[0]!.id}`))).toBeLessThanOrEqual(2000);
   const first = memory.trace(`S${sessionId}`, { cap: 1 });
   const cursor = cursorOf(first)!;
-  expect(() => memory.search("", "raw", { cursor })).toThrow(/frozen/);
-  expect(memory.trace(`cursor=${cursor}`)).toContain(`T${turns[1]!.id}`);
+  expect(() => memory.search("", "raw", { cursor })).toThrow(/search cannot continue a trace cursor/);
+  const next = memory.trace(`cursor=${cursor}`);
+  expect(tokens(next)).toBeLessThanOrEqual(2000);
+  expect(() => memory.trace(`cursor=${cursor}`)).toThrow(/unknown or expired/);
 });

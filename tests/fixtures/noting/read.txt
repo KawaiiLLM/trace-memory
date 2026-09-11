@@ -45,4 +45,4 @@ Decoder works — those are clean building textures. Correcting the standing ass
 
 Receipts:
 T2: 1 omitted calls (including partial calls)
-expand: trace({"address":"T2","tool":2,"full":true})
+expand: trace({"address":"T2#t2","full":true})

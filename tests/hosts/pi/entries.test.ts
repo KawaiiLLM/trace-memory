@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { wholeTrace } from "../../trace-pages.ts";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { DEFAULT_CONFIG, TraceMemory, renderEntry, tokens, type NotingAgentInput } from "../../../src/core/api/index.ts";
@@ -276,7 +277,7 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     expect(before.raw).toBe(JSON.stringify(message));
     // 23c: `full` renders the same labels as every other view, the stored value bytes uncut — the
     // argument strings are JSON-encoded exactly as they were stored, and the result is the raw string.
-    expect(h.memory.trace("T1#t1", { full: true })).toBe(`[T1#t1] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
+    expect(wholeTrace(h.memory, "T1#t1", { full: true })).toBe(`[T1#t1] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
       + `\n[T1#t1] bash success: ${JSON.stringify({ content, details })}`);
     const result = h.memory.pendingEntries(1, "main", 1).find(e => e.role === "toolResult")!;
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });

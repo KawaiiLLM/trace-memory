@@ -13,7 +13,8 @@ import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
 export interface ListingOptions { maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
-export const DEFAULT_SEARCH_TOKENS = 2000;
+/** Shared default response budget for trace and search, including pagination receipts. */
+export const DEFAULT_READ_TOKENS = 2000;
 /** Exact versions resolved by a named K read; bare reads replace that identity's prior bases. */
 export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean }
 export interface TraceRead { text: string; completed: KnowledgeRead[] }
@@ -66,10 +67,10 @@ export interface Injection { text: string; knowledgeCommitIds: number[]; composi
  * or already frozen by the query, so these three annotations are the whole remainder. */
 interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile }
 
-/** One component of a `trace` comma list, in request order: either a fact an interval selected —
- * rendered when a page asks for it, from the relations the query froze — or text a named component
- * already resolved at query time. */
-type TraceUnit = { fact: number; relations?: FactRelation[] } | { text: string };
+/** One component of a `trace` comma list, in request order: either an interval's immutable fact
+ * identity with frozen relations, or a named component's renderer over frozen database values.
+ * Both render only after the snapshot transaction exits. */
+type TraceUnit = { fact: number; relations: FactRelation[] } | { render: () => string };
 
 /** Parent 29 "Version-aware knowledge" (29b): one line per commit the reader's context already holds
  * that is not among the current applicable commits here — superseded, archived or merged away. The
@@ -97,8 +98,9 @@ export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWi
   });
 }
 
-export function readFacade(store: Store, config: TraceMemoryConfig, expand: (address: string, options?: ListingOptions, reads?: KnowledgeRead[]) => string,
+export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions, reads?: KnowledgeRead[]) => (() => string),
   resultText: ResultExtractor = rawResultText) {
+  const expand = (address: string, options?: ListingOptions) => prepare(address, options)();
   // 22c: what a listing still owes its caller is kept as hit identities plus the formatter that turns
   // exactly one page of them into lines. The formatter carries its query's own snapshot, so a page
   // asked for later prints the labels that query established, and nothing but values is held between
@@ -110,11 +112,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     capture?: (deferred: readonly unknown[]) => readonly unknown[] }
   /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
    * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
-   * crossed the page edge — `cap` counts output lines. Search also freezes `maxTokens`; an
+   * crossed the page edge — `cap` counts output lines. Every read freezes `maxTokens`; an
    * oversized line leaves its unsent suffix in the same queue, without a second fragment cache.
+   * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
    * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[] };
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -122,17 +125,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // ever becomes large enough that sixteen of them matter.
   const CURSORS = 16;
   const cursors = new Map<string, Remainder>();
-  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", reads: KnowledgeRead[] = []): TraceRead => {
+  const page = (source: string[] | Continuation, options: ListingOptions = {}, footer = "", reads: KnowledgeRead[] = [], origin: "trace" | "search" = "trace"): TraceRead => {
     const owner = options.sessionId === undefined ? "unbound" : `${options.sessionId}:${store.getSession(options.sessionId)?.projectId}`;
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
+    if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) { footer = saved.footer; reads = saved.reads; }
     if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1))
-      throw new Error("search maxTokens must be a positive safe integer");
+      throw new Error("listing maxTokens must be a positive safe integer");
     if (saved && options.maxTokens !== undefined && options.maxTokens !== saved.maxTokens)
       throw new Error("cursor maxTokens is frozen; omit it or use the original budget");
     const maxTokens = saved?.maxTokens ?? options.maxTokens;
@@ -144,37 +148,49 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // Alternating letters/digits bound the UUID's estimate, so an admitted tiny budget still
     // permits progress when the next page generates a more expensive cursor spelling.
     const minimum = output(["😀"], true, true).replace(cursor, "a1a1a1a1-a1a1-4a1a-a1a1-a1a1a1a1a1a1");
-    if (maxTokens !== undefined && tokens(minimum) > maxTokens) throw new Error("search maxTokens is too small for pagination hints and content");
+    if (maxTokens !== undefined && tokens(minimum) > maxTokens) throw new Error("listing maxTokens is too small for pagination hints and content");
     const lines: string[] = [], pending = [...(saved?.pending ?? [])];
-    let at = saved?.offset ?? 0, fragment = false;
+    let at = saved?.offset ?? 0, fragment = false, fragmented = saved?.fragmented ?? false;
     while (lines.length < cap && (pending.length || at < items.length)) {
       // One-hit lookahead only. Unrendered hits retain the existing frozen identity snapshot.
       if (!pending.length) pending.push(...format([items[at++]]));
       if (!pending.length) continue;
       const line = pending[0]!;
       const more = pending.length > 1 || at < items.length;
-      if (maxTokens === undefined || fits([...lines, line], more)) { lines.push(pending.shift()!); continue; }
-      // Prefer a whole hit on the next page to splitting it into the current page's spare space.
+      // The estimator is not monotone (an ASCII suffix can reclassify an emoji run).
+      // Price each intact line once before probing; never repeat this full scan on its fragments.
+      if (!fragmented && fits([...lines, line], more)) { lines.push(pending.shift()!); continue; }
+      // Probe near the page size, not halfway through a potentially megabyte-long remainder.
+      // Measuring the whole suffix on EVERY page makes a large single line quadratic to drain.
+      // Price only valid code-point prefixes too: a dangling surrogate can change the estimator's
+      // script classification (notably a pure emoji run), making an unsafe cut look much cheaper.
+      const prefix = (end: number) => line.slice(0, end > 0 && /[\uD800-\uDBFF]/.test(line[end - 1]!)
+        && /[\uDC00-\uDFFF]/.test(line[end] ?? "") ? end - 1 : end);
+      let low = 0, high = Math.min(256, line.length);
+      while (high < line.length && fits([...lines, prefix(high)], true, true)) {
+        low = high; high = Math.min(line.length, high * 2);
+      }
+      if (high === line.length && fits([...lines, line], more)) { lines.push(pending.shift()!); fragmented = false; continue; }
+      // Prefer a whole line on the next page to splitting into this page's spare space.
       if (lines.length) break;
-      // Search lines can contain a whole Raw Turn. Keep the suffix in the SAME pending queue,
-      // splitting only at code-point boundaries (never inside a UTF-16 surrogate pair).
-      let low = 0, high = line.length;
+      // Keep the suffix in the SAME pending queue, at code-point boundaries. Escaped text is
+      // transported verbatim: fragments must be concatenated before interpreting JSON escapes.
       while (low < high) {
         const mid = Math.ceil((low + high) / 2);
-        if (fits([line.slice(0, mid)], true, true)) low = mid; else high = mid - 1;
+        if (fits([prefix(mid)], true, true)) low = mid; else high = mid - 1;
       }
-      if (low > 0 && /[\uD800-\uDBFF]/.test(line[low - 1]!) && /[\uDC00-\uDFFF]/.test(line[low] ?? "")) low--;
-      if (!low || !fits([line.slice(0, low)], true, true)) throw new Error("search maxTokens is too small for this hit and pagination hints");
-      lines.push(line.slice(0, low)); pending[0] = line.slice(low); fragment = true;
+      const kept = prefix(low);
+      if (!kept || !fits([kept], true, true)) throw new Error("listing maxTokens is too small for this hit and pagination hints");
+      lines.push(kept); pending[0] = line.slice(kept.length); fragment = true; fragmented = true;
       break;
     }
     const more = pending.length > 0 || at < items.length;
     const result = output(lines, more, fragment);
-    if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("search maxTokens is too small for pagination hints");
+    if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("listing maxTokens is too small for pagination hints");
     // Snapshot and validate first: a rejected request must leave the input cursor usable.
-    const remainder = more ? saved ? { ...saved, offset: at, pending }
-      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads }
-      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads } : undefined;
+    const remainder = more ? saved ? { ...saved, offset: at, pending, fragmented }
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
       cursors.set(cursor, remainder);
@@ -257,49 +273,48 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     return { from: first, to: last };
   };
   const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
+    const targets = address.split(",").map((a) => a.trim());
+    // Validate the request shape before either cursor entry point can consume a page.
+    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
-    const targets = address.split(",").map((a) => a.trim());
-    // A continuation is already one bounded response, not a component to unwrap into a new
-    // unbudgeted comma listing. Refuse before any child can consume its cursor.
-    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
-    const intervals = targets.map(factInterval);
+    options = { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens };
     const reads: KnowledgeRead[] = [];
-    // A comma list and an interval are the same read: every component contributes its lines in request
-    // order, repeats included. An interval contributes its facts as identities — one range query, no
-    // record read — so the first page costs the page, not the interval; only the components the reader
-    // named individually are resolved at query time, as they always were. What a deferred fact's line
-    // still reads from the database is its relations, and those are frozen for the whole remainder in
-    // one batched read the moment the query defers (22c's snapshot rule, the same one search meets).
-    if (targets.length > 1 || intervals.some(Boolean)) {
-      const items = targets.flatMap((target, index): TraceUnit[] => {
-        const range = intervals[index];
-        if (!range) {
-          const child = traceRead(target, { ...options, cap: Number.MAX_SAFE_INTEGER });
-          reads.push(...child.completed);
-          return [{ text: child.text }];
+    const items = store.transaction(() => {
+      const intervals = targets.map(factInterval);
+      // Freeze only values under the write lock. Renderers close over these values, not queries.
+      const named = (target: string): (() => string) => {
+        const s = /^S([1-9]\d*)$/.exec(target);
+        if (s) {
+          session(Number(s[1]));
+          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`));
+          return () => turns.map(render => listingLine(render())).join("\n");
         }
-        const ids = store.listFactIdsInRange(range.from, range.to);
-        return ids.length ? ids.map((fact) => ({ fact })) : [{ text: `${target}: no facts exist in this range` }];
-      });
-      const format = (units: readonly unknown[]) => (units as TraceUnit[])
-        .flatMap((unit) => ("fact" in unit ? factLine(unit.fact, unit.relations) : unit.text).split("\n"));
-      const capture = (deferred: readonly unknown[]): TraceUnit[] => {
-        const units = deferred as TraceUnit[];
-        const relations = store.listFactRelationsOf(units.flatMap((unit) => "fact" in unit ? [unit.fact] : []));
-        return units.map((unit) => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
+        let project = store.findProjectByName(target);
+        while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
+        if (project) {
+          const knowledge = store.listVisibleKnowledge(0, project.id).map(value => ({ value, marks: store.listKnowledgeMarks(value.knowledge.id) }));
+          const facts = store.listProjectFacts(project.id).map(fact => ({ fact, relations: store.listFactRelations(fact.id) }));
+          return () => [...knowledge.map(k => knowledgeLine(k.value, k.marks)),
+            ...facts.map(f => renderFact(f.fact, f.relations))].map(listingLine).join("\n");
+        }
+        return prepare(target, options, reads);
       };
-      return page({ items, format, capture }, options, "", reads);
-    }
-    const s = /^S([1-9]\d*)$/.exec(address);
-    if (s) { session(Number(s[1])); return page(store.listTurns(Number(s[1])).map((t) => listingLine(expand(`T${t.id}`))), options); }
-    let project = store.findProjectByName(address);
-    while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
-    if (project) return page([...store.listVisibleKnowledge(0, project.id).map((k) => knowledgeLine(k)),
-      ...store.listProjectFacts(project.id).map((f) => factLine(f.id))].map(listingLine), options);
-    const result = expand(address, options, reads);
-    return /^(K|F\d+\.\.)/.test(address) || options.cap !== undefined
-      ? page(result.split("\n"), options, "", reads) : { text: result, completed: reads };
+      // Intervals keep immutable fact bodies lazy; membership and mutable relations freeze now.
+      const units = targets.flatMap((target, index): TraceUnit[] => {
+        const range = intervals[index];
+        if (!range) return [{ render: named(target) }];
+        const ids = store.listFactIdsInRange(range.from, range.to);
+        return ids.length ? ids.map(fact => ({ fact, relations: [] }))
+          : [{ render: () => `${target}: no facts exist in this range` }];
+      });
+      const ids = units.flatMap(unit => "fact" in unit ? [unit.fact] : []);
+      const relations = ids.length ? store.listFactRelationsOf(ids) : new Map<number, FactRelation[]>();
+      return units.map(unit => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
+    });
+    const format = (units: readonly unknown[]) => (units as TraceUnit[])
+      .flatMap(unit => ("fact" in unit ? factLine(unit.fact, unit.relations) : unit.render()).split("\n"));
+    return page({ items, format }, options, "", reads);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
   // 22d: the usage is projected out of the stored response by the store; the request and response
@@ -512,8 +527,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if (options.cursor) {
-        // Shared trace cursors cannot turn a search continuation into an unbudgeted read.
-        return page([], { ...options, maxTokens: options.maxTokens === undefined ? cursors.get(options.cursor)?.maxTokens ?? DEFAULT_SEARCH_TOKENS : options.maxTokens }).text;
+        return page([], options, "", [], "search").text;
       }
       const addresses = store.searchAddresses(query, scope);
       // 22c: the path, the applicable set, the current tips and the commit ancestry are resolved once,
@@ -561,7 +575,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           .map(r => `\n  maintenance judgment: K${r.knowledgeId}@${r.id}; actor dreaming; run R${r.runId}; parent K${r.knowledgeId}@${r.parentId}; reason: ${r.reason}`).join("");
         return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}${retirement}`;
       }).map(listingLine);
-      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_SEARCH_TOKENS : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.").text;
+      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.", [], "search").text;
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

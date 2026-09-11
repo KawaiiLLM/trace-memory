@@ -313,9 +313,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   evidence without visibility restrictions; one `address` may carry a comma list
   (`F81,F90,F95`, kinds mixable, request order and repeats kept) and inclusive fact-id
   intervals (`F81-F90`, combinable as `F81-F90,F95`), while `cap` counts output lines.
-  Search additionally defaults to 2000 estimated tokens for the whole response via
-  `maxTokens`; cursors retain that budget, and oversized hits continue in lossless
-  fragments. Follow the receipts and continue with an empty query; see
+  Trace and search both default to 2,000 estimated tokens for the whole response;
+  search exposes `maxTokens`. Cursors retain that budget, and oversized content
+  continues in lossless fragments even with `full: true` (uncompressed Raw).
+  Follow the receipts; continue search with an empty query and trace with its cursor. See
   [the core search contract](core.md) for budget rejection and joining rules.
   `note({facts})` writes facts and `memory({operations, skipped})` writes
   knowledge; every knowledge operation carries its own `supports` evidence and a
@@ -1769,9 +1770,11 @@ sequence. One marker family states the count of omitted characters —
 `[... N characters truncated]`, and `[... N characters of details truncated]` for
 dropped structured data — and the honesty clause "the omitted middle was not inspected"
 is stated once in the Noter prompt instead of in every marker. `trace` with `full: true`
-is the same renderer with no budget: the same labels, the stored arguments and result
-text uncut, each native occurrence of a call as its own entry, and its read scope
-unrestricted whatever branch the reader is bound to (17a). A budget too
+uses the same renderer without content compression: the same labels, the stored
+arguments and result text uncut, each native occurrence of a call as its own entry,
+and its read scope unrestricted whatever branch the reader is bound to (17a).
+The outer trace paginator still applies the default 2,000 estimated-token budget
+and line cap, preserving the complete text through lossless cursor continuation. A budget too
 small for an entry's labels and markers reports a capacity error and leaves the
 entry pending (compaction delegates to the host's own over it).
 

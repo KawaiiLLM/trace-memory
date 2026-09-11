@@ -490,7 +490,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     for (const ordinal of view.omitted) omitted.add(ordinal);
   }
   const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
-    ...[...omitted].sort((a, b) => a - b).map((ordinal) => `expand: trace({"address":"T${turn.id}","tool":${ordinal},"full":true})`)] : [];
+    ...[...omitted].sort((a, b) => a - b).map((ordinal) => `expand: trace({"address":"T${turn.id}#t${ordinal}","full":true})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
