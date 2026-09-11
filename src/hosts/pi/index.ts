@@ -146,7 +146,7 @@ export default function (pi: ExtensionAPI) {
     // encrypted fields need no rule of ours. An unknown measure refuses nothing.
     const checkCapacity = !model ? undefined : (contextTokens: number | undefined) => {
       if (contextTokens !== undefined && contextTokens > model.contextWindow - CONTEXT_HEADROOM)
-        throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
+        throw new Error(`${PHASE_LABEL[input.kind]} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
     };
     // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the

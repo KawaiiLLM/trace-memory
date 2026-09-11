@@ -1,4 +1,5 @@
 import { expect, test, vi } from "vitest";
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,6 +20,23 @@ const terminal = async (h: ReturnType<typeof host>) => vi.waitFor(() => {
   const run = h.memory.store.listRuns(1).find(r => r.kind === "dreaming" && JSON.parse(r.response ?? "{}").check);
   expect(run).toBeTruthy(); return run!;
 }, { timeout: 5000 });
+
+test("Dreamer pre-request capacity failure names its own phase and retains its work", async () => {
+  const { h, store, item } = await seeded();
+  const measure = vi.spyOn(AgentSession.prototype, "getContextUsage").mockReturnValue({ tokens: 200_000, contextWindow: 200_000, percent: 100 });
+  try {
+    await h.turn(); await h.drain();
+    const runs = store.listRuns(1).filter(r => r.kind === "dreaming");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.outcome).toBe("failure");
+    expect(runs[0]!.response).toContain("Dreamer capacity: the child's context");
+    expect(runs[0]!.response).not.toContain("Consolidation capacity");
+    expect(h.requests).toEqual([]);
+    expect(store.isKnowledgeProcessed(item.commit)).toBe(false);
+    expect(store.getClaim(1, "dreaming")).toBeNull();
+    expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 1 }]);
+  } finally { measure.mockRestore(); await h.dispose(); }
+});
 
 test("32d native host: entry completion starts fresh Dreamer; no tool check still certifies", async () => {
   const { h, store, item } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
