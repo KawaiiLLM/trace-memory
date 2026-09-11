@@ -59,21 +59,21 @@ export function traceTargets(expression: string): string[] {
   for (let i = 0; i < expression.length; i++) {
     const c = expression[i];
     if (quoted) { if (escaped) escaped = false; else if (c === "\\") escaped = true; else if (c === '"') quoted = false; }
-    else if (c === '"') quoted = true;
+    else if (c === '"' && /^(?:(?:S\d+\/)?T\d+(?:#E\d+(?:\.\.E\d+)?)?|E\d+(?:\.\.E\d+)?)@$/.test(expression.slice(start, i).trim())) quoted = true;
     else if (c === ",") { pieces.push(expression.slice(start, i).trim()); start = i + 1; }
   }
   if (quoted) throw new Error("unterminated quoted tool call ID");
   pieces.push(expression.slice(start).trim());
   const targets: string[] = [];
   for (const piece of pieces) {
-    if (!piece) throw new Error("invalid empty trace target");
+    if (!piece) throw new Error("invalid trace address: empty target");
     if (/^E\d/.test(piece)) {
       const previous = targets.at(-1);
       if (!previous || !/^(?:S\d+\/)?T\d+#E/.test(previous) || previous.includes("@")) throw new Error("entry shorthand requires a preceding Turn entry selection; @ applies to the entire selection");
       targets[targets.length - 1] += `,${piece}`;
     } else targets.push(piece);
   }
-  for (const target of targets) if (/^(?:S\d+\/)?T\d/.test(target)) {
+  for (const target of targets) if (/^(?:S\d+\/)?T\d/.test(target) && !/^[A-Z]\d+-[A-Z]\d+$/.test(target)) {
     if (!parseTurnAddress(target)) throw new Error(`invalid trace address: ${target}`);
   }
   return targets;

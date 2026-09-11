@@ -6,7 +6,7 @@ import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
+import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, type NotingMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 
@@ -226,7 +226,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
     });
     const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
       model: input.model ?? "session", mode };
-    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history, initial);
+    const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history, initial, resultText);
     const capacity = input.capacity;
     // Gate 4 (ruling 2026-09-08), with ticket 20's "Capacity negotiation": the adapter reports its
     // available material budget before selection; core prices the domain text it prepared for this
@@ -277,7 +277,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
  * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
  * any one of them says. */
-function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, resultText: ResultExtractor = rawResultText) {
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -303,15 +303,15 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   // request a fork inherits stops before the reply it produced, so a withheld head entry is the one
   // body the view cannot be trusted for and the reply is restated (ruling 08:53's head reply, now
   // conditional). When the Raw block below carries that entry, its reply is already in it.
-  const headWithheld = entries.some(entry => entry.turnId === head.id && entry.role === "assistant"
+  const headWithheld = entries.filter(entry => entry.turnId === head.id && entry.role === "assistant"
     && initial.visible.raw.has(entry.nativeId));
   const material: NotingMaterial = {
     entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
-    head: headWithheld && head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
+    head: headWithheld.length ? headWithheld.map(entry => view(entry).content).filter(Boolean).join(BLOCK) : null,
     // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index
     // is what identifies the target entries exactly and maps them to addresses the child must find in
     // its own context. It covers the whole frozen range, not only what was supplied.
-    sources: withheld ? turns.map(({ turn, calls }) => renderSources(turn, calls)) : [],
+    sources: withheld ? entries.map(entry => renderEntryIndex(entry, config.render, resultText)) : [],
     facts: budgeted.facts,
     receipts,
   };

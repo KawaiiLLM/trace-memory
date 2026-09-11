@@ -1,7 +1,7 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
-import { entryAddress, fragmentAddress, sourceBlocks } from "../model/source.ts";
+import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
 import type { Selector } from "../model/address.ts";
 import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 
@@ -221,11 +221,6 @@ function halves(cut: Cut, kept: number): { head: string; tail: string; omitted: 
 /** Pi's line shape with our address as the label: the label, a colon, and the body on the same line,
  * continuing on the following lines as stored (`core/compaction/utils.js`'s `[User]: …`). */
 const bodyLine = (label: string, body: string) => body ? `${label}: ${body}` : `${label}:`;
-/** The natural-text part of an entry, and Noting's head reply, from one shape: `renderTurn` is gone
- * with 23c ruling 4, and the head reply is the same line every entry view emits. */
-export const renderText = (turnId: number, role: "user" | "assistant", text: string): string =>
-  bodyLine(`[T${turnId}#${role}]`, text);
-
 /** Natural text: the text as stored, cut head and tail in equal halves when it must yield. Text is
  * not exempt by rule, only by size (23). */
 const textFloor = (label: string, body: string) => body ? `${label}:\n${truncated(codePoints(body))}` : bodyLine(label, body);
@@ -373,7 +368,13 @@ export interface EntryView extends Rendered { omitted: number[] }
 function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice,
   selector?: Selector): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
   const sources: ReturnType<typeof sourceParts> = [];
-  for (const block of sourceBlocks(entry)) {
+  const blocks = sourceBlocks(entry);
+  if (blocks.length && blocks.every(block => block.kind === "thinking") && selector?.kind !== "thinking"
+    && !selector && choose(`T${entry.turnId}#assistant`) !== "drop") {
+    const label = `[${entryAddress(entry)}] assistant`, body = "[thinking omitted]";
+    sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body), floor: () => bodyLine(label, body), part: () => textPart(label, body) });
+  }
+  for (const block of blocks) {
     const tool = block.kind === "call" || block.kind === "result";
     if (block.kind === "thinking" && selector?.kind !== "thinking") continue;
     if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
@@ -389,11 +390,12 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
       sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),
         floor: () => textFloor(label, body), part: () => textPart(label, body) });
     } else {
-      const call = block.call, label = `[${address}]${role} ${call.name}`;
+      const call = block.call, label = `[${address}] ${call.name}`;
+      const result = () => selector?.kind === "text" ? { text: blockText(block) } : resultText(call.result ?? "");
       sources.push(block.kind === "result"
-        ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, resultText(call.result ?? "")),
-            floor: () => resultFloor(`${label} ${call.status}`, resultText(call.result ?? "")),
-            part: () => resultPart(`${label} ${call.status}`, resultText(call.result ?? "")) }
+        ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, result()),
+            floor: () => resultFloor(`${label} ${call.status}`, result()),
+            part: () => resultPart(`${label} ${call.status}`, result()) }
         : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
             floor: () => argumentsFloor(label, items(call.input ?? "")), part: () => argumentsPart(label, call.input ?? "") });
     }
@@ -497,14 +499,17 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
   };
   const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
-  const omitted = new Set<number>();
+  const omitted = new Set<string>();
   for (const entry of entries) {
     const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
     if (view.content) lines.push(view.content);
-    for (const ordinal of view.omitted) omitted.add(ordinal);
+    for (const ordinal of view.omitted) {
+      const call = entry.calls.find(call => call.ordinal === ordinal)!;
+      omitted.add(fragmentAddress(entry, { kind: entry.role === "toolResult" ? "result" : "call", call }));
+    }
   }
   const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
-    ...[...omitted].sort((a, b) => a - b).map((ordinal) => `expand: trace({"address":"T${turn.id}#t${ordinal}","full":true})`)] : [];
+    ...[...omitted].map(address => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
@@ -530,13 +535,10 @@ function object(text: string | null): Record<string, unknown> | null {
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
-export function renderSources(turn: Turn, calls: ToolCall[]): string {
-  const preview = (text: string | null) => [...(text ?? "").replace(/\s+/gu, " ")].slice(0, 60).join("");
-  return [
-    ...(turn.userPrompt === null ? [] : [`T${turn.id}#user ${preview(turn.userPrompt)}`]),
-    ...(turn.assistantText === null ? [] : [`T${turn.id}#assistant ${preview(turn.assistantText)}`]),
-    ...calls.map((call) => `T${turn.id}#t${call.ordinal} tool=${call.name} ${preview(call.input)}`),
-  ].join(" | ");
+/** An inherited-context index is framing, not another Raw body or evidence receipt. It uses the
+ * same parts and exact labels, sealed at their honest omission skeleton, without a second formatter. */
+export function renderEntryIndex(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText): string {
+  return renderEntry(entry, profile, resultText, () => "floor").content;
 }
 
 /** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
@@ -664,9 +666,9 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
 }
 
 export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }
-export function renderNegationWalk(steps: NegationStep[]): string {
+export function renderNegationWalk(steps: NegationStep[], cap = Infinity): string {
   return steps.flatMap(({ fact, relations, depth, terminal }) => [
-    ...renderFact(fact, relations).split("\n").map((line) => "  ".repeat(depth) + line),
+    ...renderFact(fact, relations, cap).split("\n").map((line) => "  ".repeat(depth) + line),
     ...(terminal ? ["  ".repeat(depth + 1) + "no later strong negation recorded"] : []),
   ]).join("\n");
 }
@@ -748,8 +750,8 @@ const factGroupHeader = (turnId: number, turns: FactTurns): string => {
  * Group by the owning Turn, not each citation: a multi-Turn fact appears once with all sources.
  * Each returned item is still one complete fact; the first in a group carries its heading so callers
  * can keep counting facts and charging the strings they actually send. No complete-Turn claim. */
-export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => string, turns: FactTurns): string[] {
-  const groups = new Map<number, Fact[]>();
+export function factGroupLayout<T extends Pick<Fact, "id" | "turnId">>(facts: readonly T[], turns: FactTurns): { fact: T; header: string }[] {
+  const groups = new Map<number, T[]>();
   for (const fact of facts) {
     const group = groups.get(fact.turnId);
     if (group) group.push(fact); else groups.set(fact.turnId, [fact]);
@@ -758,7 +760,10 @@ export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => s
   // Native times are ISO timestamps; legacy/unknown times stay explicit and sort last, by Turn id.
   ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
   return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
-    .map((fact, index) => `${index === 0 ? `${header}\n` : ""}${line(fact)}`));
+    .map((fact, index) => ({ fact, header: index === 0 ? `${header}\n` : "" })));
+}
+export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => string, turns: FactTurns): string[] {
+  return factGroupLayout(facts, turns).map(({ fact, header }) => header + line(fact));
 }
 
 /** Selection follows the caller's history priority, not display order. Charge each group heading

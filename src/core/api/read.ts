@@ -3,7 +3,7 @@ import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
-import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -87,7 +87,7 @@ interface FrozenHit { address: string; relations?: FactRelation[]; marks?: Knowl
 /** One component of a `trace` comma list, in request order: either an interval's immutable fact
  * identity with frozen relations, or a named component's renderer over frozen database values.
  * Both render only after the snapshot transaction exits. */
-type TraceUnit = { fact: number; relations: FactRelation[] } | { render: () => string };
+type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | { render: () => string };
 
 /** Parent 29 "Version-aware knowledge" (29b): one line per commit the reader's context already holds
  * that is not among the current applicable commits here — superseded, archived or merged away. The
@@ -304,6 +304,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const reads: KnowledgeRead[] = [];
+    const profile = readProfile(options, config.render);
     const items = store.transaction(() => {
       const intervals = targets.map(factInterval);
       // Freeze only values under the write lock. Renderers close over these values, not queries.
@@ -311,7 +312,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const s = /^S([1-9]\d*)$/.exec(target);
         if (s) {
           session(Number(s[1]));
-          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`));
+          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`, { ...options, profile }));
           return () => turns.map(render => listingLine(render())).join("\n");
         }
         let project = store.findProjectByName(target);
@@ -319,25 +320,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (project) {
           const knowledge = store.listVisibleKnowledge(0, project.id).map(value => ({ value, marks: store.listKnowledgeMarks(value.knowledge.id) }));
           const facts = store.listProjectFacts(project.id).map(fact => ({ fact, relations: store.listFactRelations(fact.id) }));
-          return () => [...knowledge.map(k => knowledgeLine(k.value, k.marks)),
-            ...facts.map(f => renderFact(f.fact, f.relations))].map(listingLine).join("\n");
+          const times = store.factTurnTimes(facts.map(f => f.fact)), relations = new Map(facts.map(f => [f.fact.id, f.relations]));
+          return () => [renderKnowledgeBlock(budgetKnowledge(knowledge.map(k => k.value), Infinity, value => {
+            const whole = knowledgeLine(value, knowledge.find(k => k.value.revision.id === value.revision.id)!.marks);
+            const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+            return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), profile.entryTokens);
+          }).groups), ...renderFactGroups(facts.map(f => f.fact), fact => renderFact(fact, relations.get(fact.id)!, profile.entryTokens), times)].filter(Boolean).join("\n");
         }
-        return prepare(target, options, reads);
+        return prepare(target, { ...options, profile }, reads);
       };
       // Intervals keep immutable fact bodies lazy; membership and mutable relations freeze now.
       const units = targets.flatMap((target, index): TraceUnit[] => {
         const range = intervals[index];
         if (!range) return [{ render: named(target) }];
-        const ids = store.listFactIdsInRange(range.from, range.to);
-        return ids.length ? ids.map(fact => ({ fact, relations: [] }))
+        const facts = store.factMetadataInRange(range.from, range.to);
+        const times = new Map(facts.map(fact => [fact.turnId, fact.time]));
+        return facts.length ? factGroupLayout(facts, times).map(({ fact, header }) => ({ fact: fact.id, header, relations: [] }))
           : [{ render: () => `${target}: no facts exist in this range` }];
       });
       const ids = units.flatMap(unit => "fact" in unit ? [unit.fact] : []);
       const relations = ids.length ? store.listFactRelationsOf(ids) : new Map<number, FactRelation[]>();
-      return units.map(unit => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
+      return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
-      .flatMap(unit => ("fact" in unit ? factLine(unit.fact, unit.relations) : unit.render()).split("\n"));
+      .flatMap(unit => ("fact" in unit ? (unit.header ?? "") + renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens) : unit.render()).split("\n"));
     return page({ items, format }, options, "", reads);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).

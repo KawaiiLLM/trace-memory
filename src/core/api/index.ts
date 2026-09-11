@@ -2,7 +2,7 @@ export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress } from "../model/address.ts";
-import { sourceBlocks, resultHasText } from "../model/source.ts";
+import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
 // 29a "One derived view": the pure visibility projection over a host's own retained context entries.
@@ -445,9 +445,9 @@ export interface TraceMemory {
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
   /** Ticket 23: the host's one result-text extractor, registered here (default: the stored string). */
-  resultText: ResultExtractor = rawResultText): TraceMemory {
+  resultText: ResultExtractor = rawResultText, normalizeSource?: SourceNormalizer): TraceMemory {
   const cfg = validateConfig(config);
-  const store = new Store(dbPath);
+  const store = new Store(dbPath, normalizeSource);
   const executorId = randomUUID();
   let stopping = false;
   const tasks = new Set<{ sessionId: number; controller: AbortController; force(): void; close(): void }>();
@@ -559,7 +559,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         steps.push({ fact, relations, depth, terminal: children.length === 0 });
         for (const child of children.reverse()) pending.push({ id: child.fromFact, depth: depth + 1 });
       }
-      return () => renderNegationWalk(steps);
+      return () => renderNegationWalk(steps, itemCap);
     }
     const factMatch = /^F([1-9]\d*)$/.exec(target ?? "");
     if (factMatch && !flags.length) {
@@ -584,7 +584,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const part = parsed.legacy;
     if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
     if ((parsed.entries || parsed.selector) && display.tool !== undefined) throw new Error("tool parameter conflicts with hierarchical selection; use an exact @toolCallId");
-    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !!parsed.entries };
+    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !!parsed.selector && parsed.selector.kind !== "role" || parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
@@ -619,16 +619,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const selector = parsed.selector;
     if (selector?.kind === "role") occurrences = occurrences.filter(entry => entry.role === selector.role);
     else if (selector && selector.kind !== "facts") {
-      const matches = (entry: SourceEntry) => sourceBlocks(entry).some(block => selector.kind === "call"
+      const matches = (entry: SourceEntry) => !!entry.blocks && sourceBlocks(entry).some(block => selector.kind === "call"
         ? (block.kind === "call" || block.kind === "result") && block.call.callId === selector.id
-        : selector.kind === "text" ? block.kind === "text" || block.kind === "result" && resultHasText(block.call.result)
+        : selector.kind === "text" ? block.kind === "text" || block.kind === "result" && resultHasText(entry)
         : block.kind === "thinking");
       if (parsed.entries && occurrences.some(entry => !matches(entry))) throw new Error(`content selector does not exist in every selected entry: ${address}`);
       occurrences = occurrences.filter(matches);
       if (!occurrences.length && selector.kind !== "text") throw new Error(`content selector does not exist: ${address}`);
     }
     const profile = readProfile(display, display.profile ?? cfg.render);
-    return () => finish(renderTrace(turn, occurrences, profile, options, resultText));
+    const uncompressed = Object.values(profile).every(cap => cap === Infinity);
+    return () => finish(renderTrace(turn, occurrences, profile, { ...options, full: uncompressed }, uncompressed ? rawResultText : resultText));
   };
 
   const read = readFacade(store, cfg, prepareTrace, resultText);

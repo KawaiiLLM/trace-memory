@@ -6,7 +6,8 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
-import { preciseSources, sourceBlocks } from "../model/source.ts";
+import { sourceAddresses, sourceBlocks, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
+export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
@@ -282,7 +283,7 @@ export interface SourceInput {
   raw: string;
   calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[];
 }
-export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number }
+export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number; blocks?: SourceBlock[] }
 
 export type Phase = "noting" | "consolidation" | "dreaming";
 export interface TaskTarget { sessionId: number; branch: string; headTurnId: number }
@@ -432,11 +433,6 @@ export interface PathSnapshot {
   consolidatedRuns: Map<number, boolean>;
 }
 
-/** The citable source addresses of one entry: `#user` or `#assistant` when it has text, `#t<n>` per tool call. */
-export const sourceAddresses = (entry: Pick<SourceEntry, "turnId" | "role" | "text"> & { calls: { ordinal: number }[] }): string[] => [
-  ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
-  ...entry.calls.map(c => `T${entry.turnId}#t${c.ordinal}`),
-];
 export interface KnowledgeFilter { scope?: KnowledgeScope; projectId?: number }
 
 export interface CommitConsolidationRunInput {
@@ -596,7 +592,9 @@ export class Store {
     return range;
   }
 
-  constructor(path: string) {
+  private readonly normalizeSource: SourceNormalizer | undefined;
+  constructor(path: string, normalizeSource?: SourceNormalizer) {
+    this.normalizeSource = normalizeSource;
     this.db = new DatabaseSync(path);
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
@@ -614,6 +612,21 @@ export class Store {
             UPDATE source_entries SET entry_ordinal = (SELECT ordinal FROM numbered WHERE numbered.id = source_entries.id);`);
         }
         this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_turn_ordinal ON source_entries(turn_id, entry_ordinal)");
+        // Derived membership metadata keeps path/coverage queries off large immutable Raw bodies.
+        // Both migration and new ingestion use the same block interpreter as write validation.
+        const columns = this.db.prepare("PRAGMA table_info(source_entries)").all();
+        if (!columns.some(r => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
+        const newAddresses = !columns.some(r => r.name === "addresses");
+        if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
+        if (newAddresses || normalizeSource) {
+          const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
+          for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
+            const input = JSON.parse(String(row.content));
+            const blocks = row.blocks == null ? normalizeSource?.(input) : JSON.parse(String(row.blocks));
+            const entry = { ...input, id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
+            update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : normalizeSource ? "null" : null, entry.id);
+          }
+        }
         if (!this.db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(r => r.name === "actor_role"))
           this.db.exec("ALTER TABLE knowledge_revisions ADD COLUMN actor_role TEXT CHECK(actor_role IS NULL OR actor_role = 'dreaming')");
       });
@@ -1017,6 +1030,10 @@ export class Store {
    * query over the rows that are there, never a walk of the numeric span: `F1-F1000000000` costs what
    * its existing facts cost, and an interval over a gap answers with an empty list rather than with a
    * missing-record diagnostic per integer. */
+  factMetadataInRange(from: number, to: number): { id: number; turnId: number; time: string }[] {
+    return this.db.prepare("SELECT f.id, f.turn_id AS turnId, t.started_at AS time FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id BETWEEN ? AND ? ORDER BY f.id").all(from, to) as { id: number; turnId: number; time: string }[];
+  }
+
   listTurnFacts(turnId: number): Fact[] {
     return this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact);
   }
@@ -1311,13 +1328,8 @@ export class Store {
    * whether there is text decide `#user`/`#assistant`, the call ordinals give `#t<n>`. */
   private addressesOf(turnId: number, ids: number[]): Set<string> {
     const addresses = new Set<string>();
-    for (const row of ids.length ? this.db.prepare(`SELECT json_extract(content, '$.role') AS role,
-        json_extract(content, '$.text') <> '' AS spoken,
-        (SELECT json_group_array(json_extract(value, '$.ordinal')) FROM json_each(content, '$.calls')) AS ordinals
-      FROM source_entries WHERE id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as { role: string; spoken: number; ordinals: string }[] : []) {
-      if (row.spoken) addresses.add(`T${turnId}#${row.role === "user" ? "user" : "assistant"}`);
-      for (const ordinal of JSON.parse(row.ordinals) as number[]) addresses.add(`T${turnId}#t${ordinal}`);
-    }
+    for (const row of ids.length ? this.db.prepare("SELECT addresses FROM source_entries WHERE turn_id = ? AND id IN (SELECT value FROM json_each(?))").all(turnId, JSON.stringify(ids)) : [])
+      for (const address of JSON.parse(String(row.addresses)) as string[]) addresses.add(address);
     return addresses;
   }
 
@@ -1344,9 +1356,7 @@ export class Store {
       bindings.get(id)!.add(Number(row.entry_id));
     }
     const sources = new Map<number, Map<string, Set<number>>>();
-    for (const row of this.db.prepare(`SELECT n.run_id, e.id, e.turn_id,
-        json_extract(content, '$.role') AS role, json_extract(content, '$.text') <> '' AS spoken,
-        (SELECT json_group_array(json_extract(value, '$.ordinal')) FROM json_each(content, '$.calls')) AS ordinals
+    for (const row of this.db.prepare(`SELECT n.run_id, e.id, e.addresses
       FROM noted_entries n JOIN runs r ON r.id = n.run_id
       JOIN source_entries e ON e.id = n.entry_id AND e.session_id = r.session_id
       WHERE r.kind = 'noting' AND r.outcome = 'success' AND r.id IN (SELECT value FROM json_each(?))`)
@@ -1354,8 +1364,7 @@ export class Store {
       const run = Number(row.run_id);
       if (!sources.has(run)) sources.set(run, new Map());
       const addresses = sources.get(run)!;
-      for (const address of sourceAddresses({ turnId: Number(row.turn_id), role: row.role as SourceEntry["role"],
-        text: row.spoken ? "source" : "", calls: (JSON.parse(String(row.ordinals)) as number[]).map(ordinal => ({ ordinal })) })) {
+      for (const address of JSON.parse(String(row.addresses)) as string[]) {
         if (!addresses.has(address)) addresses.set(address, new Set());
         addresses.get(address)!.add(Number(row.id));
       }
@@ -1902,21 +1911,25 @@ export class Store {
           this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
       const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
-        const { id: _, entryOrdinal: _ordinal, ...original } = known;
+        const { id: _, entryOrdinal: _ordinal, blocks: _blocks, ...original } = known;
         if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
         return known;
       }
-      if (!input.text && !input.calls.length && input.role !== "user" && !sourceBlocks({ ...input, id: 0, entryOrdinal: 0 }).length) throw new Error("empty source entry"); // an image-only user message still bounds a Turn
+      const blocks = this.normalizeSource?.(input);
+      if (!input.text && !input.calls.length && input.role !== "user" && !blocks?.length) throw new Error("empty source entry"); // an image-only user message still bounds a Turn
       const ordinal = Number(this.db.prepare("SELECT COALESCE(MAX(entry_ordinal), 0) + 1 AS n FROM source_entries WHERE turn_id = ?").get(input.turnId)!.n);
       if (!Number.isSafeInteger(ordinal)) throw new Error("Turn entry ordinal exhausted");
-      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input), ordinal);
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal, addresses, blocks) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input), ordinal,
+          JSON.stringify(sourceAddresses({ ...input, id: 0, entryOrdinal: ordinal, blocks })), blocks ? JSON.stringify(blocks) : this.normalizeSource ? "null" : null);
       return this.getSourceEntry(Number(result.lastInsertRowid))!;
     });
   }
   getSourceEntry(id: number): SourceEntry | null {
-    const row = this.db.prepare("SELECT id, content, entry_ordinal FROM source_entries WHERE id = ?").get(id) as { id: number; content: string; entry_ordinal: number } | undefined;
-    return row ? { ...JSON.parse(row.content), id: row.id, entryOrdinal: row.entry_ordinal } : null;
+    const row = this.db.prepare("SELECT id, content, entry_ordinal, blocks FROM source_entries WHERE id = ?").get(id) as { id: number; content: string; entry_ordinal: number; blocks: string | null } | undefined;
+    if (!row) return null;
+    const blocks = row.blocks === null ? undefined : JSON.parse(row.blocks) ?? undefined;
+    return { ...JSON.parse(row.content), id: row.id, entryOrdinal: row.entry_ordinal, ...(blocks ? { blocks } : {}) };
   }
   findSourceEntry(sessionId: number, nativeLineage: string, nativeId: string): SourceEntry | null {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId) as { id: number } | undefined;

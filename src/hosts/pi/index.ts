@@ -66,6 +66,8 @@ export function visibility(manager: VisibleSource) {
 // stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
 // runner; nothing in this adapter reads or duplicates Pi's runtime settings any more.
 
+import { piSourceBlocks } from "./source.ts";
+
 export default function (pi: ExtensionAPI) {
   const environment = process.env.TRACE_MEMORY_CONFIG;
   const agentDir = agentDirectory();
@@ -189,7 +191,7 @@ export default function (pi: ExtensionAPI) {
       },
       onRetryEnd: () => { activity.retrying = false; showSpend(callContext); },
     });
-  }, core, piResultText);
+  }, core, piResultText, piSourceBlocks);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
    * admission (the cache-miss latch, 29c's Raw availability), the launch, the native runner's own
    * gate, and (27b) a capacity refusal before sending or a provider overflow after a real attempt.

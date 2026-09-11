@@ -30,7 +30,10 @@ export function seedSourceEntry(memory: TraceMemory, turnId: number, role: Sourc
  * imports is covered by the Pi host tests and by direct store cases — never through this wrapper.
  * The substitution is here, named, rather than hidden behind a factory that looks like the real one. */
 export const sourceSeededMemory: typeof createMemory = (...args) => {
-  const memory = createMemory(...args);
+  const memory = createMemory(args[0], args[1], args[2], args[3], args[4] ?? (entry => [
+    ...(entry.text ? [{ kind: "text" as const, text: entry.text }] : entry.role === "user" ? [{ kind: "marker" as const, text: "[non-text content omitted]" }] : []),
+    ...entry.calls.map(call => ({ kind: entry.role === "toolResult" ? "result" as const : "call" as const, call })),
+  ]));
   const store = memory.store;
   const append = store.appendTurn.bind(store), tool = store.appendToolCall.bind(store), update = store.updateTurn.bind(store);
   const seed = (turnId: number, role: SourceEntry["role"], text: string, calls: SourceEntry["calls"] = []) =>
