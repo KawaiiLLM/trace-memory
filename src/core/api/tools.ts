@@ -140,6 +140,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     // occurrence outside the admitted path still invalidates an ambiguous frozen citation.
     const currentPath = store.sourcePath(session.id, context.branch, path.headTurnId!);
     const candidates = context.kind === "noting" ? initialPath.filter(entry => frozenIds.has(entry.id)) : currentPath;
+    const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
     const currentIds = new Set(currentPath.map(entry => entry.id));
     const authority = [...currentPath, ...candidates.filter(entry => !currentIds.has(entry.id))];
     const resolution = new Map<string, SourceResolution[]>();
@@ -179,8 +180,15 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         }
         if (first) {
           const entryIds = candidates.filter(entry => cited.some(hit => hit.entry.id === entry.id)).map(entry => entry.id);
-          const results = new Set(cited.flatMap(({ entry, blocks }) => blocks.flatMap(block => block.kind === "result" ? [`${entry.turnId}:${block.call.callId}`] : [])));
-          if (fact.status === "completed" && cited.some(({ entry, blocks }) => blocks.some(block => block.kind === "call" && !results.has(`${entry.turnId}:${block.call.callId}`))))
+          // Call IDs may be reused within a Turn. Match the stored invocation ordinal too,
+          // and compare admitted path positions, never E ordinals or citation order.
+          const results = new Map<string, number>();
+          for (const { entry, blocks } of cited) for (const block of blocks) if (block.kind === "result") {
+            const key = `${entry.turnId}:${block.call.ordinal}:${block.call.callId}`;
+            results.set(key, Math.max(results.get(key) ?? -1, positions.get(entry.id)!));
+          }
+          if (fact.status === "completed" && cited.some(({ entry, blocks }) => blocks.some(block => block.kind === "call"
+            && (results.get(`${entry.turnId}:${block.call.ordinal}:${block.call.callId}`) ?? -1) <= positions.get(entry.id)!)))
             errors.push("completed requires result evidence for each cited dispatch; cite the corresponding toolResult on this path, or use an explicit text source for a text deliverable or reported/dispatched status");
           commits.push({ ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt, entryIds });
         }

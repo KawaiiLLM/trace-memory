@@ -160,3 +160,41 @@ Evidence hashes (SHA-256):
 - `source-index.json`: `4adfa10dfd47f1248f7dcc400fc8970e515bd3bfea862079f7b820b9cedab5d1`
 
 Unverified boundaries remain real-provider extraction quality, billing/cache reuse, interactive user acceptance, other SDK/runtime versions and unsupported old schemas. Completion validation establishes structural result evidence, not that the result semantically proves every authored claim. The host's existing fork gate remains responsible for rejecting a captured-context mismatch. Main-branch integration, publishing, real installation and the independent cleanup branch are outside this work. Sol re-review is still pending.
+
+## Completion evidence follow-up
+
+This follow-up starts at `36b4a294c08524bb859cdfc85abe725b8f692336` and addresses only the remaining completion-association blocker. The earlier review records above remain historical; their Turn/call-ID matching rule was insufficient when one Turn reused a call ID.
+
+**Invocation and order.** The shared citation resolution now matches Turn, stored call ordinal and call ID, and requires the cited result to follow its dispatch in the admitted source path. Noter uses its initially frozen path order; manual writes use the current path. Neither immutable E numbers, authored citation order nor the caller's frozen-ID array order substitutes for path order. A position map reuses the already loaded candidates; each submission still reads the source path once. No new database query, session traversal, renderer or semantic classifier was introduced.
+
+**Completion is not success.** A matching failure result can establish that tests ran and failure was observed. Explicit text deliverables and reported/dispatched/attempted facts remain accepted. Unmatched dispatches reject the entire batch without facts, noted-entry settlement or a successful run; manual bounced-run audit records remain intact.
+
+Production changes relative to this follow-up's starting commit are **+11 / −3 lines, net +8**, in two files: `src/core/api/tools.ts` (+10/−2) and the one requested sentence in `src/core/prompts/noting.md` (+1/−1). The prompt now promises every frozen entry and addresses exposed by default bounded Raw, not every thinking block. The withdrawn head/thinking and optional consolidated-fact findings, E2k/C100/R100, visible-view semantics and all four closed items were left unchanged.
+
+### Ordered validation
+
+Runtime checks ran on Node 24.6.0, darwin/arm64, before this audit-only appendix was added. Evidence is retained under `.scratch/completion-repair/`:
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Pre-fix targeted reproduction | 13 expected failures, 33 passes | `targeted-red.log` |
+| Targeted regressions | 9 files, 130 tests passed; 46 new completion cases | `targeted-after.log` |
+| TypeScript | Passed | `typecheck.log` |
+| Full Vitest, one worker, cache disabled | 92 files, 1,388 tests passed | `full.log` |
+| Pi fake-provider smoke | Native Noting, Dreamer recovery and long-history checks passed | `pi-smoke.log` |
+| Isolated offline package smoke | 40 shipped files; tarball install, Pi load and native workers passed | `package-smoke.log` |
+| Serial performance | Both fixture sizes, three samples per scenario, isolated cache | `perf.log` |
+| Fixed drift and capacity | Only prompt cost changed; exact-capacity acceptance and one-below rejection passed | `unified-drift.json`, `source-index.json`, `drift-comparison.log` |
+| Diff checks | Working diff and both starting-commit/original-baseline comparisons passed | `diff-before-doc.log`, `final-diff.log` |
+
+The new tests cover reused call IDs with different ordinals, an ordinal mismatch even with a later result, results preceding dispatch despite larger E numbers, wrong call IDs, other Turns, siblings, uncited/missing results, matching success/failure, whole entries and exact fragments, manual/Noter parity, frozen membership and live reordering. Rejected mixed batches assert zero facts, zero noted entries and no successful run. Submission-level spies assert one source-path read.
+
+### Drift and retained evidence
+
+Compared with the preceding repair's retained measurements, all Raw/fact bytes, estimates, cumulative prefixes, trigger and batch boundaries, renderer examples, selected source-index members and increment bodies are unchanged. Prompt size moves from 14,920 bytes / 3,385 estimated tokens to 14,988 / 3,397 (+68 bytes / +12 tokens). Tool metadata remains 7,293 bytes / 1,743 tokens. Exact input floors rise only by those 12 prompt tokens: all-visible 5,643 → 5,655; mixed 8,970 → 8,982.
+
+The large performance fixture's 3,948-entry pending backlog still reads 88 sources for Noting eligibility (140.3 ms warm); 50 unchanged-leaf streaming updates read zero sources (0.7 ms warm). These are small synthetic samples, not production latency guarantees. `evidence-sha256.txt` records log hashes; drift JSON SHA-256 is `a3a718072672d88ea067d4ac28d0fff89010c9ee1a88e2b031e43758399f0a35`, and source-index JSON SHA-256 is `5709637a5f720c68f68e6d7e5b0401ff66a788adfc865738d5e7fb114d1c0e26`.
+
+All old logs remain. `targeted-before.log` also retains the first run's incorrect test assumption that fact-binding storage returns path order; the corrected test checks membership, without changing storage. The initial parent-directory search encountered unrelated OS read denials and did not pursue those locations. No approval refusal was bypassed.
+
+**Pending acceptance:** the main agent must arrange Sol's directed final review. Structural result matching does not prove the semantics of every authored claim. Real-provider quality, billing/cache reuse, interactive acceptance, other runtimes and unsupported old schemas remain unverified. No main/cleanup-worktree modification, real database/configuration/installation change, amend, merge or release was performed.
