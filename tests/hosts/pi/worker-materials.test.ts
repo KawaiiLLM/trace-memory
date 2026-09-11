@@ -31,14 +31,14 @@ const nthRun = async (f: Fixture, n: number) =>
     return runs.at(-1)!;
   }, { timeout: 5000 });
 
-/** One run writes F1; the next prompt injects and confirms its `<noted>` receipt (the fork admission
- * wait of ticket 25, kept); the third prompt is the task under test, whose history is already in the
- * foreground it would fork from. Returns the requests sent for that third prompt. */
+/** One run writes F1 without delivering it to the foreground. The next prompt advances the native
+ * conversation; the third prompt is the task under test. Its fork inherits Raw, but missing fact
+ * history must be supplied as worker material. Returns the requests sent for that third prompt. */
 async function thirdPrompt(f: Fixture, options: { capture?: boolean } = {}) {
   script(f);
   await f.turn("用 pnpm，不要 npm", options);
   await settled(f);
-  await f.turn("再来一次", options); // the delivery rides this prompt and is confirmed at its settle
+  await f.turn("再来一次", options); // No background-result delivery or receipt wait.
   const before = f.sent.length;
   await f.turn("第三次", options);
   const run = await nthRun(f, 2);
@@ -48,8 +48,8 @@ async function thirdPrompt(f: Fixture, options: { capture?: boolean } = {}) {
 /** 29b (cases 10 and 12), superseding 25a's "no history in a fork": the fork's material is built by
  * the same builder as a fresh child's, from the visible view this host really derived from its own
  * selected context. Every target entry is a retained conversation entry there, so no Raw body is
- * repeated; the earlier run's facts are NOT proven visible by anything structural — a `<noted>`
- * receipt is prose — so the missing applicable history is supplied inside its own allowance. */
+ * repeated; the earlier run's facts were never delivered to the foreground, so the missing
+ * applicable history is supplied inside its own allowance. */
 test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw and carries the missing history", async () => {
   const f = await fixture({ "noting.triggerTokens": 1 });
   try {
@@ -79,7 +79,7 @@ test("25a 2026-09-09: the same task in subagent mode carries full history and ti
     expect(String(child.messages[0].content)).toContain("Noting (fact extraction)");
     const body = text(child.messages.at(-1)!);
     expect(body).toContain("Recent facts (by Turn):");
-    expect(body).toContain("[F1]"); // the history the fork inherited instead
+    expect(body).toContain("[F1]"); // Both modes must supply this missing fact history.
     expect(body).toContain("Range: ");
     expect(body).toContain("Raw:");
     expect(body).not.toContain("<knowledge>"); // neither mode carries knowledge (25a)

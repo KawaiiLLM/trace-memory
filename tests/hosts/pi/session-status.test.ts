@@ -6,6 +6,9 @@ import { contextMap, pendingBar, statusBody } from "../../../src/hosts/pi/sessio
 import { host } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
+import * as api from "../../../src/core/api/index.ts";
+import * as composition from "../../../src/hosts/pi/context-composition.ts";
+import { nativeAncestry } from "../../perf/fixture.ts";
 
 vi.mock("@earendil-works/pi-tui", async importOriginal => {
   const actual = await importOriginal<typeof import("@earendil-works/pi-tui")>();
@@ -204,31 +207,71 @@ test("headless shares composition while retaining verbose explanations and comma
   expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
 });
 
-test.each([false, true])("enrollment notices reuse Current session without core prose (allocated=%s)", async allocated => {
+test.each([false, true])("enrollment notices share only lightweight session wording (allocated=%s)", async allocated => {
+  const coreStatus = vi.fn(() => { throw new Error("Pi must use its own status wording"); });
+  const measurements = vi.fn();
+  const create = api.TraceMemory;
+  vi.spyOn(api, "TraceMemory").mockImplementation((...args) => {
+    const memory = create(...args), pending = memory.pendingTokens;
+    memory.status = coreStatus;
+    memory.pendingTokens = (...params) => { measurements(...params); return pending(...params); };
+    return memory;
+  });
   const h = setup();
   if (allocated) {
     await h.turn();
     h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
   } else await h.emit("session_start");
-  const coreStatus = vi.spyOn(h.memory, "status").mockImplementation(() => { throw new Error("Pi must use its own status body"); });
+  const census = vi.spyOn(composition, "contextComposition");
   const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
   for (const value of ["off", "on"]) {
+    measurements.mockClear(); census.mockClear();
     await command(value);
     const notice = h.notices.at(-1)!;
+    expect(measurements).not.toHaveBeenCalled(); expect(census).not.toHaveBeenCalled();
+    expect(notice).not.toMatch(/Pending.*trigger|Pi rebuilt text estimate|Memory ~/);
     await command("");
     const body = h.notices.at(-1)!.slice("Current session\n".length).split("\n/trace (menu;")[0]!;
-    expect(notice).toBe(`${body}\n${value === "on"
+    expect(measurements.mock.calls.map(([phase]) => phase)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect(census).toHaveBeenCalledTimes(1);
+    for (const line of notice.split("\n").slice(0, -1)) expect(body.split("\n")).toContain(line);
+    expect(notice).toContain(value === "on"
       ? "Available history, including the paused interval, is queued; ordinary completions check thresholds."
-      : "Processing and future injection are paused. Stored memory and already-injected text remain."}`);
+      : "Processing and future injection are paused. Stored memory and already-injected text remain.");
     expect(notice).toContain(`Enrollment: ${value === "on" ? "Enabled" : "Disabled"} (explicit choice)`);
     expect(notice).toContain(allocated ? "Session: S1" : "Session: None (no assistant reply)");
     if (allocated) expect(notice).toContain("Fork: suppressed since 2026-09-11");
-    else expect(notice).toContain("(no session)");
+    else expect(notice).toContain("Cost: N/A (no session)");
   }
   expect(coreStatus).not.toHaveBeenCalled();
   expect(h.memory.store.listTurns(1)).toHaveLength(allocated ? 1 : 0);
   expect(h.memory.store.getSession(allocated ? 2 : 1)).toBeNull();
   expect(h.requests).toEqual([]);
+});
+
+test("long-history toggles retain reconciliation but never add a full status scan or worker admission", async () => {
+  const h = setup(); h.setHeaderTimestamp("2000-01-01T00:00:00Z");
+  await h.emit("session_start");
+  const ancestry = nativeAncestry({ entries: 2000 });
+  h.entries.push(...ancestry); h.allEntries.push(...ancestry);
+  const census = vi.spyOn(composition, "contextComposition");
+  const views = vi.spyOn(rendering, "renderEntry");
+  const reads = vi.spyOn(Store.prototype, "getSourceEntry");
+  const grants = vi.spyOn(h.ctx.modelRegistry, "getApiKeyAndHeaders");
+  const claims = vi.spyOn(Store.prototype, "acquireClaim");
+  const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
+  await command("on");
+  for (const value of ["on", "off", "off", "on"]) {
+    reads.mockClear();
+    await command(value);
+    // Re-enabling still reconciles every native identity; the notice must add no Raw reads.
+    expect(reads).toHaveBeenCalledTimes(value === "on" ? ancestry.length : 0);
+    expect(h.memory.store.enabled(1)).toBe(value === "on");
+  }
+  expect(census).not.toHaveBeenCalled(); expect(views).not.toHaveBeenCalled();
+  expect(grants).not.toHaveBeenCalled(); expect(claims).not.toHaveBeenCalled();
+  expect(h.requests).toEqual([]); expect(h.memory.store.listRuns(1)).toEqual([]);
+  expect(h.memory.store.listSourceEntries(1)).toHaveLength(ancestry.length);
 });
 
 test("headless and UI read the same composition once per opening without writes or grants", async () => {

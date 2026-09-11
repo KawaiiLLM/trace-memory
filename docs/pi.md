@@ -551,6 +551,9 @@ stays under **Runs**; automatic-off reasons and fork recovery remain in the pane
 Headless bare `/trace` uses the same read-only composition snapshot and classification as
 the UI, retaining its verbose enrollment, pending/trigger, shared-identity and recovery
 explanations and command forms. Both paths read once per opening, never per render.
+On/off notifications share only the lightweight identity, enrollment, project, cost and recovery
+wording. They do not rebuild context composition or measure pending tokens; enabling still imports
+available native history through the existing reconciliation path without starting a worker.
 
 #### Global preferences
 

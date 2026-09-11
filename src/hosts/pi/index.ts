@@ -1348,7 +1348,9 @@ export default function (pi: ExtensionAPI) {
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
     showSpend(ctx);
-    ctx.ui.notify(`${sessionStatus(false)(Math.max(1, (process.stdout.columns ?? 100) - 2))}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
+    const { lines, recovery, cost, shared } = sessionSummary();
+    const notice = statusBody([...recovery, ...lines, cost, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
+    ctx.ui.notify(`${notice}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
   // ---- 24b: the command surface ----
   // Amendment 1 (user ruling 2026-09-09): seven documented forms, no hidden aliases. `enable`,
@@ -1493,11 +1495,9 @@ export default function (pi: ExtensionAPI) {
     if (index < 0) return;
     await editPreference(preferences[index]!);
   };
-  // Only opened on demand. No reconciliation, compact allocation, tool grants or worker admission.
-  const sessionStatus = (compact = false): SessionBody => {
-    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
-    const composition = contextComposition(ctx, pi);
-    const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [], recovery: string[] = [];
+  // Shared wording only: enrollment confirmations must not census context or render pending material.
+  const sessionSummary = (compact = false) => {
+    const lines: string[] = [], recovery: string[] = [];
     const e = enrollment();
     lines.push(compact ? `${state.sessionId ? `S${state.sessionId}` : "Session: No session"} | ${enabled() ? "On" : "Off"}(${e.choice === null ? "default" : "explicit"})`
       : `Session: ${state.sessionId ? `S${state.sessionId}` : "None (no assistant reply)"}`);
@@ -1508,26 +1508,36 @@ export default function (pi: ExtensionAPI) {
       if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
         recovery.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
-    const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
     let cost: string;
     try { cost = `Cost: ${state.sessionId ? `$${memory.spend(state.sessionId).cost.toFixed(4)}` : "N/A (no session)"}`; }
     catch { cost = "Cost: Unknown (unavailable)"; }
     if (compact) lines[0] += ` | ${cost.replace(/^Cost: /, "")}`;
-    lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
-    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
-      const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
-      lines.push(paint => pendingBar(label, pending, compact, paint));
-    }
-    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", cost);
     const downgrade = suppressed();
     if (downgrade) recovery.push(`Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu`);
     if (lastCompaction) recovery.push(`Compaction: ${lastCompaction}`);
     const catchupStatus = catchupLine();
     if (catchupStatus) recovery.push(catchupStatus);
-    if (compact) { if (state.shared) lines.push("Shared identity"); }
-    else lines.push(state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
-      : "Forks or clones carrying this memory identity share this switch.");
-    return (width, paint) => statusBody([...recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
+    const shared = compact ? (state.shared ? ["Shared identity"] : [])
+      : [state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
+        : "Forks or clones carrying this memory identity share this switch."];
+    return { lines, recovery, cost, shared };
+  };
+  // Full measurements only on explicit panel/headless status opening, never on toggle confirmation.
+  // No reconciliation, compact allocation, tool grants or worker admission.
+  const sessionStatus = (compact = false): SessionBody => {
+    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
+    const composition = contextComposition(ctx, pi);
+    const summary = sessionSummary(compact);
+    const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [...summary.lines];
+    const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
+    lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
+    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
+      const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
+      lines.push(paint => pendingBar(label, pending, compact, paint));
+    }
+    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost);
+    lines.push(...summary.shared);
+    return (width, paint) => statusBody([...summary.recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
   };
   // ---- 24b: the menu ----
   const sessionMenu = async () => {
