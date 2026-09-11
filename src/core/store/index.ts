@@ -182,16 +182,7 @@ CREATE TABLE IF NOT EXISTS knowledge_marks (
   FOREIGN KEY (knowledge_id, commit_id) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
--- 29d: retired. Automatic foreground receipt delivery is gone; nothing writes or reads this table
--- any more. It is created and left as it is so a published Beta database opens unchanged, and its
--- timestamps are never interpreted as visibility (parent 29, "Retire automatic foreground receipt
--- delivery": historical tables may remain, the new version does not drain or interpret them).
-CREATE TABLE IF NOT EXISTS pending_deliveries (
-  run_id INTEGER NOT NULL REFERENCES runs(id),
-  session_id INTEGER NOT NULL REFERENCES sessions(id),
-  branch TEXT,
-  delivered_at TEXT
-);
+-- Legacy pending_deliveries tables are left untouched, not created or used as visibility evidence.
 
 CREATE TABLE IF NOT EXISTS source_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

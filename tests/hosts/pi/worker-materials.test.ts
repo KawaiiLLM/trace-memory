@@ -64,8 +64,8 @@ test("29b 2026-09-10: the Noter fork's captured request repeats no visible Raw a
     expect(increment).not.toContain("Raw:"); // the target entries are visible in the inherited context
     expect(increment).toContain("Recent facts (by Turn):");
     expect(increment).toContain("[F1]"); // the history the child cannot prove it holds
-    // 29d: nothing is delivered into the foreground any more; the table stays for Beta databases, unread.
-    expect(f.h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+    // Worker completion creates neither foreground delivery nor a legacy queue table.
+    expect(f.h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.id)).toEqual([1]);
   } finally { await f.dispose(); }
 });

@@ -271,12 +271,10 @@ export interface RunAgentResult {
   audit?: { available: false; reason: string };
   verification?: unknown;
   fallbackReason?: string;
-  /** 27c (parent 27 "Per-task fork fallback"): the host would not run this frozen task in the mode it
-   * was admitted for — a fork its launch, its gate or the provider's context limit refused — and it
-   * admits the task once more itself, on the model that will run it. Nothing was committed and no run
-   * is recorded for this attempt: the value is opaque to core, which returns it to the caller with
-   * `outcome: "dropped"` so what the attempt produced is charged to the run the re-admission makes,
-   * and one task keeps one run record. */
+  /** The host refused this frozen task's admitted mode and may re-admit it as a fresh child.
+   * With no business commit, core returns this opaque value with `outcome: "dropped"`.
+   * A refusal that sent a request records its own failed run and spend; one that sent nothing
+   * records no run. Re-admission shares the logical execution, never the attempt's spend. */
   refused?: unknown;
   /** Absolute path of the host's native worker log for this run, when the host writes one (19a). */
   nativeLog?: string;

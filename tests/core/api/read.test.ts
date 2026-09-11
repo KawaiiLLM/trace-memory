@@ -427,7 +427,7 @@ test("29d: a noting commit records its facts and leaves no delivery intent behin
   const first = noting(s.id, t.id, "first fact", "main");
   noting(s.id, t.id, "second fact", "other");
   expect(memory.inject(s.id)).not.toContain("noted");
-  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   expect(JSON.parse(memory.store.getRun(first.runId)!.response!).factIds).toEqual([first.facts[0]!.id]);
 });
 

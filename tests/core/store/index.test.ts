@@ -46,13 +46,13 @@ describe("schema", () => {
       "knowledge_links",
       "runs",
       "knowledge_marks",
-      "pending_deliveries",
       "source_entries", "source_paths", "noted_entries",
       "idx_knowledge_project",
       "idx_runs_session",
     ]) {
       expect(names).toContain(expected);
     }
+    expect(names).not.toContain("pending_deliveries");
     again.close();
   });
 });

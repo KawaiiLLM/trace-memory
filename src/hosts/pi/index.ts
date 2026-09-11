@@ -1335,19 +1335,6 @@ export default function (pi: ExtensionAPI) {
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
-  const status = () => {
-    const e = enrollment();
-    // 24a: with an identity, the counts are the footer's own, for this selected branch and head.
-    // Without one there is nothing to count — that is stated, not shown as a row of zeros, and it is
-    // a different condition from an allocated session whose imported history happens to be empty.
-    const base = state.sessionId ? memory.status(state.sessionId, state.branch, state.head ?? null)
-      : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no memory identity allocated, so no session id and no counts (this is not a claim that no native history exists).`;
-    // 19c: the automatic downgrade is session state a user can act on, so status shows it and names
-    // its one reset. The run that detected it keeps its own fork mode in the run record.
-    const downgrade = suppressed();
-    const fork = downgrade ? `Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu` : undefined;
-    return [base, fork, lastCompaction && `Compaction: ${lastCompaction}`, catchupLine()].filter(Boolean).join("\n");
-  };
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
@@ -1361,7 +1348,7 @@ export default function (pi: ExtensionAPI) {
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
     showSpend(ctx);
-    ctx.ui.notify(`${status()}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
+    ctx.ui.notify(`${sessionStatus(false)(Math.max(1, (process.stdout.columns ?? 100) - 2))}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
   // ---- 24b: the command surface ----
   // Amendment 1 (user ruling 2026-09-09): seven documented forms, no hidden aliases. `enable`,

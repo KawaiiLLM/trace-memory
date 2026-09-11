@@ -146,7 +146,7 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs 
     expect(h.memory.spend(t.sessionId).input).toBeGreaterThan(0); expect(h.memory.spend(1).input).toBe(0);
     // 29d: the borrowed target's facts and commits stay attributed to it and are delivered to no
     // conversation at all -- neither this executor's nor the target's own.
-    expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+    expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
     expect((await h.prompt("after borrowed work"))?.message?.content ?? "").not.toContain("<noted>");
   } finally { await h.dispose(); }
 });

@@ -1665,7 +1665,7 @@ test("26 amendment 5 (26a) 2026-09-09: a Noter completes a batch only by calling
   submit = true;
   expect(await memory.noting(target)).toMatchObject({ outcome: "success", facts: [] });
   expect(memory.store.sourcePath(s.id, "main", t.id).every(e => memory.store.entryNoted(e.id))).toBe(true);
-  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 /** 26 amendment 2 (26c design §1, defect D3): one shared prefix and two children — a fact on the

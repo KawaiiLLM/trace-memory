@@ -379,10 +379,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return { topics: [...groups.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(topic => ({ topic, commits: groups.get(topic)! })), unclassified };
     },
-    // Knowledge is injected once per visible baseline (ruling: "constraints first", grilling Q15);
-    // 29d retired the per-prompt delivery that used to ride beside it, so this is the only automatic
-    // material the foreground receives — later background results reach it through a compaction or an
-    // explicit read, never because a worker finished.
+    // The host uses this knowledge selection for the initial baseline and explicit one-shot
+    // supplements. Worker completion alone never delivers material into the foreground.
     injection,
     inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
     // One allocator: required exact versions/facts/Raw first, fixed bases plus shared required-only
@@ -606,7 +604,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         // here is not proof that every available native message has been processed.
         `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note, ${counts.unconsolidated} of ${counts.facts} applicable ${counts.facts === 1 ? "fact" : "facts"} to consolidate; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
-        `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
+        `Knowledge: ${counts.knowledge} visible active`,
         ...(["noting", "consolidation", "dreaming"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");
     },
   };

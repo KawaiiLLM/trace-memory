@@ -133,13 +133,8 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
   expect(h.memory.store.listRuns(1).every(r => r.outcome !== "success")).toBe(true);
 });
 
-// 25b: Consolidation has no mode to vary any more, so the rule is exercised over the one worker mode
-// that is still configurable. 29d supersedes the delivery half of the 18a ruling this test pinned
-// ("enabled delivery ignores the Noter mode and disable preserves unseen deliveries"): there is no
-// delivery to ignore a mode or to preserve across a disable. What the ruling was protecting -- that
-// disabling stops automatic material without losing committed work, and that enabling restores the
-// automatic material that is left -- is retargeted onto the initial knowledge block, which is that
-// material now.
+// Across both Noter modes, disabling stops automatic material without losing committed work.
+// Re-enabling supplies the remaining knowledge through the one-shot supplement, not a delivery queue.
 test.each([true, false])("29d: automatic material ignores the Noter mode (%s); disable stops it and preserves committed work", async (noting) => {
   const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
@@ -152,7 +147,7 @@ test.each([true, false])("29d: automatic material ignores the Noter mode (%s); d
   expect((await h.prompt("no receipts"))?.message?.content ?? "").not.toContain("<noted>");
   await h.answer(); await h.emit("agent_settled"); await h.answer("consolidation opportunity"); await h.drain();
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1);
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   await command(h, "off");
   expect(await h.prompt("unseen")).toBeUndefined(); await h.answer(); await h.emit("agent_settled");
   expect(h.memory.store.listVisibleKnowledge(0, 1).some(k => k.revision.text === "Retained shared knowledge")).toBe(true);

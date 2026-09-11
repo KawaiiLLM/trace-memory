@@ -204,6 +204,33 @@ test("headless shares composition while retaining verbose explanations and comma
   expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
 });
 
+test.each([false, true])("enrollment notices reuse Current session without core prose (allocated=%s)", async allocated => {
+  const h = setup();
+  if (allocated) {
+    await h.turn();
+    h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
+  } else await h.emit("session_start");
+  const coreStatus = vi.spyOn(h.memory, "status").mockImplementation(() => { throw new Error("Pi must use its own status body"); });
+  const command = (args: string) => h.commands.get("trace").handler(args, h.ctx);
+  for (const value of ["off", "on"]) {
+    await command(value);
+    const notice = h.notices.at(-1)!;
+    await command("");
+    const body = h.notices.at(-1)!.slice("Current session\n".length).split("\n/trace (menu;")[0]!;
+    expect(notice).toBe(`${body}\n${value === "on"
+      ? "Available history, including the paused interval, is queued; ordinary completions check thresholds."
+      : "Processing and future injection are paused. Stored memory and already-injected text remain."}`);
+    expect(notice).toContain(`Enrollment: ${value === "on" ? "Enabled" : "Disabled"} (explicit choice)`);
+    expect(notice).toContain(allocated ? "Session: S1" : "Session: None (no assistant reply)");
+    if (allocated) expect(notice).toContain("Fork: suppressed since 2026-09-11");
+    else expect(notice).toContain("(no session)");
+  }
+  expect(coreStatus).not.toHaveBeenCalled();
+  expect(h.memory.store.listTurns(1)).toHaveLength(allocated ? 1 : 0);
+  expect(h.memory.store.getSession(allocated ? 2 : 1)).toBeNull();
+  expect(h.requests).toEqual([]);
+});
+
 test("headless and UI read the same composition once per opening without writes or grants", async () => {
   const h = setup(); await h.turn();
   h.ctx.getSystemPrompt = () => "x".repeat(408);

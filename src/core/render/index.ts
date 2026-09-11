@@ -653,11 +653,10 @@ const EXPAND_LIMIT = 8;
 export const expandList = (addresses: string[]): string => addresses.length <= EXPAND_LIMIT ? addresses.join(", ")
   : `${addresses.slice(0, EXPAND_LIMIT).join(", ")} and ${addresses.length - EXPAND_LIMIT} more up to ${addresses.at(-1)}`;
 
-/** The knowledge block within its hard cap (ticket 20 "Knowledge hard cap", confirmed 2026-09-08).
- * Category priority and the deterministic within-category order are unchanged; the exemption that let
- * constraints, open items and disputes exceed the budget is gone. Items are retained whole, in that
- * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
- * omitted item is named, never rewritten to fit, and remains stored and traceable. */
+/** Whole knowledge items within the caller's cap, including category tags and emitted receipts.
+ * Required exact versions cannot be omitted. Optional items follow relevance, then category/time/id;
+ * compaction may omit their receipts too rather than spend required overflow on optional framing.
+ * No item is rewritten to fit, and omitted items remain stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
   budget = "render.knowledgeBlockTokens", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number) {
@@ -688,11 +687,10 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     + (emittedReceipts(kept).length ? charge(["Receipts:"]) : 0); // the heading `finish` adds is emitted too
   let kept = 0;
   while (kept < optional.length && cost(kept + 1) <= cap) kept++;
-  // Omitting one more item can lengthen a receipt: recheck the prefix the loop stopped on. The floor
-  // is the receipt itself, which is never dropped to fit — nothing else would say the item exists.
+  // Omitting another item can lengthen a receipt: recheck the selected optional prefix.
+  // Without a required set, the receipt itself is the floor and cannot be dropped to fit.
   while (kept > 0 && cost(kept) > cap) kept--;
-  // A hard cap is hard for its receipt too (review 2026-09-08): when even the bounded receipt of the
-  // omitted items does not fit, that is a capacity problem to report, not oversized material to emit.
+  // Required bodies and emitted receipts must fit too; report capacity rather than emit oversize.
   if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds ${budget} (${cap})`);
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
     text: selected(kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
