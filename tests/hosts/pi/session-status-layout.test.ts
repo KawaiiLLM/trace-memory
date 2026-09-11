@@ -130,6 +130,68 @@ test("injected remapped keys and legacy j/k navigation are honored", () => {
   expect(selected).toEqual(["Runs"]); panel.handleInput("\x18"); expect(selected).toEqual(["Runs", undefined]);
 });
 
+// Legacy Ctrl+J is the same byte as LF; CSI u also represents Ctrl+J unambiguously.
+const oldConfirmKeys = ["\r", "\n", "\x1b[106;5u"];
+
+test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding rejects old keys for Off and Retry fork", ({ binding }) => {
+  const kb = new KeybindingsManager({ "tui.select.confirm": binding });
+  for (const action of ["Off", "Retry fork"]) {
+    const done = vi.fn();
+    const panel = new SessionPanel(overview, [action], () => 24, { fg: (_color, text) => text }, kb, done, () => {});
+    panel.render(40);
+    for (const key of oldConfirmKeys) {
+      expect(kb.matches(key, "tui.select.confirm")).toBe(false);
+      panel.handleInput(key);
+      expect(done).not.toHaveBeenCalled();
+    }
+    panel.handleInput("\x19");
+    expect(done.mock.calls).toEqual(binding === "ctrl+y" ? [[action]] : []);
+    panel.handleInput("\x1b");
+    expect(done.mock.calls.at(-1)).toEqual([undefined]);
+  }
+});
+
+test("default confirmation follows Pi manager for legacy CR/LF and encoded Ctrl+J", () => {
+  const kb = new KeybindingsManager();
+  for (const [key, confirms] of [["\r", true], ["\n", true], ["\x1b[106;5u", false]] as const) {
+    const done = vi.fn();
+    let height = 3;
+    const panel = new SessionPanel(overview, ["Off"], () => height, { fg: (_color, text) => text }, kb, done, () => {});
+    panel.render(40);
+    expect(kb.matches(key, "tui.select.confirm")).toBe(confirms);
+    panel.handleInput(key);
+    expect(done.mock.calls).toEqual(confirms ? [["Off"]] : []);
+    done.mockClear(); height = 1; // Guard must apply before the next resize render.
+    panel.handleInput(key); expect(done).not.toHaveBeenCalled();
+    panel.handleInput("\x1b"); expect(done.mock.calls).toEqual([[undefined]]);
+  }
+});
+
+test.each([{ binding: "ctrl+y" }, { binding: [] }])("Retry fork has no side effect from old confirmation keys with override $binding", async ({ binding }) => {
+  const h = host();
+  try {
+    await h.turn(); h.ctx.mode = "tui"; h.ctx.hasUI = true;
+    h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
+    const before = h.memory.store.forkSuppression(1);
+    const s = screenHarness(40, 24); h.ctx.ui.custom = s.ctx.ui.custom;
+    s.kb.setUserBindings({ "tui.select.confirm": binding });
+    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    for (let i = 0; i < 4; i++) s.key("j");
+    expect(s.frame().some(line => line.trim() === "→ Retry fork")).toBe(true);
+    for (const key of oldConfirmKeys) {
+      s.key(key); await new Promise(resolve => setImmediate(resolve));
+      expect(h.memory.store.forkSuppression(1)).toEqual(before);
+    }
+    s.key("\x1b[6~"); s.frame(); s.key("\x1b[5~");
+    expect(s.frame().some(line => line.trim() === "→ Retry fork")).toBe(true);
+    s.key("\x19"); await new Promise(resolve => setImmediate(resolve));
+    expect(h.memory.store.forkSuppression(1)).toEqual(binding === "ctrl+y" ? null : before);
+    s.key("\x1b"); await command;
+    expect(h.requests).toEqual([]);
+  } finally { await h.dispose(); }
+});
+
 test("actual TUI command opens custom panel, reflow never scans, and Escape writes nothing", async () => {
   const h = host();
   try {

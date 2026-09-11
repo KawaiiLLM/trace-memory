@@ -45,7 +45,7 @@ export class SessionPanel implements Component {
     if (this.height() < 3) return; // Even before a resize redraw, do not accept hidden actions.
     if (is("tui.select.up") || data === "k") this.selected = Math.max(0, this.selected - 1);
     else if (is("tui.select.down") || data === "j") this.selected = Math.min(this.actions.length - 1, this.selected + 1);
-    else if (is("tui.select.confirm") || data === "\n") { this.done(this.actions[this.selected]); return; }
+    else if (is("tui.select.confirm")) { this.done(this.actions[this.selected]); return; }
     else if (is("tui.select.pageUp")) this.offset = Math.max(0, this.offset - this.pageSize);
     else if (is("tui.select.pageDown")) this.offset = Math.min(this.maxOffset, this.offset + this.pageSize);
     this.list.setSelectedIndex(this.selected);
