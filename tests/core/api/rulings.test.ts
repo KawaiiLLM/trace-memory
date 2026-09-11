@@ -1028,7 +1028,7 @@ test("28: three windows, one envelope — required material first, refills into 
   const text = compacted(full), windows = charged(full);
   expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  expect(text).not.toContain("CONSOLIDATED HISTORY"); // final Raw fully covers optional history
+  expect(text).toContain("CONSOLIDATED HISTORY"); // manual write has no frozen source set to prove completeness
   for (const marker of ["PENDING FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
   // The Noter's envelope is not compact's: moving it changes not one byte here.
   memory.config.render.episodicBlockTokens = 40;
@@ -1728,7 +1728,7 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   compactionWindows(Math.max(1, measured.knowledge), total - measured.knowledge - measured.required.raw, measured.required.raw);
   const squeezed = compacted(memory.compact(s.id, "C", selected.id));
   expect(squeezed).not.toContain(`[F${onPath}]`); expect(squeezed).not.toContain(`[F${shared}]`);
-  expect(squeezed).not.toContain("older facts; expand:"); // final Raw covers both before budgeting
+  expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`); // manual bindings remain eligible
   defaultWindows();
 
   // --- the Noter's freeze: the same list in the same order, from one snapshot. The write-tool

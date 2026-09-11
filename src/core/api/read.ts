@@ -373,7 +373,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // One allocator: required exact versions/facts/Raw first, fixed bases plus shared required-only
     // overflow, then processed knowledge and Raw-first historical refill in each own base remainder.
     // No worker, processing mark or coverage persistence is performed by this synchronous render.
-    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedNativeIds: readonly string[] | VisibleView = []): CompactResult => {
+    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedView: readonly string[] | VisibleView = []): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
@@ -384,8 +384,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
       const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
       const requiredCommits = new Set(knowledge.filter(k => !store.isKnowledgeProcessed(k.revision.id)).map(k => k.revision.id));
-      const visible = Array.isArray(retainedNativeIds) ? noVisibility() : retainedNativeIds as VisibleView;
-      const retained = new Set(Array.isArray(retainedNativeIds) ? retainedNativeIds : visible.raw.keys());
+      const visible = Array.isArray(retainedView) ? noVisibility() : retainedView as VisibleView;
+      const retained = new Set(Array.isArray(retainedView) ? retainedView : visible.raw.keys());
       // Archives remain real immediately, but unprocessed retirement must retain its accounting.
       // Reuse the applicable graph (including archives), never the active-only knowledge list.
       const archives = store.commitGraph(path, undefined, snapshot).current.filter(r => r.op === "archive" && !store.isKnowledgeProcessed(r.id));
@@ -451,7 +451,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       }
       const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id),
         ...pendingIds, ...refilledRaw.map(s => s.entry.id)]);
-      consolidated = consolidated.filter(f => !store.factCoveredByRaw(f, coverage));
+      const coveredFacts = store.factsCoveredByRaw(consolidated, coverage);
+      consolidated = consolidated.filter(f => !coveredFacts.has(f.id));
       const spare = Math.max(0, caps.facts - requiredFacts);
       // Refill (a): whole facts, freshness order, into the spare, charged to the facts window and the
       // envelope. The receipt for what is left out is charged with them; when even that receipt does

@@ -7,12 +7,12 @@ const open = () => sourceSeededMemory(":memory:", async () => { throw new Error(
 let memory: ReturnType<typeof open>;
 beforeEach(() => { memory = open(); });
 afterEach(() => memory.close());
-function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, consolidated = true) {
+function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, consolidated = true, noted = false) {
   const p = memory.store.createProject({ name: "project", declaredBy: "marker" });
   const s = memory.store.createSession({ enrollmentChoice: true, host: "fake", startedAt: time, firstReplyAt: time, projectId: p.id });
   const t = memory.store.appendTurn({ sessionId: s.id, userPrompt: "word ".repeat(extra.raw) + "source", assistantText: null, kind: "turn", startedAt: time });
   const entries = memory.store.sourcePath(s.id, "main", t.id);
-  const f = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time }, entryIds: [],
+  const f = memory.store.commitNotingRun({ run: { sessionId: s.id, branch: "main", kind: "noting", createdAt: time }, entryIds: noted ? entries.map(e => e.id) : [],
     facts: [{ turnId: t.id, text: "word ".repeat(extra.facts) + "required fact", category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time }] });
   if (!f.ok) throw new Error(JSON.stringify(f));
   const k = memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, consolidated: consolidated ? [f.facts[0]!.id] : [],
@@ -52,9 +52,9 @@ test("32e shared allowance equality and independent optional base remainders inc
 });
 
 test("32e final Raw coverage filters optional facts only; retained bounded views count and unknown bindings stay", () => {
-  const { s, t, f, entries } = fixture();
+  const { s, t, f, entries } = fixture(undefined, true, true);
   const first = memory.compact(s.id, "main", t.id);
-  expect("native" in first ? [] : first.supplied.factIds).not.toContain(f.id); // pending Raw covers consolidated fact
+  expect("native" in first ? [] : first.supplied.factIds).not.toContain(f.id); // extracted Raw covers the completely bound consolidated fact
   memory.store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ?").run(f.id);
   expect(compacted(memory.compact(s.id, "main", t.id))).toContain("required fact");
   memory.store.db.prepare("INSERT INTO fact_sources VALUES (?, ?)").run(f.id, entries[0]!.id);
@@ -171,8 +171,8 @@ test("32e old pending hole remains required; partial and incomplete optional bin
 });
 
 test("32e coverage filtering precedes fact prefix budgeting and retained fact IDs deduplicate", () => {
-  const { s, t, entries } = fixture();
-  const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: [],
+  const { s, t, entries } = fixture(undefined, true, true);
+  const history = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: s.id, branch: "main", createdAt: time }, entryIds: entries.map(e => e.id),
     facts: [
       { turnId: t.id, text: "older unknown binding", category: "observation", actor: "user", source: [`T${t.id}#user`], createdAt: time },
       { turnId: t.id, text: "newest covered " + "word ".repeat(3_000), category: "observation", actor: "user", source: [`T${t.id}#user`], entryIds: entries.map(e => e.id), createdAt: time },

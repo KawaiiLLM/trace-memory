@@ -402,9 +402,9 @@ export interface TraceMemory {
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
    * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
-   * `retainedNativeIds` (or its VisibleView) describes actual retained context, which Raw refill must
-   * not supply a second time (28a item 5); a host that keeps none passes none. */
-  compact(sessionId: number, branch?: string, headTurnId?: number, retainedNativeIds?: readonly string[] | VisibleView): CompactResult;
+   * `retainedView` describes actually retained Raw/fact/knowledge identities; legacy native-ID arrays
+   * remain accepted for Raw-only callers. A host that keeps none passes none. */
+  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;

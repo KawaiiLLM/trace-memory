@@ -1068,9 +1068,9 @@ export default function (pi: ExtensionAPI) {
   // 28a item 5 reads the retained set off exactly this value, so the two can never disagree — with
   // nothing kept, refill (b) excludes nothing but the pending entries it already excludes.
   const KEPT_AFTER_CUSTOM_COMPACTION = "";
-  /** The native ids the post-compaction context retains: the ordinary conversation entries from
-   * `first` onwards in Pi's own compaction-aware view (28a item 5, so nothing is supplied twice). */
-  const retainedNativeIds = (context: ExtensionContext, first: string): VisibleView => {
+  /** Raw, fact and knowledge identities actually retained from `first` onwards in Pi's
+   * compaction-aware context, including recognized identity-bound carriers. */
+  const retainedView = (context: ExtensionContext, first: string): VisibleView => {
     if (!first) return visibleView([], binding());
     const entries = context.sessionManager.buildContextEntries() as ContextEntry[];
     const at = entries.findIndex(entry => entry.id === first);
@@ -1174,7 +1174,7 @@ export default function (pi: ExtensionAPI) {
     const allocate = (): ReturnType<typeof memory.compact> => {
       try {
         if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed during recovery" };
-        if (state.sessionId) return memory.compact(state.sessionId, state.branch, state.head, retainedNativeIds(context, KEPT_AFTER_CUSTOM_COMPACTION));
+        if (state.sessionId) return memory.compact(state.sessionId, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
       } catch (error) { return { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
