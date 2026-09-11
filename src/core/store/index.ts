@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
+import { preciseSources, sourceBlocks } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
@@ -281,7 +282,7 @@ export interface SourceInput {
   raw: string;
   calls: { ordinal: number; name: string; callId: string; input?: string; result?: string; status: string }[];
 }
-export interface SourceEntry extends SourceInput { id: number }
+export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number }
 
 export type Phase = "noting" | "consolidation" | "dreaming";
 export interface TaskTarget { sessionId: number; branch: string; headTurnId: number }
@@ -605,6 +606,14 @@ export class Store {
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db);
       this.transaction(() => {
+        // Allocate once in original insertion order, across every branch of each Turn. Raw and
+        // historic citation strings remain untouched. Recheck under the immediate write lock.
+        if (!this.db.prepare("PRAGMA table_info(source_entries)").all().some(r => r.name === "entry_ordinal")) {
+          this.db.exec(`ALTER TABLE source_entries ADD COLUMN entry_ordinal INTEGER CHECK(entry_ordinal > 0);
+            WITH numbered AS (SELECT id, row_number() OVER (PARTITION BY turn_id ORDER BY id) AS ordinal FROM source_entries)
+            UPDATE source_entries SET entry_ordinal = (SELECT ordinal FROM numbered WHERE numbered.id = source_entries.id);`);
+        }
+        this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_source_turn_ordinal ON source_entries(turn_id, entry_ordinal)");
         if (!this.db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(r => r.name === "actor_role"))
           this.db.exec("ALTER TABLE knowledge_revisions ADD COLUMN actor_role TEXT CHECK(actor_role IS NULL OR actor_role = 'dreaming')");
       });
@@ -1008,6 +1017,10 @@ export class Store {
    * query over the rows that are there, never a walk of the numeric span: `F1-F1000000000` costs what
    * its existing facts cost, and an interval over a gap answers with an empty list rather than with a
    * missing-record diagnostic per integer. */
+  listTurnFacts(turnId: number): Fact[] {
+    return this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact);
+  }
+
   listFactIdsInRange(from: number, to: number): number[] {
     return (this.db.prepare("SELECT id FROM facts WHERE id BETWEEN ? AND ? ORDER BY id").all(from, to) as { id: number }[]).map(row => row.id);
   }
@@ -1882,26 +1895,28 @@ export class Store {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
       if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
-          !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || !c.name || !c.callId || !c.status ||
+          !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || typeof c.status !== "string" || !c.status ||
             (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
-          new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
+          new Set(input.calls.map(c => c.callId)).size !== input.calls.length || new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
       if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||
           this.getTurn(input.turnId)?.sessionId !== input.sessionId || this.getTurn(input.turnId)?.kind !== "turn") throw new Error("invalid source entry identity or owning turn");
       const known = this.findSourceEntry(input.sessionId, input.nativeLineage, input.nativeId);
       if (known) {
-        const { id: _, ...original } = known;
+        const { id: _, entryOrdinal: _ordinal, ...original } = known;
         if (JSON.stringify(original) !== JSON.stringify(input)) throw new Error("native source entry changed after persistence");
         return known;
       }
-      if (!input.text && !input.calls.length && input.role !== "user") throw new Error("empty source entry"); // an image-only user message still bounds a Turn
-      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content) VALUES (?, ?, ?, ?, ?)")
-        .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input));
+      if (!input.text && !input.calls.length && input.role !== "user" && !sourceBlocks({ ...input, id: 0, entryOrdinal: 0 }).length) throw new Error("empty source entry"); // an image-only user message still bounds a Turn
+      const ordinal = Number(this.db.prepare("SELECT COALESCE(MAX(entry_ordinal), 0) + 1 AS n FROM source_entries WHERE turn_id = ?").get(input.turnId)!.n);
+      if (!Number.isSafeInteger(ordinal)) throw new Error("Turn entry ordinal exhausted");
+      const result = this.db.prepare("INSERT INTO source_entries (session_id, native_lineage, native_id, turn_id, content, entry_ordinal) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(input.sessionId, input.nativeLineage, input.nativeId, input.turnId, JSON.stringify(input), ordinal);
       return this.getSourceEntry(Number(result.lastInsertRowid))!;
     });
   }
   getSourceEntry(id: number): SourceEntry | null {
-    const row = this.db.prepare("SELECT id, content FROM source_entries WHERE id = ?").get(id) as { id: number; content: string } | undefined;
-    return row ? { ...JSON.parse(row.content), id: row.id } : null;
+    const row = this.db.prepare("SELECT id, content, entry_ordinal FROM source_entries WHERE id = ?").get(id) as { id: number; content: string; entry_ordinal: number } | undefined;
+    return row ? { ...JSON.parse(row.content), id: row.id, entryOrdinal: row.entry_ordinal } : null;
   }
   findSourceEntry(sessionId: number, nativeLineage: string, nativeId: string): SourceEntry | null {
     const row = this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND native_lineage = ? AND native_id = ?").get(sessionId, nativeLineage, nativeId) as { id: number } | undefined;
