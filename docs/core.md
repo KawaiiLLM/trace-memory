@@ -617,7 +617,7 @@ turns. (29d: the `<noted>` block that used to follow knowledge on every prompt i
 `pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
 writes, reads, drains or migrates it, and its timestamps are never read as visibility.)
 
-`compact(sessionId, branch = "main", headTurnId?, retainedNativeIds = [])` renders one frozen read
+`compact(sessionId, branch = "main", headTurnId?, retainedView = [])` renders one frozen read
 snapshot of the path and returns one of two outcomes, not a string (ticket 20c, one view since 30,
 three windows since 28a):
 
@@ -647,8 +647,10 @@ material cannot use overflow. Required 25k/8k/6k leaves optional capacities 0/2k
 
 **Raw-first refill.** Select newest already-extracted Raw as whole bounded E/C/R views, excluding
 exact pending entries and originals or recognized bounded carriers actually retained after compact.
-The optional `retainedNativeIds` argument also accepts the existing `VisibleView` for retained fact
-and knowledge identities. The discarded summary establishes no retained coverage. Display selected
+The optional `retainedView` argument has type `readonly string[] | VisibleView`: legacy native-ID
+arrays describe retained Raw only; the existing `VisibleView` describes actually retained Raw,
+fact and knowledge identities, including recognized carrier identities. Its position and default
+empty array are unchanged. The discarded summary establishes no retained coverage. Display selected
 Raw in source order.
 
 Then filter already-consolidated facts before budget selection: exclude only facts whose nonempty,
