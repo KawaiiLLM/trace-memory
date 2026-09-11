@@ -50,8 +50,11 @@ test.each(cases.flatMap(value => (["stop", "off", "shutdown"] as const).map(canc
   "$phase $route preflight cannot continue after $cancel", async ({ phase, route, cancel }) => {
     const { h, start } = await pending(phase);
     try {
-      let cancelled: Promise<unknown> | undefined;
+      let cancelled: Promise<unknown> | undefined, cancelling = false;
       const cancelNow = () => {
+        // Inject one user action. Its status notice may read context usage synchronously too.
+        if (cancelling) return;
+        cancelling = true;
         cancelled = cancel === "shutdown" ? h.emit("session_shutdown") : h.commands.get("trace")!.handler(cancel, h.ctx);
       };
       h.ctx.getContextUsage = () => {
@@ -61,6 +64,7 @@ test.each(cases.flatMap(value => (["stop", "off", "shutdown"] as const).map(canc
       const ending = start(() => cancel === "shutdown" && cancelled !== undefined);
       if (route === "capacity") cancelNow(); // after freeze rejection, before its catch/reroute microtask
       await ending; await cancelled; await h.drain();
+      expect(cancelled).toBeDefined();
       expect(h.requests).toHaveLength(0);
       expect(h.notices.filter(notice => notice.includes("fell back to subagent mode"))).toEqual([]);
     } finally { await h.dispose(); }

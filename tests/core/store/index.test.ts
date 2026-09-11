@@ -46,13 +46,13 @@ describe("schema", () => {
       "knowledge_links",
       "runs",
       "knowledge_marks",
-      "pending_deliveries",
       "source_entries", "source_paths", "noted_entries",
       "idx_knowledge_project",
       "idx_runs_session",
     ]) {
       expect(names).toContain(expected);
     }
+    expect(names).not.toContain("pending_deliveries");
     again.close();
   });
 });
@@ -402,8 +402,8 @@ describe("marks", () => {
   });
 
   // 29d supersedes "queues and clears a pending delivery bound to a branch": the queue and both of its
-  // operations are retired. The table itself is still created for published Beta databases, which the
-  // schema test above pins by name, and 29d's own test opens such a database read-only.
+  // operations are retired. The schema test above pins its absence in new databases; the legacy
+  // compatibility test verifies that reopening preserves an existing table's schema and rows unchanged.
 });
 
 describe("commit boundaries (ticket 01 review repairs)", () => {

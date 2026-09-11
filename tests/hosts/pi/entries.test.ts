@@ -381,7 +381,7 @@ test("review 2026-09-08 P2: the branch carry reads every pending entry, keeps th
     expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(23);
     const carry = h.memory.branchSummary(1, "main", 1);
     expect(carry).toContain("LAST_PENDING_SENTINEL");
-    expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries beyond the carry budget truncated/);
+    expect(carry).toMatch(/\[\.\.\. \d+ earlier pending entries omitted from the carry budget/);
     // 30: the same backlog is over compaction's envelope and there is no tighter rendering left to
     // fall back on, so compact delegates to the host instead of dropping an entry to fit; the carry's
     // own receipt above is what states an omission here.

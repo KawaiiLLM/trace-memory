@@ -148,7 +148,7 @@ export default function (pi: ExtensionAPI) {
     // encrypted fields need no rule of ours. An unknown measure refuses nothing.
     const checkCapacity = !model ? undefined : (contextTokens: number | undefined) => {
       if (contextTokens !== undefined && contextTokens > model.contextWindow - CONTEXT_HEADROOM)
-        throw new Error(`${input.kind === "noting" ? "Noting" : "Consolidation"} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
+        throw new Error(`${PHASE_LABEL[input.kind]} capacity: the child's context of ${contextTokens} tokens leaves less than the ${CONTEXT_HEADROOM}-token headroom in the ${model.contextWindow}-token window of ${model.provider}/${model.id}`);
     };
     // 24a review (2026-09-09): a worker's tool execution is the boundary at which its bound writer
     // commits (`note`, `memory`), so the footer is re-read after each one — the counts then show the
@@ -893,6 +893,20 @@ export default function (pi: ExtensionAPI) {
     if (!checkpoint) return "the parent session has no persisted leaf entry";
     return checkpointReadiness(parentFile, checkpoint);
   };
+  /** Track cleanup, not admission or result policy. Callers reserve the slot before starting work
+   * and choose whether `slot.result` exposes the raw attempt, a swallowed rejection or this settled
+   * promise. Shutdown waits for cleanup; only an explicit catchup may chain on release. */
+  const trackSlot = <T,>(kind: WorkerPhase, slot: Slot, work: Promise<T>, context: ExtensionContext, released: () => void): Promise<T> => {
+    const settled = work.finally(() => {
+      slots.delete(kind); pending.delete(settled); activity.running.delete(kind);
+      released();
+    });
+    slot.done = settled;
+    pending.add(settled);
+    // Consume cleanup failures even when the initiating caller does not await this task.
+    void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+    return settled;
+  };
   const checkQueues = () => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
@@ -938,15 +952,10 @@ export default function (pi: ExtensionAPI) {
       };
       const promise = work();
       slot.result = promise;
-      pending.add(promise); activity.running.set(kind, 1); showSpend(context);
-      // The handled promise includes cleanup; no detached rejecting finally chain survives disposal.
-      const settled = promise.then(result => reportProblems(result, context), error => {
+      activity.running.set(kind, 1); showSpend(context);
+      trackSlot(kind, slot, promise.then(result => reportProblems(result, context), error => {
         activity.last = "error"; context.ui.notify(String(error), "error");
-      }).finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
-        if (catchup) driveCatchup(); }); // 18b: a slot release is one of the two events that may resume a waiting catchup.
-      slot.done = settled;
-      pending.delete(promise); pending.add(settled);
-      void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+      }), context, () => { showSpend(context); if (catchup) driveCatchup(); });
     }
     if (catchup) driveCatchup(); // 18b: an ordinary eligible-entry opportunity is the other resumption event.
   };
@@ -993,9 +1002,8 @@ export default function (pi: ExtensionAPI) {
     const slot: Slot = { target: own, boundary };
     slots.set(phase, slot); activity.running.set(phase, 1); showSpend(context);
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
-    pending.add(promise);
     let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
-    const settled = promise.then(result => {
+    const handled = promise.then(result => {
       if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
         for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
       reportProblems(result, context);
@@ -1008,16 +1016,14 @@ export default function (pi: ExtensionAPI) {
         c.outcome = outcome === "cancelled" ? "stopped" : "failed";
         c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
       }
-    }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); })
-      .finally(() => { slots.delete(phase); c.runningPhase = undefined; pending.delete(settled); activity.running.delete(phase); showSpend(context);
-        // The explicit drain exception: only this active catchup schedules its own next batch. A batch
-        // that ended in Waiting is resumed by a slot release or the next ordinary opportunity, never by
-        // this line: re-driving a wait immediately is a loop without a wait (review 2026-09-08).
-        if (!waited) driveCatchup(); });
+    }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
     slot.result = promise.catch(() => undefined);
-    slot.done = settled;
-    pending.delete(promise); pending.add(settled);
-    void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+    trackSlot(phase, slot, handled, context, () => {
+      c.runningPhase = undefined; showSpend(context);
+      // Only this explicit drain chains. A dropped attempt waits for a later opportunity;
+      // immediately re-driving it would loop without a wait.
+      if (!waited) driveCatchup();
+    });
   };
   const startCatchup = () => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
@@ -1146,18 +1152,14 @@ export default function (pi: ExtensionAPI) {
     context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : kind === "dreaming" ? "knowledge" : "facts"}.`, "info");
     const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
       { borrowed: false, automatic: false, boundary, signal });
-    pending.add(promise);
-    const settled = promise.then(result => {
+    const settled = trackSlot(kind, slot, promise.then(result => {
       reportProblems(result, context);
       if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
       return result;
     },
-      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; })
-      .finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
-        if (catchup) driveCatchup(); }); // 18b: this slot release is a resumption event like any other
+      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; }),
+      context, () => { showSpend(context); if (catchup) driveCatchup(); });
     slot.result = settled;
-    slot.done = settled;
-    pending.delete(promise); pending.add(settled);
     const result = await settled;
     return { used: !!result && "runId" in result, result };
   };
@@ -1335,19 +1337,6 @@ export default function (pi: ExtensionAPI) {
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
-  const status = () => {
-    const e = enrollment();
-    // 24a: with an identity, the counts are the footer's own, for this selected branch and head.
-    // Without one there is nothing to count — that is stated, not shown as a row of zeros, and it is
-    // a different condition from an allocated session whose imported history happens to be empty.
-    const base = state.sessionId ? memory.status(state.sessionId, state.branch, state.head ?? null)
-      : `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})\nTrace Memory: no assistant reply; no memory identity allocated, so no session id and no counts (this is not a claim that no native history exists).`;
-    // 19c: the automatic downgrade is session state a user can act on, so status shows it and names
-    // its one reset. The run that detected it keeps its own fork mode in the run record.
-    const downgrade = suppressed();
-    const fork = downgrade ? `Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu` : undefined;
-    return [base, fork, lastCompaction && `Compaction: ${lastCompaction}`, catchupLine()].filter(Boolean).join("\n");
-  };
   const toggle = (value: boolean) => {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
@@ -1361,7 +1350,9 @@ export default function (pi: ExtensionAPI) {
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
     showSpend(ctx);
-    ctx.ui.notify(`${status()}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
+    const { lines, recovery, cost, shared } = sessionSummary();
+    const notice = statusBody([...recovery, ...lines, cost, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
+    ctx.ui.notify(`${notice}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
   // ---- 24b: the command surface ----
   // Amendment 1 (user ruling 2026-09-09): seven documented forms, no hidden aliases. `enable`,
@@ -1506,11 +1497,9 @@ export default function (pi: ExtensionAPI) {
     if (index < 0) return;
     await editPreference(preferences[index]!);
   };
-  // Only opened on demand. No reconciliation, compact allocation, tool grants or worker admission.
-  const sessionStatus = (compact = false): SessionBody => {
-    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
-    const composition = contextComposition(ctx, pi);
-    const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [], recovery: string[] = [];
+  // Shared wording only: enrollment confirmations must not census context or render pending material.
+  const sessionSummary = (compact = false) => {
+    const lines: string[] = [], recovery: string[] = [];
     const e = enrollment();
     lines.push(compact ? `${state.sessionId ? `S${state.sessionId}` : "Session: No session"} | ${enabled() ? "On" : "Off"}(${e.choice === null ? "default" : "explicit"})`
       : `Session: ${state.sessionId ? `S${state.sessionId}` : "None (no assistant reply)"}`);
@@ -1521,26 +1510,36 @@ export default function (pi: ExtensionAPI) {
       if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
         recovery.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
-    const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
     let cost: string;
     try { cost = `Cost: ${state.sessionId ? `$${memory.spend(state.sessionId).cost.toFixed(4)}` : "N/A (no session)"}`; }
     catch { cost = "Cost: Unknown (unavailable)"; }
     if (compact) lines[0] += ` | ${cost.replace(/^Cost: /, "")}`;
-    lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
-    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
-      const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
-      lines.push(paint => pendingBar(label, pending, compact, paint));
-    }
-    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", cost);
     const downgrade = suppressed();
     if (downgrade) recovery.push(`Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu`);
     if (lastCompaction) recovery.push(`Compaction: ${lastCompaction}`);
     const catchupStatus = catchupLine();
     if (catchupStatus) recovery.push(catchupStatus);
-    if (compact) { if (state.shared) lines.push("Shared identity"); }
-    else lines.push(state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
-      : "Forks or clones carrying this memory identity share this switch.");
-    return (width, paint) => statusBody([...recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
+    const shared = compact ? (state.shared ? ["Shared identity"] : [])
+      : [state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
+        : "Forks or clones carrying this memory identity share this switch."];
+    return { lines, recovery, cost, shared };
+  };
+  // Full measurements only on explicit panel/headless status opening, never on toggle confirmation.
+  // No reconciliation, compact allocation, tool grants or worker admission.
+  const sessionStatus = (compact = false): SessionBody => {
+    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
+    const composition = contextComposition(ctx, pi);
+    const summary = sessionSummary(compact);
+    const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [...summary.lines];
+    const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
+    lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
+    for (const phase of ["noting", "consolidation", "dreaming"] as const) {
+      const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
+      lines.push(paint => pendingBar(label, pending, compact, paint));
+    }
+    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost);
+    lines.push(...summary.shared);
+    return (width, paint) => statusBody([...summary.recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
   };
   // ---- 24b: the menu ----
   const sessionMenu = async () => {

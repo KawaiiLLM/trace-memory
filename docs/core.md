@@ -719,8 +719,9 @@ so a re-enable with nothing new to say says nothing.
 Successful noting commits record `factIds` in the
 existing response envelope; this identifies a run's own facts even when runs overlap in their source
 turns. (29d: the `<noted>` block that used to follow knowledge on every prompt is gone. The
-`pending_deliveries` table is still created so a published Beta database opens unchanged, but nothing
-writes, reads, drains or migrates it, and its timestamps are never read as visibility.)
+`pending_deliveries` table is not created in new databases. Existing legacy tables retain their
+schema and rows unchanged; nothing writes, reads, drains or migrates them, and their timestamps
+are never read as visibility.)
 
 `compact(sessionId, branch = "main", headTurnId?, retainedView = [])` renders one frozen read
 snapshot of the path and returns one of two outcomes, not a string (ticket 20c, one view since 30,
@@ -902,6 +903,11 @@ inherits material bound to the same memory session. The carrier format itself is
 block with the fixed other-branch reminder, facts whose raw evidence lies on the
 leaving path, commits selected by that evidence, and shared pending entry views.
 As in every block, tags delimit and content lines remain byte-identical. There is no fact budget.
+The optional Raw sub-block keeps the newest whole suffix within `render.episodicBlockTokens`,
+including its title, separators and omission receipt. An oversized newest entry may leave no Raw
+body; an envelope too small even for the title and required omission receipt raises a capacity
+error. Omission neither processes entries nor supplies coverage identities. This is not compact's
+required Raw window, which must preserve every pending view or delegate to native compaction.
 The host passes the block immediately as Pi's summary, launching
 neither phase and awaiting no Noting; unprocessed entries remain Raw views. Injected messages
 are never raw sources for new facts.
