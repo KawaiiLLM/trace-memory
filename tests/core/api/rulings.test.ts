@@ -648,7 +648,13 @@ test("search previews and cursor fragments never refresh a knowledge write base"
   expect(count).toBeGreaterThan(1);
   expect(edit().results[0]).toContain("current: K1@2");
   expect(edit("K1@2").results[0]).toContain("knowledge was not read");
-  other.tools[0]!.execute({ address: "K1" });
+  page = other.tools[0]!.execute({ address: "K1" });
+  for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
+    expect(tokens(page)).toBeLessThanOrEqual(2000);
+    expect(edit("K1@2").results[0]).toContain("knowledge was not read");
+    page = other.tools[0]!.execute({ address: `cursor=${cursor}` });
+  }
+  expect(tokens(page)).toBeLessThanOrEqual(2000);
   expect(edit("K1@2").committed[0].commit).toBe(3);
 });
 

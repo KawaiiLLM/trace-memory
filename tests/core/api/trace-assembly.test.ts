@@ -10,6 +10,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, renderEntry, renderEntryWhole, type ConfigOverride } from "../../source-fixture.ts";
+import { wholeTrace } from "../../trace-pages.ts";
 
 const time = "2026-09-09T00:00:00Z";
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, sessionId: number;
@@ -84,7 +85,7 @@ test("23b golden: tool selection renders one call and keeps every other call's l
     `[T${t.id}#t2] read success:`, "[... 40 characters truncated]",
     "", "Receipts:",
     `T${t.id}: 1 omitted calls (including partial calls)`,
-    `expand: trace({"address":"T${t.id}","tool":2,"full":true})`].join("\n"));
+    `expand: trace({"address":"T${t.id}#t2","full":true})`].join("\n"));
   // The unselected call is sealed at its floor even though its payload would have fitted the budget.
   expect(memory.trace(`T${t.id}`, { tool: 1 })).not.toContain("/tmp/x.md");
   expect(memory.trace(`T${t.id}`)).toContain(`file_path="/tmp/x.md"`); // no selection: every call renders
@@ -145,7 +146,7 @@ test("23b: a read of a tool result without full is the entry renderer's tier-1 r
   const entries = memory.store.listSourceEntries(sessionId, t.id);
   const views = entries.map(e => renderEntry(e, memory.config.render, memory.resultText).content);
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id), ...views].join("\n") +
-    `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}","tool":1,"full":true})`);
+    `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}#t1","full":true})`);
   const result = entries.find(e => e.role === "toolResult")!;
   expect(memory.trace(`T${t.id}#t1`)).toContain(renderEntry(result, memory.config.render, memory.resultText).content);
 });
@@ -159,11 +160,8 @@ test("23b: the per-tool branches of the Turn preview, the tool-name regex and th
   }
 });
 
-/** The one guard that demonstrably fires (ticket 23c, `full` cost): the token estimator is the only
- * caller of `String.prototype.split` in the renderer — a prototype method, unlike `tokens` itself,
- * which is module-internal and invisible to a spy on the export. Counting split calls around a read
- * therefore counts token measurement, and the count must be shown to grow on the budgeted read before
- * its flatness on the unbounded one means anything. */
+/** Count the paginator's prefix probes through the estimator's split calls, beside the fixed
+ * address/line parsing calls. Entry-renderer tests separately pin full rendering's no-tokenizer path. */
 const splitCalls = (run: () => void): number => {
   const original = String.prototype.split;
   let count = 0;
@@ -172,7 +170,7 @@ const splitCalls = (run: () => void): number => {
   return count;
 };
 
-test("23c full cost: a full read measures no tokens, so its cost follows neither the payload nor the parts", () => {
+test("full trace prices bounded page prefixes, not the entire pending single-line suffix", () => {
   const read = (characters: number, calls: number, options: Parameters<typeof memory.trace>[1]) => {
     const t = turn(`read ${characters}x${calls}`);
     for (let n = 0; n < calls; n++) {
@@ -181,18 +179,16 @@ test("23c full cost: a full read measures no tokens, so its cost follows neither
     }
     return splitCalls(() => memory.trace(`T${t.id}`, options));
   };
-  // A hundred times the payload and twenty times the parts, the same handful of splits — and they are
-  // the address parsing the read does before it renders anything, never the estimator.
-  const small = read(5_000, 1, { full: true });
-  // And what it produces for a 2 MB stored result is that result's label plus the stored bytes.
+  // The renderer still copies uncompressed strings; the outer paginator now estimates tokens.
+  // Increasing an oversized single line by 100x does not increase the number of prefix probes.
+  const small = read(50_000, 1, { full: true });
+  // Draining a 2 MB stored result recovers its label plus every stored byte.
   const huge = turn("two megabytes");
   const stored = "z".repeat(2_000_000);
   memory.store.appendToolCall({ turnId: huge.id, name: "bash", input: "{}", result: stored, status: "success" });
-  expect(memory.trace(`T${huge.id}#t1`, { full: true })).toBe(`[T${huge.id}#t1] bash()\n[T${huge.id}#t1] bash success: ${stored}`);
-  expect([read(500_000, 1, { full: true }), read(5_000, 20, { full: true })]).toEqual([small, small]);
-  // The budgeted read of the same evidence measures, many times over, which is what makes the
-  // flatness above evidence of anything at all.
-  expect(read(5_000, 20, {})).toBeGreaterThan(small + 20);
+  expect(wholeTrace(memory, `T${huge.id}#t1`, { full: true })).toBe(`[T${huge.id}#t1] bash()\n[T${huge.id}#t1] bash success: ${stored}`);
+  expect(read(5_000_000, 1, { full: true })).toBe(small);
+  expect(read(5_000, 20, {})).toBeGreaterThan(small);
 });
 
 /** Every `.ts` under `src/`, comment lines removed — the device `boundary.test.ts` uses for host

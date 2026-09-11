@@ -42,4 +42,4 @@ That's it — you spotted a real swap. Noting it:
 
 Receipts:
 T1: 1 omitted calls (including partial calls)
-expand: trace({"address":"T1","tool":2,"full":true})
+expand: trace({"address":"T1#t2","full":true})

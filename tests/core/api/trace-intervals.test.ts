@@ -173,7 +173,7 @@ test("a first page of an interval costs the page: one record rendered, one batch
     expect(relations.batched()).toBe(1);
     // A cap wide enough for every line is what it always was: every record in the interval.
     records.reset();
-    memory.trace(`F1-F${ids.length}`, { cap: ids.length * 3 });
+    memory.trace(`F1-F${ids.length}`, { cap: ids.length * 3, maxTokens: 100_000 });
     expect(records.records()).toBe(ids.length);
   } finally { records.restore(); relations.restore(); }
 });

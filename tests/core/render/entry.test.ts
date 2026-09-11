@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { wholeTrace } from "../../trace-pages.ts";
 import { DEFAULT_CONFIG, renderEntry, renderEntryWhole, tokens, type EntryProfile, type ResultExtractor, type SourceEntry } from "../../../src/core/api/index.ts";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 
@@ -319,7 +320,7 @@ test("23 fidelity: an omitted middle states an honest count and its address fetc
     const label = "[T1#t1] bash success: ";
     expect([...result].length - [...head!.slice(label.length)].length - [...tail!].length + 2).toBe(Number(marker[1]));
     // The address the label carries fetches the original through the unbounded `full` path.
-    expect(memory.trace(`T${turn.id}#t1`, { full: true })).toContain("key200: value200");
+    expect(wholeTrace(memory, `T${turn.id}#t1`, { full: true })).toContain("key200: value200");
   } finally { memory.close(); }
 });
 

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { wholeTrace } from "../../trace-pages.ts";
 import { readFileSync } from "node:fs";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
 
@@ -236,10 +237,11 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
   // read without `full` (23b) is the same bounded view of the same entry, cut where the budgets bite.
-  expect(memory.trace(`T${next.id}#user`, { full: true })).toContain(body);
+  expect(wholeTrace(memory, `T${next.id}#user`, { full: true })).toContain(body);
   expect(memory.trace(`T${next.id}#user`)).toContain("USER_HEAD");
-  expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_ARGUMENT");
-  expect(memory.trace(`T${next.id}`, { tool: 1, full: true })).toContain("SECRET_RESULT");
+  const full = wholeTrace(memory, `T${next.id}`, { tool: 1, full: true });
+  expect(full).toContain("SECRET_ARGUMENT");
+  expect(full).toContain("SECRET_RESULT");
 });
 
 /** 25c amended this acceptance on its own terms — its thresholds moved from `noting.batchTokens` to
