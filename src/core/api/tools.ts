@@ -214,6 +214,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (context.kind === "noting") committed = committedRun;
     return result;
   };
+  // Exceptions outside memory's batch validator must also block Dreamer completion until
+  // that tool is used legally; tool text is diagnostic, never a conflict classification.
+  const toolProblems = new Map<string, string>();
   const definitions = dreaming ? dreamingToolDefinitions() : toolDefinitions;
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
@@ -228,7 +231,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           if (name === "trace" || name === "search") validateReadInput(name, raw);
           result = execute(raw as Record<string, unknown>);
         }
-      } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
+        toolProblems.delete(name);
+      } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+        if (dreaming) toolProblems.set(name, result);
+        if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}) }) });
@@ -247,6 +253,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
-  return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
+  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
     reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); memory.requestSeen(); run.request = JSON.stringify(request); } };
 }

@@ -81,10 +81,10 @@ test("32d: external successors after each freeze stay unprocessed even after ful
     if (reread) task.tools.find(t => t.name === "trace")!.execute({ address: `K${f.item.knowledgeId}` });
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   const retained = f.store.retryDreamingRange(f.target)!;
   reread = true;
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   expect(f.store.retryDreamingRange(f.target)).toEqual(retained);
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2, 3]);
@@ -195,7 +195,7 @@ test("32d: a successor arriving between host check and final transaction is neve
     return success;
   });
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("failure");
+  expect(result.outcome).toBe("conflict");
   expect("problems" in result && result.problems.join()).toContain("external successor after freeze");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2]);
@@ -336,7 +336,7 @@ test("32d: a fully read external merge outside family cannot hide the selected r
     expect(checked.family).not.toContain(item.knowledgeId);
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(3);
 });

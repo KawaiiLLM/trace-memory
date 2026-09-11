@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS runs (
   mode TEXT,
   request TEXT,
   response TEXT,
-  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced','conflict')),
   created_at TEXT NOT NULL
 );
 
@@ -579,11 +579,13 @@ export class Store {
     return this.isDreamingRun(run) ? this.dreamingAuthorities.get(run.dreamingAuthority!)!.runId : undefined;
   }
 
-  validateDreamingRun(run: RunInput, path: KnowledgePath): DreamingRange {
+  validateDreamingRun(run: RunInput, path: KnowledgePath, forCompletion = false): DreamingRange {
     if (!this.isDreamingRun(run)) throw new Error("trusted Dreamer run binding required");
     this.requireEnabled(run.sessionId!);
     this.requireClaim(run);
-    const range = this.dreamingRange(run.dreamingRangeId!);
+    // Another target may legitimately finish shared events while this execution is running.
+    // Its final check still needs the original identity; writes continue to require an open range.
+    const range = this.dreamingRange(run.dreamingRangeId!, forCompletion);
     if (!range || path.sessionId !== range.sessionId || path.branch !== range.branch || path.headTurnId !== range.headTurnId)
       throw new Error("Dreamer target differs from its retained path");
     const snapshot = this.pathSnapshot(path);
@@ -738,6 +740,15 @@ export class Store {
   }
   settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string) {
     return settleExecution(this, id, outcome, runId, reason);
+  }
+  /** Core-only terminal path; the capability never crosses the model/public settlement boundary. */
+  settleDreamingConflict(run: RunInput, reason: string): void {
+    const runId = this.dreamingRunId(run);
+    if (runId === undefined || !this.db.isTransaction) throw new Error("Trusted Dreamer termination transaction required");
+    // Core checked the graph/path in this transaction; do not validate every event again.
+    this.requireEnabled(run.sessionId!);
+    this.requireClaim(run);
+    settleExecution(this, run.executionId!, "conflict", runId, reason, run);
   }
   private completeExecution(runId: number): void {
     const row = this.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId);
@@ -1634,8 +1645,8 @@ export class Store {
     return this.dreamingResults(graph, [], range).some(r => !this.isKnowledgeProcessed(r.id)) ? range : null;
   }
 
-  dreamingRange(id: number): DreamingRange | null {
-    const row = this.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ? AND completed_run IS NULL").get(id);
+  dreamingRange(id: number, includeCompleted = false): DreamingRange | null {
+    const row = this.db.prepare(`SELECT * FROM dreaming_ranges WHERE id = ?${includeCompleted ? "" : " AND completed_run IS NULL"}`).get(id);
     return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: Number(row.anchor),
       eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map(r => Number(r.event_id)),
       knowledgeIds: this.db.prepare("SELECT knowledge_id FROM dreaming_family WHERE range_id = ? ORDER BY knowledge_id").all(id).map(r => Number(r.knowledge_id)) } : null;

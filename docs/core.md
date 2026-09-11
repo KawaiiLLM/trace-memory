@@ -76,6 +76,14 @@ updates the run outcome, revalidates claims/versions/totals, settles exact event
 separate result IDs and settles the execution in one transaction. Replay has no second streak
 effect. Failed/cancelled tasks keep prior commits and pending ranges without certification.
 
+The [external-successor ruling](dreamer-external-conflict.md) adds a real `conflict` terminal outcome
+only when a post-freeze external descendant is the sole acceptance blocker. Core records exact
+successor identities separately from other failures, rechecks transactionally, and settles through
+its live Dreamer capability. This preserves the streak, including its previous reason/run/time,
+without certification or cancellation labeling. Provider, request, illegal-operation and capacity
+failures cannot be hidden by that classification. A later admission can certify freshly supplied
+merge survivors while retaining the original writable family. No scheduler or retry loop is added.
+
 Prompt lineage: pi-om `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
 `src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
 `packages/plugin/src/features/magic-context/dreamer/task-prompts.ts` and
@@ -118,7 +126,11 @@ Its native provider retries and one repair remain inside the same execution; onl
 updates the streak.
 
 Final business failure includes incomplete Noting, unresolved submission refusal and failed
-Dreamer acceptance after partial writes. Cancellation, shutdown, busy admission and corrected
+Dreamer acceptance after partial writes, except the core-verified external-successor-only
+`conflict` defined above. It neither increments nor resets the existing streak. The public
+`settleExecution` entry point cannot issue this exception from caller-supplied outcome/audit text;
+new conflict settlement requires the live core Dreamer capability and its associated run.
+Cancellation, shutdown, busy admission and corrected
 refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason,
 last run and update time. Success resets its key; explicit enrollment on clears all target
 streaks, while reopen does not.
