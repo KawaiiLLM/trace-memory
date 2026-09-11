@@ -9,7 +9,7 @@ import { CONTEXT_HEADROOM } from "../../../src/hosts/pi/index.ts";
 // batch ceiling or a capacity allowance with several entries or a smaller cap instead of one huge
 // entry. What each pins — the exact threshold, the batch composition, the capacity prefix — is
 // unchanged; only the size one entry may reach is.
-const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [] } as SourceEntry, DEFAULT_CONFIG.render).content;
+const view = (text: string, nativeId: string, role: "user" | "assistant") => renderEntry({ id: 1, entryOrdinal: role === "user" ? 1 : 2, sessionId: 1, nativeLineage: "pi-test", nativeId, turnId: 1, role, text, raw: "", calls: [] } as SourceEntry, DEFAULT_CONFIG.render).content;
 const batchText = (input: string) => input.split("Raw:\n\n")[1]!.split("\n\nReceipts:")[0]!;
 
 test.each([9999, 10000])("17b 2026-09-08: Noting threshold is exactly compressed tokens (%s)", async size => {

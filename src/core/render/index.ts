@@ -1,9 +1,11 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
+import { entryAddress, fragmentAddress, sourceBlocks } from "../model/source.ts";
+import type { Selector } from "../model/address.ts";
 import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 
-export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}` }
+export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 // Token estimate (no tokenizer dependency). Two weights over character classes cannot price both
@@ -122,7 +124,7 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "30-v3-one-view";
+export const ENTRY_VIEW_VERSION = "33-v1-entry-addresses";
 // One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
 // omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
 // of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in
@@ -368,27 +370,33 @@ export interface EntryView extends Rendered { omitted: number[] }
  * caller keeps. Both paths below build them here, so the budgeted view and `full` speak the same
  * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
  * which is what makes `full` free of every budget device (23c ruling 4). */
-function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice):
-  { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
+function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice,
+  selector?: Selector): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
   const sources: ReturnType<typeof sourceParts> = [];
-  const isResult = entry.role === "toolResult";
-  const role = entry.role === "user" ? "user" : "assistant";
-  if (speaks(entry) && choose(`T${entry.turnId}#${role}`) === "render") {
-    const label = `[T${entry.turnId}#${role}]`, body = entry.text || "[non-text content omitted]";
-    sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body),
-      floor: () => textFloor(label, body), part: () => textPart(label, body) });
-  }
-  for (const call of entry.calls) {
-    const choice = choose(`T${entry.turnId}#t${call.ordinal}`);
+  for (const block of sourceBlocks(entry)) {
+    const tool = block.kind === "call" || block.kind === "result";
+    if (block.kind === "thinking" && selector?.kind !== "thinking") continue;
+    if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
+    if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
+    if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
+    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
+    const choice = choose(legacy);
     if (choice === "drop") continue;
-    const label = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
-    sources.push(isResult
-      ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, resultText(call.result ?? "")),
-          floor: () => resultFloor(`${label} ${call.status}`, resultText(call.result ?? "")),
-          part: () => resultPart(`${label} ${call.status}`, resultText(call.result ?? "")) }
-      : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
-          floor: () => argumentsFloor(label, items(call.input ?? "")),
-          part: () => argumentsPart(label, call.input ?? "") });
+    const address = entry.entryOrdinal ? fragmentAddress(entry, block) : legacy;
+    const role = entry.entryOrdinal ? ` ${entry.role}` : "";
+    if ("text" in block) {
+      const label = `[${address}]${role}`, body = block.text;
+      sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),
+        floor: () => textFloor(label, body), part: () => textPart(label, body) });
+    } else {
+      const call = block.call, label = `[${address}]${role} ${call.name}`;
+      sources.push(block.kind === "result"
+        ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, resultText(call.result ?? "")),
+            floor: () => resultFloor(`${label} ${call.status}`, resultText(call.result ?? "")),
+            part: () => resultPart(`${label} ${call.status}`, resultText(call.result ?? "")) }
+        : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
+            floor: () => argumentsFloor(label, items(call.input ?? "")), part: () => argumentsPart(label, call.input ?? "") });
+    }
   }
   return sources;
 }
@@ -398,8 +406,8 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
  * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
  * path did. A sealed part still shows its floor, which is what `tool` selection asks of it. */
 export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render"): EntryView {
-  const sources = sourceParts(entry, resultText, choose);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector);
   return { receipts: [], content: sources.map((source) => source.choice === "floor" ? source.floor() : source.whole()).join("\n"),
     omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
 }
@@ -415,8 +423,8 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
  * the text part yield. Nothing is emitted shorter than a part's minimum and no budget is exceeded to
  * make room: when even the minima cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render"): EntryView {
-  const sources = sourceParts(entry, resultText, choose);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector);
   if (!sources.length) return { content: "", receipts: [], omitted: [] };
   const ordinals = sources.map((source) => source.ordinal);
   const isResult = entry.role === "toolResult";
@@ -431,16 +439,22 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
       : separator + part.render(Math.max(0, cap - tokens(separator))) };
   });
   const toolCap = isResult ? profile.toolResultTokens : profile.toolInputTokens;
-  const caps = sources.map(source => source.ordinal === null ? profile.entryTokens : toolCap);
+  const caps = sources.map(source => source.ordinal === null ? profile.entryTokens : Math.min(toolCap, perBlock ? profile.entryTokens : Infinity));
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
   // Verified before returning, with the entry against `E` below: no tool part exceeds its own cap.
-  for (const [index, part] of parts.entries()) if (ordinals[index] !== null && part.minimum > caps[index]!) throw capacity();
+  for (const [index, part] of parts.entries()) if (Math.min(part.minimum, tokens(part.whole)) > caps[index]!) throw capacity();
+  if (perBlock) {
+    const rendered = parts.map((part, index) => part.render(caps[index]!));
+    if (rendered.some((text, index) => tokens(text) > caps[index]!)) throw capacity();
+    return { content: rendered.join(""), receipts: [], omitted: ordinals.filter((ordinal, index) => ordinal !== null && rendered[index] !== parts[index]!.whole) as number[] };
+  }
   // The order the entry cap takes room back in (30): results, then calls, then natural text. Parts of
   // equal priority share their stage's allowance through the same per-part allocator as before, and a
   // stage only moves once the one before it is at its floor.
   const stage = (index: number) => ordinals[index] === null ? 2 : isResult ? 0 : 1;
   const cap = profile.entryTokens;
-  const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap];
+  const maximum = parts.reduce((sum, part) => sum + tokens(part.whole) + part.minimum, 0);
+  const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap].map(room => Math.min(room, maximum));
   const build = (room: readonly number[]) => parts.map((part, index) => part.render(Math.min(caps[index]!, room[stage(index)]!)));
   let rendered = build(rooms), content = rendered.join("");
   for (let level = 0; level < rooms.length && tokens(content) > cap; level++) {
@@ -473,7 +487,7 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
   // paged read that froze those entries must not pick up a reply completed after its query.
   const carried = entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#assistant`));
   const stored: SourceEntry[] = turn.kind === "compaction" && turn.assistantText !== null && !carried
-    ? [{ id: 0, sessionId: turn.sessionId, turnId: turn.id, nativeLineage: "", nativeId: "", role: "assistant", text: turn.assistantText, raw: "", calls: [] }] : [];
+    ? [{ id: 0, entryOrdinal: 0, sessionId: turn.sessionId, turnId: turn.id, nativeLineage: "", nativeId: "", role: "assistant", text: turn.assistantText, raw: "", calls: [] }] : [];
   entries = [...entries, ...stored];
   // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
   if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
@@ -482,10 +496,10 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     if (part) return suffix === part ? "render" : "drop";
     return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
   };
-  const lines = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
+  const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
   const omitted = new Set<number>();
   for (const entry of entries) {
-    const view = options.full ? renderEntryWhole(entry, resultText, choose) : renderEntry(entry, profile, resultText, choose);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
     if (view.content) lines.push(view.content);
     for (const ordinal of view.omitted) omitted.add(ordinal);
   }
@@ -565,12 +579,25 @@ export function finish(rendered: Rendered): string {
   return rendered.content + (rendered.receipts.length ? `\n\nReceipts:\n${rendered.receipts.join("\n")}` : "");
 }
 
-export function renderFact(fact: Fact, relations: FactRelation[]): string {
+/** Trace-only content ceiling. Automatic facts/knowledge leave this unbounded; identity and
+ * evidence metadata are never truncated to make a semantic body appear complete. */
+export function renderSemantic(prefix: string, body: string, suffix: string, cap = Infinity): string {
+  const whole = prefix + body + suffix;
+  if (tokens(whole) <= cap) return whole;
+  const cut = cutUnits(body, false);
+  const build = (kept: number) => {
+    const { head, tail, omitted } = halves(cut, kept);
+    return prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix;
+  };
+  if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
+  return build(fit(build, cut.list.length, cap));
+}
+export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
-  return [`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}${fact.text}${edges.length ? ` · ${edges.join(" · ")}` : ""}`,
-    ...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-    `  source: ${fact.source.join(", ")}`].join("\n");
+  return renderSemantic(`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
+    `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
+      `  source: ${fact.source.join(", ")}`].join("\n"), cap);
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -588,10 +615,12 @@ const commitLine = (r: KnowledgeRevision): string =>
 export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
 
-export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[]): string {
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
-  return [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+  const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
     `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
+  const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+  return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
 }
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.

@@ -12,7 +12,7 @@ const extract: ResultExtractor = (raw) => {
   return { text: value.text, ...(value.details === undefined ? {} : { details: JSON.stringify(value.details) }) };
 };
 const entry = (role: SourceEntry["role"], text: string, calls: SourceEntry["calls"] = []): SourceEntry =>
-  ({ id: 1, sessionId: 1, nativeLineage: "lineage", nativeId: "native", turnId: 7, role, text, raw: "", calls });
+  ({ id: 1, entryOrdinal: 1, sessionId: 1, nativeLineage: "lineage", nativeId: "native", turnId: 7, role, text, raw: "", calls });
 const call = (ordinal: number, name: string, rest: Partial<SourceEntry["calls"][number]>) =>
   ({ ordinal, name, callId: `native-${ordinal}`, status: "attempted", ...rest });
 const envelope = (text: string, details?: unknown) => JSON.stringify({ text, ...(details === undefined ? {} : { details }) });

@@ -737,7 +737,7 @@ export default function (pi: ExtensionAPI) {
       const calls = message.role === "assistant" ? message.content.filter(c => c.type === "toolCall") : [];
       // A user message is a Turn boundary whatever it carries (an image-only message has no text); only an
       // assistant message with neither text nor tool calls is nothing (review 2026-09-08).
-      if (!natural && !calls.length && message.role === "assistant") continue;
+      if (!natural && !calls.length && message.role === "assistant" && !message.content.some(c => c.type === "thinking")) continue;
       const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
         if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);

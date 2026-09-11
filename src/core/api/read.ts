@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
@@ -12,11 +13,27 @@ import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible
  * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
-export interface ListingOptions { maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+/** Validate aliases before rendering or touching cursor state. Null is only a content-ceiling
+ * disable; pageBudget=null is reserved for internal assembled material reads. */
+export function validateBudgets(options: ListingOptions): void {
+  for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget"] as const) {
+    const value = options[key];
+    if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value < 1)) throw new Error(`${key} must be a positive safe integer or null`);
+  }
+  if (options.full !== undefined && typeof options.full !== "boolean") throw new Error("full must be boolean");
+  if (options.full === true && [options.itemBudget, options.toolCallBudget, options.toolResultBudget].some(v => v !== undefined && v !== null)) throw new Error("full:true conflicts with finite content budgets; use null for all content ceilings");
+  if (options.pageBudget !== undefined && options.maxTokens !== undefined && options.pageBudget !== options.maxTokens) throw new Error("pageBudget conflicts with maxTokens");
+  if (options.tool !== undefined && (!Number.isSafeInteger(options.tool) || options.tool < 1)) throw new Error("tool must be a positive ordinal");
+}
+export function readProfile(options: ListingOptions, inherited: EntryProfile): EntryProfile {
+  const limit = (value: number | null | undefined, fallback: number) => options.full === true || value === null ? Infinity : value ?? fallback;
+  return { entryTokens: limit(options.itemBudget, inherited.entryTokens), toolInputTokens: limit(options.toolCallBudget, inherited.toolInputTokens), toolResultTokens: limit(options.toolResultBudget, inherited.toolResultTokens) };
+}
 /** Shared default response budget for trace and search, including pagination receipts. */
 export const DEFAULT_READ_TOKENS = 2000;
 /** Exact versions resolved by a named K read; bare reads replace that identity's prior bases. */
-export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean }
+export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean; complete?: boolean }
 export interface TraceRead { text: string; completed: KnowledgeRead[] }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
@@ -117,7 +134,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
    * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean };
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; budgets?: ListingOptions }; 
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -130,6 +147,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget", "full", "tool"] as const) {
+      if (saved && options[key] !== undefined && options[key] !== saved.budgets?.[key]) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
+    }
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
     const { items, format, capture } = saved ?? (Array.isArray(source)
@@ -193,10 +213,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
-      cursors.set(cursor, remainder);
+      cursors.set(cursor, { ...remainder, budgets: saved?.budgets ?? { ...options } });
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
-    return { text: result, completed: more ? [] : reads };
+    return { text: result, completed: more ? [] : reads.filter(read => read.complete !== false) };
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -273,12 +293,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return { from: first, to: last };
   };
   const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
-    const targets = address.split(",").map((a) => a.trim());
-    // Validate the request shape before either cursor entry point can consume a page.
-    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
-    const cursor = /^cursor=(\S+)$/.exec(address.trim());
-    if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
-    options = { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens };
+    validateBudgets(options);
+    const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
+    if (options.cursor || cursor) {
+      if ((address.trim() && !cursor) || (options.cursor && cursor && options.cursor !== cursor[1])) throw new Error("continue a cursor alone, not with an address");
+      return page([], { ...options, cursor: options.cursor ?? cursor![1] });
+    }
+    const targets = traceTargets(address);
+    if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
+    options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
+      ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const reads: KnowledgeRead[] = [];
     const items = store.transaction(() => {
       const intervals = targets.map(factInterval);

@@ -1,7 +1,9 @@
 export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { readFacade, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
+import { parseTurnAddress } from "../model/address.ts";
+import { sourceBlocks, resultHasText } from "../model/source.ts";
+import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
 // 29a "One derived view": the pure visibility projection over a host's own retained context entries.
 import type { VisibleView } from "./visible.ts";
@@ -471,8 +473,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   };
   // Freeze database values first; the returned renderer runs outside the read transaction.
   const prepareTrace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): (() => string) => {
-    const [target, ...flags] = address.trim().split(/\s+/);
+    const target = address.trim(), flags = /^(?:S\d+\/)?T\d/.test(target) ? [] : target.split(/\s+/).slice(1);
     const invalid = () => new Error(`invalid trace address: ${address}`);
+    const itemCap = readProfile(display, display.profile ?? cfg.render).entryTokens;
     const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.K([1-9]\d*)@([1-9]\d*))?|(\.\.))?$/.exec(target ?? "");
     if (knowledgeMatch) {
       const [id, from, other, to] = knowledgeMatch.slice(1, 5).map(n => n === undefined ? undefined : Number(n));
@@ -492,7 +495,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         for (const r of revisions) {
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
-          descriptions.set(r.id, () => renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children));
+          descriptions.set(r.id, () => {
+            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children);
+            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap);
+            if (text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
+            return text;
+          });
         }
       };
       const describe = (r: typeof history[number]) => descriptions.get(r.id)!();
@@ -559,7 +567,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
       const relations = store.listFactRelations(fact.id);
-      return () => renderFact(fact, relations);
+      const times = store.factTurnTimes([fact]);
+      return () => renderFactGroups([fact], f => renderFact(f, relations, itemCap), times).join("\n");
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
     if (runMatch) {
@@ -569,16 +578,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const facts = store.listFactsByRun(run.id).map((f) => f.id), commits = store.listCommitsByRun(run.id);
       return () => renderRun(run, facts, commits, display.full === true);
     }
-    const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(user|assistant|t[1-9]\d*))?$/.exec(target ?? "");
-    if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
-    const sessionOfAddress = turnMatch[1] === undefined ? undefined : Number(turnMatch[1]);
-    if (flags.length) throw new Error("invalid trace address: use tool and full parameters");
-    const part = turnMatch[3] as TurnOptions["part"];
+    const parsed = parseTurnAddress(target);
+    if (!parsed) throw invalid();
+    const sessionOfAddress = parsed.session;
+    const part = parsed.legacy;
     if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
-    const options: TurnOptions = { tool: display.tool, full: display.full, part };
-    const turn = store.getTurn(Number(turnMatch[2]));
+    if ((parsed.entries || parsed.selector) && display.tool !== undefined) throw new Error("tool parameter conflicts with hierarchical selection; use an exact @toolCallId");
+    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !!parsed.entries };
+    const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
+    if (parsed.selector?.kind === "facts") {
+      const facts = store.listTurnFacts(turn.id), relations = store.listFactRelationsOf(facts.map(f => f.id)), times = store.factTurnTimes(facts);
+      return () => renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? [], itemCap), times).join("\n");
+    }
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
     // 23b: without `full` the read is this Turn's selected source entries, in path order, each
@@ -591,11 +604,31 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // each occurrence shows as its own entry instead of a merged `multiple results` call.
     // 22c: `entryIds` is a paged read's own frozen occurrence membership for this Turn, supplied
     // instead of a branch; without it the branch selects (never for `full`), exactly as 23b left it.
-    const occurrences = display.entryIds
+    let occurrences = display.entryIds
       ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
-      : store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch);
-    const profile = { ...(display.profile ?? cfg.render) };
-    return () => finish(renderTrace(turn, occurrences, profile, options, options.full ? rawResultText : resultText));
+      : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
+    if (parsed.entries) {
+      const byOrdinal = new Map(occurrences.map(entry => [entry.entryOrdinal, entry]));
+      occurrences = parsed.entries.flatMap(selection => {
+        if (selection.to !== undefined) return occurrences.filter(entry => entry.entryOrdinal >= selection.from && entry.entryOrdinal <= selection.to!);
+        const entry = byOrdinal.get(selection.from);
+        if (!entry) throw new Error(`entry T${turn.id}#E${selection.from} does not exist on this path`);
+        return [entry];
+      });
+    }
+    const selector = parsed.selector;
+    if (selector?.kind === "role") occurrences = occurrences.filter(entry => entry.role === selector.role);
+    else if (selector && selector.kind !== "facts") {
+      const matches = (entry: SourceEntry) => sourceBlocks(entry).some(block => selector.kind === "call"
+        ? (block.kind === "call" || block.kind === "result") && block.call.callId === selector.id
+        : selector.kind === "text" ? block.kind === "text" || block.kind === "result" && resultHasText(block.call.result)
+        : block.kind === "thinking");
+      if (parsed.entries && occurrences.some(entry => !matches(entry))) throw new Error(`content selector does not exist in every selected entry: ${address}`);
+      occurrences = occurrences.filter(matches);
+      if (!occurrences.length && selector.kind !== "text") throw new Error(`content selector does not exist: ${address}`);
+    }
+    const profile = readProfile(display, display.profile ?? cfg.render);
+    return () => finish(renderTrace(turn, occurrences, profile, options, resultText));
   };
 
   const read = readFacade(store, cfg, prepareTrace, resultText);

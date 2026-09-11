@@ -1,8 +1,10 @@
 import { sourceAddresses } from "../render/index.ts";
+import { exactSource, preciseSources } from "../model/source.ts";
+import { parseTurnAddress } from "../model/address.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
-import { DEFAULT_READ_TOKENS, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
+import { DEFAULT_READ_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
 
 export interface ToolDefinition {
   name: "trace" | "search" | "note" | "memory" | "check";
@@ -19,10 +21,12 @@ const object = (properties: Record<string, unknown>, required: string[] = []) =>
 const string = { type: "string" };
 const relation = { type: "array", items: { type: "array", prefixItems: [{ type: "string", pattern: "^(F[1-9][0-9]*|\\$[1-9][0-9]*)$" }, { enum: ["strong", "weak"] }], minItems: 2, maxItems: 2 } };
 const factSchema = { ...object({ category: { enum: FACT_CATEGORIES }, actor: { enum: ACTORS }, text: { type: "string", minLength: 1 }, quote: string,
-  source: { type: "array", minItems: 1, items: { type: "string", pattern: "^T[1-9][0-9]*#(user|assistant|t[1-9][0-9]*)$" } },
+  source: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
   support: relation, negate: relation, status: { enum: EVENT_STATUSES } }, ["category", "actor", "text", "source"]),
   allOf: [{ if: { properties: { category: { const: "event" } } }, then: { required: ["status"] }, else: { not: { required: ["status"] } } }] };
 const pagination = { cursor: string, cap: { type: "integer", minimum: 1 } };
+const contentBudget = { anyOf: [{ type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, { type: "null" }] };
+const budgets = { itemBudget: { ...contentBudget, default: 2000 }, toolCallBudget: { ...contentBudget, default: 100 }, toolResultBudget: { ...contentBudget, default: 100 }, pageBudget: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_READ_TOKENS } };
 
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*@[1-9][0-9]*$" };
@@ -36,7 +40,7 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 ] };
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
-  { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
+  { name: "trace", description: "Read evidence by address: any fact, raw turn or tool call, knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...budgets, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: `Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.`, parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_READ_TOKENS }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
   { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Update/archive and every merge participant require an explicit K1@57 handle whose complete body was supplied or read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
@@ -60,6 +64,8 @@ export function validateReadInput(name: "trace" | "search", raw: unknown): Recor
   if (Object.keys(input).some(k => !(k in properties))) throw new Error("unexpected parameter");
   if (name === "trace") {
     if (typeof input.address !== "string") throw new Error("address must be a string");
+    if (input.pageBudget === null) throw new Error("pageBudget must be a positive safe integer; null is internal-only");
+    validateBudgets(input as ListingOptions);
     if (input.tool !== undefined && (!Number.isSafeInteger(input.tool) || Number(input.tool) < 1)) throw new Error("tool must be a positive ordinal");
     if (input.full !== undefined && typeof input.full !== "boolean") throw new Error("full must be boolean");
   } else if (typeof input.query !== "string") throw new Error("query must be a string");
@@ -112,11 +118,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
     : context.kind === "dreaming" ? dreaming!.path : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
-  const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => sourceAddresses(e).includes(source));
+  const matchesSource = (entry: NonNullable<ReturnType<Store["getSourceEntry"]>>, source: string) => exactSource(entry, source) || sourceAddresses(entry).includes(source);
+  const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => matchesSource(e, source));
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? store.sourcePath(session.id, context.branch, path.headTurnId!).filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
-  const frozenSources = new Set(frozenEntries.flatMap(id => sourceAddresses(store.getSourceEntry(id)!)));
+  const frozenSources = new Set(frozenEntries.flatMap(id => { const entry = store.getSourceEntry(id)!; return [...sourceAddresses(entry), ...preciseSources(entry)]; }));
   const frozenPath = new Set(context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
-  const sourceEligible = (source: string) => frozenSources.has(source) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
+  const sourceEligible = (source: string) => (frozenSources.has(source) || frozenEntries.some(id => exactSource(store.getSourceEntry(id)!, source))) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
     .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
   if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
@@ -142,12 +149,13 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       if (fact) {
         let first = 0;
         if (Array.isArray(fact.source)) for (const source of fact.source) {
-          const m = typeof source === "string" ? /^T([1-9]\d*)#(user|assistant|t([1-9]\d*))$/.exec(source) : null;
-          const turn = m ? store.getTurn(Number(m[1])) : null;
+          let parsed: ReturnType<typeof parseTurnAddress> = null;
+          try { parsed = typeof source === "string" ? parseTurnAddress(source) : null; } catch { /* Invalid source becomes an atomic refusal. */ }
+          const turn = parsed ? store.getTurn(parsed.turn) : null;
           if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || (context.kind === "manual" && !manualSourceEligible(source)) || (context.kind === "noting" && !sourceEligible(source)) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
           else {
             if (!first) first = turn.id;
-            if ((m![2] === "user" && turn.userPrompt === null) || (m![2] === "assistant" && turn.assistantText === null) || (m![3] && !store.listToolCalls(turn.id).some((c) => c.ordinal === Number(m![3])))) errors.push(`source ${source} does not exist`);
+            // Membership and actual block existence above are authoritative, never aggregate Turn text.
           }
         }
         for (const kind of ["support", "negate"] as const) {
@@ -162,7 +170,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (first) {
           // Bind the citations to the entries they resolve to in the writer's set (review 2026-09-08).
           const candidates = context.kind === "noting" ? frozenEntries.map(id => store.getSourceEntry(id)!) : store.sourcePath(session.id, context.branch, path.headTurnId!);
-          const entryIds = candidates.filter(e => sourceAddresses(e).some(a => (fact.source as string[]).includes(a))).map(e => e.id);
+          const entryIds = candidates.filter(e => fact.source.some(source => matchesSource(e, source))).map(e => e.id);
           commits.push({ ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt, entryIds });
         }
       }
