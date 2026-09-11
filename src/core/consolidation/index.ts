@@ -65,7 +65,7 @@ export interface ConsolidationAgentInput extends AgentControl {
   tools: import("../api/tools.ts").ToolDefinition[];
   reportRequest(request: unknown): void;
 }
-export type ConsolidateResult =
+export type ConsolidateResult = { executionId?: string; automaticOff?: string } & (
   // 27d: two variants rather than one union member — a dropped task may name why it dropped, and the
   // outcome alone is what narrows the results that own a `problems` list.
   // 29e: and, as Noting's has since 27c/27d, it may carry the host's fork refusal and the run record
@@ -75,7 +75,7 @@ export type ConsolidateResult =
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[] }
   | { outcome: "success"; runId: number; output: MemoryBatch; problems?: string[];
       committed: CommittedKnowledgeOp[]; diagnostics: ConsolidationDiagnostic[];
-      range: ConsolidationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[]; unansweredNear: NearPair[] };
+      range: ConsolidationRange; readKnowledgeCommits: { knowledgeId: number; commit: number }[]; unansweredNear: NearPair[] });
 
 /** 27b's twin for this phase (29e): the opening of both capacity refusals a Consolidation freeze can
  * raise — the preflight floor and the loop exit that pops the batch down to its oldest fact. The Pi

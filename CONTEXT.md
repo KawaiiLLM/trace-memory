@@ -56,6 +56,7 @@ Terms only. No implementation detail. When a term here conflicts with usage in c
 
 ## Process
 
+- **Logical task** — one target session, phase and stable oldest selected backlog item: a source entry for Noting, the first fact in Consolidation selection order, or the original frozen change event for Dreamer. Its identity survives retries, borrowed execution, growing tails and partial edits; a changing leaf or run id is not part of the key. Three terminal business failures disable the target's memory; successful completion resets that task, and explicit on resets every target streak. Reopening does not.
 - **Accounting** — after each consolidation run, every user fact and every question in the range must be cited by a knowledge item or listed in `skipped` with a reason; missing accounting is a diagnostic.
 - **NEAR** — the lexically nearest existing knowledge shown for every new or edited knowledge; the Consolidator must edit, merge, or state why the claim differs.
 - **CLOSER** — new facts lexically near each open or goal knowledge, shown as candidate closing evidence.

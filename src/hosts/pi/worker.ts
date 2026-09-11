@@ -60,6 +60,7 @@ export interface ForkRefusal {
   /** The run core recorded for the refused attempt, when that attempt sent a request. The
    * re-admitted run names it in its own `fallbackReason`, so the two records read as one task. */
   runId?: number;
+  executionId?: string;
 }
 
 /** What the host hands one run. Values, not the host's live state; the callbacks are the only way

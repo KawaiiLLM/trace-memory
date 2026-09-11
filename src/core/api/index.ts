@@ -299,6 +299,8 @@ export const CANCELLED_BEFORE_FALLBACK = "cancelled before fallback";
  * task stays pending — a smaller batch would be a membership change made after execution started. */
 export interface TaskBoundary { maxEntryId?: number; exactEntryIds?: number[]; allowedFactIds?: number[]; exactFactIds?: number[] }
 export interface TaskOptions {
+  /** Durable execution shared only with a refused attempt's fallback. */
+  executionId?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
    * (a requested fork resolved to subagent by the host's cache-miss latch). Capacity and material
@@ -371,6 +373,9 @@ export interface TraceMemory {
    * applies it wherever it renders an entry and never inspects envelope fields itself. */
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
+  /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
+   * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
+  settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
   /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
   cancelTasks(stopping?: boolean): void;
   /** Freeze before host preflight: even an unsent refusal belongs to this admission generation. */
@@ -434,7 +439,15 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const store = new Store(dbPath);
   const executorId = randomUUID();
   let stopping = false;
-  const tasks = new Set<{ controller: AbortController; force(): void; close(): void }>();
+  const tasks = new Set<{ sessionId: number; controller: AbortController; force(): void; close(): void }>();
+  const abortTarget = (sessionId: number) => {
+    for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); }
+  };
+  const settleExecution: TraceMemory["settleExecution"] = (id, outcome, runId, reason) => {
+    const settled = store.settleExecution(id, outcome, runId, reason);
+    if (settled.automaticOff) abortTarget(store.getRun(runId)!.sessionId!);
+    return settled;
+  };
   // 27d repair 4 (parent 27 line 83): the cancellation generation. Every cancellation advances it,
   // stop or not — `/trace stop` cancels without stopping, and a task cancelled that way must not
   // come back through a fork fallback either. Admission freezes it with the task, the host carries
@@ -605,6 +618,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number;
+    let executionId: string;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | null;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
@@ -632,7 +646,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
-      return phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+      const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
+      if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head }, input.executionId);
+      return frozen;
     }); } catch (error) {
       // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
       // processed is not an admission failure and not work to retry — the claim that completed it
@@ -645,7 +662,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let force!: () => void;
     const forced = new Promise<RunAgentResult>(resolve => { force = () => resolve({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
     const progress: Partial<RunAgentResult> = {};
-    const task = { controller, force, close: () => {} };
+    const task = { sessionId: target.sessionId, controller, force, close: () => {} };
     tasks.add(task);
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
     // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
@@ -666,6 +683,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     else external?.addEventListener("abort", onExternalAbort, { once: true });
     const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
+      run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       const binding = bindTools(store, read, context, run, review);
       task.close = binding.close;
@@ -685,21 +703,36 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       external?.removeEventListener("abort", onExternalAbort);
       task.close(); tasks.delete(task);
       const originalClaim = claim as TaskClaim; // assigned by the successful admission transaction
-      try { if (!store.closed) store.transaction(() => {
+      const owned = () => {
         const current = store.getClaim(originalClaim.sessionId, originalClaim.phase);
-        const owned = current && current.token === originalClaim.token && current.executorId === originalClaim.executorId
+        return current && current.token === originalClaim.token && current.executorId === originalClaim.executorId
           && !current.reserved && current.expiresAt > Date.now();
-        // Only a still-owned attempt may authorize the release/re-admission handoff. Once lost,
-        // exact pending membership alone cannot revive it, even if a successor released its claim.
-        if (result?.outcome === "dropped" && result.refused && !owned)
-          result = { outcome: "dropped", reason: "task claim lost before fallback", ...(result.runId === undefined ? {} : { runId: result.runId }) };
-        store.releaseClaim(originalClaim);
-      }); }
-      catch (error) {
-        // 27d: a dropped result may now carry the `runId` of a refused attempt's own record, so the
-        // variants that own a `problems` list are selected by outcome rather than by that key.
-        if (result && result.outcome !== "dropped" && result.outcome !== "empty") result.problems = [...(result.problems ?? []), `claim release failed: ${String(error)}`];
-        else throw error;
+      };
+      try {
+        if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
+          const terminal = result;
+          const settled = store.transaction(() => store.settleExecution(executionId!, terminal.outcome === "success" ? "success"
+            : controller.signal.aborted || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled" : "failure",
+            terminal.runId, terminal.problems?.join("; ")));
+          if (settled.automaticOff) {
+            terminal.automaticOff = settled.automaticOff;
+            // The off/fence transaction has committed before invoking any local abort listener.
+            abortTarget(target.sessionId);
+          }
+        }
+      } finally {
+        // Cleanup failure must neither roll back a terminal decision nor masquerade as one.
+        try { if (!store.closed) store.transaction(() => {
+          if (result?.outcome === "dropped" && result.refused !== undefined) {
+            if (owned()) result.executionId = executionId!;
+            else result = { outcome: "dropped", reason: "task claim lost before fallback", ...(result.runId === undefined ? {} : { runId: result.runId }) };
+          }
+          store.releaseClaim(originalClaim);
+        }); }
+        catch (error) {
+          if (result && result.outcome !== "dropped" && result.outcome !== "empty") result.problems = [...(result.problems ?? []), `claim release failed: ${String(error)}`];
+          else throw error;
+        }
       }
     }
     return result;
@@ -708,7 +741,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // this database instance and target branch, never in a process-global or cross-database cache.
   const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
-    store, executorId, resultText, cancelTasks, taskEligibility,
+    store, executorId, resultText, cancelTasks, taskEligibility, settleExecution,
     get cancellation() { return cancellation; },
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,

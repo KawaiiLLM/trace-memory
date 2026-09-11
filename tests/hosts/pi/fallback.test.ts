@@ -135,6 +135,11 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
     expect(f.sent.filter(forkAttempt)).toHaveLength(1); // one fork attempt, and only one
     expect(attempt!.mode).toBe("fork");
     expect(attempt!.outcome).toBe("failure");
+    // 32c: native fallback transports the same durable execution, not two failed tasks.
+    const links = f.h.memory.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id IN (?,?)").all(attempt!.id, run!.id);
+    expect(new Set(links.map(row => row.execution_id)).size).toBe(1);
+    expect(links).toHaveLength(2);
+    expect(f.h.memory.store.taskFailures(1)).toMatchObject([{ count: 0 }]);
     expect(attempt!.model).toBe("fake/test"); // the session model it really ran on
     expect(first.requestedMode).toBe("fork");
     expect(first.problems.join(" ")).toContain(OVERFLOW);
@@ -275,6 +280,10 @@ test("27b 2026-09-10: at most one transition per task — the fresh child's own 
     const response = JSON.parse(run!.response!);
     expect(f.sent.filter(forkAttempt)).toHaveLength(1);
     expect(f.sent.filter(fresh)).toHaveLength(1);
+    const links = f.h.memory.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id IN (?,?)").all(attempt!.id, run!.id);
+    expect(new Set(links.map(row => row.execution_id)).size).toBe(1);
+    expect(links).toHaveLength(2);
+    expect(f.h.memory.store.taskFailures(1)).toMatchObject([{ count: 1 }]);
     expect(attempt!.mode).toBe("fork");   // 27d: the refused attempt is its own record
     expect(attempt!.outcome).toBe("failure");
     expect(run!.mode).toBe("subagent");

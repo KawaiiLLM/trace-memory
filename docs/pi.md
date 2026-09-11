@@ -384,7 +384,11 @@ shutdown past cleanup or write through disposed tools.
 
 ## Enrollment and native menu
 
-One enrollment switch belongs to each memory identity. New native sessions whose
+One enrollment switch belongs to each memory identity. Three failures of the same logical
+task can turn it off automatically; see [Three failures turn memory off](#three-failures-turn-memory-off-32c).
+Explicit `/trace on` clears that identity's persisted failure streaks; reopening does not.
+
+New native sessions whose
 `ctx.sessionManager.getHeader().timestamp` is strictly after the baseline default
 Enabled; older, equal, missing or malformed timestamps default Disabled. The
 baseline is atomically published in `trace-memory-baseline.json` in Pi's agent
@@ -1297,31 +1301,30 @@ extraction. There is no `/trace retry` subcommand and no permanent top-level ite
 reopen nor a settings refresh clears the state. Two later consecutive eligible misses begin a new
 episode and may downgrade once again.
 
-## The incomplete-Noting guard (26a)
+## Three failures turn memory off (32c)
 
-Core reports a Noting run that ended normally, committed nothing and had nothing rejected as
-outcome `failure` with the `NOTING_INCOMPLETE` diagnostic and the batch's oldest frozen entry on
-`incompleteHeadEntryId` (docs/core.md). The host counts those runs per memory session, keyed by
-that head entry: a batch whose head has not advanced is the same batch, whatever arrived at its
-tail. Counting rule (ticket 26 amendment 5): only an incomplete run increments; a successful,
-empty or bounced submission for that head resets the count to zero; a provider failure, a
-cancellation, a dropped admission or a capacity wait leaves it unchanged, because none of them
-says anything about the model's behaviour. Two ordinary cancellations therefore pause nothing.
+Three terminal business failures of one **logical task** persistently disable its target's
+memory. The key is the target session, phase and oldest selected backlog item: a source entry
+for Noting, the first fact in Consolidation selection order, or the frozen change event for
+Dreamer. A new leaf, a growing tail, another executor or partial Dreamer edits do not reset it.
+Dreamer's worker is not implemented yet; it will reuse the same settlement primitives.
 
-On the **second consecutive** incomplete run for the same head, automatic Noting is paused for
-that session alone. Consolidation admission, reads, receipts, manual writes, `/trace catchup` and
-borrowed work for other sessions are unaffected. The pause emits one notice — `Trace Memory:
-automatic Noting paused for this session after two consecutive runs ended without calling note.
-…` — the footer line gains ` noting: paused`, and the status text adds:
+Provider retries and fork fallback share one durable execution identity. A refused fork followed
+by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete
+Noting and unresolved submission refusal count; cancellation, busy admission and audit errors
+after business success do not. Duplicate observers and process restarts cannot count an
+execution twice. A successful task resets its own streak.
 
-```
-Noting: automatic runs paused after 2 consecutive runs ended without calling note (batch head E<n>); Consolidation, reads and manual tools continue; /trace catchup or reopening the session resumes it
-```
+The third failure atomically disables enrollment and fences the target's outstanding claims.
+Locally owned work for that target is aborted; committed data and pending work survive. A
+borrowed failure disables the target, not its executor or another session. One notification
+names the phase, failed runs, latest reason and `/trace on`; the footer becomes `🧠 ○ off`.
+Compaction with disabled memory delegates natively rather than publishing an empty custom
+summary; user cancellation still takes precedence.
 
-Like the cache-miss count, this count lives in the executor process only: it is not
-`forkSuppression`, has no database column, no setting and no scheduler. `/trace catchup` clears
-it (the explicit drain is the user's own instruction to continue) and so does a session reopen —
-the same `restore()` boundary that clears the cache-miss count; a tree switch is not one.
+**Only explicit `/trace on` resets all target streaks and re-enables memory.** Reopening and
+`/trace catchup` do neither. Status retains the automatic-off cause. This replaces the old
+process-local two-incomplete-Noting pause; it adds no retry loop, scheduler or setting.
 
 ## Live prefix identity procedure
 

@@ -69,7 +69,7 @@ export interface EntryAudit {
    * `{toolCallTokens, entryTokens}` shape, with its own `B`/`E` meaning, and is never relabelled. */
   viewBudgets: { entryTokens: number; toolInputTokens: number; toolResultTokens: number };
 }
-export type NotingResult =
+export type NotingResult = { executionId?: string; automaticOff?: string } & (
   | { outcome: "empty" }
   /** 27c: `refused` is the host's own refusal value, returned unread when the host declined to run
    * this task in the mode it was admitted for and admits it once more itself.
@@ -81,9 +81,9 @@ export type NotingResult =
   | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
       /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
-       * nothing and had nothing rejected. Present on that outcome alone; it identifies the batch a
-       * host counts consecutive incomplete runs for. */
-      incompleteHeadEntryId?: number };
+       * nothing and had nothing rejected. Retained as diagnostic metadata; persisted logical-task
+       * settlement now owns failure counting, not a host-local incomplete guard. */
+      incompleteHeadEntryId?: number });
 
 /** 27b: the opening of both capacity refusals a Noting freeze can raise — the preflight floor
  * (instructions, tools and, for a fork, the inherited context) and the loop exit that pops the batch

@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
+import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import type {
@@ -292,6 +293,7 @@ export interface TaskClaim {
 export type ClosedSessionScope = "off" | "project" | "global";
 
 export interface RunInput {
+  executionId?: string;
   /** Retained source range for Dreamer's immediate writes; not a new trigger source. */
   dreamingRangeId?: number;
   claim?: TaskClaim;
@@ -563,6 +565,7 @@ export class Store {
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db);
       this.db.exec(PROCESSING_SQL);
+      this.db.exec(EXECUTIONS_SQL);
     } catch (error) {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
       throw error;
@@ -657,7 +660,22 @@ export class Store {
     this.transaction(() => {
       this.enrollment(sessionId);
       this.db.prepare("UPDATE sessions SET enrollment_choice = ? WHERE id = ?").run(Number(enabled), sessionId);
+      if (enabled) this.db.prepare("DELETE FROM task_failures WHERE session_id = ?").run(sessionId);
     });
+  }
+  beginExecution(task: LogicalTask, previous?: string): string { return this.transaction(() => beginExecution(this, task, previous)); }
+  taskFailures(sessionId: number) {
+    return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head").all(sessionId).map(row => ({
+      phase: row.phase as Phase, head: Number(row.head), count: Number(row.count), lastReason: String(row.last_reason ?? ""),
+      lastRunId: row.last_run_id === null ? null : Number(row.last_run_id), updatedAt: String(row.updated_at),
+    }));
+  }
+  settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string) {
+    return settleExecution(this, id, outcome, runId, reason);
+  }
+  private completeExecution(runId: number): void {
+    const row = this.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId);
+    if (row) this.settleExecution(String(row.execution_id), "success", runId);
   }
   requireEnabled(sessionId: number): void {
     if (!this.enabled(sessionId)) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
@@ -1007,6 +1025,7 @@ export class Store {
           if (this.getSourceEntry(id)?.sessionId !== sessionId) throw new Error("entry does not belong to the run session");
           this.db.prepare("INSERT INTO noted_entries (entry_id, run_id) VALUES (?, ?)").run(id, runId);
         }
+        this.completeExecution(runId);
         return { runId, facts: batchIds.map((id) => this.getFact(id)!) };
       });
       return { ok: true, runId: result.runId, facts: result.facts };
@@ -1050,6 +1069,7 @@ export class Store {
         input.createdAt,
       );
     const id = Number(info.lastInsertRowid);
+    linkExecutionRun(this, id, input);
     if (input.dreamingRangeId !== undefined) {
       const range = this.dreamingRange(input.dreamingRangeId);
       if (input.kind !== "dreaming" || !range || range.sessionId !== input.sessionId)
@@ -1350,6 +1370,7 @@ export class Store {
         if (input.finalizeResponse) {
           this.db.prepare("UPDATE runs SET response = ? WHERE id = ?").run(input.finalizeResponse({ committed }), runId);
         }
+        if (input.run.kind === "consolidation") this.completeExecution(runId);
         return { runId, committed };
       });
       return { ok: true, ...result };
@@ -1536,6 +1557,7 @@ export class Store {
       this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
       for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
       for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
+      this.completeExecution(runId);
       // Shared certification may finish another session's retained work too. Settlement alone
       // cannot close it: every applicable current result, including derived K, must be processed.
       const ranges = this.db.prepare(`SELECT session_id, branch FROM dreaming_ranges WHERE completed_run IS NULL

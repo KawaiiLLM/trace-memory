@@ -66,6 +66,29 @@ const consolidates = (h: Host, conversation: any): Reply =>
  * production prompt the material carries, exactly as `native-fixture`'s `worker()` tells them apart. */
 const isNoting = (conversation: unknown) => JSON.stringify(conversation).includes("Noting (fact extraction)");
 
+test.each([false, true])("32c: automatic off during compaction takes native failure; user cancellation takes precedence (%s)", async cancel => {
+  const h = host({ ...quiet, ...windows(1, 1, 1) });
+  try {
+    await turns(h, 1);
+    h.provider(async () => reply("Nothing to note."));
+    await compact(h); await compact(h);
+    expect(h.memory.store.taskFailures(1)).toMatchObject([{ count: 2 }]);
+    const controller = new AbortController();
+    const notify = h.ctx.ui.notify.bind(h.ctx.ui);
+    const notices = vi.spyOn(h.ctx.ui, "notify").mockImplementation((message, level) => {
+      notify(message, level); if (cancel && String(message).includes("off after three failures")) controller.abort();
+    });
+    const result = await compact(h, controller.signal);
+    notices.mockRestore();
+    expect(h.memory.store.enabled(1)).toBe(false);
+    expect(h.memory.store.taskFailures(1)).toMatchObject([{ count: 3 }]);
+    expect(h.notices.filter(n => n.includes("off after three failures"))).toHaveLength(1);
+    expect(result).toEqual(cancel ? { cancel: true } : undefined);
+    expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).not.toEqual([]);
+    expect(h.memory.status(1)).toContain("Automatic off: noting");
+  } finally { vi.restoreAllMocks(); await h.dispose(); }
+});
+
 test("28b acceptance 5: a facts-only overflow runs one awaited Consolidation and nothing else", async () => {
   // Nothing pending in Raw, ten pending facts, and an envelope smaller than they charge.
   const h = host({ ...quiet, ...windows(1, 1, 200) });

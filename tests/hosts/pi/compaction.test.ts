@@ -60,6 +60,9 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }
+    // 32c: repeated failures now disable enrollment. Explicitly resume before testing the
+    // compaction boundary itself; this imports the disabled interval and resets its streak.
+    await h.commands.get("trace").handler("on", h.ctx);
     expect(h.memory.pendingEntries(1, "main", 1).length).toBeGreaterThan(0);
     const runsBefore = h.memory.store.listRuns(1).length;
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);

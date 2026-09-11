@@ -39,6 +39,40 @@ use savepoints. No external SQLite dependency is needed.
 Run `npm test` for the Vitest suite, `npm run typecheck` for TypeScript, and
 `npm run smoke:pi` for a direct Node extension import and fake-provider noting run.
 
+## Logical-task outcomes (32c)
+
+A logical task is `(target session, phase, oldest selected backlog item)`, independent of its
+execution's run ids and the changing leaf. Noting uses the first frozen source entry;
+Consolidation uses the first selected fact, not a numeric minimum; Dreamer uses its retained
+range's original event anchor, even after committed partial edits.
+
+`Store.beginExecution(task, previous?)` creates a durable execution or continues the same
+unsettled execution after fork refusal. Each attempt run carries `RunInput.executionId` and
+is linked through `execution_runs`. The façade returns that identity with a refused attempt;
+the host carries it in `TaskOptions.executionId` on fallback. Attempt audit outcomes do not
+settle executions. Interrupted executions remain unresolved rather than inheriting an
+intermediate attempt's failure or inventing success.
+
+`Store.settleExecution(id, outcome, runId, reason?)` records one authoritative terminal outcome
+and updates the logical task's streak in the same transaction. Replay observes the existing
+outcome without applying it again. Successful Noting/Consolidation commits settle inside the
+business transaction; subsequent provider or audit errors cannot reverse success. Dreamer
+writes do not settle success: `completeDreaming` settles the linked execution only with its
+validated exact completion sets. A future Dreamer worker uses `TraceMemory.settleExecution`
+for terminal failure; that façade also aborts local target work after the Store transaction
+commits. No worker or new execution loop is introduced here.
+
+Final business failure includes incomplete Noting, unresolved submission refusal and failed
+Dreamer acceptance after partial writes. Cancellation, shutdown, busy admission and corrected
+refusals do not count. `Store.taskFailures(sessionId)` returns each key's count, latest reason,
+last run and update time. Success resets its key; explicit enrollment on clears all target
+streaks, while reopen does not.
+
+The third failure atomically persists enrollment off and expires every target claim. The façade
+then closes and aborts locally owned target tasks. Only the transitioning settlement returns
+`automaticOff` for the host's single notification. Committed data and backlog survive; other
+targets and a borrowing executor remain enabled. No automatic retry or re-enable follows.
+
 ## Noting and trace host contract (ticket 02)
 
 Hosts pass completed source identities/content through `appendEntry(SourceInput)`
