@@ -14,7 +14,7 @@ fake/test
 SDK mismatch: 44.5k > text ~1.8k; gap
 Unknown
 ~44.5k / 1M (4.5%)
-⛁ Tools ~1.7k (0.2%)
+⛁ Tools ~1.8k (0.2%)
 ⛁ Conversation ~12 (<0.1%)
 ⛁ Unknown ~42.7k (4.3%)
 ⛶ Free ~955.5k (95.5%)
@@ -68,7 +68,7 @@ fake/test
 SDK mismatch: 44.5k > text ~1.8k; gap
 Unknown
 ~44.5k / 1M (4.5%)
-⛁ Tools ~1.7k (0.2%)
+⛁ Tools ~1.8k (0.2%)
 ⛁ Conversation ~12 (<0.1%)
 ⛁ Unknown ~42.7k (4.3%)
 ⛶ Free ~955.5k (95.5%)
@@ -116,7 +116,7 @@ pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
                                           ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -140,7 +140,7 @@ exports[`actual Current session first viewport at 80 x 24 'fullscreen' 2`] = `
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
                                           ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -170,7 +170,7 @@ pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
                                           ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -194,7 +194,7 @@ exports[`actual Current session first viewport at 80 x 24 'regular' 2`] = `
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
                                           ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -223,7 +223,7 @@ pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -248,7 +248,7 @@ exports[`actual Current session first viewport at 100 x 24 'fullscreen' 2`] = `
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -277,7 +277,7 @@ pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
@@ -302,7 +302,7 @@ exports[`actual Current session first viewport at 100 x 24 'regular' 2`] = `
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.7k (0.2%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
                                           ⛁ Unknown ~42.7k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)

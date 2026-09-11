@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
-import { sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
+import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
@@ -622,7 +622,16 @@ export class Store {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
             const input = JSON.parse(String(row.content));
-            const blocks = row.blocks == null ? normalizeSource?.(input) : JSON.parse(String(row.blocks));
+            let blocks: SourceBlock[] | undefined;
+            if (row.blocks == null) {
+              try { blocks = normalizeSource?.(input); }
+              catch (error) {
+                if (!(error instanceof SourceNormalizationError)) throw error;
+                // Persist JSON null below: retain legacy proof without retrying this row on reopen.
+                // Numeric storage identities locate the row without exposing Raw or native IDs.
+                console.warn(`Trace Memory: legacy source normalization skipped; entry=${Number(row.id)} turn=${Number(input.turnId)}; call mapping mismatch`);
+              }
+            } else blocks = JSON.parse(String(row.blocks));
             const entry = { ...input, id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
             update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : normalizeSource ? "null" : null, entry.id);
           }
@@ -1320,8 +1329,8 @@ export class Store {
     } };
   }
 
-  /** The citable addresses of one Turn's selected entries, read from entry metadata: the role and
-   * whether there is text decide `#user`/`#assistant`, the call ordinals give `#t<n>`. */
+  /** Historical source membership for one Turn's selected entries, including persisted precise
+   * fragments and legacy role/tool aliases. New-note permission is checked separately. */
   private addressesOf(turnId: number, ids: number[]): Set<string> {
     const addresses = new Set<string>();
     for (const row of ids.length ? this.db.prepare("SELECT addresses FROM source_entries WHERE turn_id = ? AND id IN (SELECT value FROM json_each(?))").all(turnId, JSON.stringify(ids)) : [])
