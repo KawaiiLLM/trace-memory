@@ -7,6 +7,8 @@ import { Store, type KnowledgeOperationInput } from "../../../src/core/store/ind
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { KNOWLEDGE_VIEW_VERSION } from "../../../src/core/store/processing.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
+import { migrateDreaming } from "../../../src/core/store/migration.ts";
+import * as rendering from "../../../src/core/render/index.ts";
 
 const stores: Store[] = [], dirs: string[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.close(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); vi.restoreAllMocks(); });
@@ -28,6 +30,146 @@ function fixture(store = new Store(":memory:"), project = "A") {
   const success = () => store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: "now" }).id;
   return { store, p, s, t, target, content, write, create, success };
 }
+
+test("32b review: unchanged eligibility avoids graph loading; scope checks load and render once", () => {
+  const memory = TraceMemory(":memory:", vi.fn()), a = fixture(memory.store);
+  for (let i = 0; i < 30; i++) fixture(a.store);
+  const commits = Array.from({ length: 10 }, (_, i) => a.create(`small ${i}`));
+  const sql = vi.spyOn(a.store.db, "prepare"), render = vi.spyOn(rendering, "renderKnowledge");
+  memory.taskEligibility("dreaming", a.target);
+  const eligibilityGraphs = sql.mock.calls.filter(([s]) => s === "SELECT * FROM knowledge_revisions ORDER BY id").length;
+  const eligibilityRenders = render.mock.calls.length;
+  sql.mockClear(); render.mockClear();
+  a.store.checkProcessedScopes(commits.map(c => c.commit));
+  const scopeGraphs = sql.mock.calls.filter(([s]) => s === "SELECT * FROM knowledge_revisions ORDER BY id").length;
+  console.log(JSON.stringify({ eligibilityGraphs, eligibilityRenders, scopeGraphs, scopeRenders: render.mock.calls.length, sessions: 31, commits: 10 }));
+  expect(eligibilityGraphs).toBe(0);
+  expect(eligibilityRenders).toBe(0);
+  expect(scopeGraphs).toBe(1);
+  expect(render).toHaveBeenCalledTimes(10);
+  memory.close();
+});
+
+test("32b review: construction closes only its connection and preserves initialization error", () => {
+  const failure = new Error("schema failed"), close = vi.spyOn(DatabaseSync.prototype, "close");
+  vi.spyOn(DatabaseSync.prototype, "exec").mockImplementationOnce(() => { throw failure; });
+  expect(() => new Store(":memory:")).toThrow(failure);
+  expect(close).toHaveBeenCalledTimes(1);
+});
+
+test("32b review: public spend and status include Dreaming without changing evidence counts", () => {
+  const memory = TraceMemory(":memory:", vi.fn()), a = fixture(memory.store);
+  const before = memory.progress(a.s.id, a.target.branch, a.t.id), run = a.success();
+  expect(memory.spend(a.s.id).runs.dreaming).toBe(1);
+  expect(memory.status(a.s.id)).toContain("1 dreaming");
+  expect(memory.status(a.s.id)).toContain(`Last dreaming: run ${run} success`);
+  expect(memory.progress(a.s.id, a.target.branch, a.t.id)).toEqual(before);
+  memory.close();
+});
+
+test("32b review: archive supplies its exact predecessor, not latest", () => {
+  const a = fixture(), c = a.create("unique complete predecessor");
+  const archived = a.write({ op: "archive", knowledgeId: c.knowledgeId, baseCommit: c.commit, supports: a.content.supports, reason: "retired", createdAt: "now" });
+  const input = a.store.dreamingInput(a.target, [archived.commit]);
+  expect(input.text).toContain("unique complete predecessor");
+  expect(input).toHaveProperty("predecessors.0.revision.id", c.commit);
+  expect(input.tokens).toBe(tokens(input.text));
+});
+
+test("32b review: cross-K chained successors are read without expanding frozen family", () => {
+  const a = fixture(), c = a.create("absorbed"), b = a.create("middle"), d = a.create("final");
+  const range = a.store.retainDreamingRange(a.target, [c.commit]);
+  const merge = a.write({ op: "merge", intoKnowledgeId: b.knowledgeId, intoBaseCommit: b.commit, absorb: [{ knowledgeId: c.knowledgeId, baseCommit: c.commit }], ...a.content, text: "merged middle" });
+  const final = a.write({ op: "merge", intoKnowledgeId: d.knowledgeId, intoBaseCommit: d.commit, absorb: [{ knowledgeId: b.knowledgeId, baseCommit: merge.commit }], ...a.content, text: "unique final body" });
+  const input = a.store.dreamingInput(a.target, [c.commit]);
+  expect(input.versions.map(v => v.revision.id)).toEqual([final.commit]);
+  expect(input.text.match(/unique final body/g)).toHaveLength(1);
+  expect(a.store.dreamingRange(range.id)?.knowledgeIds).toEqual([c.knowledgeId]);
+  const archived = a.write({ op: "archive", knowledgeId: final.knowledgeId, baseCommit: final.commit, supports: a.content.supports, reason: "retired", createdAt: "now" });
+  const after = a.store.dreamingInput(a.target, [c.commit]);
+  expect(after.versions.map(v => v.revision.id)).toEqual([archived.commit]);
+  expect(after.predecessors.map(v => v.revision.id)).toEqual([final.commit]);
+  expect(after.text.match(/unique final body/g)).toHaveLength(1);
+  expect(input.versions[0]!.revision.id).toBe(final.commit);
+});
+
+test("32b review: sibling-only merge cannot replace input on the original path", () => {
+  const a = fixture(), c = a.create("original branch body"), b = a.create("survivor");
+  const turn = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "sibling", startedAt: "now" });
+  const noted = a.store.commitNotingRun({ run: { kind: "manual", sessionId: a.s.id, createdAt: "now" }, facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "sibling evidence", source: [`T${turn.id}#user`], createdAt: "now" }] });
+  if (!noted.ok) throw Error(noted.problems.join());
+  const sibling = { ...a.target, branch: "sibling", headTurnId: turn.id };
+  const merged = a.store.commitConsolidationRun({ path: sibling, run: { kind: "manual", sessionId: a.s.id, branch: "sibling", createdAt: "now" }, operations: [{ op: "merge", intoKnowledgeId: b.knowledgeId, intoBaseCommit: b.commit, absorb: [{ knowledgeId: c.knowledgeId, baseCommit: c.commit }], ...a.content, supports: [noted.facts[0]!.id], text: "sibling merged body" }] });
+  if (!merged.ok) throw Error(merged.problems.join());
+  expect(a.store.dreamingInput(a.target, [c.commit]).versions.map(v => v.revision.id)).toEqual([c.commit]);
+  expect(a.store.dreamingInput(sibling, [c.commit]).versions.map(v => v.revision.id)).toEqual([merged.committed[0]!.commit]);
+});
+
+test("32b review: shared settlement does not strand an unfinished derived range", () => {
+  const memory = TraceMemory(":memory:", vi.fn()), a = fixture(memory.store), b = fixture(a.store);
+  const c = a.create(), range = a.store.retainDreamingRange(a.target, [c.commit]);
+  const otherRange = a.store.retainDreamingRange(b.target, [c.commit]);
+  const derived = a.create("unfinished derived", "project", range.id);
+  a.store.completeDreaming(b.success(), [c.commit], [c.commit]);
+  expect(a.store.pendingKnowledgeEvents(a.target)).toEqual([]);
+  expect(a.store.dreamingRange(otherRange.id)).toBeNull();
+  expect(memory.taskEligibility("dreaming", a.target)).toEqual({ due: true });
+  const claim = a.store.acquireClaim(a.target, "dreaming", "retry");
+  expect(claim).not.toBeNull();
+  expect(a.store.retainDreamingRange(a.target, []).anchor).toBe(c.commit);
+  if (claim) a.store.releaseClaim(claim);
+  a.store.completeDreaming(b.success(), [], [derived.commit]);
+  expect(memory.taskEligibility("dreaming", a.target)).toEqual({ due: false });
+  expect(a.store.acquireClaim(a.target, "dreaming", "done")).toBeNull();
+  expect(a.store.dreamingRange(range.id)).toBeNull();
+  const next = a.create("new work");
+  expect(a.store.retainDreamingRange(a.target, [next.commit]).anchor).toBe(next.commit);
+  memory.close();
+});
+
+test.each([0, 1])("32b review: a copy failure rolls back the whole migration and restores FK=%s", initial => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    db.exec(`PRAGMA foreign_keys=OFF; CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT CHECK(kind IN ('manual','consolidation')));
+      CREATE TABLE task_claims(id INTEGER PRIMARY KEY, phase TEXT CHECK(phase IN ('noting','consolidation')));
+      CREATE TABLE child(run_id INTEGER REFERENCES runs(id)); INSERT INTO child VALUES (999);
+      INSERT INTO runs(kind) VALUES ('manual'); PRAGMA foreign_keys=${initial}`);
+    expect(() => migrateDreaming(db)).toThrow("foreign key violations");
+    expect(db.isTransaction).toBe(false);
+    expect(db.prepare("PRAGMA foreign_keys").get()!.foreign_keys).toBe(initial);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%_32b'").all()).toEqual([]);
+    expect(() => db.exec("INSERT INTO runs(kind) VALUES ('dreaming')")).toThrow(/CHECK/);
+    expect(db.prepare("SELECT * FROM runs").all()).toHaveLength(1);
+    db.exec("DELETE FROM child");
+    migrateDreaming(db);
+    db.exec("INSERT INTO runs(kind) VALUES ('dreaming')");
+  } finally { db.close(); }
+});
+
+test.each([0, 1])("32b review: locked real old tables restore FK=%s and preserve caller transactions", initial => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-32b-lock-")); dirs.push(dir);
+  const file = join(dir, "old.sqlite"), db = new DatabaseSync(file), lock = new DatabaseSync(file);
+  try {
+    db.exec("CREATE TABLE runs(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT CHECK(kind IN ('manual','consolidation'))); CREATE TABLE task_claims(id INTEGER PRIMARY KEY, phase TEXT CHECK(phase IN ('noting','consolidation'))); INSERT INTO runs(kind) VALUES ('manual')");
+    db.exec(`PRAGMA foreign_keys=${initial}`);
+    lock.exec("BEGIN IMMEDIATE");
+    expect(() => migrateDreaming(db)).toThrow(/locked/);
+    expect(db.prepare("PRAGMA foreign_keys").get()!.foreign_keys).toBe(initial);
+    expect(db.isTransaction).toBe(false);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%_32b'").all()).toEqual([]);
+    lock.exec("ROLLBACK");
+    db.exec("BEGIN");
+    expect(() => migrateDreaming(db)).toThrow();
+    expect(db.isTransaction).toBe(true);
+    db.exec("ROLLBACK");
+    migrateDreaming(db);
+    expect(db.prepare("PRAGMA foreign_keys").get()!.foreign_keys).toBe(initial);
+    expect(db.prepare("SELECT * FROM runs").all()).toHaveLength(1);
+    db.exec("INSERT INTO runs(kind) VALUES ('dreaming')");
+  } finally { lock.close(); db.close(); }
+  const reopened = new DatabaseSync(file);
+  try { expect(reopened.prepare("SELECT * FROM runs").all()).toHaveLength(2); } finally { reopened.close(); }
+});
 
 test("32: completion is per exact version and shared database-wide; settlement is a separate set", () => {
   const a = fixture(), b = fixture(a.store), foreign = fixture(a.store, "foreign");

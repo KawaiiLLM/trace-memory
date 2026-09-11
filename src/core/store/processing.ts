@@ -66,23 +66,20 @@ export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE
 }
 
 export function pendingEvents(store: Store, path: KnowledgePath): KnowledgeEvent[] {
-  const graph = store.commitGraph(path);
-  const settled = new Set(store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(r => Number(r.event_id)));
-  // Own transformations belong to a retained range, not another source backlog. Unlinked legacy
-  // Dreamer rows remain pending conservatively rather than disappearing on the role name alone.
-  const derived = new Set(store.db.prepare(`SELECT k.id FROM knowledge_revisions k
-    JOIN dreaming_run_ranges d ON d.run_id = k.run_id`).all().map(r => Number(r.id)));
+  const candidates = store.pendingKnowledgeRevisions(path);
+  if (!candidates.length) return [];
+  const snapshot = store.pathSnapshot(path);
   const retained = new Set(store.db.prepare(`SELECT e.event_id FROM dreaming_range_events e JOIN dreaming_ranges r ON r.id = e.range_id
     WHERE r.session_id = ? AND r.branch = ? AND r.completed_run IS NULL`).all(path.sessionId, path.branch ?? "").map(r => Number(r.event_id)));
-  return graph.revisions.filter(r => !settled.has(r.id) && !derived.has(r.id) && (graph.applicable.has(r.id) || retained.has(r.id)))
+  return candidates.filter(r => retained.has(r.id) || store.commitApplies(r, path, snapshot))
     .map(r => ({ id: r.id, knowledgeId: r.knowledgeId, tokens: changeWeight(store, r.id) }));
 }
 
 /** Full block, never a truncated budget selection. Shared by placement and final certification. */
-export function processedBlock(values: KnowledgeWithRevision[]): string {
+export function processedBlock(values: KnowledgeWithRevision[], render = renderKnowledge): string {
   return renderKnowledgeBlock(KNOWLEDGE_CATEGORIES.flatMap(category => {
     const members = values.filter(v => v.revision.category === category);
-    return members.length ? [{ category, text: members.map(v => renderKnowledge(v)).join("\n") }] : [];
+    return members.length ? [{ category, text: members.map(v => render(v)).join("\n") }] : [];
   }));
 }
 
@@ -98,22 +95,32 @@ function projectionPaths(store: Store): KnowledgePath[] {
       AND NOT EXISTS (SELECT 1 FROM turns c WHERE c.parent_turn_id = t.id)`).all(sessionId))
       paths.push({ sessionId, headTurnId: Number(turn.id) });
   }
-  return paths;
+  return [...new Map(paths.map(path => [JSON.stringify([path.sessionId, path.branch ?? null, path.headTurnId ?? null]), path])).values()];
 }
 
 export function placementOwner(store: Store, value: KnowledgeWithRevision): string {
   const r = value.revision;
   if (r.scope === "global") return "global";
-  const session = r.runId === null ? null : store.getRun(r.runId)?.sessionId;
-  if (session == null) throw new Error(`K${r.knowledgeId}@${r.id}: missing run-session scope attribution`);
-  return r.scope === "session" ? `session:${session}` : `project:${store.getSession(session)!.projectId}`;
+  const origin = r.runId === null ? null : store.db.prepare(`SELECT s.id, s.project_id FROM runs u
+    JOIN sessions s ON s.id = u.session_id WHERE u.id = ?`).get(r.runId);
+  if (!origin) throw new Error(`K${r.knowledgeId}@${r.id}: missing run-session scope attribution`);
+  return r.scope === "session" ? `session:${origin.id}` : `project:${origin.project_id}`;
 }
 
-export function processedProjection(store: Store, accepted: number[] = []) {
+export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>) {
   const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
   const pools = new Map<string, Map<number, KnowledgeWithRevision>>();
-  const paths = projectionPaths(store).map(path => {
-    const values = store.listCurrentKnowledge(path).filter(v => processed.has(v.revision.id));
+  if (!processed.size) return { pools, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
+  if (affected?.size === 0) return { pools, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
+  const input = store.commitGraphInput();
+  const knowledge = new Map<number, KnowledgeWithRevision["knowledge"]>();
+  const paths = projectionPaths(store).filter(path => !affected || affected.has("global") ||
+    affected.has(`session:${path.sessionId}`) || affected.has(`project:${store.getSession(path.sessionId)!.projectId}`)).map(path => {
+    const values = store.commitGraph(path, undefined, undefined, input).current
+      .filter(r => r.op !== "archive" && processed.has(r.id)).map(revision => {
+        if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, store.getKnowledge(revision.knowledgeId)!);
+        return { knowledge: knowledge.get(revision.knowledgeId)!, revision };
+      });
     for (const value of values) {
       const owner = placementOwner(store, value);
       if (!pools.has(owner)) pools.set(owner, new Map());
@@ -125,15 +132,20 @@ export function processedProjection(store: Store, accepted: number[] = []) {
 }
 
 export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>) {
-  const { pools, paths } = processedProjection(store, accepted);
+  const { pools, paths } = processedProjection(store, accepted, affected);
+  const rendered = new Map<number, string>();
+  const render = (value: KnowledgeWithRevision) => {
+    if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
+    return rendered.get(value.revision.id)!;
+  };
   const totals: { scope: string; tokens: number; cap: number }[] = [];
   for (const [scope, values] of pools) {
     if (affected && !affected.has(scope)) continue;
-    totals.push({ scope, tokens: tokens(processedBlock([...values.values()])), cap: scope === "global" ? 4000 : scope.startsWith("project:") ? 10000 : 1000 });
+    totals.push({ scope, tokens: tokens(processedBlock([...values.values()], render)), cap: scope === "global" ? 4000 : scope.startsWith("project:") ? 10000 : 1000 });
   }
   for (const { path, values } of paths) {
     if (affected && !values.some(v => affected.has(placementOwner(store, v)))) continue;
-    totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values)), cap: 15000 });
+    totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values, render)), cap: 15000 });
   }
   return { totals, problems: totals.filter(t => t.tokens > t.cap).map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
 }

@@ -7,8 +7,13 @@ export function migrateDreaming(db: DatabaseSync): void {
     sql: String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)!.sql),
   })).filter(table => !table.sql.includes("'dreaming'"));
   if (!tables.length) return;
-  db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+  if (db.isTransaction) throw new Error("Dreaming migration requires its own transaction");
+  const foreignKeys = Number(db.prepare("PRAGMA foreign_keys").get()!.foreign_keys);
+  let began = false, failed = false;
   try {
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec("BEGIN IMMEDIATE");
+    began = true;
     for (const { name, sql } of tables) {
       const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index','trigger') AND sql IS NOT NULL").all(name);
       const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(name);
@@ -21,9 +26,13 @@ export function migrateDreaming(db: DatabaseSync): void {
     if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Dreaming migration: foreign key violations");
     db.exec("COMMIT");
   } catch (error) {
-    db.exec("ROLLBACK");
+    failed = true;
+    if (began && db.isTransaction) {
+      try { db.exec("ROLLBACK"); } catch { /* Preserve the migration error. */ }
+    }
     throw error;
   } finally {
-    db.exec("PRAGMA foreign_keys = ON");
+    try { db.exec(`PRAGMA foreign_keys = ${foreignKeys}`); }
+    catch (error) { if (!failed) throw error; }
   }
 }

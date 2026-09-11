@@ -51,6 +51,7 @@ For example, either settings file can contain:
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
+    "dreaming.triggerTokens": 5000,
     "consolidation.batchTokens": 10000,
     "consolidation.knowledgeTokens": 10000,
     "render.knowledgeBlockTokens": 20000,
@@ -82,7 +83,7 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
   load by name with that list. They set the level this phase's **subagent** runs think at; `inherit`
   and omission both mean the foreground level frozen at admission (26b). A fork run keeps inheriting
   either way, so on a forking Noter the value reaches only the fallback child.
-- Core settings use dotted names: every `render.*`, `noting.*`, and `consolidation.*` key
+- Core settings use dotted names: every `render.*`, `noting.*`, `consolidation.*`, and `dreaming.*` key
   in `DEFAULT_CONFIG` is accepted with the core's default and value type.
 - `noting.forkModeDefault` defaults to `false` (subagent). Set it to `true` for fork
   notings. Defaults apply only when no explicit override is supplied; existing `true` settings,
@@ -233,6 +234,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   pending with a capacity notification — unless it was a *fork* that could not fit, which 27b
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
+- `dreaming.triggerTokens` defaults to **5,000 pending knowledge-change tokens** and must be a
+  positive safe integer. Exactly 5,000 meets the default threshold. In 32b this only reports
+  eligibility; it does not launch a Dreamer worker or add model/menu settings. A frozen unfinished
+  range retains retry eligibility without charging its own edits as new trigger work.
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable

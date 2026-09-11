@@ -548,14 +548,18 @@ export class Store {
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
-    this.db.exec("PRAGMA foreign_keys = ON;");
-    // Another process may hold a short write lock (its own noting or consolidation commit); wait instead of failing.
-    // Commits run as immediate transactions: a deferred one that reads first and then writes gets
-    // SQLITE_BUSY at once, without the busy handler, when a writer is already active.
-    this.db.exec("PRAGMA busy_timeout = 5000;");
-    this.db.exec(SCHEMA_SQL);
-    migrateDreaming(this.db);
-    this.db.exec(PROCESSING_SQL);
+    try {
+      this.db.exec("PRAGMA foreign_keys = ON;");
+      // Another process may hold a short write lock; wait instead of failing. Immediate
+      // transactions avoid a deferred read-to-write upgrade bypassing the busy handler.
+      this.db.exec("PRAGMA busy_timeout = 5000;");
+      this.db.exec(SCHEMA_SQL);
+      migrateDreaming(this.db);
+      this.db.exec(PROCESSING_SQL);
+    } catch (error) {
+      try { this.db.close(); } catch { /* Preserve the initialization error. */ }
+      throw error;
+    }
   }
 
   beginShutdown(): void {
@@ -705,7 +709,7 @@ export class Store {
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
         : phase === "dreaming" ? this.pendingKnowledgeEvents(target)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-      if (!pending.length || !eligible()) return null;
+      if ((!pending.length && !(phase === "dreaming" && this.retryDreamingRange(target))) || !eligible()) return null;
       const current = this.getClaim(target.sessionId, phase), now = Date.now();
       const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
       if (current && current.expiresAt > now && !takeover) return null;
@@ -775,7 +779,8 @@ export class Store {
         const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId)
           : phase === "dreaming" ? this.pendingKnowledgeEvents({ sessionId, branch: String(branch), headTurnId })
           : this.consolidationBatch(sessionId, String(branch), headTurnId);
-        if (pending.length) targets.push({ sessionId, branch: String(branch), headTurnId, oldest: Math.min(...pending.map(e => e.id)) });
+        const retry = phase === "dreaming" ? this.retryDreamingRange({ sessionId, branch: String(branch), headTurnId }) : null;
+        if (pending.length || retry) targets.push({ sessionId, branch: String(branch), headTurnId, oldest: retry?.anchor ?? Math.min(...pending.map(e => e.id)) });
       }
     }
     // Global source/fact allocation order is durable pending arrival order; branches never coalesce.
@@ -1093,15 +1098,21 @@ export class Store {
   /** Compatibility for callers without a host head: use the branch's latest recorded or manual turn. */
   knowledgePath(sessionId: number, branch?: string, headTurnId?: number | null): KnowledgePath {
     if (headTurnId !== undefined) return branch === undefined ? { sessionId, headTurnId } : { sessionId, headTurnId, branch };
-    if (branch === undefined) return { sessionId, headTurnId: this.listTurns(sessionId).at(-1)?.id ?? null };
+    if (branch === undefined) {
+      const row = this.db.prepare("SELECT id FROM turns WHERE session_id = ? ORDER BY id DESC LIMIT 1").get(sessionId);
+      return { sessionId, headTurnId: row ? Number(row.id) : null };
+    }
     const native = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch) as { entry_ids: string } | undefined;
-    if (native) return { sessionId, headTurnId: this.getSourceEntry((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0)?.turnId ?? null, branch };
+    if (native) {
+      const row = this.db.prepare("SELECT turn_id FROM source_entries WHERE id = ?").get((JSON.parse(native.entry_ids) as number[]).at(-1) ?? 0);
+      return { sessionId, headTurnId: row ? Number(row.turn_id) : null, branch };
+    }
     const member = this.db.prepare("SELECT s.turn_id FROM noted_entries e JOIN source_entries s ON s.id = e.entry_id JOIN runs r ON r.id = e.run_id WHERE r.session_id = ? AND r.branch = ? ORDER BY s.id DESC LIMIT 1").get(sessionId, branch) as { turn_id: number } | undefined;
-    const recorded = Math.max(member?.turn_id ?? 0, ...this.listRuns(sessionId).filter(r => r.kind === "noting" && r.outcome === "success" && r.branch === branch)
-      .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0)));
-    const manual = this.listRuns(sessionId).filter(r => r.kind === "manual" && r.branch === branch)
-      .map(r => Number(/\/T(\d+)$/.exec(r.rangeTo ?? "")?.[1] ?? 0));
-    return { sessionId, headTurnId: Math.max(recorded, ...manual) || null, branch };
+    let recorded = member?.turn_id ?? 0;
+    for (const row of this.db.prepare(`SELECT range_to FROM runs WHERE session_id = ? AND branch = ?
+      AND (kind = 'manual' OR (kind = 'noting' AND outcome = 'success'))`).all(sessionId, branch))
+      recorded = Math.max(recorded, Number(/\/T(\d+)$/.exec(String(row.range_to ?? ""))?.[1] ?? 0));
+    return { sessionId, headTurnId: recorded || null, branch };
   }
 
   private admits(revision: KnowledgeRevision, sessionId: number): boolean {
@@ -1125,16 +1136,26 @@ export class Store {
    *
    * An operation that has already built the path snapshot (22a) passes it: the footer's four counts
    * (24a) are one operation and share one membership, exactly as `consolidationBatch` does. */
-  commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot): CommitGraph {
+  commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
     const snapshot = path ? prepared ?? this.pathSnapshot(path) : null;
+    const { revisions, parents } = input;
+    const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
+      (r.scope === "project" && r.runId !== null && this.getSession(this.runSessionId(r.runId)!)?.projectId === projectId)) &&
+      (!path || this.commitApplies(r, path, snapshot!)));
+    return this.projectCommitGraph(revisions, parents, applicable);
+  }
+
+  /** Immutable DAG inputs shared only within one synchronous operation, never across runs. */
+  commitGraphInput() {
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
       parents.get(link.to_commit)!.push(link.from_commit);
     }
-    const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
-      (r.scope === "project" && r.runId !== null && this.getSession(this.runSessionId(r.runId)!)?.projectId === projectId)) &&
-      (!path || this.commitApplies(r, path, snapshot!)));
+    return { revisions, parents };
+  }
+
+  private projectCommitGraph(revisions: KnowledgeRevision[], parents: Map<number, number[]>, applicable: KnowledgeRevision[]): CommitGraph {
     const superseded = new Set<number>();
     // ponytail: scan the commit DAG per read; index/cache only if measured history size requires it.
     for (const r of applicable) {
@@ -1373,26 +1394,66 @@ export class Store {
 
   pendingKnowledgeEvents(path: KnowledgePath) { return pendingEvents(this, path); }
 
+  pendingKnowledgeRevisions(path: KnowledgePath) {
+    // Compare immutable integer identities first; deserialize only pending candidates, not the
+    // settled history. All exclusions use existing primary keys, with no second event ledger.
+    return this.db.prepare(`SELECT r.* FROM knowledge_revisions r WHERE r.id IN (
+      SELECT id FROM knowledge_revisions EXCEPT SELECT event_id FROM settled_knowledge_events)
+      AND NOT EXISTS (SELECT 1 FROM dreaming_run_ranges d WHERE d.run_id = r.run_id)
+      AND (r.scope = 'global' OR EXISTS (SELECT 1 FROM runs u JOIN sessions s ON s.id = u.session_id
+        WHERE u.id = r.run_id AND ((r.scope = 'session' AND s.id = ?) OR
+          (r.scope = 'project' AND s.project_id = (SELECT project_id FROM sessions WHERE id = ?))))
+        OR EXISTS (SELECT 1 FROM dreaming_range_events e JOIN dreaming_ranges d ON d.id = e.range_id
+          WHERE e.event_id = r.id AND d.session_id = ? AND d.branch = ? AND d.completed_run IS NULL)) ORDER BY r.id`)
+      .all(path.sessionId, path.sessionId, path.sessionId, path.branch ?? "").map(toKnowledgeRevision);
+  }
+
   isKnowledgeProcessed(commitId: number): boolean {
     return !!this.db.prepare("SELECT 1 FROM processed_knowledge_versions WHERE commit_id = ?").get(commitId);
   }
 
   /** Event weight is cumulative; changed input supplies each current exact body only once.
    * A bounded caller selects eventIds first and settles only those actually supplied. */
-  dreamingInput(path: KnowledgePath, eventIds = this.pendingKnowledgeEvents(path).map(e => e.id)) {
-    const events = this.pendingKnowledgeEvents(path).filter(e => eventIds.includes(e.id));
-    const ids = new Set(events.map(e => e.knowledgeId));
+  dreamingInput(path: KnowledgePath, eventIds?: number[]) {
+    const selected = eventIds && new Set(eventIds);
+    const events = this.pendingKnowledgeEvents(path).filter(e => !selected || selected.has(e.id));
     const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
-    if (range) for (const id of range.knowledgeIds) ids.add(id);
     const graph = this.commitGraph(path);
-    const versions = graph.current.filter(r => ids.has(r.knowledgeId)).map(revision => ({
+    const versions = this.dreamingResults(graph, events.map(e => e.id), range).map(revision => ({
       knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
     }));
+    const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
+      const revision = this.knowledgeRevision(id);
+      if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
+      return { knowledge: this.getKnowledge(revision.knowledgeId)!, revision };
+    });
+    const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
     const text = [`Change events: ${events.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
+      ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${renderKnowledge(v)}`),
       ...versions.map(v => v.revision.op === "archive"
         ? `K${v.knowledge.id}@${v.revision.id} archived; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
         : `${renderKnowledge(v)}\n  processed: ${v.processed}`)].join("\n");
-    return { events, oldestId: events[0]?.id ?? null, versions, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
+    return { events, oldestId: range?.anchor ?? events[0]?.id ?? null, versions, predecessors, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
+  }
+
+  /** Read successors across merge edges; this never adds their identities to the writable family. */
+  private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null) {
+    const roots = new Set([...events, ...(range?.eventIds ?? [])]);
+    const family = new Set(range?.knowledgeIds ?? []);
+    for (const revision of graph.revisions) if (family.has(revision.knowledgeId)) roots.add(revision.id);
+    const descendants = new Set<number>();
+    for (const id of roots) if (!descendants.has(id)) for (const child of graph.descendants(id)) descendants.add(child);
+    return graph.current.filter(r => descendants.has(r.id));
+  }
+
+  /** A frozen unfinished range retries independently of new-event weight and shared settlement. */
+  retryDreamingRange(path: KnowledgePath, input?: ReturnType<Store["commitGraphInput"]>): DreamingRange | null {
+    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
+    if (!range) return null;
+    if (this.db.prepare(`SELECT 1 FROM dreaming_range_events e WHERE range_id = ?
+      AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id) LIMIT 1`).get(range.id)) return range;
+    const graph = this.commitGraph({ sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId }, undefined, undefined, input);
+    return this.dreamingResults(graph, [], range).some(r => !this.isKnowledgeProcessed(r.id)) ? range : null;
   }
 
   dreamingRange(id: number): DreamingRange | null {
@@ -1441,15 +1502,26 @@ export class Store {
       validate();
       for (const id of [...events, ...results]) if (!Number.isSafeInteger(id) || !this.db.prepare("SELECT 1 FROM knowledge_revisions WHERE id = ?").get(id))
         throw new Error(`Unknown knowledge commit ${id}`);
-      const check = this.checkProcessedScopes(results);
+      const affected = new Set(results.map(id => {
+        const revision = this.knowledgeRevision(id)!;
+        return placementOwner(this, { knowledge: this.getKnowledge(revision.knowledgeId)!, revision });
+      }));
+      const check = checkProcessedScopes(this, results, affected);
       if (check.problems.length) throw new Error(check.problems.join("; "));
       this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
       for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
       for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
-      this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ? WHERE completed_run IS NULL
-        AND id IN (SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?)
+      // Shared certification may finish another session's retained work too. Settlement alone
+      // cannot close it: every applicable current result, including derived K, must be processed.
+      const ranges = this.db.prepare(`SELECT session_id, branch FROM dreaming_ranges WHERE completed_run IS NULL
         AND NOT EXISTS (SELECT 1 FROM dreaming_range_events e WHERE e.range_id = dreaming_ranges.id
-          AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).run(runId, runId);
+          AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).all();
+      const input = ranges.length ? this.commitGraphInput() : undefined;
+      for (const row of ranges) {
+        const path = { sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: null };
+        if (!this.retryDreamingRange(path, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
+          WHERE session_id = ? AND branch = ? AND completed_run IS NULL`).run(runId, path.sessionId, path.branch);
+      }
     });
   }
 

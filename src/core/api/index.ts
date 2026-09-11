@@ -53,6 +53,7 @@ export interface TraceMemoryConfig {
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
+  /** Positive safe integer; default 5,000 change tokens. Eligibility only, no worker launch. */
   dreaming: { triggerTokens: number };
   consolidation: {
     /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
@@ -423,7 +424,7 @@ export interface TraceMemory {
    * body, and pending work stays pending until its business commit. */
   progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number; knowledge: number };
   /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
-  spend(sessionId: number): { runs: { noting: number; consolidation: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},
@@ -584,7 +585,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return { due: phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
-      : phase === "dreaming" ? store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
+      : phase === "dreaming" ? !!store.retryDreamingRange(target) || store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
       : consolidationDue(target) };
   };
   const execute = async (phase: Exclude<Phase, "dreaming">, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
