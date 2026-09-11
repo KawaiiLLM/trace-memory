@@ -1,5 +1,7 @@
 src/core/ is host-agnostic: it must not import any host SDK.
 
+The [entry-address contract](unified-entry.md) supersedes older ticket descriptions below of Raw labels, source previews, trace content limits and full-read branch scope. It is the current reference for stable E identities, ordered normalized blocks, per-child budgets and semantic read completion.
+
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
 - noting/    freeze the task material, provide tools, record the last provider request and final text.
@@ -186,8 +188,7 @@ Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Consolidation range. They do not
 advance Noting. `memory` writes knowledge with the uniform batch contract below.
 
-Sources are `T<id>#user`, `T<id>#assistant`, or `T<id>#t<n>` in the frozen entry set
-(Noting) or current selected source path (manual). Time is the first source turn's
+New sources are exact `T<id>#E<n>` entries or their actual `@text`, `@thinking` or opaque-call-ID blocks in the frozen entry set (Noting) or selected source path (manual). Legacy `#user`, `#assistant` and `#t<n>` retain their historical meaning and stored spelling. The host supplies ordered normalized blocks once; raw JSON shape guesses cannot invent precise fragments. Time is the first source turn's
 `started_at`; timestamps from the model are rejected. Event facts require
 `status` (completed, reported, dispatched, attempted); other categories reject
 status. Text has no completion prefix; the shared renderer supplies it. Relations
@@ -279,8 +280,8 @@ permanently truncated by pagination. The query freezes its material, scope and
 rendering profile; later writes or branch changes cannot alter its continuation.
 Named components resolve once without child cursors; fact intervals retain lazy
 record rendering and batched relation snapshots. A knowledge read refreshes handles
-only after the entire expression's final page. Rejected continuation requests do
-not consume a valid cursor. No new tool parameter is introduced.
+only after the entire expression's final page and only for complete semantic bodies. Finishing a truncated preview grants no exact write handle. Rejected continuation requests do
+not consume a valid cursor. Trace content parameters are `itemBudget`, `toolCallBudget` and `toolResultBudget`; `pageBudget` independently caps pages. All are frozen with the cursor; public pages cannot disable pagination.
 
 `renderEntry` is the one view, under one profile of three independent budgets (ticket 30,
 superseding 23c's single `B` split in half): a tool-call part is worth at most `C`

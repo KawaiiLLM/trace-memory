@@ -62,6 +62,8 @@ Enabled sessions make background model requests using your Pi credentials and ma
 
 The agent gets four tools: `trace`, `search`, `note`, and `memory`. Explicit reads can search across the local database; automatic knowledge selection and write evidence follow scope and conversation ancestry. Topics organize knowledge without changing those permissions.
 
+**Development-tree address update:** `T792#E2` reads a stable native entry; `T792#E2,E7@text` projects text from the selected entries; `T792@toolResult` reads complete result messages. New Noter citations use exact E/block labels; legacy citations remain readable. Content limits apply to each selected child, while pages independently default to 2,000 tokens. Set all three content budgets to null (or use `full: true`) for uncompressed content, then follow cursors. See [entry addresses and read budgets](docs/unified-entry.md) for grammar, compatibility and upgrade rules.
+
 ## Data and limits
 
 - **Storage:** the default database is `~/.trace-memory/trace.db`; the installation example uses a separate Beta database. New worker logs default to `<Pi agent directory>/sessions/trace-memory/`; an explicit `runsDir` override is preserved. Existing logs are not moved. The files contain conversation content and model requests: keep them private. Log retention is not automatic.

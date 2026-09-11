@@ -111,7 +111,7 @@ test("trace and search use parameter options, share scoped pagination, and rejec
   memory.tools(manual())[2]!.execute({ facts: [fact(), fact()] });
   const [trace, search] = memory.tools(manual());
   expect(trace!.execute({ address: "T1", tool: 1, full: true })).toContain("x".repeat(2000));
-  expect(trace!.execute({ address: "T1" })).toContain('trace({"address":"T1#t1","full":true})');
+  expect(trace!.execute({ address: "T1" })).toContain('trace({"address":"T1#E4@call-1","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})');
   for (const address of ["T1 tool=1 full", "T1 cap=0", "F1 cap=1"]) expect(trace!.execute({ address })).toContain("rejected:");
   const first = search!.execute({ query: "project", layer: "facts", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1];

@@ -213,10 +213,13 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
     expect(tokens(view)).toBeLessThanOrEqual(memory.config.render.entryTokens);
   }
   expect(text).not.toContain(`[entry ${JSON.stringify([pending[0]!.nativeLineage, pending[0]!.nativeId])}]`);
-  expect(text.indexOf(`[T${next.id}#user]:`)).toBeLessThan(text.indexOf(`[T${next.id}#t1]`));
+  const own = pending.filter(entry => entry.turnId === next.id);
+  const call = own.find(entry => entry.role === "assistant" && entry.calls.length)!;
+  const resultEntry = own.find(entry => entry.role === "toolResult")!;
+  expect(text.indexOf(`[T${next.id}#E1@text] user:`)).toBeLessThan(text.indexOf(`[T${next.id}#E${call.entryOrdinal}@`));
   // Tool identity and status remain, and so does what `C` and `R` can hold of the payload.
-  expect(text).toContain(`[T${next.id}#t1] Bash(command="SECRET_ARGUMENT")`);
-  expect(text).toContain(`[T${next.id}#t1] Bash success: `);
+  expect(text).toContain(`[T${next.id}#E${call.entryOrdinal}@${call.calls[0]!.callId}] Bash(command="SECRET_ARGUMENT")`);
+  expect(text).toContain(`[T${next.id}#E${resultEntry.entryOrdinal}@${resultEntry.calls[0]!.callId}] Bash success: `);
   expect(text).toContain("SECRET_RESULT"); expect(text).not.toContain("x".repeat(4_000));
   // User text is excerpted, and the omission is marked in the one wording every view uses.
   expect(text).toContain("USER_HEAD"); expect(text).not.toContain(body);

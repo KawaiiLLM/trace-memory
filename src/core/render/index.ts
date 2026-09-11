@@ -1,9 +1,11 @@
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type { KnowledgeRevision, KnowledgeMark, Fact, FactRelation, ToolCall, Turn } from "../model/index.ts";
 import { sourceAddresses } from "../store/index.ts";
+import { entryAddress, fragmentAddress, sourceBlocks, blockText } from "../model/source.ts";
+import type { Selector } from "../model/address.ts";
 import type { SourceEntry, KnowledgeWithRevision } from "../store/index.ts";
 
-export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}` }
+export interface TurnOptions { tool?: number; full?: boolean; part?: "user" | "assistant" | `t${number}`; selector?: Selector; blocks?: boolean }
 export interface Rendered { content: string; receipts: string[] }
 
 // Token estimate (no tokenizer dependency). Two weights over character classes cannot price both
@@ -122,7 +124,7 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "30-v3-one-view";
+export const ENTRY_VIEW_VERSION = "33-v1-entry-addresses";
 // One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
 // omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
 // of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in
@@ -219,11 +221,6 @@ function halves(cut: Cut, kept: number): { head: string; tail: string; omitted: 
 /** Pi's line shape with our address as the label: the label, a colon, and the body on the same line,
  * continuing on the following lines as stored (`core/compaction/utils.js`'s `[User]: …`). */
 const bodyLine = (label: string, body: string) => body ? `${label}: ${body}` : `${label}:`;
-/** The natural-text part of an entry, and Noting's head reply, from one shape: `renderTurn` is gone
- * with 23c ruling 4, and the head reply is the same line every entry view emits. */
-export const renderText = (turnId: number, role: "user" | "assistant", text: string): string =>
-  bodyLine(`[T${turnId}#${role}]`, text);
-
 /** Natural text: the text as stored, cut head and tail in equal halves when it must yield. Text is
  * not exempt by rule, only by size (23). */
 const textFloor = (label: string, body: string) => body ? `${label}:\n${truncated(codePoints(body))}` : bodyLine(label, body);
@@ -364,31 +361,44 @@ export type PartChoice = "render" | "floor" | "drop";
  * omissions in line, in the `[... N characters truncated]` family the run audit detects. */
 export interface EntryView extends Rendered { omitted: number[] }
 
-/** The parts of one entry in order: at most one natural-text part and one part per tool call the
+/** The parts of one entry in native block order, including interleaved text and calls the
  * caller keeps. Both paths below build them here, so the budgeted view and `full` speak the same
  * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
  * which is what makes `full` free of every budget device (23c ruling 4). */
-function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice):
-  { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
+function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (address: string) => PartChoice,
+  selector?: Selector): { ordinal: number | null; choice: PartChoice; whole: () => string; floor: () => string; part: () => Part }[] {
   const sources: ReturnType<typeof sourceParts> = [];
-  const isResult = entry.role === "toolResult";
-  const role = entry.role === "user" ? "user" : "assistant";
-  if (speaks(entry) && choose(`T${entry.turnId}#${role}`) === "render") {
-    const label = `[T${entry.turnId}#${role}]`, body = entry.text || "[non-text content omitted]";
-    sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body),
-      floor: () => textFloor(label, body), part: () => textPart(label, body) });
+  const blocks = sourceBlocks(entry);
+  if (blocks.length && blocks.every(block => block.kind === "thinking") && selector?.kind !== "thinking"
+    && !selector && choose(`T${entry.turnId}#assistant`) !== "drop") {
+    const label = `[${entryAddress(entry)}] assistant`, body = "[thinking omitted]";
+    sources.push({ ordinal: null, choice: "render", whole: () => bodyLine(label, body), floor: () => bodyLine(label, body), part: () => textPart(label, body) });
   }
-  for (const call of entry.calls) {
-    const choice = choose(`T${entry.turnId}#t${call.ordinal}`);
+  for (const block of blocks) {
+    const tool = block.kind === "call" || block.kind === "result";
+    if (block.kind === "thinking" && selector?.kind !== "thinking") continue;
+    if (selector?.kind === "thinking" && block.kind !== "thinking") continue;
+    if (selector?.kind === "call" && (!tool || block.call.callId !== selector.id)) continue;
+    if (selector?.kind === "text" && block.kind !== "text" && block.kind !== "result") continue;
+    const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
+    const choice = choose(legacy);
     if (choice === "drop") continue;
-    const label = `[T${entry.turnId}#t${call.ordinal}] ${call.name}`;
-    sources.push(isResult
-      ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, resultText(call.result ?? "")),
-          floor: () => resultFloor(`${label} ${call.status}`, resultText(call.result ?? "")),
-          part: () => resultPart(`${label} ${call.status}`, resultText(call.result ?? "")) }
-      : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
-          floor: () => argumentsFloor(label, items(call.input ?? "")),
-          part: () => argumentsPart(label, call.input ?? "") });
+    const address = fragmentAddress(entry, block);
+    const role = ` ${entry.role}`;
+    if ("text" in block) {
+      const label = `[${address}]${role}`, body = block.text;
+      sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),
+        floor: () => textFloor(label, body), part: () => textPart(label, body) });
+    } else {
+      const call = block.call, label = `[${address}] ${call.name}`;
+      const result = () => selector?.kind === "text" ? { text: blockText(block) } : resultText(call.result ?? "");
+      sources.push(block.kind === "result"
+        ? { ordinal: call.ordinal, choice, whole: () => resultWhole(`${label} ${call.status}`, result()),
+            floor: () => resultFloor(`${label} ${call.status}`, result()),
+            part: () => resultPart(`${label} ${call.status}`, result()) }
+        : { ordinal: call.ordinal, choice, whole: () => argumentsWhole(label, items(call.input ?? "")),
+            floor: () => argumentsFloor(label, items(call.input ?? "")), part: () => argumentsPart(label, call.input ?? "") });
+    }
   }
   return sources;
 }
@@ -398,16 +408,16 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
  * token measurement — so a `full` read of a large result copies stored strings as the deleted evidence
  * path did. A sealed part still shows its floor, which is what `tool` selection asks of it. */
 export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render"): EntryView {
-  const sources = sourceParts(entry, resultText, choose);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector);
   return { receipts: [], content: sources.map((source) => source.choice === "floor" ? source.floor() : source.whole()).join("\n"),
     omitted: sources.filter((source) => source.ordinal !== null && source.choice === "floor").map((source) => source.ordinal!) };
 }
 
 /** One immutable view of one source entry (ticket 23, one profile since 30), used by Noting material,
  * compaction, branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one
- * natural-text part and one part per tool call. No call id and no native-identity header enters the
- * model-facing text — native identity and lineage stay in storage and in the run's entry audit, and the
+ * ordered text/call/result blocks. Exact labels include opaque call IDs, while native message
+ * identity and lineage stay in storage and in the run's entry audit. The
  * addresses the Noter cites are the ones the labels carry. Allocation is staged (30 "Rendering
  * contract"): each tool part is capped first by its own allowance, `C` for a call and `R` for a result,
  * neither borrowed from the other; if the entry is still over `E`, result payloads give way first,
@@ -415,8 +425,8 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
  * the text part yield. Nothing is emitted shorter than a part's minimum and no budget is exceeded to
  * make room: when even the minima cannot fit `E`, the capacity error leaves the entry pending. */
 export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText,
-  choose: (address: string) => PartChoice = () => "render"): EntryView {
-  const sources = sourceParts(entry, resultText, choose);
+  choose: (address: string) => PartChoice = () => "render", selector?: Selector, perBlock = false): EntryView {
+  const sources = sourceParts(entry, resultText, choose, selector);
   if (!sources.length) return { content: "", receipts: [], omitted: [] };
   const ordinals = sources.map((source) => source.ordinal);
   const isResult = entry.role === "toolResult";
@@ -431,16 +441,22 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
       : separator + part.render(Math.max(0, cap - tokens(separator))) };
   });
   const toolCap = isResult ? profile.toolResultTokens : profile.toolInputTokens;
-  const caps = sources.map(source => source.ordinal === null ? profile.entryTokens : toolCap);
+  const caps = sources.map(source => source.ordinal === null ? profile.entryTokens : Math.min(toolCap, perBlock ? profile.entryTokens : Infinity));
   const capacity = () => new Error("entry view capacity cannot hold source labels and omission markers");
   // Verified before returning, with the entry against `E` below: no tool part exceeds its own cap.
-  for (const [index, part] of parts.entries()) if (ordinals[index] !== null && part.minimum > caps[index]!) throw capacity();
+  for (const [index, part] of parts.entries()) if (Math.min(part.minimum, tokens(part.whole)) > caps[index]!) throw capacity();
+  if (perBlock) {
+    const rendered = parts.map((part, index) => part.render(caps[index]!));
+    if (rendered.some((text, index) => tokens(text) > caps[index]!)) throw capacity();
+    return { content: rendered.join(""), receipts: [], omitted: ordinals.filter((ordinal, index) => ordinal !== null && rendered[index] !== parts[index]!.whole) as number[] };
+  }
   // The order the entry cap takes room back in (30): results, then calls, then natural text. Parts of
   // equal priority share their stage's allowance through the same per-part allocator as before, and a
   // stage only moves once the one before it is at its floor.
   const stage = (index: number) => ordinals[index] === null ? 2 : isResult ? 0 : 1;
   const cap = profile.entryTokens;
-  const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap];
+  const maximum = parts.reduce((sum, part) => sum + tokens(part.whole) + part.minimum, 0);
+  const rooms = [profile.toolResultTokens, profile.toolInputTokens, cap].map(room => Math.min(room, maximum));
   const build = (room: readonly number[]) => parts.map((part, index) => part.render(Math.min(caps[index]!, room[stage(index)]!)));
   let rendered = build(rooms), content = rendered.join("");
   for (let level = 0; level < rooms.length && tokens(content) > cap; level++) {
@@ -462,19 +478,16 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
  * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
  * reads that one source part and drops the rest. `full` is the same assembly through the unbounded
  * path and the raw extractor (23c ruling 4): the same labels, the stored arguments, result text and
- * `details` uncut, and each native occurrence of a call as its own entry — which is how an
- * unrestricted `full` trace still retains both fork results of a shared call (17a). */
+ * `details` uncut. Each selected native occurrence remains its own entry; compression never changes
+ * membership. An unbound read can still include both fork results of a shared call. */
 export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryProfile, options: TurnOptions = {},
   resultText: ResultExtractor = rawResultText): Rendered {
   const part = options.part;
-  // A compaction Turn's stored summary has no source entry — it is deliberately not Raw evidence —
-  // yet it is what the Turn holds, so it is readable here as the same text line every entry view
-  // emits (review 2026-09-09). Only a compaction Turn: an ordinary Turn's text is its entries, and a
-  // paged read that froze those entries must not pick up a reply completed after its query.
-  const carried = entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#assistant`));
-  const stored: SourceEntry[] = turn.kind === "compaction" && turn.assistantText !== null && !carried
-    ? [{ id: 0, sessionId: turn.sessionId, turnId: turn.id, nativeLineage: "", nativeId: "", role: "assistant", text: turn.assistantText, raw: "", calls: [] }] : [];
-  entries = [...entries, ...stored];
+  // A legacy summary is readable, but has no native entry or source address. Never route it
+  // through Raw rendering, which would fabricate a citable-looking identity.
+  if (turn.kind === "compaction" && turn.assistantText !== null && !options.selector && !options.blocks
+    && (!part || part === "assistant")) return { content: renderSemantic(
+      `[T${turn.id}] compaction summary (not Raw evidence): `, turn.assistantText, "", options.full ? Infinity : profile.entryTokens), receipts: [] };
   // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
   if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
   const choose = (address: string): PartChoice => {
@@ -482,15 +495,18 @@ export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryPr
     if (part) return suffix === part ? "render" : "drop";
     return options.tool === undefined || !/^t\d+$/.test(suffix) || suffix === `t${options.tool}` ? "render" : "floor";
   };
-  const lines = part ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
-  const omitted = new Set<number>();
+  const lines = part || options.blocks || options.selector ? [] : [`[S${turn.sessionId}/T${turn.id}] ${turn.startedAt} [${turn.kind}]`];
+  const omitted = new Set<string>();
   for (const entry of entries) {
-    const view = options.full ? renderEntryWhole(entry, resultText, choose) : renderEntry(entry, profile, resultText, choose);
+    const view = options.full ? renderEntryWhole(entry, resultText, choose, options.selector) : renderEntry(entry, profile, resultText, choose, options.selector, options.blocks);
     if (view.content) lines.push(view.content);
-    for (const ordinal of view.omitted) omitted.add(ordinal);
+    for (const ordinal of view.omitted) {
+      const call = entry.calls.find(call => call.ordinal === ordinal)!;
+      omitted.add(fragmentAddress(entry, { kind: entry.role === "toolResult" ? "result" : "call", call }));
+    }
   }
   const receipts = omitted.size ? [`T${turn.id}: ${omitted.size} omitted calls (including partial calls)`,
-    ...[...omitted].sort((a, b) => a - b).map((ordinal) => `expand: trace({"address":"T${turn.id}#t${ordinal}","full":true})`)] : [];
+    ...[...omitted].map(address => `expand: trace(${JSON.stringify({ address, itemBudget: null, toolCallBudget: null, toolResultBudget: null })})`)] : [];
   return { content: lines.join("\n"), receipts };
 }
 
@@ -516,13 +532,12 @@ function object(text: string | null): Record<string, unknown> | null {
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
-export function renderSources(turn: Turn, calls: ToolCall[]): string {
-  const preview = (text: string | null) => [...(text ?? "").replace(/\s+/gu, " ")].slice(0, 60).join("");
-  return [
-    ...(turn.userPrompt === null ? [] : [`T${turn.id}#user ${preview(turn.userPrompt)}`]),
-    ...(turn.assistantText === null ? [] : [`T${turn.id}#assistant ${preview(turn.assistantText)}`]),
-    ...calls.map((call) => `T${turn.id}#t${call.ordinal} tool=${call.name} ${preview(call.input)}`),
-  ].join(" | ");
+/** Identity mapping only, never another Raw preview. Fragment labels share persisted source
+ * authority with rendering and citations; repeated text blocks need only one index address. */
+export function renderEntryIndex(entry: SourceEntry): string {
+  const addresses = [...new Set(sourceBlocks(entry).filter(block => block.kind !== "thinking")
+    .map(block => fragmentAddress(entry, block)))];
+  return `[${entryAddress(entry)}] ${entry.role}: ${addresses.join(", ")}`;
 }
 
 /** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
@@ -565,12 +580,25 @@ export function finish(rendered: Rendered): string {
   return rendered.content + (rendered.receipts.length ? `\n\nReceipts:\n${rendered.receipts.join("\n")}` : "");
 }
 
-export function renderFact(fact: Fact, relations: FactRelation[]): string {
+/** Trace-only content ceiling. Automatic facts/knowledge leave this unbounded; identity and
+ * evidence metadata are never truncated to make a semantic body appear complete. */
+export function renderSemantic(prefix: string, body: string, suffix: string, cap = Infinity, frame: (text: string) => string = text => text): string {
+  const whole = frame(prefix + body + suffix);
+  if (tokens(whole) <= cap) return whole;
+  const cut = cutUnits(body, false);
+  const build = (kept: number) => {
+    const { head, tail, omitted } = halves(cut, kept);
+    return frame(prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix);
+  };
+  if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
+  return build(fit(build, cut.list.length, cap));
+}
+export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
-  return [`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}${fact.text}${edges.length ? ` · ${edges.join(" · ")}` : ""}`,
-    ...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-    `  source: ${fact.source.join(", ")}`].join("\n");
+  return renderSemantic(`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
+    `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
+      `  source: ${fact.source.join(", ")}`].join("\n"), cap, frame);
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -588,10 +616,12 @@ const commitLine = (r: KnowledgeRevision): string =>
 export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
 
-export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[]): string {
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
-  return [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+  const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
     `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
+  const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+  return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
 }
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
@@ -623,8 +653,9 @@ function diffText(before: string, after: string): string {
   return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
 }
 
-export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[]): string {
-  return [`[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]`, `  text: ${diffText(a.text, b.text)}`,
+export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity): string {
+  const text = diffText(a.text, b.text), prefix = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]\n  text: `;
+  const whole = [prefix + text,
     `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
@@ -632,14 +663,14 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
     ...(JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`]),
     renderCommitHistory(revisions)].join("\n");
+  return renderSemantic(prefix, text, whole.slice(prefix.length + text.length), cap);
 }
 
 export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }
-export function renderNegationWalk(steps: NegationStep[]): string {
-  return steps.flatMap(({ fact, relations, depth, terminal }) => [
-    ...renderFact(fact, relations).split("\n").map((line) => "  ".repeat(depth) + line),
-    ...(terminal ? ["  ".repeat(depth + 1) + "no later strong negation recorded"] : []),
-  ]).join("\n");
+export function renderNegationWalk(steps: NegationStep[], cap = Infinity): string {
+  return steps.map(({ fact, relations, depth, terminal }, index) => renderFact(fact, relations, cap, text =>
+    (index ? "\n" : "") + text.split("\n").map(line => "  ".repeat(depth) + line).join("\n")
+      + (terminal ? `\n${"  ".repeat(depth + 1)}no later strong negation recorded` : ""))).join("");
 }
 
 // A block joins its parts with one separator and the estimator prices that separator at one token, so
@@ -719,8 +750,8 @@ const factGroupHeader = (turnId: number, turns: FactTurns): string => {
  * Group by the owning Turn, not each citation: a multi-Turn fact appears once with all sources.
  * Each returned item is still one complete fact; the first in a group carries its heading so callers
  * can keep counting facts and charging the strings they actually send. No complete-Turn claim. */
-export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => string, turns: FactTurns): string[] {
-  const groups = new Map<number, Fact[]>();
+export function factGroupLayout<T extends Pick<Fact, "id" | "turnId">>(facts: readonly T[], turns: FactTurns): { fact: T; header: string }[] {
+  const groups = new Map<number, T[]>();
   for (const fact of facts) {
     const group = groups.get(fact.turnId);
     if (group) group.push(fact); else groups.set(fact.turnId, [fact]);
@@ -729,7 +760,13 @@ export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => s
   // Native times are ISO timestamps; legacy/unknown times stay explicit and sort last, by Turn id.
   ordered.sort((a, b) => (Number.isFinite(a.time) ? a.time : Infinity) - (Number.isFinite(b.time) ? b.time : Infinity) || a.id - b.id);
   return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
-    .map((fact, index) => `${index === 0 ? `${header}\n` : ""}${line(fact)}`));
+    .map((fact, index) => ({ fact, header: index === 0 ? `${header}\n` : "" })));
+}
+export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact, frame: (text: string) => string) => string, turns: FactTurns, preview = false): string[] {
+  return factGroupLayout(facts, turns).map(({ fact, header }, index) => preview
+    // The enclosing list emits the separator; measure it with its owning item before removing it.
+    ? line(fact, text => (index ? "\n" : "") + header + text).slice(index ? 1 : 0)
+    : header + line(fact, text => text));
 }
 
 /** Selection follows the caller's history priority, not display order. Charge each group heading

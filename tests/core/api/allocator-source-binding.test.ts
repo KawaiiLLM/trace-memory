@@ -52,7 +52,7 @@ for (const count of [1, 40]) test(`coverage SQL count is bounded per batch: ${co
     f.compact();
     const queries = spy.mock.calls.filter(([sql]) => /fact_sources|json_extract\(content/.test(sql));
     process.stdout.write(`coverage SQL: ${count} facts, batch=2, compact related=${queries.length}\n`);
-    expect(queries.length).toBe(4);
+    expect(queries.length).toBe(3);
     spy.mockRestore();
   } finally { f.m.close(); }
 });

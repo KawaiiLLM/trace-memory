@@ -61,7 +61,7 @@ test("17b supersedes 50K raw growth: compressed tool views alone do not trigger;
 });
 
 test("noting through runAgent commits the exact provider request, prompt, model, usage and subagent mode", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -147,7 +147,7 @@ test("raw is incremental and compaction contains intermediate assistant text wit
 // Manual catchup and borrowed work stay subagent, and their slots and claims are pinned by
 // `catchup.test.ts`; what is pinned here is the absence of a drain loop behind an ordinary commit.
 test("29d case 24: a worker's completion starts no drain loop, and a tree switch launches nothing", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn(); // one Noting run over T1, committing F1
   const after = h.requests.length;
@@ -164,7 +164,7 @@ test("29d case 24: a worker's completion starts no drain loop, and a tree switch
 });
 
 test("29d case 22: a worker's commit reaches no later prompt, on the branch it ran on or a sibling", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -194,7 +194,7 @@ test("29d case 22: a worker's commit reaches no later prompt, on the branch it r
 // injects again (duplicates over silent loss) and a persisted one ends it without a settle. The
 // delivery half has no subject and is asserted as its negative.
 test("29d: the knowledge block is offered until the selected context carries it, and the settle confirms nothing", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   const store = h.memory.store, p = store.createProject({ name: "project-name", declaredBy: "mark" });
   const seed = store.createSession({ enrollmentChoice: true, host: "fixture", projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const st = store.appendTurn({ sessionId: seed.id, kind: "turn", startedAt: "now", userPrompt: "规则" });
@@ -224,7 +224,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
 });
 
 test("in-flight duplicate is dropped; new raw and branch switches cannot change its frozen range", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled");
@@ -240,7 +240,7 @@ test("in-flight duplicate is dropped; new raw and branch switches cannot change 
 });
 
 test("consolidation waits for a turn stop after facts arrive and final replays candidate plus one feedback message", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, consolidationModel: "fake/Consolidator" });
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output : notingFact(c));
   await h.turn();
@@ -259,7 +259,7 @@ test("consolidation waits for a turn stop after facts arrive and final replays c
 });
 
 test.each(["new", "resume", "fork"])("shutdown for session replacement (%s) waits for pending runs — superseded 17c 2026-09-08: cancels, launches nothing, and closes the store", async reason => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn();
@@ -286,7 +286,7 @@ test("17b supersedes watermark growth: compressed source labels count along with
 });
 
 test("provider failures retain captured request and do not advance a watermark", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async () => { throw new Error("provider unavailable"); });
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -295,7 +295,7 @@ test("provider failures retain captured request and do not advance a watermark",
 });
 
 test("consolidation in-flight duplicates cannot erase the candidate continuation", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const output = consolidationReply();
   let release!: (value: Reply) => void;
@@ -395,7 +395,7 @@ test("removing file discovery preserves stored project attribution on restore", 
 });
 
 test("declaring an own project moves facts and project knowledge, preserves session scope, and injects immediately", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c)); await h.turn();
   const store = h.memory.store, own = store.getSession(1)!.projectId;
   const seed = (sessionId: number, fact: number, scopes: ("project" | "session")[]) => {
@@ -440,7 +440,7 @@ test("declaring an own project moves facts and project knowledge, preserves sess
 });
 
 test("before-tree waits for a frozen pending noting and summarizes its facts plus later raw, and delivers nothing on either branch (29d)", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); const forkPoint = [...h.entries];
@@ -499,7 +499,7 @@ test("an empty session allocates neither session nor turns through prompt, compa
 
 
 test("branch summaries retain earlier committed facts and exclude sibling facts", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c)); await h.turn();
   const point = [...h.entries];
   await h.prompt("abandoned tail"); await h.answer("tail reply");
@@ -546,7 +546,7 @@ test("a former marker cannot make a new session merge an existing shared project
 // identically and neither prompt carries a receipt. Phase slots, enrollment, the readiness wait and
 // claim checks still gate the launch and are exercised by their own tests.
 test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes advance identically and neither prompt carries one", async forkMode => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": forkMode, notingModel: "fake/noter" });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": forkMode, notingModel: "fake/noter" });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.turn(); // Noting A in flight over T1.
@@ -584,7 +584,7 @@ test("spec overflow policy: a subagent noting fetches cut evidence through the t
 });
 
 test("an consolidation call carries no tools; a noting tool call for a bad address returns an error result and the noting still completes", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "consolidation.triggerTokens": 1 });
   const call = { type: "toolCall" as const, id: "call-2", name: "trace", arguments: { address: "K999" } };
   const output = consolidationReply();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? output
@@ -631,7 +631,7 @@ test("main facade tools bind each call to the current turn, commit immediately a
 
 
 test("subagent runs receive the same four definitions registered for the main agent: name, description, schema", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   const original = h.ctx.modelRegistry.complete.bind(h.ctx.modelRegistry);
   vi.spyOn(h.ctx.modelRegistry, "complete").mockImplementation(async (model, conversation, options) => {
     expect(conversation.tools).toHaveLength(4);
@@ -673,7 +673,7 @@ test("main trace can fetch historical rejected tool evidence without becoming a 
 });
 
 test("18:39: two memory submissions in one reply cannot skip the checklist; the second commits only after the feedback was sent", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   h.provider(async c => notingFact(c)); await h.turn();
   const double = { ...consolidationReply(), content: [consolidationReply().content[0]!, { ...consolidationReply().content[0]!, id: "memory-2" }] } as Reply;
   h.provider(async c => c.messages.some(m => m.role === "toolResult") ? consolidationReply() : double);
@@ -692,14 +692,14 @@ test("18:39: two memory submissions in one reply cannot skip the checklist; the 
 });
 
 test("maxToolRounds is a budget: unlimited by default, and a run over an explicit budget fails without committing", async () => {
-  const unlimited = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false });
+  const unlimited = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   let calls = 0;
   const looping = (c: Parameters<typeof notingFact>[0]) => c.messages.filter(m => m.role === "toolResult").length < 20
     ? { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: `t${++calls}`, name: "trace", arguments: { address: "T1" } }] } : notingFact(c);
   unlimited.provider(async c => looping(c)); await unlimited.turn();
   expect(unlimited.memory.store.listRuns(1)[0]!.outcome).toBe("success");
   expect(unlimited.conversations.length).toBeGreaterThan(20);
-  const capped = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, "noting.maxToolRounds": 2 });
+  const capped = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, "noting.maxToolRounds": 2 });
   capped.provider(async c => looping(c)); await capped.turn();
   const run = capped.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("failure"); expect(JSON.parse(run.response!).problems[0]).toContain("tool rounds exceeded (2)");
@@ -711,7 +711,7 @@ test("maxToolRounds is a budget: unlimited by default, and a run over an explici
 // because what a prompt supplied is stated on the entry Pi persisted for it rather than on a
 // settle-time acknowledgement. The steering path is kept as the negative.
 test("29d: a queued user message mid-run finds no receipt to carry and no confirmation to lose", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn(); // noting of T1 commits F1
   expect((await h.prompt("two"))?.message?.content ?? "").not.toContain("<noted>");
@@ -722,7 +722,7 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
 });
 
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
   await h.turn();
   const run = h.memory.store.listRuns(1)[0]!;
@@ -769,7 +769,7 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
 });
 
 test("a Pi fork continues the same session on a new branch that inherits the source watermarks, so shared turns are recorded once", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn(); // T1 recorded on main
   expect(h.memory.store.sourcePath(1, "main", 1).length).toBeGreaterThan(0);
@@ -788,7 +788,7 @@ test("a Pi fork continues the same session on a new branch that inherits the sou
 });
 
 test("the plugin's spend is a footer status item updated after every run, and the tree-switch noting's usage rides on the branch summary", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn();
   // 24a: idle; nothing left to note, one applicable fact, that fact still to consolidate, no knowledge yet.
@@ -814,7 +814,7 @@ test("the state entry pointing at a new turn is written only after Pi persisted 
 });
 
 test("a branch forked from an earlier point inherits the nearest recorded ancestor as its watermark", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => notingFact(c));
   await h.turn(); // T1 recorded
   const atT1 = [...h.entries];
@@ -831,7 +831,7 @@ test("a branch forked from an earlier point inherits the nearest recorded ancest
 });
 
 test("the footer indicator follows activity: accent while noting runs, error after a failed run, warning after a committed-with-problems run, dim idle", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
@@ -847,7 +847,7 @@ test("the footer indicator follows activity: accent while noting runs, error aft
 });
 
 test("a fork sees consolidation progress exactly when every fact of that consolidation lies on its path", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 4 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "consolidation.maxToolRounds": 4 });
   // The fake Consolidator submits once per round and stops after any rejection instead of resubmitting forever.
   h.provider(async c => !c.systemPrompt!.includes("### Second-round user message") ? notingFact(c)
     : c.messages.some(m => m.role === "toolResult" && m.toolName === "memory" && (m.content[0] as { text: string }).text.startsWith("rejected")) ? reply("stopped") : consolidationReply());
@@ -871,7 +871,7 @@ test("a fork sees consolidation progress exactly when every fact of that consoli
 });
 
 test("a dropped duplicate Consolidation trigger neither ends the running indicator nor changes the last outcome", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   let release!: (value: Reply) => void, held = false;
   h.provider(async c => { if (!c.systemPrompt!.includes("### Second-round user message")) return notingFact(c);
     if (held) return consolidationReply(); held = true; return new Promise(resolve => { release = resolve; }); });
@@ -885,7 +885,7 @@ test("a dropped duplicate Consolidation trigger neither ends the running indicat
 });
 
 test("a stream that dies mid-reply is a failure carrying the provider's error, commits nothing, and a later stream death after a commit is a problem on a success", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   h.provider(async () => ({ ...reply("partial tex"), stopReason: "error", errorMessage: "stream reset by peer" }));
   await h.turn();
   let run = h.memory.store.listRuns(1)[0]!;
@@ -926,7 +926,7 @@ test("consolidation progress does not count on a fork when a manual fact beyond 
 });
 
 test("a transient provider error is retried with Pi's policy before the run is failed, and a retry never repeats a committed write", async () => {
-  const h = host({ "noting.triggerTokens": 20 });
+  const h = host({ "noting.triggerTokens": 30 });
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return notingFact(c); });
   await h.turn();
@@ -943,7 +943,7 @@ test("a transient provider error is retried with Pi's policy before the run is f
 });
 
 test("a retry re-sends the same request: a stream error after a tool round does not duplicate the tool result, failed attempts count in usage and retries are recorded", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, retry: { baseDelayMs: 1 } });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, retry: { baseDelayMs: 1 } });
   let calls = 0;
   h.provider(async c => {
     calls++;
@@ -964,7 +964,7 @@ test("a retry re-sends the same request: a stream error after a tool round does 
 });
 
 test("the footer shows the warning indicator while a retry waits", async () => {
-  const h = host({ "noting.triggerTokens": 20, retry: { baseDelayMs: 60 } });
+  const h = host({ "noting.triggerTokens": 30, retry: { baseDelayMs: 60 } });
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return notingFact(c); });
   await h.turn(); // the first attempt failed, the retry is sleeping
@@ -978,7 +978,7 @@ const knowledgeReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", cont
   arguments: { operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Use pnpm, never npm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] } }] });
 
 test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the Consolidator subagent gets facts and knowledge changes and waits for no receipt it does not inherit", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, "consolidation.maxToolRounds": 4 });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : notingFact(c));
   await h.turn(); // Noting commits F1.
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? knowledgeReply() : reply("No new facts."));

@@ -74,7 +74,7 @@ const noted = (h: Host, count: number) => {
  * answers the closing turn once the submission is in. */
 const notes = (conversation: any, text = "recovered fact"): Reply => ({ ...reply(""), stopReason: "toolUse",
   content: [{ type: "toolCall", id: "note-1", name: "note", arguments: { facts: [{ category: "observation", actor: "user", text,
-    source: [/\[(T\d+#user)\]:/.exec(String(conversation.messages[0]?.content ?? ""))?.[1] ?? "T1#user"] }] } }] });
+    source: [/\[(T\d+#E\d+@text)\] user:/.exec(String(conversation.messages[0]?.content ?? ""))?.[1] ?? "T1#user"] }] } }] });
 /** A Consolidator reply that accounts for every fact of its batch by skipping it: the batch is
  * consolidated, so the facts window empties, and no knowledge is written. A batch that skips
  * everything reports no commit, which is not one of `test-host`'s automatic closing conditions, so
@@ -369,7 +369,7 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
   // Ordinary automatic work: same phase, same target, but no frozen boundary of ours — not the same
   // frozen range, so its completion is not this recovery's progress (28 amendment 2). The slot is
   // waited out, the task is left alone, and this compaction then runs its own batch.
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1_000_000_000, ...windows(1, 1_000, 1), "noting.batchTokens": 2_400 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000, ...windows(1, 1_000, 1), "noting.batchTokens": 2_400 });
   try {
     let release = () => {};
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -394,7 +394,7 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
 });
 
 test.each([false, true])("a catchup slot acquired during the capacity wait is reused, with cancellable wait: %s", async cancel => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1e9,
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1e9,
     "noting.batchTokens": 2400, ...windows(1, 1000, 1) });
   let releaseFirst = () => {}, releaseRest = () => {};
   const first = new Promise<void>(resolve => { releaseFirst = resolve; });
@@ -432,7 +432,7 @@ test.each([false, true])("a catchup slot acquired during the capacity wait is re
 });
 
 test("a second unrelated slot owner ends the capacity wait without false recovery status", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1e9,
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1e9,
     "noting.batchTokens": 2400, ...windows(1, 1000, 1) });
   let releaseFirst = () => {}, releaseRest = () => {};
   const first = new Promise<void>(resolve => { releaseFirst = resolve; });

@@ -16,7 +16,7 @@ Commits (by evidence):
 [K1@2] [constraint/project] C version
   supports: F2
 Pending raw:
-[T4#user]: Unrecorded <work> & more
-[T4#assistant]: Pending
+[T4#E1@text] user: Unrecorded <work> & more
+[T4#E2@text] assistant: Pending
 </branch_carry>"
 `;

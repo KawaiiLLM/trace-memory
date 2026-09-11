@@ -17,7 +17,7 @@ const { createJiti } = piRequire("jiti");
 const extension = process.argv[2] ? (await createJiti(import.meta.url, {
   alias: { "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui") },
 }).import(resolve(process.argv[2]))).default : undefined;
-const h = host({ "noting.triggerTokens": 20 }, { extension });
+const h = host({ "noting.triggerTokens": 30 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
   mkdirSync(join(h.dir, ".trace-memory"));

@@ -60,7 +60,7 @@ test("32d: Dreamer preferences reuse Settings with no mode or advanced page", as
 });
 
 test("both modes default to subagent in Settings and ordinary execution; saving fork changes only that phase", async () => {
-  const h = setup({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = setup({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   // A fork has no system prompt of its own — it inherits the parent's — so the phase of a forked
   // child is told from the task text this host appended, not from the Consolidator instructions.
   // The skipped facts are read out of the batch this run was actually given: this case runs two
@@ -215,7 +215,7 @@ test("closed-session scope respects a project override and invalid values never 
 });
 
 test("24b: a saved mode reaches the next admitted task without a reload, and a task already running keeps its own", async () => {
-  const h = setup({ "noting.triggerTokens": 20 });
+  const h = setup({ "noting.triggerTokens": 30 });
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
   await h.turn();
@@ -239,7 +239,7 @@ test("24b: a saved mode reaches the next admitted task without a reload, and a t
 });
 
 test("24b: a saved model is used by the next subagent run, and selecting a model never switches the mode", async () => {
-  const h = setup({ "noting.triggerTokens": 20 });
+  const h = setup({ "noting.triggerTokens": 30 });
   h.provider(async conversation => notingFact(conversation));
   await h.emit("session_start");
   await edit(h, "Noter mode: subagent (Default)", "subagent");

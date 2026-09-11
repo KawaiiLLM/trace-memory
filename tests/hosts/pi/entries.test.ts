@@ -43,9 +43,10 @@ test("17a 2026-09-08: attach imports earlier native history, preserves repeated 
     h.persist({ role: "branchSummary", summary: "carry" });
     await h.emit("session_start");
     const entries = h.memory.pendingEntries(1, "main", 2);
-    expect(entries.map(e => [e.turnId, e.role, e.text])).toEqual([[1, "user", "same"], [1, "assistant", "same answer"], [1, "assistant", "same answer"], [2, "user", "same"], [2, "assistant", "same answer"]]);
-    expect(new Set(entries.map(e => e.nativeId)).size).toBe(5);
-    expect(h.memory.trace("T1#assistant", { full: true })).toBe("[T1#assistant]: same answer\n[T1#assistant]: same answer");
+    expect(entries.map(e => [e.turnId, e.role, e.text])).toEqual([[1, "user", "same"], [1, "assistant", "same answer"], [1, "assistant", "same answer"], [2, "user", "same"], [2, "assistant", "same answer"], [2, "assistant", ""]]);
+    expect(new Set(entries.map(e => e.nativeId)).size).toBe(6);
+    expect(h.memory.trace("T1#assistant", { full: true })).toBe("[T1#E2@text] assistant: same answer\n[T1#E3@text] assistant: same answer");
+    expect(h.memory.trace("T2#E3@thinking", { full: true })).toContain("private");
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 2)).toEqual(entries);
     expect(h.memory.store.getSession(2)).toBeNull();
@@ -102,7 +103,7 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     expect(renderEntry(h.memory.store.getSourceEntry(before[1]!.id)!, h.memory.config.render).content).toBe(oldView);
     const audit = JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit;
     expect(audit.entries.map((e: { id: number }) => e.id)).toEqual(before.map(e => e.id));
-    expect(audit).toMatchObject({ branch: "main", viewVersion: "30-v3-one-view", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
+    expect(audit).toMatchObject({ branch: "main", viewVersion: "33-v1-entry-addresses", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
     await h.emit("session_start");
     expect(h.memory.pendingEntries(1, "main", 1)).toEqual(after);
     expect(h.memory.trace("T1#t1", { full: true })).toContain("late result");
@@ -242,21 +243,23 @@ test("17a 2026-09-08: shared-call fork results retain both originals through unr
     expect(branch).not.toBe("main");
     await h.emit("tool_result", { toolCallId: "shared", toolName: "bash", input: {}, content: [{ type: "text", text: "RESULT B" }], isError: true });
     const full = h.memory.trace("T1#t1", { full: true });
-    expect(full).toContain(`[T1#t1] bash(command="check", timeout=20)`); // 23c: `full` under the entry view's own labels
+    expect(full).toContain(`[T1#E2@shared] bash(command="check", timeout=20)`); // 23c: `full` under the entry view's own labels
     expect(full.match(/RESULT [AB]/g)).toEqual(["RESULT A", "RESULT B"]);
     expect(full).toMatch(/bash success:[\s\S]*RESULT A[\s\S]*bash failure:[\s\S]*RESULT B/);
     expect(h.memory.pendingEntries(1, branch, 1).flatMap(e => e.calls.map(c => c.result).filter(Boolean)).join("\n")).not.toContain("RESULT A");
   } finally { await h.dispose(); }
 });
 
-test("17a 2026-09-08: thinking-only reply remains answered for the existing trigger but is not a source", async () => {
+test("33: thinking-only messages are stored for explicit reads, never added to automatic Raw text",  async () => {
   const h = host(quiet);
   try {
     await h.prompt("question");
     await h.emit("message_end", { message: { ...reply(""), content: [{ type: "thinking", thinking: "private reasoning", thinkingSignature: "sig" }] } });
     await h.emit("agent_settled"); await h.drain();
     expect(h.conversations).toHaveLength(0); // answered-Turn trigger superseded 2026-09-08 by 17b
-    expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toEqual(["user"]);
+    expect(h.memory.store.listSourceEntries(1).map(e => e.role)).toEqual(["user", "assistant"]);
+    expect(h.memory.trace("T1#E2@thinking", { full: true })).toContain("private reasoning");
+    expect(h.memory.trace("T1@text", { full: true })).not.toContain("private reasoning");
     expect(compacted(h.memory.compact(1, "main", 1))).not.toContain("private reasoning");
   } finally { await h.dispose(); }
 });
@@ -277,8 +280,8 @@ test("17a 2026-09-08: huge native JSON arguments and results remain byte-exact t
     expect(before.raw).toBe(JSON.stringify(message));
     // 23c: `full` renders the same labels as every other view, the stored value bytes uncut â€” the
     // argument strings are JSON-encoded exactly as they were stored, and the result is the raw string.
-    expect(wholeTrace(h.memory, "T1#t1", { full: true })).toBe(`[T1#t1] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
-      + `\n[T1#t1] bash success: ${JSON.stringify({ content, details })}`);
+    expect(wholeTrace(h.memory, "T1#t1", { full: true })).toBe(`[T1#E2@huge] bash(command=${JSON.stringify(args.command)}, timeout=42, env=${JSON.stringify(args.env)})`
+      + `\n[T1#E3@huge] bash success: ${JSON.stringify({ content, details })}`);
     const result = h.memory.pendingEntries(1, "main", 1).find(e => e.role === "toolResult")!;
     expect(JSON.parse(result.raw)).toMatchObject({ content, details, toolCallId: "huge", toolName: "bash", isError: false });
     expect(renderEntry(h.memory.store.getSourceEntry(before.id)!, h.memory.config.render).content).toBe(argumentView);
@@ -344,7 +347,7 @@ test("review 2026-09-08 P2: an image-only user message still starts a new user T
     expect(turns[1]!.assistantText).toBe("The image shows a red chart.");
     const users = h.memory.store.listSourceEntries(1).filter(e => e.role === "user");
     expect(users.map(e => e.raw.includes("synthetic-image"))).toEqual([false, true]);
-    expect(compacted(h.memory.compact(1, "main", 2))).toContain("[non-text content omitted]"); // the shared view shows the source; it has no citable text
+    expect(compacted(h.memory.compact(1, "main", 2))).toContain("[image omitted]"); // the shared view shows the source; it has no citable text
   } finally { await h.dispose(); }
 });
 
@@ -466,7 +469,7 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape â
     expect(piResultText(stored.calls[0]!.result!)).toEqual({ text: "first block\n[image omitted]\nthird block", details: JSON.stringify(details) });
     // Core applies the registered extractor and never inspects the envelope itself.
     expect(renderEntry(stored, h.memory.config.render, h.memory.resultText).content)
-      .toBe("[T1#t1] read success: first block\n[image omitted]\nthird block\n[... 37 characters of details truncated]");
+      .toBe("[T1#E3@call-1] read success: first block\n[image omitted]\nthird block\n[... 37 characters of details truncated]");
     // An empty `details` object is not dropped structured data, so nothing is marked for it.
     expect(piResultText(JSON.stringify({ content: [{ type: "text", text: "plain" }], details: {} }))).toEqual({ text: "plain" });
     // A result string that is not this host's envelope is the string itself.
@@ -476,7 +479,7 @@ test("23 2026-09-09: the Pi extractor unwraps a real tool-result message shape â
   } finally { await h.dispose(); }
 });
 
-test("23 2026-09-09: the Noter's captured request carries the address labels and neither call ids nor native identity", async () => {
+test("33: the Noter carries exact entry/block labels with opaque call IDs, not native message identity",  async () => {
   const h = host({ ...quiet, "noting.forkModeDefault": false });
   try {
     h.provider(async () => reply("Done."));
@@ -488,24 +491,23 @@ test("23 2026-09-09: the Noter's captured request carries the address labels and
     await h.commands.get("trace").handler("catchup", h.ctx); // the whole turn, tool result included
     for (let i = 0; i < 40 && !h.conversations.length; i++) await h.drain();
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[T1#user]: ");
-    expect(sent).toContain("[T1#assistant]: ");
-    expect(sent).toContain(`[T1#t1] bash(command="pnpm install")`);
-    expect(sent).toContain("[T1#t1] bash success: done");
-    expect(sent).not.toContain("native-call-id-9"); // no call id
+    expect(sent).toContain("[T1#E1@text] user: ");
+    expect(sent).toContain("[T1#E2@text] assistant: ");
+    expect(sent).toContain(`[T1#E2@native-call-id-9] bash(command="pnpm install")`);
+    expect(sent).toContain("[T1#E3@native-call-id-9] bash success: done");
     expect(sent).not.toContain("[entry ["); // no native-identity header
     expect(sent).not.toContain("tool="); // the 17a label shape is gone with it
     // The identities are still bound, in storage and in the run audit.
     const audit = JSON.parse(h.memory.store.listRuns(1).at(-1)!.response!).entryAudit;
     expect(audit.entries.every((e: { nativeId: string }) => Boolean(e.nativeId))).toBe(true);
-    expect(audit).toMatchObject({ viewVersion: "30-v3-one-view", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
+    expect(audit).toMatchObject({ viewVersion: "33-v1-entry-addresses", viewBudgets: { entryTokens: 2_000, toolInputTokens: 100, toolResultTokens: 100 } });
   } finally { await h.dispose(); }
 });
 
 test("23c/30: the Noter prompt names the labels, the independent part budgets and the honesty clause once", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
-  for (const named of ["`[T<n>#user]: <text>`", "`[T<n>#assistant]: <text>`",
-    "`[T<n>#t<k>] <tool>(<key>=<value>, â€¦)`", "`[T<n>#t<k>] <tool> <status>: <result text>`",
+  for (const named of ["`[T<n>#E<m>@text] user: <text>`", "`assistant: <text>`",
+    "`[T<n>#E<m>@<callId>] <tool>(<key>=<value>, â€¦)`", "`[T<n>#E<r>@<callId>] <tool> <status>: <result text>`",
     "one tool-call part is worth at most 100 tokens and one tool-result part at most 100, each an independent allowance",
     "one entry at most 2,000",
     "`[... N characters truncated]`", "`[... N characters of details truncated]`"]) {

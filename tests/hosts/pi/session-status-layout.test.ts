@@ -323,7 +323,7 @@ test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => (
     const seen = first + "\n" + second;
     expect(seen).toContain("S1 | On(default) | $0.0000");
     expect(seen).toContain("Project: pi:pi-test (undeclared)");
-    expect(seen).toContain("Noting        █████░░░░░  52.0% 26/50");
+    expect(seen).toContain("Noting        ███████░░░  72.0% 36/50");
     expect(seen).toContain("Dreaming      ░░░░░░░░░░");
     expect(seen).toContain("Consolidation ░░░░░░░░░░");
     expect(seen).toContain("Memory ~0");

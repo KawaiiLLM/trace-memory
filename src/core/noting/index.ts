@@ -6,8 +6,8 @@ import type { bindTools } from "../api/tools.ts";
 import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderFact, renderText, renderSources, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
-import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, type NotingMaterial } from "../render/material.ts";
+import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
+import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITLE, type NotingMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
@@ -182,6 +182,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // path made current, so an explicit `trace K…` inside the run is judged against a frozen base.
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId); // entry-aware (review 2026-09-08)
   const snapshot = store.pathSnapshot(path); // one membership for this freeze, knowledge and facts alike
+  const headEntryId = store.sourceHeadEntryId(session.id, input.branch, input.headTurnId, snapshot);
   const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
   // 26 amendment 2: the history block carries the facts applicable on this freeze's path, never the
   // whole session's — a sibling branch's fact is not this Noter's history. `listSessionFacts`'s
@@ -224,7 +225,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
         assistantText: selected.filter(e => e.role === "assistant" && e.text).map(e => e.text).join("\n") || null },
         calls: toolCalls(turn.id).filter(c => ordinals.has(c.ordinal)) };
     });
-    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], turns, knowledge, facts,
+    const frozen = { sessionId: session.id, branch: input.branch, entries: [...entries], headEntryId, turns, knowledge, facts,
       model: input.model ?? "session", mode };
     const prepared = notingMaterial(frozen, config, entry => rendered.get(entry.id)!, factLine, factTurns, history, initial);
     const capacity = input.capacity;
@@ -277,7 +278,7 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
  * The entry views and the fact lines are supplied by the freeze, which renders each of them once for
  * the whole negotiation (22d): re-freezing a smaller batch changes which of them are used, never what
  * any one of them says. */
-function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
+function notingMaterial(frozen: { sessionId: number; headEntryId?: number; entries: ReturnType<Store["pendingEntries"]>; turns: { turn: Turn; calls: ReturnType<Store["listToolCalls"]> }[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; facts: Fact[] }, config: TraceMemoryConfig, view: (entry: { id: number }) => ReturnType<typeof renderEntry>, factLine: (fact: Fact) => string, factTurns: FactTurns, history = Infinity, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }) {
   const { sessionId, entries, turns, knowledge, facts: applicable } = frozen;
   const address = (id: number) => `S${sessionId}/T${id}`;
   const range = { from: address(turns[0]!.turn.id), to: address(turns.at(-1)!.turn.id) };
@@ -288,6 +289,13 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   const withheld = entries.length - supplied.length;
   const facts = applicable.filter(fact => !initial.visible.factIds.has(fact.id));
   const raw = supplied.map(view);
+  // Only the selected path's last native reply can be absent from the captured parent request.
+  // Earlier assistant entries in the same Turn are already inherited, not head supplements.
+  const headEntry = entries.find(entry => entry.id === frozen.headEntryId && entry.role === "assistant"
+    && initial.visible.raw.has(entry.nativeId));
+  const headView = headEntry ? view(headEntry) : undefined;
+  const head = headView?.content || null;
+  const sources = withheld ? entries.map(renderEntryIndex) : [];
   // One budgeting for every consumer of the shared material (ticket 20): the selected Raw is charged
   // against this phase's own batch ceiling — `noting.batchTokens` — and the titles, the range and the
   // historical facts against the episodic budget. 25c stopped compact from applying that ceiling to a
@@ -295,23 +303,16 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   // reservation is still what keeps this phase's two allowances independent. 25a: no knowledge
   // candidates are passed, because neither Noter mode emits a knowledge block.
   const budgeted = budgetMaterial({ current: raw.map((r) => r.content).join(BLOCK),
-    framing: [FACTS_TITLE, RAW_TITLE], range, facts, factLine, factTurns, history,
+    framing: [FACTS_TITLE, RAW_TITLE, ...(head ? [head] : []), ...(sources.length ? [SOURCES_TITLE, ...sources] : [])], range, facts, factLine, factTurns, history,
     caps: { episodic: config.render.episodicBlockTokens, current: config.noting.batchTokens } });
   const receipts = [...raw.flatMap((r) => r.receipts), ...budgeted.receipts];
-  const head = turns.at(-1)!.turn;
-  // The head turn's own assistant entries, and whether this run withheld one of them. The captured
-  // request a fork inherits stops before the reply it produced, so a withheld head entry is the one
-  // body the view cannot be trusted for and the reply is restated (ruling 08:53's head reply, now
-  // conditional). When the Raw block below carries that entry, its reply is already in it.
-  const headWithheld = entries.some(entry => entry.turnId === head.id && entry.role === "assistant"
-    && initial.visible.raw.has(entry.nativeId));
   const material: NotingMaterial = {
     entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),
-    head: headWithheld && head.assistantText ? renderText(head.id, "assistant", head.assistantText) : null,
+    head,
     // Mandatory framing (parent 29 "Keep mandatory framing"): with a body withheld, the source index
     // is what identifies the target entries exactly and maps them to addresses the child must find in
     // its own context. It covers the whole frozen range, not only what was supplied.
-    sources: withheld ? turns.map(({ turn, calls }) => renderSources(turn, calls)) : [],
+    sources,
     facts: budgeted.facts,
     receipts,
   };
@@ -320,9 +321,10 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   const text = notingText(material, range);
   // 29a "Renderers return what they kept": every entry in the Raw block is the one bounded view (30),
   // and the facts are the ones budgeting actually kept. The Noter emits no knowledge block (25a).
-  const suppliedMaterial: SuppliedMaterial = { entries: supplied.map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const })),
+  const carried = [...supplied, ...(headEntry && head ? [headEntry] : [])];
+  const suppliedMaterial: SuppliedMaterial = { entries: carried.map(e => ({ id: e.id, nativeId: e.nativeId, view: "bounded" as const })),
     factIds: budgeted.factIds, knowledgeCommitIds: [] };
-  return { range, readKnowledgeCommits, views: new Map(supplied.map((e, i) => [e.id, raw[i]!])),
+  return { range, readKnowledgeCommits, views: new Map(carried.map(e => [e.id, view(e)])),
     material, text, supplied: suppliedMaterial, over: budgeted.over };
 }
 
@@ -342,7 +344,7 @@ export async function runNoting(
   const { range, readKnowledgeCommits, views, material, text, supplied } = frozen.prepared;
   // 29b: the audit still lists every entry of the frozen target — membership is the processing target,
   // not what was injected — but the omission markers are read from the view this run actually sent.
-  // A withheld entry sent no view, so it has no markers of ours to record.
+  // An inherited entry without a head supplement sent no view and has no markers of ours to record.
   const entryAudit: EntryAudit = { entries: entries.map((e) => ({ id: e.id, nativeLineage: e.nativeLineage, nativeId: e.nativeId, turnId: e.turnId, omissions: views.get(e.id)?.content.match(OMISSION) ?? [] })),
     branch, viewVersion: ENTRY_VIEW_VERSION, viewBudgets: { entryTokens: config.render.entryTokens,
       toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } };

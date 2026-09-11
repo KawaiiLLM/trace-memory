@@ -28,9 +28,9 @@ test("omission receipts expand only the exact source call, including its result"
   const { turn, script, result } = corpus();
   const preview = wholeTrace(memory, `T${turn.id}`);
   const instructions = [...preview.matchAll(/expand: trace\(([^\n]+)\)/g)].map(m => JSON.parse(m[1]!));
-  expect(instructions).toEqual([{ address: `T${turn.id}#t1`, full: true }]);
-  const instruction = instructions[0]!;
-  const expanded = wholeTrace(memory, instruction.address, instruction);
+  expect(instructions).toEqual([3, 4].map(ordinal => ({ address: `T${turn.id}#E${ordinal}@call-1`,
+    itemBudget: null, toolCallBudget: null, toolResultBudget: null })));
+  const expanded = instructions.map(instruction => wholeTrace(memory, instruction.address, instruction)).join("\n");
   expect(expanded).toBe(rendered(turn.id, true, "t1"));
   expect(expanded).toContain(`command=${JSON.stringify(script)}`);
   expect(expanded).toContain(result);
@@ -154,7 +154,7 @@ test.each(["😀", "𠮷", "👨‍👩‍👧‍👦", "é", "\\\\uD83D\\\\uDE0
   const text = unit.repeat(2000);
   const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
   const options = { full: true, maxTokens: 128 };
-  expect(drainTrace(memory, memory.trace(`T${t.id}#user`, options), options).joined).toBe(`[T${t.id}#user]: ${text}`);
+  expect(drainTrace(memory, memory.trace(`T${t.id}#user`, options), options).joined).toBe(`[T${t.id}#E1@text] user: ${text}`);
 });
 
 test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact knowledge handle only on the last page", address => {
@@ -203,7 +203,7 @@ test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page whe
   const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
   expect(tokens("😀".repeat(128))).toBe(143);
   expect(tokens("😀".repeat(128) + "a")).toBe(37);
-  const expected = `[T${t.id}#user]: ${text}`;
+  const expected = `[T${t.id}#E1@text] user: ${text}`;
   expect(memory.trace(`T${t.id}#user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
   const search = memory.search("needle", "raw", { maxTokens: 1_000_000 });
   expect(search).not.toContain("cursor=");

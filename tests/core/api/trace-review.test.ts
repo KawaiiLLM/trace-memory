@@ -19,12 +19,12 @@ test("review 80e: a stored compaction summary is readable through trace, full an
   try {
     const t = m.store.appendTurn({ sessionId: s.id, kind: "compaction", assistantText: "PERSISTED COMPACTION SUMMARY", startedAt: "t" });
     expect(m.store.listSourceEntries(s.id, t.id)).toEqual([]); // summaries are deliberately not Raw source entries
-    expect(m.trace(`T${t.id}`, { full: true })).toContain(`[T${t.id}#assistant]: PERSISTED COMPACTION SUMMARY`);
+    expect(m.trace(`T${t.id}`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
     expect(m.trace(`T${t.id}`)).toContain("PERSISTED COMPACTION SUMMARY");
-    expect(m.trace(`T${t.id}#assistant`, { full: true })).toBe(`[T${t.id}#assistant]: PERSISTED COMPACTION SUMMARY`);
-    // Display only: no source entry was created by reading it. (Whether a fact may cite a Turn that
-    // has no source entries is decided by the address fallback of fact-source validation, unchanged
-    // here and already accepting it before this repair.)
+    expect(m.trace(`T${t.id}#assistant`, { full: true })).toBe(`[T${t.id}] compaction summary (not Raw evidence): PERSISTED COMPACTION SUMMARY`);
+    expect(() => m.trace(`T${t.id}#E1`)).toThrow(/does not exist/);
+    expect(m.trace(`T${t.id}`)).not.toContain(`#assistant]`);
+    // Display only: neither an E source nor a citable-looking legacy label is fabricated.
     expect(m.store.listSourceEntries(s.id, t.id)).toEqual([]);
     // An ordinary Turn whose assistant entry exists shows that entry once, never a second stored copy.
     const u = m.store.appendTurn({ sessionId: s.id, parentTurnId: t.id, kind: "turn", userPrompt: "q", startedAt: "t" });
@@ -52,19 +52,19 @@ test("review 80e: a search continuation renders its deferred Raw hits under the 
 
 test("review 80e: a root-array JSON payload is cut on escape-safe units, never inside an escape sequence", () => {
   const input = JSON.stringify(Array.from({ length: 100 }, () => "xxa\nb\"c\\d "));
-  const entry = { id: 1, sessionId: 1, turnId: 1, nativeId: "x", nativeLineage: "fake", role: "assistant" as const, text: "", raw: "",
+  const entry = { id: 1, entryOrdinal: 1, sessionId: 1, turnId: 1, nativeId: "x", nativeLineage: "fake", role: "assistant" as const, text: "", raw: "",
     calls: [{ ordinal: 1, name: "tool", callId: "c", input, status: "attempted" }] };
   for (const C of [300, 100]) {
     const text = renderEntry(entry, { entryTokens: 10_000, toolInputTokens: C, toolResultTokens: C }).content;
     const marker = text.indexOf("[...");
     expect(marker).toBeGreaterThan(0);
-    const head = text.slice("[T1#t1] tool(".length, marker);
+    const head = text.slice("[T1#E1] tool(".length, marker);
     expect((/\\+$/.exec(head)?.[0].length ?? 0) % 2).toBe(0); // a head never ends on a lone backslash
     expect(head.startsWith("[\"xxa\\nb")).toBe(true); // the compact JSON text, not the raw payload re-quoted
   }
   const withInput = (value: string) => ({ ...entry, calls: [{ ...entry.calls[0]!, input: value }] });
   // A root string is a quoted value; a root number is its JSON text; text that is not JSON stays raw.
-  expect(renderEntry(withInput(JSON.stringify("plain")), profile).content).toBe("[T1#t1] tool(\"plain\")");
-  expect(renderEntry(withInput("42"), profile).content).toBe("[T1#t1] tool(42)");
-  expect(renderEntry(withInput("not json"), profile).content).toBe("[T1#t1] tool(not json)");
+  expect(renderEntry(withInput(JSON.stringify("plain")), profile).content).toBe("[T1#E1] tool(\"plain\")");
+  expect(renderEntry(withInput("42"), profile).content).toBe("[T1#E1] tool(42)");
+  expect(renderEntry(withInput("not json"), profile).content).toBe("[T1#E1] tool(not json)");
 });

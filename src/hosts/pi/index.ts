@@ -66,6 +66,8 @@ export function visibility(manager: VisibleSource) {
 // stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
 // runner; nothing in this adapter reads or duplicates Pi's runtime settings any more.
 
+import { piSourceBlocks } from "./source.ts";
+
 export default function (pi: ExtensionAPI) {
   const environment = process.env.TRACE_MEMORY_CONFIG;
   const agentDir = agentDirectory();
@@ -189,7 +191,7 @@ export default function (pi: ExtensionAPI) {
       },
       onRetryEnd: () => { activity.retrying = false; showSpend(callContext); },
     });
-  }, core, piResultText);
+  }, core, piResultText, piSourceBlocks);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
    * admission (the cache-miss latch, 29c's Raw availability), the launch, the native runner's own
    * gate, and (27b) a capacity refusal before sending or a provider overflow after a real attempt.
@@ -737,7 +739,7 @@ export default function (pi: ExtensionAPI) {
       const calls = message.role === "assistant" ? message.content.filter(c => c.type === "toolCall") : [];
       // A user message is a Turn boundary whatever it carries (an image-only message has no text); only an
       // assistant message with neither text nor tool calls is nothing (review 2026-09-08).
-      if (!natural && !calls.length && message.role === "assistant") continue;
+      if (!natural && !calls.length && message.role === "assistant" && !message.content.some(c => c.type === "thinking")) continue;
       const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
         if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);

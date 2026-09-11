@@ -14,7 +14,7 @@ Recent facts (by Turn):
 
 Raw:
 
-[T1#user]: 地形层和高度层需要一起读。
+[T1#E1@text] user: 地形层和高度层需要一起读。
 
-[T2#user]: 能不能从贴图推断
+[T2#E1@text] user: 能不能从贴图推断
 </episodic>

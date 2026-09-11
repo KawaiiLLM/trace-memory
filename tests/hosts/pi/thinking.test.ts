@@ -63,7 +63,7 @@ test("26b: a fork worker runs at the frozen foreground level; neither the global
 });
 
 test("26b: a fresh subagent worker inherits the same frozen level, and a foreground switch mid-run reaches neither its later rounds nor the audit", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
   try {
     h.setThinkingLevel("high");
     h.provider(async conversation => {
@@ -82,7 +82,7 @@ test("26b: a fresh subagent worker inherits the same frozen level, and a foregro
 });
 
 test("26b: a worker model that does not support the level runs at Pi's clamped level, and the audit shows both", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, defaultThinkingLevel: "medium" });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, defaultThinkingLevel: "medium" });
   try {
     h.setThinkingLevel("high"); // the default model declares no reasoning support
     h.provider(async conversation => notingFact(conversation));
@@ -96,14 +96,14 @@ test("26b: a worker model that does not support the level runs at Pi's clamped l
 });
 
 test("26b: every launch path freezes the same level — both phases, automatic work, a fork fallback, borrowed closed-session work and manual catchup", async () => {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, "consolidation.triggerTokens": 1 });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30, "consolidation.triggerTokens": 1 });
   try {
     h.setThinkingLevel("high");
     await h.turn(); // allocates the session; this case explicitly configures fork mode
     const tail = closedTail(h.memory);
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
-    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : notingFact(c));
+    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply(c) : notingFact(c));
     h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
     const beforeCatchup = h.memory.store.listRuns(1).length;
     h.persist(reply("more evidence " + "word ".repeat(30)));
@@ -146,7 +146,7 @@ test("26b: a level that makes the inherited request differ is refused by the exi
 });
 
 test("26b: borrowed work inherits the executor's level, not the level any historical session ran at", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
   try {
     await h.turn();
     const tail = closedTail(h.memory);
@@ -204,7 +204,7 @@ test("26d: the same fork task, refused by the gate, runs its fresh child at the 
 });
 
 test("26d: every subagent path takes its phase's configured level — explicit subagent mode, borrowed closed-session work, manual catchup and Consolidation", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false,
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false,
     notingThinking: "high", consolidationThinking: "low" });
   try {
     h.setThinkingLevel("off"); // the foreground level, which `inherit` would have used
@@ -212,7 +212,7 @@ test("26d: every subagent path takes its phase's configured level — explicit s
     const tail = closedTail(h.memory);
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Own claim", source: ["T1#user"] }] });
-    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply() : notingFact(c));
+    h.provider(async c => phaseOf(c) === "consolidation" ? consolidationReply(c) : notingFact(c));
     h.persist(reply("eligible completion")); await h.emit("agent_end"); await settle(h);
     const beforeCatchup = h.memory.store.listRuns(1).length;
     h.persist(reply("more evidence " + "word ".repeat(30)));
@@ -232,7 +232,7 @@ test("26d: every subagent path takes its phase's configured level — explicit s
 test("26d: a fork task that falls back runs at the configured level, clamped by Pi to what the worker model supports", async () => {
   // This case explicitly selects fork; the fake foreground has no session file to fork from, so
   // the documented fallback runs — on the session model, which declares no reasoning support.
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingThinking: "high" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30, notingThinking: "high" });
   try {
     h.setThinkingLevel("minimal");
     h.provider(async conversation => notingFact(conversation));
@@ -248,7 +248,7 @@ test("26d: a fork task that falls back runs at the configured level, clamped by 
 });
 
 test("26d: the configured level is frozen at admission — a preference saved while a task runs reaches neither its later rounds nor its fallback", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, notingModel: "fake/test-thinking" });
   try {
     // The level under edit has to be the Global layer the menu writes, not this fixture's environment
     // override, so seed the resolved settings file and load it the way a session start does.

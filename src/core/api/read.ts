@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
-import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { budgetMaterial, injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -12,11 +13,27 @@ import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible
  * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
-export interface ListingOptions { maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+/** Validate aliases before rendering or touching cursor state. Null is only a content-ceiling
+ * disable; pageBudget=null is reserved for internal assembled material reads. */
+export function validateBudgets(options: ListingOptions): void {
+  for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget"] as const) {
+    const value = options[key];
+    if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value < 1)) throw new Error(`${key} must be a positive safe integer or null`);
+  }
+  if (options.full !== undefined && typeof options.full !== "boolean") throw new Error("full must be boolean");
+  if (options.full === true && [options.itemBudget, options.toolCallBudget, options.toolResultBudget].some(v => v !== undefined && v !== null)) throw new Error("full:true conflicts with finite content budgets; use null for all content ceilings");
+  if (options.pageBudget !== undefined && options.maxTokens !== undefined && options.pageBudget !== options.maxTokens) throw new Error("pageBudget conflicts with maxTokens");
+  if (options.tool !== undefined && (!Number.isSafeInteger(options.tool) || options.tool < 1)) throw new Error("tool must be a positive ordinal");
+}
+export function readProfile(options: ListingOptions, inherited: EntryProfile): EntryProfile {
+  const limit = (value: number | null | undefined, fallback: number) => options.full === true || value === null ? Infinity : value ?? fallback;
+  return { entryTokens: limit(options.itemBudget, inherited.entryTokens), toolInputTokens: limit(options.toolCallBudget, inherited.toolInputTokens), toolResultTokens: limit(options.toolResultBudget, inherited.toolResultTokens) };
+}
 /** Shared default response budget for trace and search, including pagination receipts. */
 export const DEFAULT_READ_TOKENS = 2000;
 /** Exact versions resolved by a named K read; bare reads replace that identity's prior bases. */
-export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean }
+export interface KnowledgeRead { knowledgeId: number; commits: number[]; replace: boolean; complete?: boolean }
 export interface TraceRead { text: string; completed: KnowledgeRead[] }
 export type SearchScope = "facts" | "knowledge" | "all" | "raw";
 
@@ -70,7 +87,7 @@ interface FrozenHit { address: string; relations?: FactRelation[]; marks?: Knowl
 /** One component of a `trace` comma list, in request order: either an interval's immutable fact
  * identity with frozen relations, or a named component's renderer over frozen database values.
  * Both render only after the snapshot transaction exits. */
-type TraceUnit = { fact: number; relations: FactRelation[] } | { render: () => string };
+type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | { render: () => string };
 
 /** Parent 29 "Version-aware knowledge" (29b): one line per commit the reader's context already holds
  * that is not among the current applicable commits here — superseded, archived or merged away. The
@@ -117,7 +134,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
    * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean };
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; budgets?: ListingOptions };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -130,6 +147,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget", "full", "tool"] as const) {
+      if (saved && options[key] !== undefined && options[key] !== saved.budgets?.[key]) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
+    }
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
     const { items, format, capture } = saved ?? (Array.isArray(source)
@@ -193,10 +213,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
-      cursors.set(cursor, remainder);
+      cursors.set(cursor, { ...remainder, budgets: saved?.budgets ?? { ...options } });
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
-    return { text: result, completed: more ? [] : reads };
+    return { text: result, completed: more ? [] : reads.filter(read => read.complete !== false) };
   };
   const session = (id: number) => {
     const value = store.getSession(id);
@@ -273,13 +293,24 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return { from: first, to: last };
   };
   const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
-    const targets = address.split(",").map((a) => a.trim());
-    // Validate the request shape before either cursor entry point can consume a page.
-    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
-    const cursor = /^cursor=(\S+)$/.exec(address.trim());
-    if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
-    options = { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens };
+    validateBudgets(options);
+    const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
+    if (options.cursor || cursor) {
+      // Preserve the explicit-cursor placeholder convention without allowing malformed entry
+      // grammar to consume a read. A placeholder never changes the frozen query membership.
+      if (options.cursor && address.trim() && !cursor) {
+        const placeholders = traceTargets(address);
+        if (placeholders.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
+        placeholders.forEach(factInterval);
+      }
+      return page([], { ...options, cursor: options.cursor ?? cursor![1] });
+    }
+    const targets = traceTargets(address);
+    if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
+    options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
+      ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const reads: KnowledgeRead[] = [];
+    const profile = readProfile(options, config.render);
     const items = store.transaction(() => {
       const intervals = targets.map(factInterval);
       // Freeze only values under the write lock. Renderers close over these values, not queries.
@@ -287,7 +318,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const s = /^S([1-9]\d*)$/.exec(target);
         if (s) {
           session(Number(s[1]));
-          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`));
+          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`, { ...options, profile }));
           return () => turns.map(render => listingLine(render())).join("\n");
         }
         let project = store.findProjectByName(target);
@@ -295,25 +326,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (project) {
           const knowledge = store.listVisibleKnowledge(0, project.id).map(value => ({ value, marks: store.listKnowledgeMarks(value.knowledge.id) }));
           const facts = store.listProjectFacts(project.id).map(fact => ({ fact, relations: store.listFactRelations(fact.id) }));
-          return () => [...knowledge.map(k => knowledgeLine(k.value, k.marks)),
-            ...facts.map(f => renderFact(f.fact, f.relations))].map(listingLine).join("\n");
+          const times = store.factTurnTimes(facts.map(f => f.fact)), relations = new Map(facts.map(f => [f.fact.id, f.relations]));
+          return () => [renderKnowledgeBlock(budgetKnowledge(knowledge.map(k => k.value), Infinity, value => {
+            const whole = knowledgeLine(value, knowledge.find(k => k.value.revision.id === value.revision.id)!.marks);
+            const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+            return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), profile.entryTokens);
+          }).groups), ...renderFactGroups(facts.map(f => f.fact), (fact, frame) => renderFact(fact, relations.get(fact.id)!, profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
         }
-        return prepare(target, options, reads);
+        return prepare(target, { ...options, profile }, reads);
       };
       // Intervals keep immutable fact bodies lazy; membership and mutable relations freeze now.
       const units = targets.flatMap((target, index): TraceUnit[] => {
         const range = intervals[index];
         if (!range) return [{ render: named(target) }];
-        const ids = store.listFactIdsInRange(range.from, range.to);
-        return ids.length ? ids.map(fact => ({ fact, relations: [] }))
+        const facts = store.factMetadataInRange(range.from, range.to);
+        const times = new Map(facts.map(fact => [fact.turnId, fact.time]));
+        return facts.length ? factGroupLayout(facts, times).map(({ fact, header }) => ({ fact: fact.id, header, relations: [] }))
           : [{ render: () => `${target}: no facts exist in this range` }];
       });
       const ids = units.flatMap(unit => "fact" in unit ? [unit.fact] : []);
       const relations = ids.length ? store.listFactRelationsOf(ids) : new Map<number, FactRelation[]>();
-      return units.map(unit => "fact" in unit ? { fact: unit.fact, relations: relations.get(unit.fact)! } : unit);
+      return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
-      .flatMap(unit => ("fact" in unit ? factLine(unit.fact, unit.relations) : unit.render()).split("\n"));
+      .flatMap(unit => ("fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens, text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render()).split("\n"));
     return page({ items, format }, options, "", reads);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
