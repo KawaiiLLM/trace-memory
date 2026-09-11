@@ -3,11 +3,12 @@ src/core/ is host-agnostic: it must not import any host SDK.
 - model/   Turn, Fact, Knowledge types and write-time validation (shape only).
 - store/   SQLite: global ids, sessions, project attribution, facts, knowledge, knowledge revisions, run records.
 - noting/    freeze the task material, provide tools, record the last provider request and final text.
-- api/tools.ts  four bound model-facing tools; atomic note validation and commit.
+- api/tools.ts  role-bound tools; atomic note/memory validation and commit; Dreamer's read-only check.
+- dreaming/  bounded frozen knowledge/facts material, exact-family checks and transactional completion.
 - consolidation/  freeze the Consolidation material, produce NEAR/CLOSER feedback, validate memory operations, account and commit revisions.
 - render/  one renderer for noting material, compaction tail, branch summary, trace; XML injection blocks.
 - render/material.ts  the shared material contract and the block layout of every consumer (20a).
-- prompts/ noting.md, consolidation.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
+- prompts/ noting.md, consolidation.md, dreaming.md — the prompt texts, versioned by content hash in every run record. Lineage (kept out of the model-facing text): the Noter descends from pi-observational-memory's observer prompt, the Consolidator from its reflector plus Magic Context's historian and curate tasks; the six fact categories, the relation model (support/negate with confidence strength, annotations only), scope fidelity, and disputes are this project's own.
 
 Model calls go through one interface, runAgent(input) → {outcome: success | failure | cancelled, output, usage, request}, where request is the exact provider request the host sent; hosts implement it (Pi: fork mode = inherited context, or subagent mode = fresh context). Optional result fields ride along into the run record's response JSON: `verification`, `fallbackReason`, `retries`, `audit`, and `nativeLog`, the absolute path of a host-side native worker log for the run (19a). The core never reads that file. One result field is not recorded at all: `refused` (27c), by which a host says it would not run the frozen task in the mode it was admitted for and will admit it once more itself — core records no run for that attempt and returns the value to the caller unread, with `outcome: "dropped"`.
 
@@ -28,6 +29,58 @@ record and does not report a missing request. A host that returns neither a requ
 declaration still gets the "runAgent must return the exact provider request" problem. The run
 record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
 visible as requested-versus-actual.
+
+## Dreamer execution (32d)
+
+`dream({sessionId, branch, headTurnId, model?, thinkingLevel?, subagentThinkingLevel?})`
+uses the existing claim/admission/cancellation path, always in subagent mode. Eligibility is
+rechecked at admission. The retained range keeps its original anchor, path and writable family
+through retries; the current exact versions are resolved afresh. Admission freezes material,
+model/thinking and profile. It supplies processed knowledge within 20k, changed knowledge within
+10k and whole direct facts within 10k, with framing and explicit omitted-fact receipts. Runtime
+reads never extend the family. A retained body too large for admission stays pending, not clipped.
+Only processed material exceeding 20k uses lexical relevance, with stable category/time/id ties.
+The shared `budgetKnowledge` keeps optional `required` exact-commit IDs in its fifth argument and
+an optional priority comparator in its sixth: required bodies are protected before optional selection,
+including category and receipt framing. Ordinary callers without priority keep their stable order.
+
+The host calls `Store.bindDreamingRun` only after claiming the target and assigning an execution.
+It returns a capability object registered in a Store-local WeakMap, bound to the session, range,
+claim token, execution and one run record. Tool arguments and role strings cannot construct it;
+other database connections cannot reuse it. All batches reference that same admitted run. Legal
+memory calls commit immediately; rejected batches roll back only themselves. Create is restricted
+to an atomic split with a family update/archive; every compound participant keeps exact-handle
+validation. Consolidator still uses candidate/review and fact accounting but rejects merge.
+
+Only a capability-bound archive may use empty supports. Its nonempty reason is a maintenance
+judgment, not factual evidence. The nullable `knowledge_revisions.actor_role` column is added to
+existing databases, with a SQLite CHECK limiting populated values to `dreaming`; no history is
+relabeled. The immutable revision carries role, run, parent and reason. Empty-support archive
+applicability follows the exact parent (including original attribution), not an empty-list
+vacuous truth. Trace and search distinguish maintenance retirement while preserving predecessor
+text and factual evidence.
+
+`DreamingAgentInput.passEnd(rounds)` is a host callback after the native prompt's complete tool
+loop and retries, never after an intermediate tool turn. One system-generated custom message may
+repair an invalid pass in the same child. `reportRounds` exposes the native counter to check;
+`dreaming.maxToolRounds` defaults to 50 and accepts 1–50, shared across both passes. The child's
+automatic compaction remains disabled through the existing in-memory Settings override.
+
+The check tool and final host check use the existing full `checkProcessedScopes` routine:
+global 4k, each project 10k, each session 1k, applicable 15k, framing included. No truncated view
+proves fit. Current versions must be exact admission versions or this retained range's own outputs;
+reading alone never certifies an external successor, and outside-family identities remain read-only. Completion
+updates the run outcome, revalidates claims/versions/totals, settles exact event IDs, certifies
+separate result IDs and settles the execution in one transaction. Replay has no second streak
+effect. Failed/cancelled tasks keep prior commits and pending ranges without certification.
+
+Prompt lineage: pi-om `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
+`src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
+`packages/plugin/src/features/magic-context/dreamer/task-prompts.ts` and
+`curate-memory-safety.ts`. The prompt borrows conservative comparison and unique-detail retention,
+not their scheduler, taxonomy, mandatory edits, citation-count scores or refusal heuristics.
+This project's explicit hard-budget retirement can deliberately lose active information with an
+honest reason and retained history; it does not require Magic Context's same-category survivor.
 
 ## Runtime and verification
 
@@ -58,9 +111,9 @@ and updates the logical task's streak in the same transaction. Replay observes t
 outcome without applying it again. Successful Noting/Consolidation commits settle inside the
 business transaction; subsequent provider or audit errors cannot reverse success. Dreamer
 writes do not settle success: `completeDreaming` settles the linked execution only with its
-validated exact completion sets. A future Dreamer worker uses `TraceMemory.settleExecution`
-for terminal failure; that façade also aborts local target work after the Store transaction
-commits. No worker or new execution loop is introduced here.
+validated exact completion sets. The Dreamer worker reuses the façade's existing terminal settlement and target cancellation path.
+Its native provider retries and one repair remain inside the same execution; only final failure
+updates the streak.
 
 Final business failure includes incomplete Noting, unresolved submission refusal and failed
 Dreamer acceptance after partial writes. Cancellation, shutdown, busy admission and corrected

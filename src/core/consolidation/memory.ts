@@ -22,6 +22,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
       }
     }
   };
+  const allCommitted: import("../store/index.ts").CommittedKnowledgeOp[] = [];
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
@@ -55,9 +56,10 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.prepared?.readKnowledgeCommits ?? [] }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
+    allCommitted.push(...result.committed);
     // A receipt names the new version but does not supply its complete rendered body.
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, reread, sequence, allCommitted, get readCommits() { return [...reads.keys()]; }, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }

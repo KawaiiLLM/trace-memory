@@ -190,17 +190,25 @@ for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"]
   if (resolution === "withdraw") output = empty;
   if (resolution === "archive") output = { ...final, operations: [...final.operations, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${f}`] }] };
   const before = memory.trace(`K${e}`); queue(candidate, output);
-  const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
+  const result = await consolidation();
+  if (resolution === "merge") {
+    expect(result.outcome).toBe("bounced");
+    expect("problems" in result && result.problems?.join()).toContain("Dreamer");
+    expect(memory.trace(`K${e}`)).toBe(before);
+    expect(consolidated(f)).toBe(false);
+    return;
+  }
+  if (result.outcome !== "success") throw new Error("expected success");
   expect(result.unansweredNear).toHaveLength(["unchanged", "archive"].includes(resolution) ? 1 : 0);
-  expect(memory.store.currentCommit(e)[0]?.id).toBe(["update", "merge", "archive"].includes(resolution) ? 4 : 1);
+  expect(memory.store.currentCommit(e)[0]?.id).toBe(["update", "archive"].includes(resolution) ? 4 : 1);
   expect(consolidated(f)).toBe(true);
   expect(calls).toHaveLength(2);
 });
 
-test("NEAR covers create, update and merge text, excludes each target, and uses threshold on character bigram sets", async () => {
+test("NEAR covers create and single-identity updates, excludes each target, and uses threshold on character bigram sets", async () => {
   const f = fact(), a = knowledge([f]), b = knowledge([f]), c = knowledge([f], { text: memories.observation });
   const op = { text: memories.knowledge, scope: "project", category: "mechanism", supports: [`F${f}`] };
-  const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...op, id: `K${a}` }, { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", ...op, id: `K${b}`, absorb: [`K${c}`] }] };
+  const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...op, id: `K${a}` }, { op: "update", topics: [], reason: "Independent fact-backed correction.", ...op, id: `K${b}` }] };
   queue(output, output); const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
   const feedback = calls[1]!.feedback!.split("CLOSER:")[0]!;
   expect(feedback).toContain(`$e1 -> K${a}@${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b}@${b} (Jaccard 1)`);
@@ -328,9 +336,15 @@ for (const operation of ["update", "archive", "merge"] as const) test(`accountin
     ? { ...empty, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${other}`] }] }
     : { ...empty, operations: [{ ...updateOutput(survivor, other).operations[0], op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${e}`] }] };
   queue(output, output); const result = await consolidation();
+  if (operation === "merge") {
+    expect(result.outcome).toBe("bounced");
+    expect("problems" in result && result.problems?.join()).toContain("Dreamer");
+    expect(consolidated(f)).toBe(false);
+    return;
+  }
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
-  expect(memory.store.currentCommit(e)[0]?.op).toBe(operation === "archive" ? "archive" : operation === "merge" ? undefined : "update");
+  expect(memory.store.currentCommit(e)[0]?.op).toBe(operation === "archive" ? "archive" : "update");
 });
 
 test("a target that moved on bounces the whole batch, audits the rejection and preserves the watermark", async () => {
@@ -351,17 +365,15 @@ test("a target that moved on bounces the whole batch, audits the rejection and p
   expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
 });
 
-test("merge records survivor revision, absorbed links, and trace history", async () => {
+test("32d: Consolidator merge cannot create a survivor revision or absorbed links", async () => {
   const a = fact(), b = fact(memories.observation), survivor = knowledge([a]), absorbed = knowledge([b]);
   const output = { ...empty, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${absorbed}`], text: memories.editedKnowledge, category: "mechanism", scope: "project", supports: [`F${a}`, `F${b}`] }] };
   queue(output, output); const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.committed).toEqual([{ op: "merge", knowledgeId: survivor, commit: 3 }]);
-  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([{ fromKnowledge: absorbed, fromCommit: 2, kind: "merged_into", toKnowledge: survivor, toCommit: 3 }]);
-  expect(memory.trace(`K${absorbed}`)).toContain(`K${survivor}@3`);
-  expect(memory.trace(`K${survivor}`)).toContain("merge");
-  expect(memory.trace(`K${survivor}@1..K${survivor}@3`)).toContain(`F${b}`);
-  expect(memory.store.getKnowledgeRevision(survivor, 3)?.reason).toBe("Merged duplicate knowledge into the survivor.");
+  expect(result.outcome).toBe("bounced");
+  expect("problems" in result && result.problems?.join()).toContain("Dreamer");
+  expect(memory.store.listKnowledgeLinks(absorbed)).toEqual([]);
+  expect(memory.store.getKnowledgeRevision(survivor, 3)).toBeNull();
+  expect(memory.store.listCurrentKnowledge()).toHaveLength(2);
 });
 
 test("numbers, token overage and unanswered NEAR are diagnostics, never gates", async () => {

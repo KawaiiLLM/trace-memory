@@ -15,6 +15,7 @@ import { generate, nativeAncestry, countSourceReads, countGraphResolutions, coun
 import { TraceMemory, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
+import { freezeDreaming } from "../../src/core/dreaming/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { host } from "../hosts/pi/test-host.ts";
 
@@ -399,6 +400,14 @@ function dreamingScenarios(size: string): Sample[] {
     const rollback = new Error("sample rollback");
     const samples = [
       measure("Dreaming eligibility", () => memory.taskEligibility("dreaming", target), `${note}; ${eligibilityGraphs} graph resolutions`),
+      measure("Dreamer admission/material (rollback each sample)", () => {
+        try { store.transaction(() => {
+          const frozen = freezeDreaming(store, target, memory.config);
+          if (tokens(frozen.material.processed) > 20000 || tokens(frozen.material.changed) > 10000 || tokens(frozen.material.facts) > 10000)
+            throw new Error("Dreamer material exceeded a hard input window");
+          throw rollback;
+        }); } catch (error) { if (error !== rollback) throw error; }
+      }, `${note}; 32d exact selection, full body/fact rendering and retained family`),
       measure("Dreaming completion (rollback each sample)", () => {
         try { store.transaction(() => { store.completeDreaming(run.id, events, results); throw rollback; }); }
         catch (error) { if (error !== rollback) throw error; }

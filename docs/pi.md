@@ -3,8 +3,9 @@
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
 its exposed store. Both Noting and Consolidation use subagents by default and may be configured
-to use verified fork mode. Each reconciled eligible entry completion checks both extraction queues.
-Compaction, shutdown and tree navigation launch neither phase.
+to use verified fork mode. Dreamer is always a fresh subagent. Each reconciled eligible entry
+completion checks all three phase queues. Shutdown and tree navigation launch no phase;
+compaction recovery remains limited to the previously implemented Noting/Consolidation path.
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -22,8 +23,9 @@ using the host tests' stub ExtensionAPI and commits one noting through the nativ
 runner into a temporary database, with the provider stubbed at the wire. See below for launching a real Pi session.
 
 This Beta requires a database created by the current schema. Older development databases,
-including those before commit reasons and versioned topics (21a/21b), are not supported;
-there is no migration. Preserve old databases and logs and choose a new, unused `dbPath`.
+including those before commit reasons and versioned topics (21a/21b), are not supported.
+Recent 32-series schemas migrate phase, processing, execution and Dreamer actor-role metadata
+in place, without marking legacy knowledge processed. Preserve old databases and logs and choose a new, unused `dbPath`.
 See the [installation guide](../README.md#install) before loading the package.
 
 ## Configuration
@@ -52,6 +54,9 @@ For example, either settings file can contain:
     "noting.batchTokens": 10000,
     "consolidation.triggerTokens": 5000,
     "dreaming.triggerTokens": 5000,
+    "dreaming.maxToolRounds": 50,
+    "dreaming.model": "session",
+    "dreaming.thinking": "inherit",
     "consolidation.batchTokens": 10000,
     "consolidation.knowledgeTokens": 10000,
     "render.knowledgeBlockTokens": 20000,
@@ -76,6 +81,10 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 ```
 
 - `dbPath` defaults to `~/.trace-memory/trace.db`; its parent is created on load.
+- `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
+  defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
+  Its `dreaming.maxToolRounds` defaults to 50 and accepts 1–50; the initial pass and one
+  system-generated repair share that bound. Provider retries do not reset it.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's
@@ -235,9 +244,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   re-admits once as a subagent instead. Unknown model capacity still leaves work pending.
   Native fork context is additional to the new-material budget and is never compressed.
 - `dreaming.triggerTokens` defaults to **5,000 pending knowledge-change tokens** and must be a
-  positive safe integer. Exactly 5,000 meets the default threshold. In 32b this only reports
-  eligibility; it does not launch a Dreamer worker or add model/menu settings. A frozen unfinished
-  range retains retry eligibility without charging its own edits as new trigger work.
+  positive safe integer. Exactly 5,000 meets the default threshold. Eligible entry completion
+  now admits Dreamer in its independent slot, rechecking threshold and pending membership after
+  claim/slot waits. A frozen unfinished range retains retry eligibility without charging its own
+  edits as new trigger work. Material is 20k processed knowledge, 10k changed knowledge and 10k
+  whole direct facts, with framing and receipts; no automatic Raw block or note tool is supplied.
+  Legal memory batches commit immediately, while final processing requires the shared-scope
+  check and exact event/result certification described in [the core contract](core.md#dreamer-execution-32d).
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -318,12 +331,13 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Executor slots, claims and shutdown
 
-Each enabled active Pi runtime is an executor with one Noting slot and one
-Consolidation slot, including borrowed tasks. Each eligible entry completion checks
+Each enabled active Pi runtime is an executor with one Noting, one Consolidation and one
+Dreaming slot, including borrowed tasks. C and D may overlap; no database-wide seat is held. Each eligible entry completion checks
 free slots. Own eligible work has priority under the normal trigger thresholds (29d removed the
 branch delivery gate). If no own task can be claimed, one enabled normally closed
 target with a nonempty phase queue may use that slot, even for one entry or one
-fact. `closedSessionScope` controls both phases: `project` (default) requires matching
+fact for Noting/Consolidation. Dreamer borrowing retains its normal threshold or unfinished-range
+eligibility. `closedSessionScope` controls all three phases: `project` (default) requires matching
 project ids, `global` permits any project, and `off` leaves closed tails pending.
 An executor must itself be enabled and open. This setting does not restrict
 current-session work, manual current-session catchup, or explicit reads. Closed targets are ordered by oldest pending entry/fact allocation id, then
@@ -485,13 +499,15 @@ foreground value exactly when that phase is configured for fork.
 | Consolidator mode | fork / subagent | `consolidation.forkModeDefault` | subagent |
 | Consolidator model | Follow foreground / an available `provider/model-id` | `consolidationModel` | `session` |
 | Consolidator thinking | inherit / one of Pi's levels | `consolidationThinking` | `inherit` |
+| Dreamer model | Follow foreground / an available `provider/model-id` | `dreaming.model` | `session` |
+| Dreamer thinking | inherit / one of Pi's levels | `dreaming.thinking` | `inherit` |
 | Closed-session scope | off / project / global | `closedSessionScope` | `project` |
 
-**The two thinking entries (26d)** choose the level this phase's *subagent* runs think at;
+**The three thinking entries (26d/32d)** choose the level this phase's *subagent* runs think at;
 `inherit` is 26b's rule, the foreground level frozen at admission. A fork keeps inheriting the
 foreground level whatever is configured, so the Noter's line and its selection dialog disclose that
-while Noting is in fork mode the value reaches only a fallback child; Consolidation is always a
-subagent, so its level always applies. A saved level reaches tasks admitted afterwards; a running
+while Noting or Consolidation is in fork mode the value reaches only a fallback child. Dreamer
+is always a subagent, so its configured level always applies. A saved level reaches tasks admitted afterwards; a running
 task keeps the level it was frozen with, and Pi's own clamp still normalizes a level the worker
 model cannot do (visible as `thinking: { requested, effective }` in the run record).
 
@@ -1307,7 +1323,8 @@ Three terminal business failures of one **logical task** persistently disable it
 memory. The key is the target session, phase and oldest selected backlog item: a source entry
 for Noting, the first fact in Consolidation selection order, or the frozen change event for
 Dreamer. A new leaf, a growing tail, another executor or partial Dreamer edits do not reset it.
-Dreamer's worker is not implemented yet; it will reuse the same settlement primitives.
+Dreamer uses the same settlement primitives. Its immediate edits do not count as successful
+maintenance: a failed final check keeps the range pending and contributes one business failure.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete

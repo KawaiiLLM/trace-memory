@@ -47,6 +47,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
     if (!["create", "update", "merge", "archive"].includes(op)) errors.push("invalid op");
+    if (frozen && op === "merge") errors.push("Consolidator cannot merge or split knowledge families; Dreamer owns complex maintenance");
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
@@ -78,7 +79,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
-    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, true), reason: value.reason!,
+    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !(op === "archive" && store.isDreamingRun(run))), reason: value.reason!,
       topics: op === "archive" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
     const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
     if (scope && content.supports.every(Number.isSafeInteger)) {

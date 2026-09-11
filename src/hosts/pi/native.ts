@@ -52,6 +52,9 @@ interface NativeCommon {
   onProgress(state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: { requested?: ThinkingLevel; effective: ThinkingLevel } }): void;
   /** Consolidation's review feedback, delivered to the child as a native user message. */
   feedback?(result: string): string | undefined;
+  /** Dreamer's host check at a completed pass, with one same-child repair. */
+  passEnd?(rounds: number): string | undefined;
+  reportRounds?(rounds: number): void;
   /** 19c: one completed fork response was eligible for the cache-miss policy (gate 3), hit or miss.
    * The run itself continues; the host counts consecutive misses and decides the downgrade. */
   onCache?(observation: CacheObservation): void;
@@ -276,7 +279,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       // Consolidation's review round: a native user message, queued as steering so the child
       // reads it before its next model call. The two-submission protocol stays in core.
       if (review) pending.push(session.sendUserMessage(review, { deliverAs: "steer" }));
-      return result(content);
+      return { ...result(content), ...(task.passEnd && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
     },
   })) satisfies { name: string }[] as unknown as PiToolDefinition[];
 
@@ -398,6 +401,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       exceeded = true; failure = `tool rounds exceeded (${task.maxToolRounds})`;
       void session.abort();
     }
+    task.reportRounds?.(rounds);
     // Gate 3: only a response whose request passed the deterministic prefix check can count, and it is
     // judged on its own usage. A response that failed or was cancelled carries SDK placeholder zeros,
     // which are unknown, not a miss. The run continues either way: never replayed, never cancelled for
@@ -415,6 +419,16 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     await session.prompt(task.task, { expandPromptTemplates: false });
     await Promise.allSettled(pending);
     await session.waitForIdle();
+    // A native prompt includes the whole tool loop and provider retries. Only now is this a pass
+    // end. The same child, counters and retry accounting survive the one system-generated repair.
+    if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
+      const followup = task.passEnd(rounds);
+      if (followup && rounds < task.maxToolRounds) {
+        await session.sendCustomMessage({ customType: "trace-memory-dreamer-check", content: followup, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+        await session.waitForIdle();
+        task.passEnd(rounds);
+      }
+    }
   } catch (error) {
     failure = String(error);
   } finally {

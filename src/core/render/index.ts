@@ -578,7 +578,7 @@ export function renderFact(fact: Fact, relations: FactRelation[]): string {
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}${topicList(r.topics)}`;
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}${topicList(r.topics)}${r.actorRole === "dreaming" ? `\n  actor: dreaming; run R${r.runId}; parent K${r.knowledgeId}@${r.parentId}; ${r.op === "archive" && !r.supports.length ? "maintenance judgment; " : ""}reason: ${r.reason}` : ""}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
@@ -659,11 +659,14 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
  * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
  * omitted item is named, never rewritten to fit, and remains stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
-  budget = "render.knowledgeBlockTokens", required?: ReadonlySet<number>) {
-  const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
-    .filter((e) => e.revision.category === category)
-    .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
-    .map((value) => ({ category, text: line(value), id: value.knowledge.id, commit: value.revision.id })));
+  budget = "render.knowledgeBlockTokens", required?: ReadonlySet<number>,
+  priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number) {
+  // Relevance selects optional whole items before the stable category/time/id tie-break.
+  // Required exact versions are retained independently; category grouping is presentation only.
+  const ordered = [...knowledge].sort((a, b) => (priority?.(a, b) ?? 0)
+    || KNOWLEDGE_CATEGORIES.indexOf(a.revision.category) - KNOWLEDGE_CATEGORIES.indexOf(b.revision.category)
+    || a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
+    .map(value => ({ category: value.revision.category, text: line(value), id: value.knowledge.id, commit: value.revision.id }));
   // Compact protects exact unprocessed versions while preserving the same optional priority and
   // renderer. Other consumers retain the original whole-prefix selection and receipt floor.
   const optional = ordered.filter(item => !required?.has(item.commit));
@@ -700,7 +703,8 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     cost: cost(kept),
     // 29a "Renderers return what they kept": the exact commits this block carries, in render order.
     // What the cap above cut is receipted, never listed here — a carrier states what was supplied.
-    commits: selected(kept).map((item) => item.commit) };
+    commits: KNOWLEDGE_CATEGORIES.flatMap(category => selected(kept)
+      .filter(item => item.category === category).map(item => item.commit)) };
 }
 
 /** Turn start times for the facts being displayed, read once without loading Turn bodies. */

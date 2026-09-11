@@ -123,6 +123,8 @@ export interface Knowledge {
 }
 
 export interface KnowledgeRevision {
+  /** Immutable trusted maintenance provenance; absence denotes legacy/fact-backed authorship. */
+  actorRole?: "dreaming" | null;
   id: number;
   knowledgeId: number;
   parentId: number | null;

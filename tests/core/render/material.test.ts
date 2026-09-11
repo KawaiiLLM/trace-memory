@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, NOTING_INCOMPLETE, sourceSeededMemory, compacted, renderEntry, tokens, visibleTarget, type ConfigOverride, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { budgetFacts, budgetKnowledge, charge, renderFact } from "../../../src/core/render/index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
@@ -580,6 +580,56 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   const squeezed = freeze([current], tight);
   expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
   expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
+});
+
+test("32de: required exact versions outrank relevance; optional selection and framing share only the remainder", () => {
+  const { s } = seeded();
+  const base = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
+  const item = (id: number, category: typeof base.revision.category, text: string) => ({
+    knowledge: { ...base.knowledge, id }, revision: { ...base.revision, id: id + 10, knowledgeId: id, category, text } });
+  const low = item(1, "constraint", "unrelated required rule " + "word ".repeat(80));
+  const high = item(2, "reference", "relevant optional rule " + "word ".repeat(80));
+  const tie = item(3, "reference", high.revision.text);
+  const values = [tie, high, low]; // relevance ties must not inherit reversed input order
+  const required = new Set([low.revision.id]); // exact commit, deliberately NOT K id
+  const priority = (a: typeof base, b: typeof base) => Number(b.knowledge.id !== 1) - Number(a.knowledge.id !== 1);
+  const minimum = budgetKnowledge([low], Infinity).cost;
+  const pair = budgetKnowledge([low, high], Infinity).cost;
+  const select = (cap: number) => budgetKnowledge(values, cap, undefined, undefined, required, priority);
+  const atFloor = select(minimum);
+  expect(atFloor.commits).toEqual([11]);
+  expect(atFloor.receipts).toEqual([]); // optional receipts cannot take required overflow
+  expect(() => select(minimum - 1)).toThrow(/Knowledge capacity/);
+  const atPair = select(pair);
+  expect(atPair.commits).toEqual([11, 12]); // display/category order, not selection order
+  expect(atPair.groups.find(g => g.category === "constraint")!.text).toBe(renderKnowledge(low));
+  expect(atPair.groups.find(g => g.category === "reference")!.text).toBe(renderKnowledge(high));
+  expect(select(pair - 1).commits).toEqual([11]); // incremental category framing is charged
+  expect(pair).toBeGreaterThan(minimum + tokens(renderKnowledge(high)));
+  for (let cap = minimum; cap <= pair + 80; cap++) {
+    const selected = select(cap);
+    expect(selected.commits).toContain(11);
+    expect(selected.cost).toBeLessThanOrEqual(cap);
+    const text = finish({ content: renderKnowledgeBlock(selected.groups), receipts: selected.receipts });
+    expect(tokens(text)).toBeLessThanOrEqual(selected.cost);
+    expect([...text.matchAll(/\[K\d+@(\d+)\]/g)].map(match => Number(match[1]))).toEqual(selected.commits);
+    expect(select(cap)).toEqual(selected);
+  }
+  expect(select(pair + 80).receipts.length).toBeGreaterThan(0);
+  expect(values.map(v => v.knowledge.id)).toEqual([3, 2, 1]); // no mutation of the caller's array
+});
+
+test("32de: required-only, priority-only and ordinary callers preserve their distinct selection contracts", () => {
+  const { s } = seeded();
+  const base = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
+  const values = [3, 2, 1].map(id => ({ knowledge: { ...base.knowledge, id },
+    revision: { ...base.revision, id: id + 10, knowledgeId: id, text: "word ".repeat(100) } }));
+  const cap = budgetKnowledge([values[0]!], Infinity).cost + 40;
+  const priority = (a: typeof base, b: typeof base) => b.knowledge.id - a.knowledge.id;
+  expect(budgetKnowledge(values, cap).commits).toEqual([11]);
+  expect(budgetKnowledge(values, cap, undefined, undefined, new Set([13])).commits).toEqual([13]);
+  expect(budgetKnowledge(values, cap, undefined, undefined, undefined, priority).commits).toEqual([13]);
+  expect(budgetKnowledge(values, cap, undefined, undefined, new Set([11]), priority).commits).toEqual([11]);
 });
 
 test("32a: omitted inherited status names and stays inside the owning knowledge budget", () => {
