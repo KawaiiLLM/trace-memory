@@ -32,6 +32,9 @@ for (const kind of ["manual", "noting"] as const) test(`thinking: ${kind} reject
     expect(trace.execute({ address: "T1#E1@thinking" })).toContain("Private inference");
     expect(trace.execute({ address: "T1#E2@thinking" })).toContain("Private inference");
     expect(trace.execute({ address: "T1", full: true })).not.toContain("Private inference");
+    const carry = f.m.branchSummary(f.sessionId, "main", f.turnId);
+    expect(carry).toContain("Public explanation");
+    expect(carry).not.toContain("Private inference");
     expect(renderEntryIndex(f.pure)).toContain("[T1#E1]");
     expect(renderEntryIndex(f.mixed)).not.toContain("thinking");
     expect(resolveFactSource(f.entries, "T1#E2")[0]!.blocks.map(b => b.kind)).toEqual(["text", "call"]);

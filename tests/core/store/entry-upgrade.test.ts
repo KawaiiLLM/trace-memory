@@ -25,6 +25,9 @@ function fixture() {
 
 test("upgrade isolates recognized malformed rows, preserves evidence and ordinals, and never retries them", () => {
   const f = fixture();
+  // The cleanup schema does not recreate the retired table; an existing Beta table below must
+  // nevertheless survive this source-entry upgrade byte-for-byte.
+  expect(f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toBeUndefined();
   const inputs = [f.input("good", [{ type: "text", text: "normal text" }], []),
     f.input("missing-map", [f.block], []), f.input("duplicate-native", [f.block, f.block]),
     f.input("wrong-map", [{ ...f.block, id: "unmapped" }]),
@@ -34,9 +37,16 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
   f.store.selectSourcePath(f.sessionId, "main", entries.map(e => e.id));
   const fact = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.sessionId, createdAt: "time" }, facts: [{ turnId: f.turnId, category: "observation", actor: "agent", text: "Existing evidence", source: ["T1#t7"], entryIds: [entries[2]!.id], createdAt: "time" }] });
   expect(fact.ok).toBe(true);
+  if (!fact.ok) throw Error(fact.problems.join("; "));
+  f.store.db.exec(`CREATE TABLE pending_deliveries (
+    run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id),
+    branch TEXT, delivered_at TEXT)`);
+  f.store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(fact.runId, f.sessionId);
   const before = f.store.db.prepare("SELECT id, content, entry_ordinal FROM source_entries ORDER BY id").all();
   const facts = f.store.db.prepare("SELECT * FROM facts").all();
   const bindings = f.store.db.prepare("SELECT * FROM fact_sources").all();
+  const deliverySchema = f.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get();
+  const deliveryRows = f.store.db.prepare("SELECT * FROM pending_deliveries").all();
   f.store.close();
   const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
   const normalize = vi.fn(piSourceBlocks);
@@ -51,6 +61,8 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
     expect(m.store.db.prepare("SELECT id, content, entry_ordinal FROM source_entries ORDER BY id").all()).toEqual(before);
     expect(m.store.db.prepare("SELECT * FROM facts").all()).toEqual(facts);
     expect(m.store.db.prepare("SELECT * FROM fact_sources").all()).toEqual(bindings);
+    expect(m.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toEqual(deliverySchema);
+    expect(m.store.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual(deliveryRows);
     for (const entry of entries.slice(1, 5)) {
       expect(m.store.getSourceEntry(entry.id)).toEqual(entry);
       expect(m.store.db.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBe("null");
