@@ -288,7 +288,7 @@ function bigrams(text: string): Set<string> {
   const chars = [...text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")];
   return new Set(chars.slice(1).map((c, i) => chars[i]! + c));
 }
-function similarity(a: string, b: string): number {
+export function similarity(a: string, b: string): number {
   const left = bigrams(a), right = bigrams(b);
   const intersection = [...left].filter((gram) => right.has(gram)).length;
   const union = left.size + right.size - intersection;

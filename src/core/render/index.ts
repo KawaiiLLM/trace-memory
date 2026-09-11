@@ -659,11 +659,13 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
  * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
  * omitted item is named, never rewritten to fit, and remains stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
-  budget = "render.knowledgeBlockTokens") {
-  const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
-    .filter((e) => e.revision.category === category)
-    .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
-    .map((value) => ({ category, text: line(value), id: value.knowledge.id, commit: value.revision.id })));
+  budget = "render.knowledgeBlockTokens", priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number) {
+  // An oversized worker window may prioritize lexical relevance for selection. Preserve that
+  // priority before the existing stable tie-break; category grouping remains presentation only.
+  const ordered = [...knowledge].sort((a, b) => (priority?.(a, b) ?? 0)
+    || KNOWLEDGE_CATEGORIES.indexOf(a.revision.category) - KNOWLEDGE_CATEGORIES.indexOf(b.revision.category)
+    || a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
+    .map(value => ({ category: value.revision.category, text: line(value), id: value.knowledge.id, commit: value.revision.id }));
   const sizes = ordered.map((item) => tokens(item.text) + 1);
   const receipts = (kept: number) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
     const omitted = ordered.slice(kept).filter((item) => item.category === category);
@@ -689,7 +691,8 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     cost: cost(kept),
     // 29a "Renderers return what they kept": the exact commits this block carries, in render order.
     // What the cap above cut is receipted, never listed here — a carrier states what was supplied.
-    commits: ordered.slice(0, kept).map((item) => item.commit) };
+    commits: KNOWLEDGE_CATEGORIES.flatMap(category => ordered.slice(0, kept)
+      .filter(item => item.category === category).map(item => item.commit)) };
 }
 
 /** Turn start times for the facts being displayed, read once without loading Turn bodies. */

@@ -5,7 +5,7 @@ import { checkProcessedScopes, placementOwner, processedBlock } from "../store/p
 import { renderFact, renderFactGroups, renderKnowledgeBlock, budgetKnowledge, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import type { ConsolidateInput } from "../consolidation/index.ts";
+import { similarity, type ConsolidateInput } from "../consolidation/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 
 const prompt = readFileSync(new URL("../prompts/dreaming.md", import.meta.url), "utf8");
@@ -51,7 +51,10 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   const processed = store.listCurrentKnowledge(path).filter(v => store.isKnowledgeProcessed(v.revision.id));
   let old = processedBlock(processed), oldIds = processed.map(v => v.revision.id);
   if (tokens(`Processed knowledge:\n${old}`) > 20000) {
-    const selected = budgetKnowledge(processed, 20000 - tokens("Processed knowledge:\n"));
+    const query = [...changed.versions, ...changed.predecessors].map(v => v.revision.text).join("\n");
+    const scores = new Map(processed.map(v => [v.revision.id, similarity(query, v.revision.text)]));
+    const selected = budgetKnowledge(processed, 20000 - tokens("Processed knowledge:\n"), undefined, "Dreamer processed input",
+      (a, b) => scores.get(b.revision.id)! - scores.get(a.revision.id)!);
     old = [renderKnowledgeBlock(selected.groups.filter(g => g.text)), ...selected.receipts].join("\n");
     oldIds = selected.commits;
   }
@@ -86,8 +89,9 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   let rounds = 0, repaired = false;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
     promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${range.eventIds.at(-1)}`, createdAt: new Date().toISOString() };
-  // The binding's read tracker records only complete delivered bodies. Own accepted writes also
-  // supply their resulting bodies; receipts from rejected batches never enter this set.
+  // Reading grants exact write handles, not certification. This execution may certify its frozen
+  // versions and this retained task's own outputs, but never a later external version merely read.
+  const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
   const check = () => {
     const problems: string[] = [...binding.memory.problems];
     let family = range.knowledgeIds;
@@ -100,12 +104,14 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
       if (!graph.current.some(r => r.knowledgeId === handle.knowledgeId || descendants.has(r.id)))
         problems.push(`K${handle.knowledgeId}@${handle.commit}: no applicable result remains on the frozen path`);
     }
-    const accepted = new Set([...binding.memory.readCommits, ...binding.memory.allCommitted.map(c => c.commit)]);
+    const eligible = new Set([...admitted, ...store.dreamingOwnCommits(range.id)]);
     for (const revision of [...current, ...state.versions.map(v => v.revision)]) {
       if (!family.includes(revision.knowledgeId)) problems.push(`K${revision.knowledgeId}@${revision.id}: external successor outside frozen family; read-only`);
-      if (!accepted.has(revision.id)) problems.push(`K${revision.knowledgeId}@${revision.id}: current version was not supplied or fully read; trace and check again`);
+      if (!eligible.has(revision.id)) problems.push(`K${revision.knowledgeId}@${revision.id}: external successor after freeze; not an admitted version or this task's own result; reading alone cannot certify it`);
     }
-    const resultIds = [...new Set(current.map(v => v.id))].sort((a, b) => a - b);
+    // Do not certify a shadowed predecessor or silently succeed after filtering a successor:
+    // every current family result above must qualify, including externally merged successors.
+    const resultIds = [...new Set(current.filter(v => eligible.has(v.id)).map(v => v.id))].sort((a, b) => a - b);
     const affected = new Set([...current, ...frozen.changed.versions.map(v => v.revision)].map(revision => placementOwner(store, { revision })));
     const scopes = checkProcessedScopes(store, resultIds, affected);
     problems.push(...scopes.problems);

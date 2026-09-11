@@ -1418,7 +1418,7 @@ export class Store {
           const range = this.validateDreamingRun(input.run, path);
           const parents = input.operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(a => a.knowledgeId)] : [op.knowledgeId]);
           if (parents.some(id => !range.knowledgeIds.includes(id))) throw new Error("knowledge outside the frozen Dreamer family is read-only");
-          if (input.operations.some(op => op.op === "create") && !parents.length) throw new Error("Dreamer create must derive from a family update/archive in the same atomic batch");
+          if (input.operations.some(op => op.op === "create") && !input.operations.some(op => op.op === "update" || op.op === "archive")) throw new Error("Dreamer create must derive from a family update/archive in the same atomic batch");
         }
         for (const op of input.operations) {
           const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, this.isDreamingRun(input.run));
@@ -1543,7 +1543,15 @@ export class Store {
     return { events, oldestId: range?.anchor ?? events[0]?.id ?? null, versions, predecessors, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
   }
 
-  /** Read successors across merge edges; this never adds their identities to the writable family. */
+  /** Exact outputs of this retained task, across batches and failed executions. Neither family
+   * membership nor an external writer's actor label proves that a revision belongs to this task. */
+  dreamingOwnCommits(rangeId: number): number[] {
+    return this.db.prepare(`SELECT r.id FROM knowledge_revisions r JOIN dreaming_run_ranges d ON d.run_id = r.run_id
+      WHERE d.range_id = ? ORDER BY r.id`).all(rangeId).map(r => Number(r.id));
+  }
+
+  /** Read successors across merge edges; this never adds their identities to the writable family
+   * or grants certification. The worker separately freezes exact admission versions and own outputs. */
   private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null) {
     const roots = new Set([...events, ...(range?.eventIds ?? [])]);
     const family = new Set(range?.knowledgeIds ?? []);
@@ -1588,8 +1596,9 @@ export class Store {
         this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, event.id);
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, event.knowledgeId);
       }
+      const current = new Set(this.commitGraph(target).current.map(r => r.knowledgeId));
       for (const knowledgeId of suppliedKnowledgeIds) {
-        if (!this.currentCommit(knowledgeId, target).length) throw new Error("Dreamer family must be applicable at admission");
+        if (!current.has(knowledgeId)) throw new Error("Dreamer family must be applicable at admission");
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, knowledgeId);
       }
       return this.dreamingRange(id)!;

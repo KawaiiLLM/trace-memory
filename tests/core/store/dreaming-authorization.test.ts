@@ -113,3 +113,44 @@ test("32d: current claim and family are enforced in the atomic Store write, not 
   f.store.releaseClaim(f.run.claim!);
   expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [f.archive] }).ok).toBe(false);
 });
+
+
+test("32d: create plus merge is not a split; rejection has zero batch side effects", () => {
+  const f = fixture();
+  const other = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...f.content }] });
+  if (!other.ok) throw Error(other.problems.join());
+  const item = other.committed[0]!;
+  // Both parents really are admitted family members; this is an operation-type violation.
+  f.store.db.prepare("INSERT INTO dreaming_family VALUES (?, ?)").run(f.run.dreamingRangeId!, item.knowledgeId);
+  const run = f.store.bindDreamingRun(f.run);
+  const before = { revisions: f.store.listKnowledgeRevisions(), family: f.store.dreamingRange(f.run.dreamingRangeId!), links: f.store.listKnowledgeLinks(f.item.knowledgeId) };
+  const merge = { op: "merge" as const, intoKnowledgeId: f.item.knowledgeId, intoBaseCommit: f.item.commit, absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...f.content };
+  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "create", handle: "$split", author: "test", ...f.content }, merge] });
+  expect(result.ok).toBe(false);
+  expect(f.store.listKnowledgeRevisions()).toEqual(before.revisions);
+  expect(f.store.dreamingRange(f.run.dreamingRangeId!)).toEqual(before.family);
+  expect(f.store.listKnowledgeLinks(f.item.knowledgeId)).toEqual(before.links);
+  expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [merge] }).ok).toBe(true);
+});
+
+test.each(["update", "archive"] as const)("32d: create plus authorized family %s is a legal atomic split", op => {
+  const f = fixture(), run = f.store.bindDreamingRun(f.run);
+  const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [
+    { op: "create", handle: "$split", author: "test", ...f.content },
+    { ...f.content, ...f.archive, op, supports: op === "archive" ? [] : f.content.supports },
+  ] });
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.committed).toHaveLength(2);
+});
+
+test("32d: an outside-family update cannot decorate create into a split", () => {
+  const f = fixture(), run = f.store.bindDreamingRun(f.run);
+  const outside = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...f.content }] });
+  if (!outside.ok) throw Error(outside.problems.join());
+  const item = outside.committed[0]!, before = f.store.listKnowledgeRevisions();
+  expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [
+    { op: "create", handle: "$split", author: "test", ...f.content },
+    { op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, ...f.content },
+  ] }).ok).toBe(false);
+  expect(f.store.listKnowledgeRevisions()).toEqual(before);
+});
