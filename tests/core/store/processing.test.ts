@@ -170,6 +170,40 @@ test("32b review: cross-K chained successors are read without expanding frozen f
   expect(input.versions[0]!.revision.id).toBe(final.commit);
 });
 
+test.each([false, true])("32b frozen path: head advance ignores later-only supports (explicit selection: %s)", selected => {
+  const a = fixture(), b = fixture(a.store), c = a.create("frozen body");
+  const range = a.store.retainDreamingRange(a.target, [c.commit]);
+  const turn = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "later", startedAt: "now" });
+  const noted = a.store.commitNotingRun({ run: { kind: "manual", sessionId: a.s.id, createdAt: "now" }, facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "later evidence", source: [`T${turn.id}#user`], createdAt: "now" }] });
+  if (!noted.ok) throw Error(noted.problems.join());
+  const advanced = { ...a.target, headTurnId: turn.id };
+  const updated = a.store.commitConsolidationRun({ path: advanced, run: { kind: "manual", sessionId: a.s.id, branch: "main", createdAt: "now" }, operations: [{ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content, supports: [noted.facts[0]!.id], text: "later-only body" }] });
+  if (!updated.ok) throw Error(updated.problems.join());
+  const later = updated.committed[0]!;
+  const input = () => a.store.dreamingInput(advanced, selected ? [c.commit] : undefined);
+  expect(input().versions.map(v => v.revision.id)).toEqual([c.commit]);
+  expect(input()).toEqual(a.store.dreamingInput(a.target, selected ? [c.commit] : undefined));
+  expect(input().events.map(e => e.id)).toEqual([c.commit]);
+  expect(input().text).not.toContain("later-only body");
+  expect(a.store.retainDreamingRange(advanced, [later.commit])).toEqual(range);
+  // A path without an open range still resolves the caller's current head.
+  expect(a.store.dreamingInput({ ...advanced, branch: "fresh" }).versions.map(v => v.revision.id)).toEqual([later.commit]);
+  // Freeze path identity, not commit time: legitimate own edits and new derived K remain visible.
+  const own = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content, text: "own transformed body" }, range.id);
+  const derived = a.create("own derived body", "project", range.id);
+  expect(input().versions.map(v => v.revision.id)).toEqual([own.commit, derived.commit]);
+  a.store.completeDreaming(b.success(), [c.commit], [own.commit]);
+  expect(input().events).toEqual([]);
+  expect(input().oldestId).toBe(c.commit);
+  expect(input().versions.map(v => [v.revision.id, v.processed])).toEqual([[own.commit, true], [derived.commit, false]]);
+  expect(a.store.retryDreamingRange(advanced)).toMatchObject({ id: range.id, headTurnId: a.t.id, anchor: c.commit });
+  a.store.completeDreaming(a.success(), [], [derived.commit]);
+  expect(a.store.dreamingRange(range.id)).toBeNull();
+  expect(a.store.retryDreamingRange(advanced)).toBeNull();
+  expect(a.store.isKnowledgeProcessed(later.commit)).toBe(false);
+  expect(a.store.dreamingInput(advanced).events.map(e => e.id)).toEqual([later.commit]);
+});
+
 test("32b review: sibling-only merge cannot replace input on the original path", () => {
   const a = fixture(), c = a.create("original branch body"), b = a.create("survivor");
   const turn = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "sibling", startedAt: "now" });

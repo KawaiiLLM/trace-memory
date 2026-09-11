@@ -1438,10 +1438,12 @@ export class Store {
   /** Event weight is cumulative; changed input supplies each current exact body only once.
    * A bounded caller selects eventIds first and settles only those actually supplied. */
   dreamingInput(path: KnowledgePath, eventIds?: number[]) {
-    const selected = eventIds && new Set(eventIds);
-    const events = this.pendingKnowledgeEvents(path).filter(e => !selected || selected.has(e.id));
     const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
-    const graph = this.commitGraph(path);
+    // Retry reads live revisions on the retained path, not the caller's advancing head.
+    const inputPath = range ? { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId } : path;
+    const selected = eventIds && new Set(eventIds);
+    const events = this.pendingKnowledgeEvents(inputPath).filter(e => !selected || selected.has(e.id));
+    const graph = this.commitGraph(inputPath);
     const versions = this.dreamingResults(graph, events.map(e => e.id), range).map(revision => ({
       knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
     }));
