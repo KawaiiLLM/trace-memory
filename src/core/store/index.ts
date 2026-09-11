@@ -429,7 +429,7 @@ export interface PathSnapshot {
 }
 
 /** The citable source addresses of one entry: `#user` or `#assistant` when it has text, `#t<n>` per tool call. */
-export const sourceAddresses = (entry: SourceEntry): string[] => [
+export const sourceAddresses = (entry: Pick<SourceEntry, "turnId" | "role" | "text"> & { calls: { ordinal: number }[] }): string[] => [
   ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map(c => `T${entry.turnId}#t${c.ordinal}`),
 ];
@@ -1265,6 +1265,50 @@ export class Store {
 
   factEntries(factId: number): number[] {
     return (this.db.prepare("SELECT entry_id FROM fact_sources WHERE fact_id = ? ORDER BY entry_id").all(factId) as { entry_id: number }[]).map(r => r.entry_id);
+  }
+
+  factCoveredByRaw(fact: Fact, covered: ReadonlySet<number>): boolean {
+    return this.factsCoveredByRaw([fact], covered).has(fact.id);
+  }
+
+  /** Re-resolve citations in the original Noting run's frozen entry set, never today's path.
+   * Manual/legacy writes without that set cannot prove completeness and stay eligible.
+   * Two metadata-only queries per allocation; no Raw bodies or persistent cache. */
+  factsCoveredByRaw(facts: readonly Fact[], covered: ReadonlySet<number>): Set<number> {
+    const result = new Set<number>();
+    if (!facts.length || !covered.size) return result;
+    const bindings = new Map<number, Set<number>>(), runs = new Map<number, number>();
+    for (const row of this.db.prepare("SELECT f.run_id, b.fact_id, b.entry_id FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(facts.map(f => f.id)))) {
+      const id = Number(row.fact_id);
+      runs.set(id, Number(row.run_id));
+      if (!bindings.has(id)) bindings.set(id, new Set());
+      bindings.get(id)!.add(Number(row.entry_id));
+    }
+    const sources = new Map<number, Map<string, Set<number>>>();
+    for (const row of this.db.prepare(`SELECT n.run_id, e.id, e.turn_id,
+        json_extract(content, '$.role') AS role, json_extract(content, '$.text') <> '' AS spoken,
+        (SELECT json_group_array(json_extract(value, '$.ordinal')) FROM json_each(content, '$.calls')) AS ordinals
+      FROM noted_entries n JOIN runs r ON r.id = n.run_id
+      JOIN source_entries e ON e.id = n.entry_id AND e.session_id = r.session_id
+      WHERE r.kind = 'noting' AND r.outcome = 'success' AND r.id IN (SELECT value FROM json_each(?))`)
+      .all(JSON.stringify([...new Set(runs.values())]))) {
+      const run = Number(row.run_id);
+      if (!sources.has(run)) sources.set(run, new Map());
+      const addresses = sources.get(run)!;
+      for (const address of sourceAddresses({ turnId: Number(row.turn_id), role: row.role as SourceEntry["role"],
+        text: row.spoken ? "source" : "", calls: (JSON.parse(String(row.ordinals)) as number[]).map(ordinal => ({ ordinal })) })) {
+        if (!addresses.has(address)) addresses.set(address, new Set());
+        addresses.get(address)!.add(Number(row.id));
+      }
+    }
+    for (const fact of facts) {
+      const bound = bindings.get(fact.id), addresses = sources.get(runs.get(fact.id)!);
+      if (!bound?.size || !fact.source.length || !addresses || !fact.source.every(a => addresses.has(a))) continue;
+      const expected = new Set(fact.source.flatMap(a => [...addresses.get(a)!]));
+      if (expected.size === bound.size && [...expected].every(id => bound.has(id) && covered.has(id))) result.add(fact.id);
+    }
+    return result;
   }
 
   /** A fact is on a path when its Turn and every cited Turn are on the ancestry and, when the branch has a

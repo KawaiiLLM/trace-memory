@@ -659,21 +659,32 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
  * order, while the rendered block, its category tags and its own omission receipts fit the cap. An
  * omitted item is named, never rewritten to fit, and remains stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
-  budget = "render.knowledgeBlockTokens") {
+  budget = "render.knowledgeBlockTokens", required?: ReadonlySet<number>) {
   const ordered = KNOWLEDGE_CATEGORIES.flatMap((category) => knowledge
     .filter((e) => e.revision.category === category)
     .sort((a, b) => a.revision.createdAt.localeCompare(b.revision.createdAt) || a.knowledge.id - b.knowledge.id)
     .map((value) => ({ category, text: line(value), id: value.knowledge.id, commit: value.revision.id })));
-  const sizes = ordered.map((item) => tokens(item.text) + 1);
+  // Compact protects exact unprocessed versions while preserving the same optional priority and
+  // renderer. Other consumers retain the original whole-prefix selection and receipt floor.
+  const optional = ordered.filter(item => !required?.has(item.commit));
+  const sizes = new Map(ordered.map(item => [item.commit, tokens(item.text) + 1]));
+  const categoryCosts = new Map(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
+  const ranks = new Map(optional.map((item, index) => [item.commit, index]));
+  const selected = (kept: number) => ordered.filter(item => required?.has(item.commit) || ranks.get(item.commit)! < kept);
   const receipts = (kept: number) => KNOWLEDGE_CATEGORIES.flatMap((category) => {
-    const omitted = ordered.slice(kept).filter((item) => item.category === category);
+    const omitted = optional.slice(kept).filter((item) => item.category === category);
     return omitted.length ? [`omitted ${omitted.length} ${category} knowledge; expand: ${expandList(omitted.map((item) => `K${item.id}`))}`] : [];
   });
-  const cost = (kept: number) => (kept ? tokens(xmlBlock("knowledge", "")) + sizes.slice(0, kept).reduce((a, b) => a + b, 0)
-    + charge([...new Set(ordered.slice(0, kept).map((item) => item.category))].map((category) => xmlBlock(category, ""))) : 0)
-    + charge(receipts(kept)) + (receipts(kept).length ? charge(["Receipts:"]) : 0); // the heading `finish` adds is emitted too
+  const bodyCost = (kept: number) => { const items = selected(kept); return items.length
+    ? tokens(xmlBlock("knowledge", "")) + items.reduce((sum, item) => sum + sizes.get(item.commit)!, 0)
+      + [...new Set(items.map(item => item.category))].reduce((sum, category) => sum + categoryCosts.get(category)!, 0) : 0; };
+  // Optional omission framing cannot spend required overflow. If it cannot fit, omit it too.
+  const emittedReceipts = (kept: number) => required && bodyCost(kept) + charge(receipts(kept))
+    + (receipts(kept).length ? charge(["Receipts:"]) : 0) > cap ? [] : receipts(kept);
+  const cost = (kept: number) => bodyCost(kept) + charge(emittedReceipts(kept))
+    + (emittedReceipts(kept).length ? charge(["Receipts:"]) : 0); // the heading `finish` adds is emitted too
   let kept = 0;
-  while (kept < ordered.length && cost(kept + 1) <= cap) kept++;
+  while (kept < optional.length && cost(kept + 1) <= cap) kept++;
   // Omitting one more item can lengthen a receipt: recheck the prefix the loop stopped on. The floor
   // is the receipt itself, which is never dropped to fit — nothing else would say the item exists.
   while (kept > 0 && cost(kept) > cap) kept--;
@@ -681,15 +692,15 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
   // omitted items does not fit, that is a capacity problem to report, not oversized material to emit.
   if (cost(kept) > cap) throw new Error(`Knowledge capacity: the omission receipt alone (${cost(kept)} tokens) exceeds ${budget} (${cap})`);
   return { groups: KNOWLEDGE_CATEGORIES.map((category) => ({ category,
-    text: ordered.slice(0, kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
-    receipts: receipts(kept),
+    text: selected(kept).filter((item) => item.category === category).map((item) => item.text).join("\n") })),
+    receipts: emittedReceipts(kept),
     // 28a "Lending": what this block actually charges, by the same accounting the cap was applied
     // with. The compaction allocator compares it against the other two windows, so it may not
     // re-measure the rendered text with a second, slightly different sum.
     cost: cost(kept),
     // 29a "Renderers return what they kept": the exact commits this block carries, in render order.
     // What the cap above cut is receipted, never listed here — a carrier states what was supplied.
-    commits: ordered.slice(0, kept).map((item) => item.commit) };
+    commits: selected(kept).map((item) => item.commit) };
 }
 
 /** Turn start times for the facts being displayed, read once without loading Turn bodies. */

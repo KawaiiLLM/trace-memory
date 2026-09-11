@@ -11,7 +11,7 @@ test("disabling memory during recovery delegates without persisting an empty cus
   const f = await piSession({ extensions: [extension as never], compaction: { enabled: false },
     env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath: join(directory, "trace.db"),
       "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-      "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1000, "compaction.rawTokens": 1 }) },
+      "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1000, "compaction.rawTokens": 1, "compaction.overflowTokens": 50 }) },
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   try {
     f.script(() => say("ANSWER_SENTINEL"));

@@ -56,7 +56,7 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
   // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
   // running over it).
-  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "render.knowledgeBlockTokens": 200, "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
+  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "render.knowledgeBlockTokens": 200, "compaction.factsTokens": 50, "compaction.rawTokens": 50, "compaction.overflowTokens": 50 });
   try {
     failing(h); // repeated Noter failures are what make a session hard to compact
     for (let i = 0; i < 20; i++) { await h.prompt(`tiny ${i}`); await h.answer(); await h.emit("agent_settled"); await h.drain(); }

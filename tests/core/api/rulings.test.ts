@@ -36,6 +36,7 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
  * unused allowance as spare. The knowledge window keeps room for its own omission receipt, which is a
  * capacity floor of its own (20b). */
 const compactionWindows = (knowledge: number, facts: number, raw: number) => {
+  memory.config.compaction.overflowTokens = 0;
   memory.config.render.knowledgeBlockTokens = knowledge;
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
@@ -1003,7 +1004,7 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 // compaction no longer reads it. Required material is placed first and is never trimmed; what is left
 // refills with recent consolidated facts and then recent already-extracted Raw.
 test("28: three windows, one envelope — required material first, refills into the spare, never a trimmed pending window", () => {
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, overflowTokens: 10_000 });
   expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(20_000);
   expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
   expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
@@ -1025,16 +1026,17 @@ test("28: three windows, one envelope — required material first, refills into 
   // Everything fits: required material and both refills, inside the 40,000-token envelope.
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(40_000);
+  expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
-  for (const marker of ["PENDING FACT", "PENDING RAW", "CONSOLIDATED HISTORY", "EXTRACTED RAW"]) expect(text).toContain(marker);
+  expect(text).toContain("CONSOLIDATED HISTORY"); // manual write has no frozen source set to prove completeness
+  for (const marker of ["PENDING FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
   // The Noter's envelope is not compact's: moving it changes not one byte here.
   memory.config.render.episodicBlockTokens = 40;
   expect(compacted(memory.compact(s.id, "main", t.id))).toBe(text);
   memory.config.render.episodicBlockTokens = DEFAULT_CONFIG.render.episodicBlockTokens;
 
   // No spare: the refills are gone and the required material is untouched — never trimmed to fit.
-  compactionWindows(Math.max(1, windows.knowledge), Math.ceil(windows.required.facts + windows.required.raw), 0);
+  compactionWindows(Math.max(1, windows.knowledge), windows.required.facts, windows.required.raw);
   const required = compacted(memory.compact(s.id, "main", t.id));
   expect(required).toContain("PENDING FACT"); expect(required).toContain("PENDING RAW");
   expect(required).not.toContain("CONSOLIDATED HISTORY"); expect(required).not.toContain("EXTRACTED RAW");
@@ -1199,8 +1201,8 @@ test("30: the shipped profile is 2,000/100/100 and the retired B and secondary k
 // or silently retired to make room for them.
 test("28a configuration: compaction.factsTokens and compaction.rawTokens are validated like every other token key", () => {
   const open = (compaction: Record<string, number>) => sourceSeededMemory(join(directory, "windows.sqlite"), async () => ok([]), { compaction } as never);
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
-  for (const key of ["factsTokens", "rawTokens"] as const) {
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, overflowTokens: 10_000 });
+  for (const key of ["factsTokens", "rawTokens", "overflowTokens"] as const) {
     expect(() => open({ [key]: 0 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     expect(() => open({ [key]: 1.5 })).toThrow(`Invalid compaction.${key}: expected a positive safe integer`);
     const set = open({ [key]: 4_321 });
@@ -1723,10 +1725,10 @@ test("26 amendment 2: compaction and the Noter's history take only path-applicab
   const measured = charged(memory.compact(s.id, "C", selected.id));
   const receipt = tokens(`omitted 2 older facts; expand: F${onPath}, F${shared}`) + tokens("Receipts:") + 2;
   const total = measured.knowledge + measured.required.facts + measured.required.raw + receipt;
-  compactionWindows(Math.max(1, measured.knowledge), Math.ceil((total - measured.knowledge) / 2), Math.floor((total - measured.knowledge) / 2));
+  compactionWindows(Math.max(1, measured.knowledge), total - measured.knowledge - measured.required.raw, measured.required.raw);
   const squeezed = compacted(memory.compact(s.id, "C", selected.id));
   expect(squeezed).not.toContain(`[F${onPath}]`); expect(squeezed).not.toContain(`[F${shared}]`);
-  expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`);
+  expect(squeezed).toContain(`omitted 2 older facts; expand: F${onPath}, F${shared}`); // manual bindings remain eligible
   defaultWindows();
 
   // --- the Noter's freeze: the same list in the same order, from one snapshot. The write-tool

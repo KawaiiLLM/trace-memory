@@ -70,13 +70,14 @@ export interface TraceMemoryConfig {
     maxToolRounds: number;
   };
   /** Ticket 28a "Windows": the two compaction material windows that are not knowledge. The third is
-   * `render.knowledgeBlockTokens`, and the envelope one custom compaction may charge is the sum of
-   * the three. `render.episodicBlockTokens` is not read here — it stayed the Noter's history envelope. */
+   * `render.knowledgeBlockTokens`, and the maximum one custom compaction may charge is their sum plus required-only overflow. `render.episodicBlockTokens` is not read here — it stayed the Noter's history envelope. */
   compaction: {
     /** The facts window: the pending facts on the path, then the consolidated refill (28a items 1, 4). */
     factsTokens: number;
     /** The Raw window: the pending entry views, then the already-extracted refill (28a items 1, 5). */
     rawTokens: number;
+    /** Shared allowance for required excess only; no ordinary window lending. */
+    overflowTokens: number;
   };
 }
 
@@ -111,6 +112,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
   compaction: {
     factsTokens: 10_000,
     rawTokens: 10_000,
+    overflowTokens: 10_000,
   },
 };
 
@@ -405,9 +407,9 @@ export interface TraceMemory {
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
    * envelope, or the explicit ask that the host decline and let its native compaction run (20c).
-   * `retainedNativeIds` are the host entries the post-compaction context keeps, which refill (b) must
-   * not supply a second time (28a item 5); a host that keeps none passes none. */
-  compact(sessionId: number, branch?: string, headTurnId?: number, retainedNativeIds?: readonly string[]): CompactResult;
+   * `retainedView` describes actually retained Raw/fact/knowledge identities; legacy native-ID arrays
+   * remain accepted for Raw-only callers. A host that keeps none passes none. */
+  compact(sessionId: number, branch?: string, headTurnId?: number, retainedView?: readonly string[] | VisibleView): CompactResult;
   /** Ticket 21b: the path-selected applicable knowledge grouped by topic, as commit references; a
    * read projection only — it neither reorders injection nor changes what is applicable. */
   topicGroups(sessionId: number, headTurnId?: number | null, branch?: string): TopicGroups;

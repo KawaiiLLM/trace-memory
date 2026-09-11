@@ -15,10 +15,12 @@ import { host, reply, type Reply } from "./test-host.ts";
 // session in `compaction-triggers.test.ts`; the cases here drive the hook itself.
 
 const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
-/** The three material windows. Their sum is the envelope, so a case that wants one window over has
- * to state all three (28a: lending makes the sum the only knob a test can turn). */
+/** Independent bases plus a small shared allowance: pending demand still overflows, while empty
+ * window titles can fit after successful recovery even in legacy one-token-base fixtures. */
 const windows = (knowledge: number, facts: number, raw: number) =>
-  ({ "render.knowledgeBlockTokens": knowledge, "compaction.factsTokens": facts, "compaction.rawTokens": raw });
+  ({ "render.knowledgeBlockTokens": knowledge, "compaction.factsTokens": facts, "compaction.rawTokens": raw,
+    // Preserve these recovery probes' deliberately tiny admission allowance; 32e tests the default.
+    "compaction.overflowTokens": 50 });
 const long = (head: string) => `${head} ` + "word ".repeat(3_000);
 type Host = ReturnType<typeof host>;
 /** The runs this compaction caused: `noted` below seeds one directly in the store, which is state,

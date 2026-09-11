@@ -24,7 +24,7 @@ const big = "word ".repeat(4_000);
 const traceMemory = (dir: string) => ({
   dbPath: join(dir, "trace.db"),
   "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000,
-  "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1_000, "compaction.rawTokens": 1,
+  "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1_000, "compaction.rawTokens": 1, "compaction.overflowTokens": 50,
 });
 const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number } = {}) => {
   const store = mkdtempSync(join(tmpdir(), "trace-memory-triggers-"));

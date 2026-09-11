@@ -45,19 +45,18 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
   if ("native" in result) throw new Error(`expected a custom replacement, got: ${result.reason}`);
   return result.charged!;
 };
-/** 28a "Lending": the three windows are one envelope and a window needing less lends the difference,
- * so what a test controls is the sum, not one key. This sets the sum, keeping the knowledge window at
- * exactly what its block already charges — the required-material fit test measures knowledge at its
- * own baseline, so pinning it there leaves the envelope as the only thing that moves. */
-const envelope = (total: number, knowledge: number) => {
+/** Tests set independent bases; a zero allowance isolates each base boundary. */
+const setWindows = (knowledge: number, facts: number, raw: number) => {
   memory.config.render.knowledgeBlockTokens = Math.max(1, knowledge);
-  memory.config.compaction.factsTokens = Math.max(0, Math.ceil((total - knowledge) / 2));
-  memory.config.compaction.rawTokens = Math.max(0, Math.floor((total - knowledge) / 2));
+  Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, overflowTokens: 0 });
 };
+const setRequiredWindows = (value: ReturnType<typeof charged>, factSpare = 0) =>
+  setWindows(value.knowledge, value.required.facts + factSpare, value.required.raw);
 const defaultWindows = () => {
   memory.config.render.knowledgeBlockTokens = 20_000;
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
+  memory.config.compaction.overflowTokens = 10_000;
 };
 
 test("injection and compaction match Chinese fixture goldens without a model call", () => {
@@ -148,7 +147,7 @@ test("compaction uses supplied ancestry and newest facts fit before older facts"
   // keeps the pending fact whole and leaves the older consolidated one out; the pending window is
   // never trimmed to make room for a refill.
   const windows = charged(whole);
-  envelope(windows.knowledge + windows.required.facts + windows.required.raw, windows.knowledge);
+  setRequiredWindows(windows);
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${n.facts[0]!.id}]`); expect(limited).not.toContain("[F1]");
   defaultWindows();
@@ -180,7 +179,7 @@ test("20c 2026-09-08 scenario 9: all pending bounded views fit, historical facts
   // pending fact, leaves F1 out and says so — the receipt sits outside the block, as every other does.
   const windows = charged(result);
   const receipt = tokens("omitted 1 older facts; expand: F1") + tokens("Receipts:") + 2;
-  envelope(windows.knowledge + windows.required.facts + windows.required.raw + receipt, windows.knowledge);
+  setRequiredWindows(windows, receipt);
   const limited = compacted(memory.compact(s.id, "main", selected.id));
   expect(limited).toContain(`[F${second.id}]`); expect(limited).not.toContain("[F1]");
   expect(limited).toContain("omitted 1 older facts; expand: F1");
@@ -227,12 +226,12 @@ test("20c/23 scenario 10, as 30 left it: one bounded view of every entry under t
   // There is no second, tighter rendering to fall back on (30): an envelope these views cannot meet
   // is a native delegation naming the overflowing window and its numbers, with nothing hidden to
   // force a success and no pending window trimmed (28a item 3).
-  envelope(500, 100);
+  setWindows(100, 200, 200);
   const delegated = memory.compact(s.id, "main", next.id);
   expect("native" in delegated).toBe(true);
   expect("native" in delegated && delegated.reason).toContain("compaction.rawTokens");
   expect("native" in delegated && delegated.reason).toContain(`bounded views of ${pending.length} pending entries`);
-  expect("native" in delegated && delegated.reason).toContain("required material does not fit after lending");
+  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared overflow");
   expect(memory.pendingEntries(s.id, "main", next.id).map(e => e.id)).toEqual(pending.map(e => e.id));
   defaultWindows();
   // The stored evidence is untouched by any of it: `full` still renders it uncut, and the assembled
@@ -308,7 +307,7 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
   const pending = memory.pendingEntries(s.id, "main", parent).map(e => e.id);
   expect(pending.length).toBeGreaterThanOrEqual(40);
   // Many tiny entries: their identities and labels alone exceed the whole envelope.
-  envelope(200, 100);
+  setWindows(100, 50, 50);
   const outer = memory.compact(s.id, "main", parent);
   expect("native" in outer).toBe(true);
   expect("native" in outer && outer.reason).toContain("compaction.rawTokens");
@@ -322,7 +321,7 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
   expect("native" in inner).toBe(false);
   expect(compacted(inner)).not.toContain("raw ceiling");
   for (const id of pending) expect(compacted(inner)).toContain(`T${memory.store.listSourceEntries(s.id).find(e => e.id === id)!.turnId}#`);
-  envelope(200, 100);
+  setWindows(100, 50, 50);
   const named = memory.compact(s.id, "main", parent);
   expect("native" in named && named.reason).toContain("compaction.rawTokens");
   expect("native" in named && named.reason).not.toContain("raw ceiling");
@@ -335,7 +334,7 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
 // ---- Ticket 25, amendment 3 (25c), as 28a left it: three windows over one envelope, required
 // material reserved out of it before either refill ----
 
-test("25c 2026-09-09, as 28a left it: with nothing pending the consolidated refill takes the whole spare, and pending Raw that needs the envelope leaves it none", () => {
+test("32e: consolidated history stays inside its own base and yields only to its own required material", () => {
   const { s, t } = populated();
   // Already-consolidated facts, large enough that "some space" and "no space" are far apart: about
   // 830 tokens each. Consolidated, so they are refill (a) — optional history in the spare — and not
@@ -349,8 +348,9 @@ test("25c 2026-09-09, as 28a left it: with nothing pending the consolidated refi
   // No pending Raw: the refill may use the whole spare, and all of it fits inside the envelope.
   const roomy = memory.compact(s.id, "main", t.id);
   const spare = compacted(roomy);
-  for (const fact of facts) expect(spare).toContain(`[F${fact.id}]`);
-  expect(spare).not.toContain("older facts; expand:");
+  expect("native" in roomy ? 0 : roomy.supplied.factIds.length).toBeLessThan(facts.length);
+  expect(spare).toContain("older facts; expand:");
+  expect(charged(roomy).facts).toBeLessThanOrEqual(10_000);
   const windows = charged(roomy);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Now pending Raw that needs almost all of the envelope. It is required and is reserved first, so
@@ -364,7 +364,7 @@ test("25c 2026-09-09, as 28a left it: with nothing pending the consolidated refi
   // An envelope of exactly the required material plus the refill's own omission receipt: the pending
   // views are all kept, the optional facts are all left out, and the receipt says so.
   const receipt = tokens(`omitted ${facts.length} older facts; expand: F1, F2, F3, F4, F5, F6, F7, F8 and 8 more up to F16`) + tokens("Receipts:") + 2;
-  envelope(measured.knowledge + measured.required.facts + measured.required.raw + receipt, measured.knowledge);
+  setRequiredWindows(measured, receipt);
   const crowded = memory.compact(s.id, "main", t.id);
   expect("native" in crowded).toBe(false); // the required material fits; only the optional refill yields
   const text = compacted(crowded);
@@ -405,7 +405,7 @@ test("25c 2026-09-09, as 30 left it: pending membership is processing progress i
   expect(membership(bounded)).toContain(noted.id); expect(membership(bounded)).toContain(open.id);
   // Native delegation: the pending set does not shrink to fit, and the injection does not move.
   const injection = memory.inject(s.id);
-  envelope(200, 200);
+  setWindows(200, 0, 0);
   const delegated = memory.compact(s.id, "main", t.id);
   expect("native" in delegated).toBe(true);
   expect("text" in delegated).toBe(false); // no custom summary is built, so none can be consumed
@@ -705,7 +705,7 @@ function consolidate(sessionId: number, ids: number[], branch = "main") {
 const entry = (sessionId: number, turnId: number, nativeId: string, text: string) =>
   memory.appendEntry({ sessionId, nativeLineage: "x", nativeId, turnId, role: "assistant", text, raw: "", calls: [] });
 
-test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit at 38k through lending without a worker", () => {
+test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit using required-only shared overflow without a worker", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
@@ -716,11 +716,11 @@ test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit at 38k thro
   expect("native" in result).toBe(false); // 38k of demand inside the 40k envelope
   const windows = charged(result), text = compacted(result);
   // The facts window is served past its 10,000-token baseline:
-  // borrowed what knowledge and Raw were not using, and nothing was clipped to a baseline.
+  // uses the shared required-only allowance; it borrows no knowledge or Raw base.
   expect(windows.facts).toBeGreaterThan(10_000);
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(40_000);
+  expect(windows.envelope).toBe(50_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
@@ -728,7 +728,7 @@ test("32a / 28 acceptance 1: 18k knowledge, 14k facts and 6k Raw fit at 38k thro
   expect(calls).toBe(0);
 });
 
-test("28a acceptance 2: a window keeps its baseline material when another wants more, optional knowledge yields first, and a required overflow delegates naming the window", () => {
+test("32e: required legacy knowledge and pending windows share overflow without trimming, then delegate with excess diagnostics", () => {
   const s = session(), t = turn(s.id, "head");
   const seed = pendingFacts(s.id, t.id, ["seed"])[0]!;
   consolidate(s.id, [seed.id]);
@@ -742,10 +742,10 @@ test("28a acceptance 2: a window keeps its baseline material when another wants 
   // The facts window keeps everything inside its own baseline although Raw wants more than its own…
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   expect(windows.raw).toBeGreaterThan(10_000);
-  // …and optional knowledge beyond its baseline is what yields, down to its baseline but never below.
-  expect(windows.knowledge).toBeLessThan(13 * 2_000);
+  // Legacy knowledge is unprocessed: all complete bodies remain required above the base.
+  expect(windows.knowledge).toBeGreaterThan(25_000);
   expect(windows.knowledge).toBeGreaterThanOrEqual(memory.config.render.knowledgeBlockTokens - 2_000);
-  expect(text).toContain("knowledge; expand: K"); // the rest is named, never silently dropped
+  expect(text).not.toContain("knowledge; expand: K"); // legacy knowledge is required in full
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Required material that still does not fit after all of that lending delegates, naming the window
   // and its numbers — the pending window is never trimmed to force a success.
@@ -754,7 +754,7 @@ test("28a acceptance 2: a window keeps its baseline material when another wants 
   expect("native" in delegated).toBe(true);
   expect("native" in delegated && delegated.reason).toContain("compaction.factsTokens");
   expect("native" in delegated && delegated.reason).toContain("pending facts need");
-  expect("native" in delegated && delegated.reason).toContain("required material does not fit after lending");
+  expect("native" in delegated && delegated.reason).toContain("required material exceeds shared overflow");
   expect(memory.pendingEntries(s.id, "main", t.id)).toHaveLength(7); // nothing was processed or erased
   expect(calls).toBe(0);
 });
@@ -810,7 +810,7 @@ test("28a acceptance 3 and 30 cases 10-12: the two refills are whole, recent, pa
   // 30 case 12: with no spare at all the refills are simply absent — no worker, no delegation, no
   // processing reset, no coverage claim, and the required material is untouched.
   const runsBefore = memory.store.listRuns(s.id).length;
-  envelope(windows.knowledge + windows.required.facts + windows.required.raw, windows.knowledge);
+  setRequiredWindows(windows);
   const tight = memory.compact(s.id, "main", selected.id);
   expect("native" in tight).toBe(false);
   const bare = compacted(tight);
@@ -835,7 +835,7 @@ test("28a: refill (a) takes the most recent consolidated facts first, whole, and
   const measured = charged(memory.compact(s.id, "main", t.id));
   // Room for one whole refilled fact and the receipt naming the other: freshness decides which.
   const receipt = tokens(`omitted 1 older facts; expand: F${older.id}`) + tokens("Receipts:") + 2;
-  envelope(measured.knowledge + measured.required.facts + measured.required.raw + receipt + 600, measured.knowledge);
+  setRequiredWindows(measured, receipt + 600);
   const text = compacted(memory.compact(s.id, "main", t.id));
   expect(text).toContain("NEWEST"); expect(text).not.toContain("OLDEST");
   expect(text).toContain(`omitted 1 older facts; expand: F${older.id}`);

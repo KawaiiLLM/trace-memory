@@ -563,5 +563,5 @@ test("23/30: the removed budget keys and a part budget above the ceiling are rej
   expect(() => host({ "compaction.factsTokens": -1 })).toThrow("Invalid compaction.factsTokens");
   expect(() => host({ "compaction.rawTokens": 0 })).toThrow("Invalid compaction.rawTokens: expected a positive safe integer");
   expect(() => host({ "compaction.episodicBlockTokens": 10 })).toThrow("Unknown setting compaction.episodicBlockTokens");
-  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000 });
+  expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, overflowTokens: 10_000 });
 });
