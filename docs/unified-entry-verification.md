@@ -66,6 +66,8 @@ The worker out-of-memory failure was reproduced in a thinking fixture: its scrip
 
 One source-store edit received a permission timeout. Its identical normal edit retry succeeded; `.scratch/resumed-permission-denial.log` retains the exact denial. No bypass was used for the denied operation.
 
+The final baseline-to-HEAD diff check also caught one trailing space inherited from the earlier budget-wiring commit. A whitespace-only ordinary follow-up removed it; `.scratch/resumed-baseline-diff-failure.log` preserves the diagnostic. No commit was amended or rebased.
+
 Final checks ran sequentially on the implementation above:
 
 | Check | Result | Log under `.scratch/` |

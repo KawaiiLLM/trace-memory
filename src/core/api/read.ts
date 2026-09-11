@@ -134,7 +134,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
    * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; budgets?: ListingOptions }; 
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; budgets?: ListingOptions };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
