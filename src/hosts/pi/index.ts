@@ -891,6 +891,20 @@ export default function (pi: ExtensionAPI) {
     if (!checkpoint) return "the parent session has no persisted leaf entry";
     return checkpointReadiness(parentFile, checkpoint);
   };
+  /** Track cleanup, not admission or result policy. Callers reserve the slot before starting work
+   * and choose whether `slot.result` exposes the raw attempt, a swallowed rejection or this settled
+   * promise. Shutdown waits for cleanup; only an explicit catchup may chain on release. */
+  const trackSlot = <T,>(kind: WorkerPhase, slot: Slot, work: Promise<T>, context: ExtensionContext, released: () => void): Promise<T> => {
+    const settled = work.finally(() => {
+      slots.delete(kind); pending.delete(settled); activity.running.delete(kind);
+      released();
+    });
+    slot.done = settled;
+    pending.add(settled);
+    // Consume cleanup failures even when the initiating caller does not await this task.
+    void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+    return settled;
+  };
   const checkQueues = () => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
@@ -936,15 +950,10 @@ export default function (pi: ExtensionAPI) {
       };
       const promise = work();
       slot.result = promise;
-      pending.add(promise); activity.running.set(kind, 1); showSpend(context);
-      // The handled promise includes cleanup; no detached rejecting finally chain survives disposal.
-      const settled = promise.then(result => reportProblems(result, context), error => {
+      activity.running.set(kind, 1); showSpend(context);
+      trackSlot(kind, slot, promise.then(result => reportProblems(result, context), error => {
         activity.last = "error"; context.ui.notify(String(error), "error");
-      }).finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
-        if (catchup) driveCatchup(); }); // 18b: a slot release is one of the two events that may resume a waiting catchup.
-      slot.done = settled;
-      pending.delete(promise); pending.add(settled);
-      void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+      }), context, () => { showSpend(context); if (catchup) driveCatchup(); });
     }
     if (catchup) driveCatchup(); // 18b: an ordinary eligible-entry opportunity is the other resumption event.
   };
@@ -991,9 +1000,8 @@ export default function (pi: ExtensionAPI) {
     const slot: Slot = { target: own, boundary };
     slots.set(phase, slot); activity.running.set(phase, 1); showSpend(context);
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
-    pending.add(promise);
     let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
-    const settled = promise.then(result => {
+    const handled = promise.then(result => {
       if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
         for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
       reportProblems(result, context);
@@ -1006,16 +1014,14 @@ export default function (pi: ExtensionAPI) {
         c.outcome = outcome === "cancelled" ? "stopped" : "failed";
         c.diagnostic = (result as { problems?: string[]; output?: unknown }).problems?.join("; ") ?? String((result as { output?: unknown }).output ?? outcome);
       }
-    }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); })
-      .finally(() => { slots.delete(phase); c.runningPhase = undefined; pending.delete(settled); activity.running.delete(phase); showSpend(context);
-        // The explicit drain exception: only this active catchup schedules its own next batch. A batch
-        // that ended in Waiting is resumed by a slot release or the next ordinary opportunity, never by
-        // this line: re-driving a wait immediately is a loop without a wait (review 2026-09-08).
-        if (!waited) driveCatchup(); });
+    }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
     slot.result = promise.catch(() => undefined);
-    slot.done = settled;
-    pending.delete(promise); pending.add(settled);
-    void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
+    trackSlot(phase, slot, handled, context, () => {
+      c.runningPhase = undefined; showSpend(context);
+      // Only this explicit drain chains. A dropped attempt waits for a later opportunity;
+      // immediately re-driving it would loop without a wait.
+      if (!waited) driveCatchup();
+    });
   };
   const startCatchup = () => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
@@ -1144,18 +1150,14 @@ export default function (pi: ExtensionAPI) {
     context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : kind === "dreaming" ? "knowledge" : "facts"}.`, "info");
     const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
       { borrowed: false, automatic: false, boundary, signal });
-    pending.add(promise);
-    const settled = promise.then(result => {
+    const settled = trackSlot(kind, slot, promise.then(result => {
       reportProblems(result, context);
       if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
       return result;
     },
-      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; })
-      .finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
-        if (catchup) driveCatchup(); }); // 18b: this slot release is a resumption event like any other
+      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; }),
+      context, () => { showSpend(context); if (catchup) driveCatchup(); });
     slot.result = settled;
-    slot.done = settled;
-    pending.delete(promise); pending.add(settled);
     const result = await settled;
     return { used: !!result && "runId" in result, result };
   };
