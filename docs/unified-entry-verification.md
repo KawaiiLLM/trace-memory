@@ -2,7 +2,7 @@
 
 Worktree: `/private/tmp/tm-unified-entry-raw-budget`, branch `feat/unified-entry-raw-budget`. Baseline: `dfdeda694c9f280680e2ef018cdb37e9d3c35bdd`. Implementation and regressions: `3f88f32c6bcb2b8c48c69cc8cfa8a5c7487a3db9`. No main-branch integration, publishing, production database, host configuration or live provider work is part of this change.
 
-The original acceptance record below is retained unchanged. The [Sol repair record](#sol-review-repairs) records the subsequent fixes and their validation.
+The original acceptance record below is retained unchanged. The [Sol repair record](#sol-review-repairs) records the subsequent fixes and their validation. The base implementation later merged at `862e40684b07bbe2be349d95139038facf9834c6`; the [Claude repair record](#claude-review-repairs) documents the current, separately scoped follow-up.
 
 ## Fixed-fixture token drift
 
@@ -198,3 +198,56 @@ The large performance fixture's 3,948-entry pending backlog still reads 88 sourc
 All old logs remain. `targeted-before.log` also retains the first run's incorrect test assumption that fact-binding storage returns path order; the corrected test checks membership, without changing storage. The initial parent-directory search encountered unrelated OS read denials and did not pursue those locations. No approval refusal was bypassed.
 
 **Pending acceptance:** the main agent must arrange Sol's directed final review. Structural result matching does not prove the semantics of every authored claim. Real-provider quality, billing/cache reuse, interactive acceptance, other runtimes and unsupported old schemas remain unverified. No main/cleanup-worktree modification, real database/configuration/installation change, amend, merge or release was performed.
+
+## Claude review repairs
+
+Base: `862e40684b07bbe2be349d95139038facf9834c6`. Repair branch: `fix/entry-upgrade-read-guidance`, worktree `/private/tmp/tm-entry-upgrade-read-guidance`. These changes address the three directed implementation findings; the specification ledger is tracked separately. Main remains at the base, unchanged. Review/user acceptance of this follow-up remains pending.
+
+| Finding | Repair and evidence |
+| --- | --- |
+| One malformed legacy row prevents opening the database | Catch only `SourceNormalizationError` around the host decoder. Missing/duplicate native-call mappings retain the original legacy projection, bytes, references, results and E/call ordinals. Numeric entry/Turn warnings reveal no content. Existing JSON-null persistence prevents reopen retries; good rows retain exact fragments. New ingestion remains strict. Mixed-row tests preserve fact/source tables and reject fabricated fragments; a database trigger aborting after an earlier good-row update still rolls back the entire transaction. Unexpected decoder errors also remain fatal. |
+| Readable thinking also became new fact authority | A new-fact resolver excludes thinking without altering the general resolver, persisted blocks or historical membership metadata. Explicit thinking and thinking-only whole-entry notes reject atomically for manual and Noter writers; mixed whole entries retain only text/call/result evidence. Regression tests retain explicit reads, default omission, identity-only indexes, and old fact/knowledge visibility both with and without stored entry bindings. |
+| Complete-K requirements omit the way to remove previews | The shared trace description gives `trace({address:'K12@57',itemBudget:null})`, requires every cursor, retains `pageBudget`, and exempts internally supplied complete versions from rereading. Actual C/D task callbacks assert receipt of that instruction. The shared tool-binding regression drains a truncated K preview without authorization, then grants the handle only after the final full-body cursor using `itemBudget:null` alone; every continuation remains within the default 2k page budget. |
+
+Source display, historical membership and new-note permission have separate documented responsibilities. No historical fact strings, Raw or knowledge were rewritten. No migration framework, new stored failure state, automatic thinking injection, permission expansion, estimator change or processing-policy change was added. Production source delta is **+42 / −20 lines, net +22**, across five files; one file changes comments only. Tests and documentation are excluded.
+
+### Measurements
+
+`tests/perf/entry-upgrade-guidance.ts` runs against an isolated archive of the exact base. Its three synthetic databases each contain 1,200 entries, 400 malformed mappings and 5,807,549 stored content bytes. The base fails to open that mixed fixture. The repaired upgrades take **85.2 / 108.1 / 75.2 ms**; reopen takes **1.18 / 1.31 / 1.26 ms**, with zero additional decoder calls or warnings. All content and ordinals compare exactly before/after. Warnings are captured rather than written to a terminal, so these samples exclude console-output latency and are not production latency guarantees.
+
+The fixed metadata comparison measures serialized tool definitions and unchanged instruction files:
+
+| Material | Base estimated tokens | Repair estimated tokens | Difference |
+| --- | ---: | ---: | ---: |
+| Shared tools, including Noter/Consolidator definitions | 1,743 | 1,825 | +82 |
+| Dreamer tools | 1,427 | 1,475 | +48 |
+| Noter instruction | 3,397 | 3,397 | 0 |
+| Consolidator instruction | 3,760 | 3,760 | 0 |
+| Dreamer instruction | 813 | 813 | 0 |
+
+Shared tool bytes grow 7,293 → 7,686; Dreamer tool bytes grow 6,008 → 6,239. The shared increase includes the +48-token read instruction and +34-token note-policy instruction. No worker prompt repeats the complete-read recipe. These are local estimates, not provider billing or claimed cost savings. Existing layout snapshots change only the displayed tool estimate, approximately 1.7k → 1.8k.
+
+### Ordered checks and retained logs
+
+Final checks ran on Node 24.6.0, darwin/arm64, in the requested order. Evidence lives under `.scratch/entry-repair/` in the repair worktree:
+
+| Check | Result | Log |
+| --- | --- | --- |
+| Directed tests | 18 files, 368 tests passed | `targeted-final.log` |
+| TypeScript | Passed | `typecheck-final.log` |
+| Full suite, one worker, no cache | 94 files, 1,394 tests passed | `full-final.log` |
+| Pi fake-provider smoke | Native Noting, Dreamer recovery and long-history checks passed | `pi-smoke-final.log` |
+| Isolated offline package smoke | 40 shipped files; tarball install, Pi discovery/load and native workers passed | `package-smoke-final.log` |
+| Serial performance, isolated temporary cache | Both fixture sizes, three samples per scenario | `perf-final.log` |
+| Migration and metadata comparison | Passed against the exact base archive | `upgrade-guidance-final.json` |
+| Diff/whitespace | Passed | `diff-final.log` |
+
+The large performance fixture still checks a 3,948-entry Noting backlog with 88 source reads (134.8 ms warm); 50 unchanged-leaf updates read zero sources (0.7 ms warm). No processed-projection optimization or unrelated task was included.
+
+Earlier failures remain: `targeted-1.log` records invalid synthetic seed assumptions and a manual-run coverage assumption; `typecheck-1.log` records an uncast test callback; `full-1.log` records the expected six layout snapshot mismatches after the tool estimate changed. Corrected fixtures/snapshots do not restore superseded semantics. Subsequent passing runs and all earlier logs are retained. `evidence-sha256.txt` hashes final checks; the measurement JSON SHA-256 is `1da6359f751e7958f9c4733cbd7d0d0b34e658721d0c182063380ff9e53bbfb8`.
+
+### Specification synchronization and boundaries
+
+Ticket 33 was created in the authorized independent repository, then **committed by another executor; this executor verified and retained it** at `8dc0eb8ff44792e3bb43fb36fa40c4f6eb26d945`. That ordinary commit contains only the identical ticket 33, and the nested repository is clean. No committer identity is inferred, no duplicate commit or overwrite was made, and ticket 32a was not changed. The ledger distinguishes explicit address/selector/range/multi/child-budget requests from the approved accompanying full/index semantics and keeps the current repairs pending acceptance.
+
+All database work used synthetic temporary fixtures. No real database, configuration, installation, main/other-worktree code, amend, merge or release was touched. No approval refusal occurred. Only this audit appendix was added after the runtime sequence; final staged diff checks include it. Unverified boundaries are live-provider behavior/quality, billing/cache reuse, interactive acceptance, other runtimes and unsupported old schemas. Fatal transaction and unexpected-decoder propagation are tested; disk-full, OS permission and physical-corruption fault injection are not. Fact validation establishes structural source authority, not whether a model's claim is semantically entailed by its cited non-thinking text.

@@ -10,7 +10,14 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 const memories: ReturnType<typeof TraceMemory>[] = [], directories: string[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, body = "durable rule", db = ":memory:", scope: "global" | "project" = "project") {
-  const memory = TraceMemory(db, task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
+  const memory = TraceMemory(db, task => {
+    const guidance = (task as DreamingAgentInput).tools.find(t => t.name === "trace")!.description;
+    expect(guidance).toContain("trace({address:'K12@57',itemBudget:null})");
+    expect(guidance).toContain("pageBudget still applies");
+    expect(guidance).toContain("Follow every cursor");
+    expect(guidance).toContain("already supplied internally need no reread");
+    return agent(task as DreamingAgentInput);
+  }, { dreaming: { triggerTokens: 1 } }); memories.push(memory);
   const store = memory.store;
   const p = store.createProject({ name: "P", declaredBy: "mark" });
   const s = store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });

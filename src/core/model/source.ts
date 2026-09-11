@@ -5,6 +5,10 @@ export type SourceBlock = { kind: "text" | "thinking" | "marker"; text: string }
   | { kind: "call" | "result"; call: SourceInput["calls"][number]; texts?: string[] };
 /** A host decodes its own immutable native envelope once, not in each rendering consumer. */
 export type SourceNormalizer = (entry: SourceInput) => SourceBlock[] | undefined;
+/** Recognized native/projection mismatch only. Storage and unexpected decoder errors stay fatal. */
+export class SourceNormalizationError extends Error {
+  constructor() { super("native call identity lacks a unique stored mapping"); this.name = "SourceNormalizationError"; }
+}
 export const entryAddress = (entry: Pick<SourceEntry, "turnId" | "entryOrdinal">): string => `T${entry.turnId}#E${entry.entryOrdinal}`;
 
 /** Legacy projections cannot prove block interleaving or precise fragment existence. They remain
@@ -19,7 +23,7 @@ export const fragmentAddress = (entry: SourceEntry, block: SourceBlock): string 
 export const blockText = (block: Extract<SourceBlock, { call: unknown }>): string => (block.texts ?? [block.call.result ?? ""]).join("\n");
 export const resultHasText = (entry: SourceEntry): boolean => sourceBlocks(entry).some(block => block.kind === "result" && blockText(block).length > 0);
 
-/** Non-text placeholders are displayable, but never evidence. */
+/** Stored source membership, not new-fact permission. Non-text placeholders carry no proof. */
 export function preciseSources(entry: SourceEntry): string[] {
   const blocks = sourceBlocks(entry).filter(block => block.kind !== "marker");
   if (!blocks.length) return [];
@@ -31,6 +35,7 @@ export const legacySources = (entry: Pick<SourceEntry, "turnId" | "role" | "text
   ...(entry.text ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map(call => `T${entry.turnId}#t${call.ordinal}`),
 ];
+/** Preserve historical thinking membership for applicability/coverage, independently of new writes. */
 export const sourceAddresses = (entry: SourceEntry): string[] => [...legacySources(entry), ...preciseSources(entry)];
 /** Membership key only: preserve the authored citation string, but compare equivalent JSON
  * spellings of an opaque ID against the same persisted block authority. */
@@ -68,6 +73,14 @@ export function resolveSource(entries: readonly SourceEntry[], address: string):
       }
     }
     return blocks.length ? [{ entry, blocks }] : [];
+  });
+}
+/** New facts use only public text/call/result evidence. Whole mixed entries exclude thinking;
+ * explicit thinking and thinking-only entries resolve to no factual evidence. Reads are unchanged. */
+export function resolveFactSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
+  return resolveSource(entries, address).flatMap(hit => {
+    const blocks = hit.blocks.filter(block => block.kind !== "thinking");
+    return blocks.length ? [{ entry: hit.entry, blocks }] : [];
   });
 }
 export function exactSource(entry: SourceEntry, address: string): boolean {

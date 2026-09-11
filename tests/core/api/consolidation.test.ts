@@ -21,6 +21,11 @@ function open(config: ConfigOverride = {}) {
     // A stub host: it receives structured material and never a core-composed message, and builds its
     // own provider record out of the material, the tool rounds and core's review feedback (19b).
     let input = { ...raw as CoreInput, round: "candidate" as const } as ConsolidationAgentInput;
+    const guidance = input.tools.find(t => t.name === "trace")!.description;
+    expect(guidance).toContain("trace({address:'K12@57',itemBudget:null})");
+    expect(guidance).toContain("pageBudget still applies");
+    expect(guidance).toContain("Follow every cursor");
+    expect(guidance).toContain("already supplied internally need no reread");
     const rounds: any[] = [{ material: structuredClone(input.material) }];
     for (;;) {
       input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };

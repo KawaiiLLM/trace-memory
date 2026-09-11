@@ -340,11 +340,9 @@ export { sourceAddresses };
 /** A user message without text (an image, say) still shows as a source with a marker; an assistant
  * entry with no text of its own (thinking only) shows no natural-text part at all. */
 const speaks = (entry: SourceEntry) => Boolean(entry.text) || entry.role === "user";
-/** The source parts an entry displays, as addresses (GPT review 2026-09-09, finding 3). An explicit
- * read of one part checks this, not `sourceAddresses`: the two answer different questions, and the one
- * that says what a fact may cite as evidence must not widen because a placeholder is displayable. So
- * an image-only user message shows `[T<n>#user]` in the assembled read and `trace T<n>#user` reads
- * that same placeholder, while it stays uncitable, and a thinking-only assistant entry stays neither. */
+/** Legacy display addresses, not source membership metadata or new-fact authority. An image-only
+ * user message remains readable with a placeholder at #user but is not evidence. Thinking-only entries
+ * have no legacy text projection; explicit @thinking reads use persisted blocks instead. */
 export const displayedAddresses = (entry: SourceEntry): string[] => [
   ...(speaks(entry) ? [`T${entry.turnId}#${entry.role === "user" ? "user" : "assistant"}`] : []),
   ...entry.calls.map((call) => `T${entry.turnId}#t${call.ordinal}`),
