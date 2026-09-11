@@ -79,6 +79,46 @@ test.each([9999, 10000, 10001])("pending %i never rounds onto its trigger", toke
   expect(bar).toContain(tokens === 10000 ? "100.0%" : tokens < 10000 ? "<100%" : ">100%");
 });
 
+test.each([
+  [0, "0.0%", "100.0%"], [0.001, "<0.1%", "<100%"],
+  [9999, "<100%", "<0.1%"], [10000, "100.0%", "0.0%"],
+  [10001, ">100%", "0.0%"], [12500, "125.0%", "0.0%"],
+] as const)("context %s preserves total, Used and safe Free percentages", (tokens, used, free) => {
+  const lines = contextMap({ tokens, contextWindow: 10000, percent: 100 }, "fake/test", 40);
+  expect.soft(lines[6]).toContain(`(${used})`);
+  expect.soft(lines[7]).toContain(`Used ${tokens === 10000 ? "10k" : tokens === 12500 ? "12.5k" : tokens.toLocaleString("en-US")} (${used})`);
+  expect(lines[8]).toContain(`(${free})`);
+  expect(lines[8]).not.toContain("-");
+  expect(lines.slice(0, 5).join("").match(/⛁/g) ?? []).toHaveLength(Math.min(100, Math.floor(tokens / 100)));
+});
+
+test("compact identity distinguishes provider, enrollment source and project declaration", async () => {
+  const h = setup(); await h.turn();
+  let title = await open(h);
+  expect(title).toContain("fake/test");
+  expect(title).toContain("S1 | On(default) | $0.0000");
+  expect(title).toContain("Project: pi:pi-test (undeclared)");
+  expect(title).not.toContain("Shared identity");
+  await h.commands.get("trace").handler("off", h.ctx);
+  expect(await open(h)).toContain("S1 | Off(explicit) | $0.0000");
+  await h.commands.get("trace").handler("on", h.ctx);
+  await h.commands.get("trace").handler("project example", h.ctx);
+  title = await open(h);
+  expect(title).toContain("S1 | On(explicit) | $0.0000");
+  expect(title).toContain("Project: example (mark)");
+});
+
+test("compact default Off stays distinct from an explicit choice", async () => {
+  const h = setup(); h.setHeaderTimestamp("2000-01-01T00:00:00Z");
+  await h.emit("session_start");
+  expect(await open(h)).toContain("Off(default)");
+});
+
+test.each([9999, 10001])("headless threshold formatting remains unchanged at %i", tokens => {
+  expect(contextMap({ tokens, contextWindow: 10000, percent: 100 }, "fake/test", 40, undefined, false).join("\n")).toContain("(100.0%)");
+  expect(pendingBar("Noting", { tokens, trigger: 10000, state: "known" }, false)).toContain("(100.0%)");
+});
+
 test("wide and narrow native Text layouts stay within Pi visible width", () => {
   for (const width of [1, 20, 40, 80, 100]) {
     const lines = contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "fake/模型-with-a-long-name", width);
@@ -145,6 +185,11 @@ test("shared identity stays concise in overview and complete in On/Off confirmat
   await h.commands.get("trace").handler("", h.ctx);
   expect(h.dialogs.at(-1)!.title).toContain("this switch also affects forks or clones carrying this memory identity.");
   expect(h.memory.store.enabled(1)).toBe(true);
+  await h.commands.get("trace").handler("off", h.ctx);
+  h.answers.push("Current session", "On", false);
+  await h.commands.get("trace").handler("", h.ctx);
+  expect(h.dialogs.at(-1)!.title).toContain("this switch also affects forks or clones carrying this memory identity.");
+  expect(h.memory.store.enabled(1)).toBe(false);
 });
 
 test("headless keeps its original verbose status", async () => {

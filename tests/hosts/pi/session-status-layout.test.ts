@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
+import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-panel.ts";
 import { host, reply } from "./test-host.ts";
 import { contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
@@ -303,12 +303,15 @@ test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => (
     await new Promise(resolve => setImmediate(resolve));
     const first = s.frame().map(line => line.trimEnd()).join("\n");
     expect(first).toContain("~44.5k / 1M (4.5%)");
+    expect(first).toContain("fake/test");
+    expect(first).toContain("S1 | On(default) | $0.0000");
+    expect(first).toContain("Project: pi:pi-test (undeclared)");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
     expect(first).toContain("Noting        █████░░░░░  52.0% 26/50");
     expect(first).toContain("Dreaming      ░░░░░░░░░░");
     expect(first).toContain("Consolidation ░░░░░░░░░░");
     expect(first).toContain("Free 955.5k (95.5%)");
-    if (width >= 80) expect(first).not.toContain("Scroll");
+    expect(first).not.toContain("Scroll");
     expect(first).toMatchSnapshot();
     s.key("\x1b[6~");
     expect(s.frame().map(line => line.trimEnd()).join("\n")).toMatchSnapshot();
@@ -321,6 +324,9 @@ test.each([40, 80, 100])("long project and actual recovery remain reachable at %
   try {
     await h.turn();
     const project = "long-project-".repeat(12) + "END";
+    const provider = "long-provider-".repeat(8) + "PROVIDER-END";
+    const model = "long-model-".repeat(8) + "MODEL-END";
+    h.ctx.model = { ...h.ctx.model!, provider, id: model };
     await h.commands.get("trace").handler(`project ${project}`, h.ctx);
     const store = h.memory.store;
     for (let i = 0; i < 3; i++) {
@@ -344,6 +350,8 @@ test.each([40, 80, 100])("long project and actual recovery remain reachable at %
     for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dreaming", "END"])
       expect(text).toContain(phrase);
     expect(seen.join("").replace(/\s+/g, "")).toContain(project);
+    for (const chunk of wrapTextWithAnsi(`${provider}/${model}`, width >= 80 ? width - 42 : width))
+      expect(seen.join("\n")).toContain(chunk);
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });

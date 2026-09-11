@@ -1435,15 +1435,15 @@ export default function (pi: ExtensionAPI) {
   const sessionStatus = (compact = false): SessionBody => {
     let usage: ReturnType<ExtensionContext["getContextUsage"]>;
     try { usage = ctx.getContextUsage(); } catch { /* unavailable, never zero */ }
-    const model = ctx.model ? compact ? ctx.model.id : `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
+    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
     const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [], recovery: string[] = [];
     const e = enrollment();
-    lines.push(compact ? `Session: ${state.sessionId ? `S${state.sessionId}` : "No session"} | ${enabled() ? "Enabled" : "Off"}`
+    lines.push(compact ? `${state.sessionId ? `S${state.sessionId}` : "Session: No session"} | ${enabled() ? "On" : "Off"}(${e.choice === null ? "default" : "explicit"})`
       : `Session: ${state.sessionId ? `S${state.sessionId}` : "None (no assistant reply)"}`);
     if (!compact) lines.push(`Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})`);
     try {
       const s = state.sessionId ? memory.store.getSession(state.sessionId) : null;
-      lines.push(`Project: ${s ? `${memory.store.getProject(s.projectId)!.name}${compact ? "" : ` (${memory.store.projectDeclaration(s.id)})`}` : state.project ?? "Unassigned"}`);
+      lines.push(`Project: ${s ? `${memory.store.getProject(s.projectId)!.name} (${memory.store.projectDeclaration(s.id)})` : state.project ?? "Unassigned"}`);
       if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
         recovery.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
@@ -1451,7 +1451,7 @@ export default function (pi: ExtensionAPI) {
     let cost: string;
     try { cost = `Cost: ${state.sessionId ? `$${memory.spend(state.sessionId).cost.toFixed(4)}` : "N/A (no session)"}`; }
     catch { cost = "Cost: Unknown (unavailable)"; }
-    if (compact) lines[0] += ` | ${cost}`;
+    if (compact) lines[0] += ` | ${cost.replace(/^Cost: /, "")}`;
     lines.push(`${compact ? "Pending / trigger (~tokens)" : "Pending: / trigger — estimated tokens"}${enabled() ? "" : " (Off; stored evidence only)"}`);
     for (const phase of ["noting", "consolidation", "dreaming"] as const) {
       const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);

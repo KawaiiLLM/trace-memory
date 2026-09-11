@@ -6,7 +6,11 @@ export type Paint = (color: "dim" | "accent", text: string) => string;
 const plain: Paint = (_color, text) => text;
 const number = (value: number) => value.toLocaleString("en-US");
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
-export const percent = (ratio: number) => ratio > 0 && ratio < 0.001 ? "<0.1%" : `${(ratio * 100).toFixed(1)}%`;
+export const percent = (ratio: number, compact = true) => {
+  const rounded = ratio > 0 && ratio < 0.001 ? "<0.1%" : `${(ratio * 100).toFixed(1)}%`;
+  // Preserve threshold direction in compact views; headless keeps its original format.
+  return compact && ratio !== 1 && rounded === "100.0%" ? (ratio < 1 ? "<100%" : ">100%") : rounded;
+};
 
 /** Compact only when exact: never round pending evidence onto or across its trigger. */
 const compactNumber = (value: number) => value >= 1_000_000 && value % 100_000 === 0 ? `${value / 1_000_000}M`
@@ -24,7 +28,7 @@ export function contextMap(usage: ContextUsage | undefined, model: string, width
     : `Unknown / ${valid(usage?.contextWindow) && usage.contextWindow > 0 ? compactNumber(usage.contextWindow) : "Unknown"}`,
     known ? `${paint("accent", full)}${paint("dim", ` Used ${compactNumber(usage.tokens!)} (${percent(ratio!)})`)}` : "? Unknown (usage unavailable)",
     ...(known ? [paint("dim", `${free} Free ${compactNumber(Math.max(0, usage.contextWindow - usage.tokens!))} (${percent(Math.max(0, 1 - ratio!))})`)] : [])]
-    : [`Context: ${model}`, known ? `${number(usage.tokens!)} / ${number(usage.contextWindow)} tokens (${percent(ratio!)})`
+    : [`Context: ${model}`, known ? `${number(usage.tokens!)} / ${number(usage.contextWindow)} tokens (${percent(ratio!, false)})`
     : `Unknown / ${valid(usage?.contextWindow) && usage.contextWindow > 0 ? number(usage.contextWindow) : "Unknown"} tokens`,
     "Pi estimate (reported + trailing)", known ? `${full} Used  ${free} Free  ${part} Partial` : "? Unknown (usage unavailable)", "100 cells; 1% each"];
   const spaced = width >= 80;
@@ -49,7 +53,7 @@ export function pendingBar(label: string, value: ReturnType<TraceMemory["pending
   const ratio = value.tokens / value.trigger;
   const filled = Math.min(10, Math.floor(ratio * 10));
   const partial = filled < 10 && ratio * 10 > filled;
-  const percentage = compact && ratio !== 1 && percent(ratio) === "100.0%" ? (ratio < 1 ? "<100%" : ">100%") : percent(ratio);
+  const percentage = percent(ratio, compact);
   if (compact) {
     const [used, free] = ["█", "░"].every(g => visibleWidth(g) === 1) ? ["█", "░"] : ["#", "."];
     // Floor visual capacity; the exact numeric amount still exposes sub-cell and over-trigger evidence.

@@ -118,7 +118,7 @@ test("24b: the menu has four entries and Current session keeps status, participa
   h.answers.push("Current session", undefined);
   await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]); // no Retry fork while not downgraded
-  expect(h.dialogs.at(-1)!.title).toContain("Session: S1");                      // status, with 24a's counts
+  expect(h.dialogs.at(-1)!.title).toContain("S1 | On(default) | $0.0000");                      // status, with 24a's counts
   expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
   expect(h.notices).toHaveLength(quiet);                                          // cancelling wrote nothing
   // Runs, with its count selection.
