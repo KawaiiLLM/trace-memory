@@ -1,14 +1,18 @@
 import { prepareMemory, accounting } from "./commit.ts";
 import type { MemoryBatch } from "../model/index.ts";
-import type { Store, RunInput, KnowledgePath } from "../store/index.ts";
+import type { Store, RunInput, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
 import type { KnowledgeRead } from "../api/read.ts";
 export interface MemoryReview {
   frozen: ReturnType<typeof freezeConsolidation>;
-  feedback(batch: MemoryBatch): { text: string; near: NearPair[] };
+  feedback(batch: MemoryBatch): { text: string; near: NearPair[]; completed: KnowledgeRead[] };
 }
-export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId)) {
-  const reads = new Map((review?.frozen.knowledge ?? store.listCurrentKnowledge(path)).map(k => [k.revision.id, k]));
+export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId),
+  reads = new Map<number, KnowledgeWithRevision>()) {
+  for (const handle of review?.frozen.prepared?.readKnowledgeCommits ?? []) {
+    const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit)!;
+    reads.set(handle.commit, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
+  }
   const reread = (completed: KnowledgeRead[]) => {
     for (const { knowledgeId, commits, replace } of completed) {
       if (replace) for (const [commit, item] of reads) if (item.knowledge.id === knowledgeId) reads.delete(commit);
@@ -21,7 +25,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
-  let requests = 0, candidateRequest = -1;
+  let requests = 0, candidateRequest = -1, pendingFeedback: KnowledgeRead[] | undefined;
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
   let failure: { runId: number; problems: string[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
@@ -34,6 +38,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (review && !candidate) {
       candidate = structuredClone(prepared.batch); candidateRequest = requests;
       const feedback = review.feedback(candidate); near = feedback.near;
+      pendingFeedback = structuredClone(feedback.completed); // Grant only when the next provider request confirms delivery.
       problems = ["first batch requires a second submission"];
       return JSON.stringify({ results: prepared.results, feedback: { role: "user", content: feedback.text } });
     }
@@ -47,13 +52,12 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
       ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id) } : {}),
       finalizeResponse: ({ committed }) => {
         if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path, committed));
-        return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.knowledge.map(k => ({ knowledgeId: k.knowledge.id, commit: k.revision.id })) }) : receipt(committed); } });
+        return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.prepared?.readKnowledgeCommits ?? [] }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
-    reread(result.committed.map(item => ({ knowledgeId: item.knowledgeId,
-      commits: store.currentCommit(item.knowledgeId, path).filter(r => r.op !== "archive").map(r => r.id), replace: true })));
+    // A receipt names the new version but does not supply its complete rendered body.
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, requestSeen: () => { requests++; }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, reread, sequence, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }

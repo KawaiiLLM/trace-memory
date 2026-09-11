@@ -16,7 +16,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
-  const knowledge = reads ?? frozen?.knowledge ?? store.listCurrentKnowledge(path);
+  const knowledge = reads ?? [];
   const touched = new Set<number>();
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
     return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as ConsolidationDiagnostic[] };
@@ -58,7 +58,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       const id = Number(match?.[1]), commitId = match?.[2] === undefined ? undefined : Number(match[2]);
       const tips = knowledge.filter(k => k.knowledge.id === id && (commitId === undefined || k.revision.id === commitId));
       const current = Number.isSafeInteger(id) ? store.currentCommit(id, path) : [];
-      if (commitId === undefined && current.length > 1) errors.push(`${address}: several tips; specify ${current.map(r => `K${id}@${r.id}`).join(", ")}`);
+      if (commitId === undefined) errors.push(`${address}: an exact read K@commit is required; current tips: ${current.map(r => `K${id}@${r.id}`).join(", ") || "none (inapplicable)"}; read and resubmit`);
       const applicableReads = tips.filter(k => current.some(r => r.id === k.revision.id));
       const read = applicableReads.length === 1 ? applicableReads[0] : tips.length === 1 ? tips[0] : undefined;
       if (!Number.isSafeInteger(id) || !read) errors.push(`${address}: ${tips.length > 1 ? "several tips; specify a commit: " + tips.map(k => `K${id}@${k.revision.id}`).join(", ") : "knowledge was not read as visible and active"}`);

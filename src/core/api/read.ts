@@ -307,7 +307,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
   // a cancelled run with unknown usage — contributes nothing at all, not a zero.
   const spend = (sessionId: number) => {
     session(sessionId);
-    const totals = { runs: { noting: 0, consolidation: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const totals = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     for (const { kind, usage } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
       if (!usage) continue;
@@ -593,14 +593,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const totals = spend(sessionId);
       const counts = progress(sessionId, branch, headTurnId);
       return [`Session: S${sessionId}`, `Enrollment: ${store.enabled(sessionId) ? "Enabled" : "Disabled"} (${store.enrollment(sessionId).choice === null ? "default" : "explicit choice"})`, `Project: ${store.getProject(s.projectId)!.name} (${store.projectDeclaration(sessionId)})`,
-        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
+        `Spend: ${totals.runs.noting} noting, ${totals.runs.consolidation} consolidation, ${totals.runs.dreaming} dreaming, ${totals.runs.manual} manual runs; ${totals.input + totals.output + totals.cacheRead + totals.cacheWrite} tokens; $${totals.cost.toFixed(4)}`,
         // 24a: the footer's own counts, spelled out. They describe imported evidence only: native
         // history of a disabled interval is imported when the session is enabled again, so a zero
         // here is not proof that every available native message has been processed.
         `Pending: ${counts.entries} imported ${counts.entries === 1 ? "entry" : "entries"} to note, ${counts.unconsolidated} of ${counts.facts} applicable ${counts.facts === 1 ? "fact" : "facts"} to consolidate; ${counts.knowledge} current knowledge (imported evidence on this branch)`,
         `Facts: ${store.listSessionFacts(sessionId).length} session; ${store.listProjectFacts(s.projectId).length} project`,
         `Knowledge: ${store.listVisibleKnowledge(sessionId, s.projectId).length} visible active`,
-        ...(["noting", "consolidation"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");
+        ...(["noting", "consolidation", "dreaming"] as const).map((kind) => { const r = [...runs].reverse().find((r) => r.kind === kind); return `Last ${kind}: ${r ? `run ${r.id} ${r.outcome} ${r.createdAt} branch=${r.branch}` : "none"}`; })].join("\n");
     },
   };
 }

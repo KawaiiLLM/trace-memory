@@ -435,7 +435,8 @@ test("21a 2026-09-08: an archive citing a sibling-entry fact retires knowledge o
     await h.emit("agent_end");
     tools = write("main");
     expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Alpha is withdrawn", source: ["T1#t2"] }] })).not.toContain("rejected:");
-    expect(tools[3]!.execute({ operations: [{ op: "archive", id: "K1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
+    tools[0]!.execute({ address: "K1@1" });
+    expect(tools[3]!.execute({ operations: [{ op: "archive", id: "K1@1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
     h.entries.splice(0, h.entries.length, ...common); await h.emit("session_tree");
     const branch = (h.entries.filter(e => e.type === "custom").at(-1) as { data: { branch: string } }).data.branch;
     expect(branch).not.toBe("main");

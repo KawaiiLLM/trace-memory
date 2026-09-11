@@ -41,7 +41,7 @@ export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 export const KNOWLEDGE_OPS = ["create", "update", "merge", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
 
-export const RUN_KINDS = ["noting", "consolidation", "manual"] as const;
+export const RUN_KINDS = ["noting", "consolidation", "dreaming", "manual"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
 
 export const RUN_OUTCOMES = ["success", "failure", "cancelled", "bounced"] as const;

@@ -1,3 +1,4 @@
+import { readHandle } from "../../read-handle-fixture.ts";
 import { recorded } from "../../source-fixture.ts";
 import { afterEach, expect, test } from "vitest";
 import { sourceSeededMemory, type ConsolidationAgentInput, type RunAgentResult } from "../../source-fixture.ts";
@@ -17,6 +18,7 @@ function setup(agent: (input: ConsolidationAgentInput) => Promise<RunAgentResult
 }
 const success = (): RunAgentResult => ({ outcome: "success", output: "Done", request: { last: true } });
 const integrate = () => memory.consolidate({ sessionId: 1, branch: "main" });
+const read = (address: string) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), address);
 
 test("Consolidation stopping after its first valid batch bounces and preserves the candidate and receipt", async () => {
   setup(async input => { input.reportRequest({ first: true }); input.tools[3]!.execute(batch); return success(); });
@@ -104,16 +106,16 @@ test("skipped validates its range, reason and shape atomically", async () => {
 test("manual memory reuses current revisions and refuses inactive or duplicate merge participants", () => {
   const write = setup(async () => success());
   write.execute({ operations: [create, create], skipped: [] });
-  const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: "K1", absorb: ["K2"] };
-  for (const absorb of [["K1"], ["K2", "K2"], ["K999"], []]) {
+  const merge = { ...create, op: "merge", reason: "Merged duplicate knowledge into the survivor.", id: read("K1@1"), absorb: [read("K2@2")] };
+  for (const absorb of [["K1@1"], ["K2@2", "K2@2"], ["K999@999"], []]) {
     expect(write.execute({ operations: [{ ...merge, absorb }], skipped: [] })).toContain("rejected:");
     expect(memory.store.currentCommit(1)[0]?.id).toBe(1);
     expect(memory.store.currentCommit(2)[0]?.op).toBe("create");
   }
   write.execute({ operations: [merge], skipped: [] });
   expect(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K2" }], skipped: [] })).toContain("rejected:");
-  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: "K1" }], skipped: [] })).committed[0].commit).toBe(4);
-  write.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F1"] }], skipped: [] });
+  expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: read("K1@3") }], skipped: [] })).committed[0].commit).toBe(4);
+  write.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: read("K1@4"), supports: ["F1"] }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
   expect(memory.trace("K1")).toContain("archive");
 });
@@ -122,7 +124,7 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
   const manual = setup(async input => {
     const final = { operations: [{ ...create, supports: ["F2"] }], skipped: [] };
     input.tools[3]!.execute(final);
-    manual.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K1", supports: ["F2"] }], skipped: [] });
+    manual.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: read("K1@1"), supports: ["F2"] }], skipped: [] });
     input.reportRequest({ second: true }); input.tools[3]!.execute(final); return success();
   });
   manual.execute(batch);
@@ -137,13 +139,13 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
 test("inserting an archive before a retained create cannot erase its unanswered NEAR", async () => {
   const manual = setup(async input => {
     input.tools[3]!.execute(batch); input.reportRequest({ second: true });
-    input.tools[3]!.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K2", supports: ["F1"] }, create], skipped: [] });
+    input.tools[3]!.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K2@2", supports: ["F1"] }, create], skipped: [] });
     return success();
   });
   manual.execute({ operations: [create, { ...create, text: "Unrelated subject" }], skipped: [] });
   const result = await integrate();
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: [{ candidate: "$e1", knowledge: "K1", score: 1 }] });
+  expect(result.diagnostics).toContainEqual({ kind: "unanswered_near", pairs: [{ candidate: "$e1", knowledge: "K1@1", score: 1 }] });
 });
 
 test("2026-09-07: an audit update that fails after the commit is reported, not turned into a business failure", async () => {
@@ -168,9 +170,9 @@ test("2026-09-07: an audit update that fails after the commit is reported, not t
 test("21a 2026-09-08: create, update, merge and archive all carry nonempty supports and a reason", () => {
   const write = setup(async () => success());
   expect(JSON.parse(write.execute({ operations: [create, { ...create, text: "Commit the lockfile" }], skipped: [] })).results).toEqual(["ok", "ok"]);
-  const merge = { ...create, op: "merge", id: "K1", absorb: ["K2"], reason: "Two readings of one packaging rule." };
+  const merge = { ...create, op: "merge", id: read("K1@1"), absorb: [read("K2@2")], reason: "Two readings of one packaging rule." };
   expect(JSON.parse(write.execute({ operations: [merge], skipped: [] })).results).toEqual(["ok"]);
-  expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).results).toEqual(["ok"]);
+  expect(JSON.parse(write.execute({ operations: [{ op: "archive", id: read("K1@3"), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] })).results).toEqual(["ok"]);
   // The archive keeps its own evidence and inherits category and scope from the parent revision.
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", text: "", supports: [1],
     reason: "The user withdrew the rule.", category: "constraint", scope: "project" });
@@ -216,7 +218,7 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
   memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
     { category: "decision", actor: "user", text: "npm is banned outright", source: ["T1#user"], negate: [["F1", "strong"]] }] });
   expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
-  const update = { ...create, op: "update", id: "K1", text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
+  const update = { ...create, op: "update", id: read("K1@1"), text: "Use pnpm; npm is banned outright", supports: ["F1", "F2"],
     reason: "The user withdrew the softer rule; F2 corrects F1." };
   expect(JSON.parse(write.execute({ operations: [update], skipped: [] })).committed).toHaveLength(1);
   // A negating fact among supports is evidence for this commit, not a contradiction, and the
@@ -227,7 +229,7 @@ test("21a 2026-09-08: one supports list holds both the text's grounds and the fa
 test("21a 2026-09-08: reason shows in commit history, diffs and the run, never in the knowledge line or the numeric diagnostic", () => {
   const write = setup(async () => success());
   write.execute(batch);
-  const receipt = JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: "K1", reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
+  const receipt = JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: read("K1@1"), reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
   expect(receipt.diagnostics).toEqual([]); // the numeric-evidence diagnostic reads text, never the reason
   expect(memory.trace("K1")).toContain("reason: Re-checked 42 files; wording unchanged.");
   expect(memory.trace("K1@1..K1@2")).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
@@ -239,7 +241,7 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
 test("21a 2026-09-08: a reason-only update on a stale base is rejected like any other commit", () => {
   const write = setup(async () => success());
   write.execute(batch);
-  write.execute({ operations: [{ ...create, op: "update", id: "K1", text: "Use pnpm, never npm", reason: "Sharpened wording." }], skipped: [] });
+  write.execute({ operations: [{ ...create, op: "update", id: read("K1@1"), text: "Use pnpm, never npm", reason: "Sharpened wording." }], skipped: [] });
   expect(write.execute({ operations: [{ ...create, op: "update", id: "K1@1", reason: "Classification cleanup only." }], skipped: [] })).toContain("rejected:");
   expect(memory.store.currentCommit(1).map(r => r.id)).toEqual([2]);
 });
@@ -281,7 +283,7 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   write.execute({ operations: [{ ...create, topics: ["packaging"] }], skipped: [] });
   // Classification cleanup is a normal update: the complete unchanged text, category, scope and
   // evidence, with a reason. There is no metadata-only path around review or conflict checking.
-  const cleanup = { ...create, op: "update", id: "K1", topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." };
+  const cleanup = { ...create, op: "update", id: read("K1@1"), topics: ["packaging", "tooling"], reason: "Classification cleanup: the rule also concerns tooling." };
   expect(JSON.parse(write.execute({ operations: [cleanup], skipped: [] })).committed).toHaveLength(1);
   expect(memory.store.getKnowledgeRevision(1, 2)!.text).toBe(memory.store.getKnowledgeRevision(1, 1)!.text);
   expect(memory.store.getKnowledgeRevision(1, 1)!.topics).toEqual(["packaging"]); // the old commit keeps its old classification
@@ -289,18 +291,18 @@ test("21b 2026-09-08: a topic-only update is an ordinary update; old commits kee
   expect(memory.trace("K1@1..K1@2")).toContain('topics: ["packaging"] -> ["packaging","tooling"]');
   expect(memory.trace("K1@1")).toContain('topics: ["packaging"]');
   // Clearing is explicit: an empty array, never an omitted field.
-  write.execute({ operations: [{ ...create, op: "update", id: "K1", topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] });
+  write.execute({ operations: [{ ...create, op: "update", id: read("K1@2"), topics: [], reason: "Classification cleanup: the labels named no subject." }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual([]);
   expect(memory.trace("K1")).not.toContain("topics:");
   expect(memory.trace("K1@2..K1@3")).toContain('topics: ["packaging","tooling"] -> []');
   // Merge supplies the survivor's complete set; no implicit union of every parent's labels.
   write.execute({ operations: [{ ...create, text: "Commit the lockfile", topics: ["lockfile"] }], skipped: [] });
-  write.execute({ operations: [{ ...create, op: "merge", id: "K1", absorb: ["K2"], topics: ["packaging"],
+  write.execute({ operations: [{ ...create, op: "merge", id: read("K1@3"), absorb: [read("K2@4")], topics: ["packaging"],
     text: "Use pnpm and commit the lockfile", reason: "Two readings of one packaging rule." }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]!.topics).toEqual(["packaging"]);
   expect(memory.store.getKnowledgeRevision(2, 4)!.topics).toEqual(["lockfile"]); // the absorbed parent keeps its own
   // Archive accepts no labels of its own and inherits the selected parent's array.
-  write.execute({ operations: [{ op: "archive", id: "K1", supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
+  write.execute({ operations: [{ op: "archive", id: read("K1@5"), supports: ["F1"], reason: "The user withdrew the rule." }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]).toMatchObject({ op: "archive", topics: ["packaging"] });
   expect(memory.trace("K1@6")).toContain('topics: ["packaging"]');
 });

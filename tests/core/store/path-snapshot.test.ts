@@ -118,6 +118,37 @@ test("22a: a same-Turn sibling occurrence stays off this branch, with bindings a
   expect(store.listBranchFacts(session.id, "sibling", siblingPath.headTurnId)).toEqual(uncached(siblingPath));
 });
 
+test("32b performance: batch and ordinary applicability agree for bindings, fallback, foreign facts and historical tips", () => {
+  const { session, path, turnIds, entries, facts, knowledgeId } = history(3, { unbound: 2 });
+  const store = memory.store;
+  const sibling = store.appendSourceEntry({ sessionId: session.id, nativeLineage: "fixture", nativeId: "batch-sibling",
+    turnId: turnIds.at(-1)!, role: "assistant", text: "sibling", raw: "{}", calls: [] });
+  memory.selectEntries(session.id, "sibling", [...entries.map(e => e.id), sibling.id]);
+  const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: time }, facts: [{
+    turnId: turnIds.at(-1)!, category: "observation", actor: "agent", text: "withdrawal", source: [`T${turnIds.at(-1)}#assistant`], entryIds: [sibling.id], createdAt: time }] });
+  if (!noted.ok) throw Error(noted.problems.join());
+  const siblingPath = { ...path, branch: "sibling" };
+  const base = store.currentCommit(knowledgeId, path)[0]!;
+  const archived = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
+    op: "archive", knowledgeId, baseCommit: base.id, supports: [noted.facts[0]!.id], reason: "sibling only", createdAt: time }] });
+  if (!archived.ok) throw Error(archived.problems.join());
+  const foreign = history(2);
+  const shared = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
+    op: "create", handle: "$shared", author: "test", scope: "global", category: "mechanism", text: "shared", topics: [],
+    supports: [...facts, ...noted.facts, ...foreign.facts].map(f => f.id), reason: "all evidence shapes", createdAt: time }] });
+  if (!shared.ok) throw Error(shared.problems.join());
+  const input = store.commitGraphInput();
+  for (const p of [path, siblingPath, { ...path, headTurnId: turnIds[0]! }, foreign.path]) {
+    const ordinary = input.revisions.filter(r => store.commitApplies(r, p));
+    const graph = store.commitGraph(p, undefined, undefined, input);
+    expect([...graph.applicable]).toEqual(ordinary.map(r => r.id));
+    for (const f of [...facts, ...noted.facts, ...foreign.facts])
+      expect(store.factOnPath(f, p, store.pathSnapshot(p), input.metadata)).toBe(store.factOnPath(f, p));
+  }
+  expect(store.commitGraph(path).current.map(r => r.id)).toContain(base.id);
+  expect(store.commitGraph(siblingPath).current.map(r => r.id)).not.toContain(base.id);
+});
+
 test("22a: a snapshot never outlives its operation, so another connection's writes are seen", () => {
   const { session, path, turnIds, entries } = history(4);
   const before = memory.store.listBranchFacts(session.id, "main", path.headTurnId).length;

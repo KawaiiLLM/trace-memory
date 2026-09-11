@@ -180,7 +180,8 @@ test("24a: the counts follow the selected branch, so a sibling entry of the same
   h.persist({ ...reply(""), content: [{ type: "toolCall", id: "withdraw", name: "bash", arguments: { command: "alpha withdrawn" } }] });
   await h.emit("agent_end");
   expect(write("main")[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Alpha is withdrawn", source: ["T1#t2"] }] })).not.toContain("rejected:");
-  expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: "K1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
+  write("main")[0]!.execute({ address: "K1@1" });
+  expect(write("main")[3]!.execute({ operations: [{ op: "archive", id: "K1@1", supports: ["F2"], reason: "The user withdrew the rule on this path." }], skipped: [] })).not.toContain("rejected:");
   await refresh(h);
   const onMain = footer(h);
   expect(onMain).toMatchObject({ ...enumerated(h), facts: "2", knowledge: "0" }); // archived here

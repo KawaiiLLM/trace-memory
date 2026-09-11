@@ -31,7 +31,7 @@ function seeded() {
   const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
   expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
   expect(tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
-  return { s, t };
+  return { s, t, read: (address: string) => tools.find(tool => tool.name === "trace")!.execute({ address, cap: Number.MAX_SAFE_INTEGER }) };
 }
 /** The same session after one Consolidation run: F1 is history, F2 is this task's pending fact. */
 function consolidated() {
@@ -269,9 +269,10 @@ test("25a 2026-09-09: at the default limits the Consolidator sends knowledge wit
 // ---- 21b 2026-09-08: the labels ride the one shared knowledge renderer, inside ticket 20's cap ----
 
 test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topics through the one renderer, and a multi-topic item appears once", async () => {
-  const { s, t } = seeded();
+  const { s, t, read } = seeded();
+  read("K1@1");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
-    .execute({ operations: [{ op: "update", id: "K1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
+    .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
       text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  supports: F1 · topics: [\"packaging\",\"storage\"]\n</constraint>\n</knowledge>";
   expect(memory.inject(s.id)).toBe(labelled);
@@ -289,9 +290,10 @@ test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topi
 });
 
 test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the leading block stays byte-identical across tasks", async () => {
-  const { s, t } = seeded();
+  const { s, t, read } = seeded();
+  read("K1@1");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
-    .execute({ operations: [{ op: "update", id: "K1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
+    .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
       text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
   const bare = { ...value, revision: { ...value.revision, topics: [] } };
@@ -543,7 +545,9 @@ test("29b 2026-09-10 (case 13): an empty view and zero inherited cost produce th
  * knowledge allowance rather than in an unbounded block of its own. */
 test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and stale inherited commits are explained inside its allowance", async () => {
   const { s, t } = seeded();
-  const memoryTool = () => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!;
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  const memoryTool = () => tools.find(tool => tool.name === "memory")!;
+  tools[0]!.execute({ address: "K1@1" });
   memoryTool().execute({ operations: [{ op: "update", id: "K1@1", topics: [], reason: "The rule was restated.", text: "The project uses pnpm only", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!
     .execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
@@ -566,6 +570,7 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   expect(unchanged.prepared!.text).not.toContain("Inherited knowledge status");
   expect(unchanged.prepared!.supplied.knowledgeCommitIds).toEqual([]);
   // An archived revision is not current authority, and the status says so where the block cannot.
+  tools[0]!.execute({ address: `K1@${current}` });
   memoryTool().execute({ operations: [{ op: "archive", id: `K1@${current}`, reason: "Withdrawn by the user.", supports: ["F1"] }], skipped: [] });
   expect(freeze([current]).prepared!.material.knowledgeNotes).toEqual([`K1@${current} is archived`]);
   // Charged inside the knowledge allowance: an allowance that the status line fills leaves the block

@@ -28,7 +28,17 @@ function open(config: ConfigOverride = {}) {
       const next = script.shift(); if (!next) throw new Error("unexpected call");
       const response = await next(input); input.response = response;
       if (response.outcome !== "success" || response.request == null) return response;
-      const batch = response.output;
+      // The fake provider now names the exact version in its supplied material. This changes
+      // only participants the script selected; it neither grants reads nor resolves live tips.
+      const batch = structuredClone(response.output) as { operations?: { id?: string; absorb?: string[] }[] };
+      const suppliedHandle = (address: string) => {
+        const reads = input.readKnowledgeCommits.filter(r => `K${r.knowledgeId}` === address);
+        return reads.length === 1 ? `${address}@${reads[0]!.commit}` : address;
+      };
+      for (const op of batch.operations ?? []) {
+        if (op.id) op.id = suppliedHandle(op.id);
+        if (op.absorb) op.absorb = op.absorb.map(suppliedHandle);
+      }
       const receipt = input.tools.find(t => t.name === "memory")!.execute(batch);
       rounds.push({ toolCall: { name: "memory", arguments: batch } }, { toolResult: receipt });
       const feedback = input.reviewFeedback(receipt);
@@ -151,7 +161,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   const candidate = createOutput(f); queue(candidate, candidate);
   const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
   expect(result.output).toEqual(candidate);
-  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}`, score: 1 }]);
+  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}@1`, score: 1 }, { candidate: "$e1", knowledge: `K${goal}@2`, score: 1 }]);
   expect(calls[0]!.feedback).toBeUndefined();
   expect(calls[0]!.text).not.toContain("NEAR:"); expect(calls[0]!.text).not.toContain("CLOSER:");
   expect(calls[0]!.request.rounds).toHaveLength(1);
@@ -193,9 +203,9 @@ test("NEAR covers create, update and merge text, excludes each target, and uses 
   const output = { ...empty, operations: [...createOutput(f).operations, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...op, id: `K${a}` }, { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", ...op, id: `K${b}`, absorb: [`K${c}`] }] };
   queue(output, output); const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
   const feedback = calls[1]!.feedback!.split("CLOSER:")[0]!;
-  expect(feedback).toContain(`$e1 -> K${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b} (Jaccard 1)`);
-  expect(feedback).toContain(`K${a} -> K${b} (Jaccard 1)`); expect(feedback).toContain(`K${b} -> K${a} (Jaccard 1)`);
-  expect(feedback).not.toContain(`K${a} -> K${a}`); expect(feedback).not.toContain(`K${b} -> K${b}`);
+  expect(feedback).toContain(`$e1 -> K${a}@${a} (Jaccard 1)`); expect(feedback).toContain(`$e1 -> K${b}@${b} (Jaccard 1)`);
+  expect(feedback).toContain(`K${a}@${a} -> K${b}@${b} (Jaccard 1)`); expect(feedback).toContain(`K${b}@${b} -> K${a}@${a} (Jaccard 1)`);
+  expect(feedback).not.toContain(`K${a}@${a} -> K${a}@${a}`); expect(feedback).not.toContain(`K${b}@${b} -> K${b}@${b}`);
   expect(feedback).not.toContain(`-> K${c}`);
   memory.close(); open({ consolidation: { nearThreshold: 1 } });
   fact(); queue(createOutput(f, memories.base), empty); await consolidation();
@@ -288,7 +298,7 @@ test("bigram Jaccard has a known nontrivial score and an inclusive configurable 
   memory.close(); open({ consolidation: { nearThreshold: 2 / 3 } });
   queue(createOutput(f, memories.base), createOutput(f, memories.base));
   const result = await consolidation(); if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}`, score: 2 / 3 }]);
+  expect(result.unansweredNear).toEqual([{ candidate: "$e1", knowledge: `K${e}@1`, score: 2 / 3 }]);
   memory.close(); open({ consolidation: { nearThreshold: 2 / 3 + 0.001 } });
   fact(); queue(createOutput(f, memories.base), empty); await consolidation();
   expect(calls[3]!.feedback).not.toContain(`-> K${e} (`);

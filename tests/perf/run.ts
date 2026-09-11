@@ -356,6 +356,63 @@ async function searchScenarios(fixture: Fixture, size: string): Promise<Sample[]
   return samples;
 }
 
+/** 32b hotspots: immutable history, shared owners, full completion and placement transactions.
+ * Completion samples roll back deliberately, so warm samples do real certification, not its
+ * idempotent fast path. All databases are synthetic and confined to the temporary perf directory. */
+function dreamingScenarios(size: string): Sample[] {
+  const file = join(cache, `${size}-dreaming.db`);
+  rmSync(file, { force: true });
+  const memory = TraceMemory(file, async () => { throw new Error("perf must not call a model"); });
+  const store = memory.store, time = "2026-01-01T00:00:00Z";
+  const sessions = size === "baseline" ? 20 : 80, revisions = size === "baseline" ? 100 : 1000;
+  try {
+    const project = store.createProject({ name: "dreaming-A", declaredBy: "mark" });
+    const other = store.createProject({ name: "dreaming-B", declaredBy: "mark" });
+    const targets = Array.from({ length: sessions }, (_, i) => {
+      const session = store.createSession({ host: "perf", enrollmentChoice: true, projectId: i % 2 ? other.id : project.id, startedAt: time, firstReplyAt: time });
+      const turn = store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "synthetic evidence", startedAt: time });
+      return { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    });
+    const target = targets[0]!;
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: time }, facts: [{ turnId: target.headTurnId, text: "synthetic evidence", category: "decision", actor: "user", source: [`T${target.headTurnId}#user`], createdAt: time }] });
+    if (!noted.ok) throw new Error(noted.problems.join());
+    const current: { knowledgeId: number; commit: number }[] = [], events: number[] = [];
+    store.transaction(() => {
+      for (let i = 0; i < revisions; i++) {
+        const base = current[i % 10];
+        const content = { text: `small conclusion ${i % 10}, revision ${i}`, topics: [], category: "mechanism" as const, scope: "project" as const, supports: [noted.facts[0]!.id], reason: "perf", createdAt: time };
+        const result = store.commitConsolidationRun({ path: target, run: { kind: "manual", sessionId: target.sessionId, branch: target.branch, createdAt: time }, operations: [base
+          ? { op: "update", knowledgeId: base.knowledgeId, baseCommit: base.commit, ...content }
+          : { op: "create", handle: `$${i}`, author: "perf", ...content }] });
+        if (!result.ok) throw new Error(result.problems.join());
+        current[i % 10] = result.committed[0]!;
+        events.push(result.committed[0]!.commit);
+      }
+    });
+    const results = current.map(c => c.commit);
+    const run = store.recordRun({ kind: "dreaming", sessionId: target.sessionId, outcome: "success", createdAt: time });
+    const counter = countGraphResolutions();
+    let eligibilityGraphs: number;
+    try { memory.taskEligibility("dreaming", target); eligibilityGraphs = counter.resolutions(); } finally { counter.restore(); }
+    if (eligibilityGraphs !== 0) throw new Error("Dreaming eligibility rebuilt the full DAG");
+    const note = `${revisions} revisions, ${sessions} sessions in 2 projects, 10 current bodies`;
+    const rollback = new Error("sample rollback");
+    const samples = [
+      measure("Dreaming eligibility", () => memory.taskEligibility("dreaming", target), `${note}; ${eligibilityGraphs} graph resolutions`),
+      measure("Dreaming completion (rollback each sample)", () => {
+        try { store.transaction(() => { store.completeDreaming(run.id, events, results); throw rollback; }); }
+        catch (error) { if (error !== rollback) throw error; }
+      }, note),
+    ];
+    store.completeDreaming(run.id, events, results);
+    samples.push(measure("Dreaming placement A→B→A", () => {
+      store.declareProject(target.sessionId, other.name, "mark");
+      store.declareProject(target.sessionId, project.name, "mark");
+    }, `${note}; full affected pools, identity preserved`));
+    return samples;
+  } finally { memory.close(); rmSync(file, { force: true }); }
+}
+
 async function runSize(size: string) {
   const options = SIZES[size];
   if (!options) throw new Error(`unknown size ${size}; use ${Object.keys(SIZES).join(" | ")}`);
@@ -422,6 +479,7 @@ async function runSize(size: string) {
     // 23b: the same Turn assembled from its entries under the tier-1 profile — the same Turn-scoped read.
     measure("trace assembled (heavy Turn, no full)", () => memory.trace(`T${fixture.heavyTurnId}`),
       `T${fixture.heavyTurnId}, ${store.listSourceEntries(fixture.sessionId, fixture.heavyTurnId).length} entries`),
+    ...dreamingScenarios(size),
     ...await searchScenarios(fixture, size),
     ...await capacityScenarios(fixture, size, memory),
     ...await spendScenarios(fixture, size),
