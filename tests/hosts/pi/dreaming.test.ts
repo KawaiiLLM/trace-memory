@@ -3,6 +3,7 @@ import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { host, reply, type Reply } from "./test-host.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { Store } from "../../../src/core/store/index.ts";
 
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as Record<string, unknown> }] });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
@@ -162,4 +163,54 @@ test("32d native host: provider overflow does not compact a Dreamer or roll back
     const entries = readFileSync(JSON.parse(run.response!).nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(entries.some(e => e.type === "compaction")).toBe(false);
   } finally { await h.dispose(); }
+});
+
+test.each([false, true])("external merge=%s conflict keeps pending work without completion chaining; next entry refreezes and completes", async merge => {
+  const { h, store, item, content } = await seeded();
+  const other = new Store(h.dbPath);
+  let entered!: () => void, release!: () => void;
+  const frozen = new Promise<void>(resolve => { entered = resolve; });
+  const changed = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const session = other.createSession({ host: "external", projectId: store.getSession(1)!.projectId, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const turn = other.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "external writer", startedAt: "now" });
+    const path = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+    let requests = 0;
+    h.provider(async () => { requests++; entered(); await changed; return reply("Reviewed; external change remains"); }, { autoStop: false });
+    const first = h.turn();
+    await frozen;
+    const run = { kind: "manual" as const, sessionId: session.id, createdAt: "now" };
+    let operations: Parameters<Store["commitConsolidationRun"]>[0]["operations"];
+    if (merge) {
+      const created = other.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$outside", author: "external", ...content }] });
+      if (!created.ok) throw Error(created.problems.join());
+      const outside = created.committed[0]!;
+      operations = [{ op: "merge", intoKnowledgeId: outside.knowledgeId, intoBaseCommit: outside.commit,
+        absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...content, text: "Merged external rule" }];
+    } else operations = [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, ...content, text: "External updated rule" }];
+    const written = other.commitConsolidationRun({ run, path, operations });
+    if (!written.ok) throw Error(written.problems.join());
+    const external = written.committed[0]!;
+    release(); await first;
+    expect((await terminal(h)).outcome).toBe("conflict");
+    expect(requests).toBe(2); // ordinary pass + the sole system repair, not another worker
+    expect(store.listRuns(1).filter(r => r.kind === "dreaming")).toHaveLength(1);
+    expect(store.db.prepare("SELECT * FROM dreaming_completions").all()).toEqual([]);
+    expect(store.isKnowledgeProcessed(external.commit)).toBe(false);
+    expect(store.taskFailures(1)).toEqual([]);
+    await h.drain();
+    expect(requests).toBe(2);
+    expect(store.retryDreamingRange(store.knowledgePath(1, "main"))?.anchor).toBe(item.commit);
+    h.provider(async conversation => {
+      expect(JSON.stringify(conversation.messages)).toContain(`K${external.knowledgeId}@${external.commit}`);
+      return reply("Maintained the freshly frozen external version");
+    }, { autoStop: false });
+    await h.turn(); await h.drain();
+    const runs = store.listRuns(1).filter(r => r.kind === "dreaming");
+    expect(runs.map(r => r.outcome)).toEqual(["conflict", "success"]);
+    expect(store.isKnowledgeProcessed(external.commit)).toBe(true);
+    expect(store.isKnowledgeProcessed(item.commit)).toBe(false);
+    expect(store.pendingKnowledgeEvents(store.knowledgePath(1, "main")).map(e => e.id)).toContain(external.commit);
+    expect(store.retryDreamingRange(store.knowledgePath(1, "main"))).toBeNull();
+  } finally { release(); other.close(); await h.dispose(); }
 });

@@ -789,7 +789,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (!store.closed && result && result.outcome !== "empty" && result.outcome !== "dropped") {
           const terminal = result;
           const settled = store.transaction(() => store.settleExecution(executionId!, terminal.outcome === "success" ? "success"
-            : controller.signal.aborted || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled" : "failure",
+            : controller.signal.aborted || !owned() || !store.enabled(target.sessionId) || terminal.outcome === "cancelled" ? "cancelled"
+            : terminal.outcome === "conflict" ? "conflict" : "failure",
             terminal.runId, terminal.problems?.join("; ")));
           if (settled.automaticOff) {
             terminal.automaticOff = settled.automaticOff;

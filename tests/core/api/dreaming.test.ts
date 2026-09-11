@@ -88,10 +88,10 @@ test("32d: external successors after each freeze stay unprocessed even after ful
     if (reread) task.tools.find(t => t.name === "trace")!.execute({ address: `K${f.item.knowledgeId}` });
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   const retained = f.store.retryDreamingRange(f.target)!;
   reread = true;
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   expect(f.store.retryDreamingRange(f.target)).toEqual(retained);
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2, 3]);
@@ -130,8 +130,8 @@ test("32: completion is transactional and hard-capped; edits committed by a fail
   const changed = f.store.currentCommit(f.item.knowledgeId, f.target)[0]!;
   expect(f.store.isKnowledgeProcessed(changed.id)).toBe(false);
   expect(f.store.retryDreamingRange(f.target)?.anchor).toBe(f.item.commit);
-  // Retry never trims the oversized retained body to manufacture a fit, even if archive could fix it.
-  await expect(f.memory.dream(f.target)).rejects.toThrow(/retained changed family exceeds 10000/);
+  // One indivisible oversized own result is never clipped or certified without being supplied.
+  await expect(f.memory.dream(f.target)).rejects.toThrow(/retained task output .* exceeds 10000/);
 });
 
 test("32d: full reads outside the family cannot expand writes; split and merge stay atomic", async () => {
@@ -202,7 +202,7 @@ test("32d: a successor arriving between host check and final transaction is neve
     return success;
   });
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("failure");
+  expect(result.outcome).toBe("conflict");
   expect("problems" in result && result.problems.join()).toContain("external successor after freeze");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2]);
@@ -343,7 +343,7 @@ test("32d: a fully read external merge outside family cannot hide the selected r
     expect(checked.family).not.toContain(item.knowledgeId);
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("failure");
+  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(3);
 });

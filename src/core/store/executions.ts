@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 import type { Store, RunInput, Phase } from "./index.ts";
 
 export interface LogicalTask { sessionId: number; phase: Phase; head: number }
-export type ExecutionOutcome = "success" | "failure" | "cancelled";
+export type ExecutionOutcome = "success" | "failure" | "cancelled" | "conflict";
 export const EXECUTIONS_SQL = `
 CREATE TABLE IF NOT EXISTS task_executions (
   id TEXT PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id),
   phase TEXT NOT NULL CHECK(phase IN ('noting','consolidation','dreaming')),
   head INTEGER NOT NULL CHECK(head > 0),
-  outcome TEXT CHECK(outcome IN ('success','failure','cancelled')),
+  outcome TEXT CHECK(outcome IN ('success','failure','cancelled','conflict')),
   terminal_run INTEGER REFERENCES runs(id), reason TEXT, updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_execution_task ON task_executions(session_id,phase,head);
@@ -51,7 +51,7 @@ export function linkExecutionRun(store: Store, runId: number, input: RunInput): 
 
 /** Caller owns the terminal decision. Attempt refusal/rejection must never call this method.
  * Dreamer calls it alongside completeDreaming in the final-check transaction, not at a write. */
-export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = ""): { automaticOff?: string } {
+export function settleExecution(store: Store, id: string, outcome: ExecutionOutcome, runId: number, reason = "", dreamingAuthority?: RunInput): { automaticOff?: string } {
   return store.transaction(() => {
     const row = store.db.prepare("SELECT * FROM task_executions WHERE id = ?").get(id);
     if (!row) throw new Error("Unknown execution");
@@ -59,6 +59,12 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     const run = store.getRun(runId);
     if (!run || !store.db.prepare("SELECT 1 FROM execution_runs WHERE execution_id = ? AND run_id = ?").get(id, runId))
       throw new Error("Terminal run must belong to the execution");
+    // Only the core's live Dreamer capability can issue the exception. Public settlement,
+    // a fabricated run outcome/response, or another run's capability cannot waive a failure.
+    if (outcome === "conflict") {
+      if (!dreamingAuthority || store.dreamingRunId(dreamingAuthority) !== runId || dreamingAuthority.executionId !== id || run.outcome !== "conflict")
+        throw new Error("Conflict settlement requires the core Dreamer termination authority");
+    }
     if (outcome === "success" && (run.outcome !== "success" || (row.phase === "dreaming" &&
         !store.db.prepare("SELECT 1 FROM dreaming_completions WHERE run_id = ?").get(runId))))
       throw new Error("Execution success requires established business completion");
@@ -66,7 +72,7 @@ export function settleExecution(store: Store, id: string, outcome: ExecutionOutc
     store.db.prepare("UPDATE task_executions SET outcome = ?, terminal_run = ?, reason = ?, updated_at = ? WHERE id = ?")
       .run(outcome, runId, reason, now, id);
     const key = [row.session_id!, row.phase!, row.head!] as const;
-    if (outcome === "cancelled") return {};
+    if (outcome === "cancelled" || outcome === "conflict") return {};
     store.db.prepare(`INSERT INTO task_failures VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id,phase,head)
       DO UPDATE SET count = CASE WHEN excluded.count = 0 THEN 0 ELSE task_failures.count + 1 END,
       last_reason = excluded.last_reason, last_run_id = excluded.last_run_id, updated_at = excluded.updated_at`)
