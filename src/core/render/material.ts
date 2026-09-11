@@ -38,6 +38,7 @@
 // whole thing. What a fork used to get by layout (no Raw, no history, a source index) it now gets by
 // subtraction: every block below renders exactly what the phase's builder kept after removing what
 // the child's own context proves visible, and the mandatory framing stays whatever the data delta is.
+import { createHash } from "node:crypto";
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, type FactTurns } from "./index.ts";
@@ -46,6 +47,16 @@ import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tok
 export interface KnowledgeGroup { category: string; text: string }
 /** A frozen task range as a label. It is a label, never an id watermark (ticket 20). */
 export interface TaskRange { from: string; to: string }
+
+/** Display-only estimates captured while assembling a carrier. Framing stays unclassified. */
+export interface MemoryComposition { bodyHash: string; knowledge: number; facts: number; raw: number }
+export const memoryBodyHash = (text: string): string => createHash("sha256").update(text).digest("hex");
+export function measuredMemory(text: string, material: SharedMaterial): { text: string; composition: MemoryComposition } {
+  return { text, composition: { bodyHash: memoryBodyHash(text),
+    knowledge: tokens((material.knowledge ?? []).map(group => group.text).join("\n")),
+    facts: tokens((material.facts ?? []).join("\n")),
+    raw: tokens((material.entries ?? []).map(entry => entry.view).join("\n\n")) } };
+}
 
 /** The parts every memory consumer shares (ticket 20, "Shared contract"): rendered knowledge,
  * historical facts, compressed Raw entries with their concrete source identity, and budget receipts.

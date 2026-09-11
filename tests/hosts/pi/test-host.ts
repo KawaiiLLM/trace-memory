@@ -181,7 +181,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   const statuses = new Map<string, string | undefined>();
   // A notice is host activity: it keeps `drain` waiting through a short retry backoff, which
   // otherwise looks idle (a scheduled retry paints the footer warning, not the running indicator).
-  const ctx = { cwd: dir, model, hasUI: false, getContextUsage: () => contextUsage, ui: { notify: (s: string) => { activity++; notices.push(s); }, setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+  const ctx = { cwd: dir, model, hasUI: false, getContextUsage: () => contextUsage, getSystemPrompt: () => "", getSystemPromptOptions: () => ({ skills: [] }), ui: { notify: (s: string) => { activity++; notices.push(s); }, setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
       select: async (title: string, options: string[]) => { dialogs.push({ title, options }); return answers.shift(); },
       confirm: async (title: string, message: string) => { dialogs.push({ title: `${title} ${message}` }); return answers.shift() ?? false; },
       input: async (title: string) => { dialogs.push({ title }); return answers.shift(); },
@@ -230,6 +230,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     } finally { inflight--; activity++; }
   }));
   const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
+    getActiveTools: () => [...tools.keys()], getAllTools: () => [...tools.values()],
     registerCommand: (name: string, command: any) => commands.set(name, command),
     // 26b: the foreground thinking level, as Pi's own extension API exposes it. The default is the
     // level a real Pi foreground would hold on these models: they declare `reasoning: false`, so Pi

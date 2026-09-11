@@ -484,14 +484,34 @@ immediately, so stop can be invoked while it runs.
 
 #### Current session measurements
 
-The context map has 100 cells (1% each), with used, free and partial-cell glyphs.
-It uses Pi's public `getContextUsage()` tokens and window, not database totals.
-Pi estimates from reported assistant usage plus trailing messages; this is not
-an exact provider-payload census. Unknown usage is a question-mark map, not free
-space. Model identity comes from the active Pi model. No reserve, auto-compaction
-buffer or token categories are inferred. Wide terminals put the summary beside
-five grid rows; narrow terminals use an unspaced grid and put the summary below.
-Pi's width utilities handle display width. In the TUI, this panel alone uses the
+The context matrix estimates **Pi's current rebuilt text**, not final provider wire
+or an exact tokenizer bill. It reads the selected `buildContextEntries()` snapshot,
+projects entries with Pi's public message APIs, and uses the core text estimator.
+It includes the current system prompt and active tool definitions. A positive gap
+between these estimates and `getContextUsage()` is **Unknown**, never distributed
+proportionally among categories. A lower Pi total never shrinks measured content.
+Missing text or unpriced non-text content makes free capacity unknown.
+
+- **Memory:** every retained initial injection, on/project supplement and marked custom
+  compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
+  changing project or disabling enrollment does not subtract text still retained.
+- **Memory's continuous bar:** Knowledge, Facts and Raw estimates captured from the
+  same assembled material, checked against its body hash. Titles, receipts and other
+  framing remain Unclassified. Old, malformed or body-mismatched metadata makes that
+  entire carrier Unclassified. Coverage IDs and database inventory never measure capacity.
+- **Skill catalog:** Pi's formatted names, descriptions and locations, deducted from
+  System only when the full catalog has one exact occurrence in the actual prompt.
+  An uncertain match stays System. Loaded SKILL.md and reference bodies remain Conversation.
+- **Conversation / Other:** retained ordinary messages and native summaries / other
+  extensions' custom messages. Pi-excluded bash executions contribute nothing.
+
+The 100 cells share one largest-remainder allocation against window capacity;
+small categories have no minimum cell. Their colored legends retain nonzero estimates
+and sub-percent percentages. Over-capacity matrices saturate and apportion 100 cells
+among retained categories; numeric percentages still use the window and may exceed 100%.
+The Memory bar uses Memory's own total, with the same rounding rule. Zero Memory has
+no filled bar. Wide terminals put the legend beside five grid rows; narrow terminals
+stack it below. Pi's width utilities handle display width. In the TUI, this panel alone uses the
 public `ui.custom` overlay API, not an oversized native selector title. The overlay
 uses the terminal's available screen rather than the fullscreen editor dock.
 Recovery warnings lead the scrollable body; the action list stays visible. The
@@ -522,7 +542,7 @@ read handles, changes visibility, writes weight caches or calls a model. Cold
 weights are computed with the existing renderer without caching. Measurements are
 read once per opening, not refreshed by a timer or footer updates. Run history
 stays under **Runs**; automatic-off reasons and fork recovery remain in the panel.
-Headless bare `/trace` prints the same unstyled overview plus command forms.
+Headless bare `/trace` retains its verbose Pi reported-plus-trailing usage view and command forms.
 
 #### Global preferences
 

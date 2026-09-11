@@ -3,7 +3,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
+import { budgetMaterial, injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -41,7 +41,7 @@ export interface TopicGroups {
  * carries — every supplied entry, pending and refilled alike, plus the facts and knowledge commits
  * that survived budgeting. What a budget dropped is absent here. A native delegation supplies
  * nothing, so it has no `supplied` at all. */
-export type CompactResult = { text: string; supplied: SuppliedMaterial; charged?: ChargedWindows }
+export type CompactResult = { text: string; supplied: SuppliedMaterial; composition?: MemoryComposition; charged?: ChargedWindows }
   /** 28b: `over` says which required window overflowed, so the host's bounded recovery can decide
    * which phase to run without reading the prose of `reason`. It is present exactly when a required
    * window excess cannot fit the shared allowance — the one condition recovery can act on. A delegation for any other
@@ -58,7 +58,7 @@ export interface ChargedWindows { knowledge: number; facts: number; raw: number;
    * framing, before either refill. `facts`/`raw` above minus these is what the refills took. */
   required: { knowledge: number; facts: number; raw: number } }
 /** 29a: the initial knowledge block and the exact commits it carries. */
-export interface Injection { text: string; knowledgeCommitIds: number[] }
+export interface Injection { text: string; knowledgeCommitIds: number[]; composition?: MemoryComposition }
 
 /** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page, with
  * the mutable state its line would otherwise read from the database then. Everything else a hit
@@ -234,7 +234,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // receipts), so its only ceiling is the knowledge cap and the episodic envelope is unbounded.
     const budgeted = budgetMaterial({ knowledge: delta, knowledgeLine, knowledgeNotes: notes,
       current: "", framing: [], caps: { knowledge: config.render.knowledgeBlockTokens, episodic: Infinity } });
-    return { text: injectionText({ knowledge: budgeted.knowledge, receipts: budgeted.receipts }, budgeted.knowledgeNotes),
+    return { ...measuredMemory(injectionText(budgeted, budgeted.knowledgeNotes), budgeted),
       knowledgeCommitIds: budgeted.knowledgeCommitIds };
   };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
@@ -471,9 +471,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const order = new Map(sourced.map((entry, index) => [entry.id, index]));
       const supplied = [...pending.map((entry, index) => ({ entry, content: views![index]!.content })), ...refilledRaw]
         .sort((a, b) => order.get(a.entry.id)! - order.get(b.entry.id)!);
-      return { text: compactText({ knowledge: active.groups, facts: lines(facts),
-          entries: supplied.map(s => ({ id: s.entry.id, view: s.content })),
-          receipts: [...views.flatMap(v => v.receipts), ...factReceipts, ...active.receipts] }, RAW_TITLE, notes),
+      const material = { knowledge: active.groups, facts: lines(facts),
+        entries: supplied.map(s => ({ id: s.entry.id, view: s.content })),
+        receipts: [...views.flatMap(v => v.receipts), ...factReceipts, ...active.receipts] };
+      return { ...measuredMemory(compactText(material, RAW_TITLE, notes), material),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries,
         // pending and refilled alike. What a budget left out is absent here (28a item 7).
         supplied: { entries: supplied.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),

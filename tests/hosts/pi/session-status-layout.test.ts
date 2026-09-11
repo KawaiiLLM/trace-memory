@@ -304,17 +304,19 @@ test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => (
     const first = s.frame().map(line => line.trimEnd()).join("\n");
     expect(first).toContain("~44.5k / 1M (4.5%)");
     expect(first).toContain("fake/test");
-    expect(first).toContain("S1 | On(default) | $0.0000");
-    expect(first).toContain("Project: pi:pi-test (undeclared)");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
-    expect(first).toContain("Noting        █████░░░░░  52.0% 26/50");
-    expect(first).toContain("Dreaming      ░░░░░░░░░░");
-    expect(first).toContain("Consolidation ░░░░░░░░░░");
-    expect(first).toContain("Free 955.5k (95.5%)");
-    expect(first).not.toContain("Scroll");
+    expect(first).toContain("Free ~955.5k (95.5%)");
     expect(first).toMatchSnapshot();
     s.key("\x1b[6~");
-    expect(s.frame().map(line => line.trimEnd()).join("\n")).toMatchSnapshot();
+    const second = s.frame().map(line => line.trimEnd()).join("\n");
+    expect(second).toMatchSnapshot();
+    const seen = first + "\n" + second;
+    expect(seen).toContain("S1 | On(default) | $0.0000");
+    expect(seen).toContain("Project: pi:pi-test (undeclared)");
+    expect(seen).toContain("Noting        █████░░░░░  52.0% 26/50");
+    expect(seen).toContain("Dreaming      ░░░░░░░░░░");
+    expect(seen).toContain("Consolidation ░░░░░░░░░░");
+    expect(seen).toContain("Memory ~0");
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });

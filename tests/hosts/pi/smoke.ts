@@ -65,6 +65,9 @@ try {
       }
       assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)") && seen.join(" ").includes("Dreaming      ░░░░░░░░░░"));
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
+      assert.ok(seen.join(" ").includes("Memory ~0"));
+      assert.ok(seen.join(" ").includes("Pi rebuilt text estimate"));
+      assert.ok(seen.join(" ").includes("Tools ~"));
       component.handleInput?.("\x1b"); assert.ok(cancelled);
     } finally { handle.hide(); component.dispose?.(); }
     return undefined as never;
@@ -106,6 +109,9 @@ try {
   });
   const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
   assert.ok(compacted?.compaction?.details?.traceMemory, "recovery returns the exact custom carrier");
+  const composition = compacted.compaction.details.traceMemory.composition;
+  assert.equal(composition.bodyHash.length, 64);
+  assert.ok(composition.raw > 0, "installed compaction carries assembly-time Raw estimates");
   const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.outcome, "success");

@@ -132,7 +132,7 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   const h = setup(); await h.emit("session_start");
   h.setContextUsage(undefined);
   let title = await open(h);
-  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("Unknown / Unknown");
+  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("/ 200k"); // Model capacity and rebuilt text remain available without SDK usage.
   await h.turn();
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);

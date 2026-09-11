@@ -1,8 +1,9 @@
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 import type { TraceMemory } from "../../core/api/index.ts";
+import type { ContextComposition } from "./context-composition.ts";
 
-export type Paint = (color: "dim" | "accent", text: string) => string;
+export type Paint = (color: "dim" | "accent" | "syntaxKeyword" | "syntaxFunction" | "syntaxString" | "syntaxNumber" | "syntaxType" | "muted", text: string) => string;
 const plain: Paint = (_color, text) => text;
 const number = (value: number) => value.toLocaleString("en-US");
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -44,6 +45,47 @@ export function contextMap(usage: ContextUsage | undefined, model: string, width
       right[i] ? `${grid[i] ?? " ".repeat(gridWidth)}   ${paint("dim", right[i]!)}` : (grid[i] ?? ""));
   }
   return [...grid, ...summary.map(line => paint("dim", line))];
+}
+
+/** Largest remainders, one shared rounding; a nonzero category has no guaranteed cell. */
+export function allocateCells(values: readonly number[], cells: number): number[] {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (!total) return values.map(() => 0);
+  const shares = values.map(value => value / total * cells), counts = shares.map(Math.floor);
+  const order = shares.map((value, i) => ({ i, remainder: value - counts[i]! })).sort((a, b) => b.remainder - a.remainder);
+  for (let i = 0, left = cells - counts.reduce((sum, count) => sum + count, 0); i < left; i++) counts[order[i]!.i]!++;
+  return counts;
+}
+const estimate = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
+const share = (value: number, total: number) => total ? (value < total / 100 && percent(value / total) === "1.0%" ? "<1%" : percent(value / total)) : "0.0%";
+const colors: Record<string, Parameters<Paint>[0]> = { System: "syntaxKeyword", Tools: "syntaxFunction", Skills: "syntaxString",
+  Memory: "accent", Conversation: "syntaxNumber", Other: "syntaxType", Unknown: "muted", Free: "dim",
+  Knowledge: "syntaxKeyword", Facts: "syntaxString", Raw: "syntaxNumber", Unclassified: "muted" };
+
+export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
+  const window = value.window, known = window !== undefined;
+  const free = known && value.complete ? Math.max(0, window - value.total) : 0;
+  const items = [...Object.entries(value.amounts), ["Free", free] as const];
+  const counts = allocateCells(items.map(([, n]) => n), 100);
+  const glyph = visibleWidth("⛁") === 1 ? "⛁" : "#";
+  const empty = visibleWidth("⛶") === 1 ? "⛶" : ".";
+  const cells = items.flatMap(([name], i) => Array(counts[i]).fill(paint(colors[name]!, name === "Free" ? empty : glyph)));
+  const grid = Array.from({ length: 5 }, (_, row) => known && value.complete
+    ? cells.slice(row * 20, row * 20 + 20).join(width >= 80 ? " " : "") : paint("dim", Array(20).fill("?").join(width >= 80 ? " " : "")));
+  const legend = [model, `~${estimate(value.total)}${value.complete ? "" : " + Unknown"} / ${known ? estimate(window) : "Unknown"}${known ? ` (${share(value.total, window)})` : ""}`,
+    ...items.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, name === "Free" ? empty : glyph)} ${name === "Skills" ? "Skill catalog" : name} ~${estimate(n)}${known ? ` (${share(n, window)})` : ""}`)];
+  const gridWidth = visibleWidth(grid[0]!);
+  const right = legend.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width - gridWidth - 3)));
+  const lines = width >= 80 ? Array.from({ length: Math.max(5, right.length) }, (_, i) =>
+    `${grid[i] ?? " ".repeat(gridWidth)}${right[i] ? `   ${right[i]}` : ""}`) : [...grid, ...legend];
+  lines.push("", `Memory ~${estimate(value.amounts.Memory)}`);
+  const parts = Object.entries(value.memory), bar = allocateCells(parts.map(([, n]) => n), Math.max(1, Math.min(60, width)));
+  const solid = visibleWidth("█") === 1 ? "█" : "#";
+  lines.push(value.amounts.Memory ? parts.map(([name], i) => paint(colors[name]!, solid.repeat(bar[i]!))).join("") : paint("dim", "No retained memory"));
+  if (value.amounts.Memory) lines.push(parts.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, glyph)} ${name} ${estimate(n)}${n < value.amounts.Memory / 100 ? ` (${share(n, value.amounts.Memory)})` : ""}`).join("  "));
+  lines.push("", "Pi rebuilt text estimate (not provider wire)",
+    ...(!value.complete ? ["Incomplete text/non-text census; free unknown."] : []), "");
+  return lines;
 }
 
 export function pendingBar(label: string, value: ReturnType<TraceMemory["pendingTokens"]>, compact = true, paint: Paint = plain): string {

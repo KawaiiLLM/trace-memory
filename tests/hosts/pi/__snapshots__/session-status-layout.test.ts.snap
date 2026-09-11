@@ -4,42 +4,44 @@ exports[`actual Current session first viewport at 40 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open |
 escape/ctrl+c Back
-⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+pageUp/pageDown Scroll
+⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
 ~44.5k / 1M (4.5%)
-⛁ Used 44.5k (4.5%)
-⛶ Free 955.5k (95.5%)
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
-Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
+⛁ Tools ~1.4k (0.1%)
+⛁ Conversation ~12 (<0.1%)
+⛁ Unknown ~43.1k (4.3%)
+⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider
 → Off
   Runs
   Project
-  Mark
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 40 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open |
 escape/ctrl+c Back
-⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-fake/test
-~44.5k / 1M (4.5%)
-⛁ Used 44.5k (4.5%)
-⛶ Free 955.5k (95.5%)
+pageUp/pageDown Scroll
+⛁ Conversation ~12 (<0.1%)
+⛁ Unknown ~43.1k (4.3%)
+⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider
+wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -49,51 +51,51 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 40 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open |
 escape/ctrl+c Back
-⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+pageUp/pageDown Scroll
+⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
 ~44.5k / 1M (4.5%)
-⛁ Used 44.5k (4.5%)
-⛶ Free 955.5k (95.5%)
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
-Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
+⛁ Tools ~1.4k (0.1%)
+⛁ Conversation ~12 (<0.1%)
+⛁ Unknown ~43.1k (4.3%)
+⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider
 → Off
   Runs
   Project
-  Mark
-editor
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 40 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open |
 escape/ctrl+c Back
-⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
-fake/test
-~44.5k / 1M (4.5%)
-⛁ Used 44.5k (4.5%)
-⛶ Free 955.5k (95.5%)
+pageUp/pageDown Scroll
+⛁ Conversation ~12 (<0.1%)
+⛁ Unknown ~43.1k (4.3%)
+⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider
+wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -103,19 +105,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-editor
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 80 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -125,24 +132,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-transcript
-transcript
-
-editor
-
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 80 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -152,24 +159,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-transcript
-transcript
-
-editor
-
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 80 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -179,24 +186,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-editor
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 80 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -206,24 +213,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-editor
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 100 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -233,24 +240,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-transcript
-transcript
-
-editor
-
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 100 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -260,24 +267,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-transcript
-transcript
-
-editor
-
-
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 100 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -287,24 +294,24 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-editor
-original footer"
+  Mark"
 `;
 
 exports[`actual Current session first viewport at 100 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛶ Free ~955.5k (95.5%)
+
+Memory ~0
+No retained memory
+
+Pi rebuilt text estimate (not provider wire)
+
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
@@ -314,12 +321,5 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
-  Mark
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-regular transcript
-editor
-original footer"
+  Mark"
 `;

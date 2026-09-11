@@ -4,7 +4,8 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
-import { contextMap, pendingBar, statusBody } from "./session-status.ts";
+import { contextComposition } from "./context-composition.ts";
+import { compositionMap, contextMap, pendingBar, statusBody } from "./session-status.ts";
 import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
@@ -821,7 +822,7 @@ export default function (pi: ExtensionAPI) {
     const supplement = supplementOpen(view);
     if (!initial && !supplement) return;
     // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
-    let block: { text: string; knowledgeCommitIds: number[] };
+    let block: ReturnType<TraceMemory["injection"]>;
     try {
       // 31: the selected context's own view is what the applicable set is subtracted against. On the
       // initial trigger that view holds no knowledge commit at all, so nothing is subtracted and the
@@ -842,7 +843,7 @@ export default function (pi: ExtensionAPI) {
     // it would have served open.
     const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds };
     return { message: { customType: tag, content: block.text, display: false,
-      details: carrier(supplied, supplement ? state.supplementGeneration : undefined) } };
+      details: { traceMemory: { ...carrier(supplied, supplement ? state.supplementGeneration : undefined).traceMemory, composition: block.composition } } } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -1195,7 +1196,7 @@ export default function (pi: ExtensionAPI) {
           return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
         });
         const block = memory.injection({ projectId: state.projectId });
-        return { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
+        return { text: block.text, composition: block.composition, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
       } catch (error) { return { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
     };
     let result = allocate();
@@ -1265,7 +1266,7 @@ export default function (pi: ExtensionAPI) {
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
-    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, recovery } } } };
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, composition: result.composition, recovery } } } };
   });
   pi.on("session_compact", (_event, context) => {
     // Pi 0.85.1 finds its event entry by the first equal summary. Read the actual appended
@@ -1506,8 +1507,9 @@ export default function (pi: ExtensionAPI) {
   // Only opened on demand. No reconciliation, compact allocation, tool grants or worker admission.
   const sessionStatus = (compact = false): SessionBody => {
     let usage: ReturnType<ExtensionContext["getContextUsage"]>;
-    try { usage = ctx.getContextUsage(); } catch { /* unavailable, never zero */ }
+    if (!compact) try { usage = ctx.getContextUsage(); } catch { /* unavailable, never zero */ }
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
+    const composition = compact ? contextComposition(ctx, pi) : undefined;
     const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [], recovery: string[] = [];
     const e = enrollment();
     lines.push(compact ? `${state.sessionId ? `S${state.sessionId}` : "Session: No session"} | ${enabled() ? "On" : "Off"}(${e.choice === null ? "default" : "explicit"})`
@@ -1538,7 +1540,7 @@ export default function (pi: ExtensionAPI) {
     if (compact) { if (state.shared) lines.push("Shared identity"); }
     else lines.push(state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
       : "Forks or clones carrying this memory identity share this switch.");
-    return (width, paint) => statusBody([...recovery, ...contextMap(usage, model, width, paint, compact), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
+    return (width, paint) => statusBody([...recovery, ...(composition ? compositionMap(composition, model, width, paint) : contextMap(usage, model, width, paint, compact)), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
   };
   // ---- 24b: the menu ----
   const sessionMenu = async () => {
