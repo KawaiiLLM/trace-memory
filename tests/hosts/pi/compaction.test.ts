@@ -41,7 +41,9 @@ test("20c scenario 10, as 30 left it: the host hands Pi the bounded summary unde
     expect(block.compaction.summary).toMatch(/\[\.\.\. \d+ characters truncated\]/);
     expect(block.compaction.summary).not.toContain("[entry ["); // no native identity in the model-facing text
     expect(block.compaction.firstKeptEntryId).toBe("");
-    expect(h.notices.at(-1)).toContain("compaction used bounded entry views");
+    expect(h.notices.at(-1)).toContain("compaction preparing bounded entry views");
+    const entry = h.compaction(block.compaction.summary);
+    await h.emit("session_compact", { compactionEntry: entry, fromExtension: true });
     await h.commands.get("trace").handler("", h.ctx);
     expect(h.notices.at(-1)).toContain("Compaction: bounded entry views");
     expect(h.requests).toEqual([]); // the plugin's own rendering calls no model
@@ -68,7 +70,7 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
     const pendingBefore = h.memory.pendingEntries(1, "main", 1).map(e => e.id);
     const result = await h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 } });
     expect(result).toBeUndefined(); // no summary at all: Pi's own compaction path runs and reports
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
     expect(h.notices.at(-1)).toContain("exceed");
     // 28b: a required window over budget is now one bounded recovery attempt before the delegation —
     // this Noter fails, as it has all along, so the delegation and everything below are unchanged.
@@ -116,7 +118,7 @@ test("20c 2026-09-08 scenario 12: compact neither waits for nor launches a Noter
     expect(h.memory.store.listRuns(1).filter(r => r.kind === "noting")).toHaveLength(1);
     // The summary is the plugin's own message: it becomes no source entry, no fact and no receipt.
     const sources = h.memory.store.listSourceEntries(1).length;
-    await h.emit("session_compact", { compactionEntry: { summary: block.compaction.summary } });
+    await h.emit("session_compact", { compactionEntry: h.compaction(block.compaction.summary), fromExtension: true });
     expect(h.memory.store.listSourceEntries(1)).toHaveLength(sources);
     const compactionTurn = h.memory.store.listTurns(1).at(-1)!;
     expect(compactionTurn.kind).toBe("compaction");

@@ -116,7 +116,7 @@ test.each(["knowledge", "project", "cancel"] as const)("32f: final coherent rech
     const notify = h.ctx.ui.notify.bind(h.ctx.ui);
     vi.spyOn(h.ctx.ui, "notify").mockImplementation((message, level) => {
       notify(message, level);
-      if (changed || !message.includes("compaction used bounded")) return;
+      if (changed || !message.includes("compaction preparing bounded")) return;
       changed = true;
       if (change === "cancel") controller.abort();
       else if (change === "project") s.declareProject(1, "changed-project", "mark");
@@ -127,7 +127,12 @@ test.each(["knowledge", "project", "cancel"] as const)("32f: final coherent rech
     });
     expect(await compact(h, controller.signal)).toEqual(change === "cancel" ? { cancel: true } : undefined);
     expect(changed).toBe(true); expect(h.requests).toHaveLength(0);
-    if (change !== "cancel") expect(h.notices.at(-1)).toContain("native delegation");
+    expect(h.notices.some(n => n.includes("compaction used"))).toBe(false);
+    if (change !== "cancel") {
+      const entry = h.compaction("native fallback", { details: { readFiles: [], modifiedFiles: [] } });
+      await h.emit("session_compact", { compactionEntry: entry, fromExtension: false });
+      expect(h.notices.at(-1)).toContain("native delegation");
+    }
   } finally { vi.restoreAllMocks(); await h.dispose(); }
 });
 

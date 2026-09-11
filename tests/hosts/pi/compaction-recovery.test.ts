@@ -15,11 +15,11 @@ const host = (config: Record<string, unknown>) => {
   return h;
 };
 
-// Ticket 28b — the bounded recovery inside Pi's compaction hook. 28a's allocator decides that a
-// REQUIRED window (the pending facts, the pending Raw) does not fit; this file pins what the adapter
-// does with that verdict: at most one Noting task and one Consolidation task, concurrent when both
-// windows are over, awaited inside the hook, then one reallocation over the frozen path and either
-// the custom replacement or the native delegation.
+// Tickets 28b/32f — bounded recovery inside Pi's compaction hook. 32e's allocator checks required
+// knowledge/facts/Raw against fixed 20k/10k/10k bases plus shared required-only 10k overflow.
+// A shortfall permits at most one eligible Noting, Consolidation and Dreamer task, including reuse.
+// Independently useful phases overlap; up to three rounds cover N→C→D. Committed progress is
+// repriced on the frozen path before custom replacement or native delegation; failure stops recovery.
 //
 // The Pi lines the sequence is mapped onto (0.85.1 `dist/`, the installed package):
 //   agent-session.js:1496-1509  manual `compact()`: the hook, its `signal`, and `{cancel: true}`
@@ -125,7 +125,7 @@ test("28b acceptance 5: a facts-only overflow runs one awaited Consolidation and
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     // The reallocation after the task saw the emptied window and the replacement was persisted.
     expect(result.compaction.summary).toBeTruthy();
-    expect(h.notices.at(-1)).toContain("compaction used bounded entry views (after recovery: Consolidation)");
+    expect(h.notices.at(-1)).toContain("compaction preparing bounded entry views (after recovery: Consolidation)");
   } finally { await h.dispose(); }
 });
 
@@ -142,7 +142,7 @@ test("28b acceptance 5: a Raw-only overflow runs one awaited Noting and persists
     expect(runs(h, "noting")[0]!.mode).toBe("subagent"); // never a fork of the context being compacted
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     expect(result.compaction.summary).toBeTruthy();
-    expect(h.notices.at(-1)).toContain("compaction used bounded entry views (after recovery: Noting)");
+    expect(h.notices.at(-1)).toContain("compaction preparing bounded entry views (after recovery: Noting)");
   } finally { await h.dispose(); }
 });
 
@@ -201,7 +201,7 @@ test("28b acceptance 6: with both phases used, the facts a Noting run added trig
     expect(result).toBeUndefined(); // the new facts are still pending and still over: this delegates
     expect(runs(h, "consolidation")).toHaveLength(1); // and never twice
     expect(runs(h, "noting")).toHaveLength(1);
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
     expect(h.notices.at(-1)).toContain("(after recovery: Noting, Consolidation)");
   } finally { await h.dispose(); }
 });
@@ -221,7 +221,7 @@ test("28b acceptance 7: a successful but insufficient recovery delegates, and it
     const after = h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length;
     expect(after).toBeLessThan(before); // the batch it did process stays processed
     expect(facts(h)).toHaveLength(1);
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
   } finally { await h.dispose(); }
 });
 
@@ -247,7 +247,7 @@ test("28b acceptance 7: a worker failure delegates only after the other task has
     expect(settled).toHaveLength(2);
     expect(settled.every(r => r.outcome !== null)).toBe(true);
     expect(settled.find(r => r.kind === "noting")!.outcome).toBe("failure"); // the failed run keeps its audit
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
     // 27b: the failing child never compacts privately — the only requests are the two workers' own.
     expect(h.requests.length).toBeGreaterThan(0);
     expect(h.requests.every(body => JSON.stringify(body).includes("extraction"))).toBe(true);
@@ -360,8 +360,8 @@ test("28: one Noting and one Consolidation per compaction, reuse counts, cancell
     // Its completion is this phase's progress and its one use: nothing of this compaction's own ran.
     expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
     expect(result).toBeUndefined(); // one batch was not enough, and the allowance is spent
-    expect(h.notices.filter(n => n.includes("compaction used")).at(-1)).toContain("native delegation");
-    expect(h.notices.filter(n => n.includes("compaction used")).at(-1)).toContain("(after recovery: Noting)");
+    expect(h.notices.filter(n => n.includes("compaction preparing")).at(-1)).toContain("native delegation");
+    expect(h.notices.filter(n => n.includes("compaction preparing")).at(-1)).toContain("(after recovery: Noting)");
   } finally { await h.dispose(); }
 });
 
@@ -453,7 +453,7 @@ test("a second unrelated slot owner ends the capacity wait without false recover
     expect(await attempt).toBeUndefined(); // do not queue behind another unrelated task
     expect(h.notices.some(n => n.includes("after recovery:"))).toBe(false);
     expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
-    expect(h.notices.some(n => n.includes("compaction used native delegation"))).toBe(true);
+    expect(h.notices.some(n => n.includes("compaction preparing native delegation"))).toBe(true);
   } finally { releaseFirst(); releaseRest(); await h.dispose(); }
 });
 

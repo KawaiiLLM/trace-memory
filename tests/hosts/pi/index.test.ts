@@ -128,7 +128,7 @@ test("raw is incremental and compaction contains intermediate assistant text wit
   expect(block.compaction.summary).toBe(compacted(h.memory.compact(1, "main", 1)));
   expect(block.compaction.summary).not.toContain("partial"); expect(block.compaction.firstKeptEntryId).toBe("");
   expect(h.requests).toHaveLength(0);
-  await h.emit("session_compact", { compactionEntry: { summary: block.compaction.summary } });
+  await h.emit("session_compact", { compactionEntry: h.compaction(block.compaction.summary), fromExtension: true });
   expect(h.memory.store.listTurns(1)[1]!.kind).toBe("compaction");
   await h.answer("finished"); await h.emit("agent_settled");
   await h.prompt("next"); await h.emit("message_start", { message: reply("") });
