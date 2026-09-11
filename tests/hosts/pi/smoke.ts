@@ -115,7 +115,16 @@ try {
   assert.deepEqual(archive.supports, []);
   assert.ok(store.isKnowledgeProcessed(archive.id));
   assert.ok(dreamer.memory.trace(`K${item.knowledgeId}`).includes("maintenance judgment"));
-  console.log("Dreamer recovery smoke passed: native fresh child, immediate trusted archive, final certification and custom compaction carrier.");
+  assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
+  assert.ok(!dreamer.notices.some(n => n.includes("compaction used")), "before returning a carrier is not persisted success");
+  const entry = dreamer.compaction(compacted.compaction.summary, { details: compacted.compaction.details });
+  await dreamer.emit("session_compact", { compactionEntry: entry, fromExtension: true, reason: "manual", willRetry: false });
+  assert.ok(dreamer.notices.at(-1)!.includes("compaction used bounded entry views (after recovery: Dreamer)"));
+  const requestsAfterRecovery = dreamer.requests.length;
+  await dreamer.commands.get("trace").handler("", dreamer.ctx);
+  assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views (after recovery: Dreamer)"));
+  assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
+  console.log("Dreamer recovery smoke passed: native fresh child, immediate trusted archive, final certification, persisted custom carrier and read-only success status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under
