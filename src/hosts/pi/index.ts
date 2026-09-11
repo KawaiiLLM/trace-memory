@@ -7,7 +7,7 @@ import { hash, snapshot, type Body } from "./fork.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -125,7 +125,7 @@ export default function (pi: ExtensionAPI) {
     return { parentFile, parentSessionId: piId, checkpoint, captured: captured.payload };
   };
   const memory = TraceMemory(dbPath, async raw => {
-    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    const input = raw as NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
     const callContext = ctx;
     const callPiId = callContext.sessionManager.getSessionId();
     const registry = callContext.modelRegistry;
@@ -256,7 +256,8 @@ export default function (pi: ExtensionAPI) {
    * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
    * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
   type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
-  const slots = new Map<"noting" | "consolidation", Slot>();
+  type WorkerPhase = "noting" | "consolidation" | "dreaming";
+  const slots = new Map<WorkerPhase, Slot>();
   /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
    * over `TaskBoundary` rather than by a serialization whose key order would decide it. An ordinary
    * automatic task carries no boundary and is therefore not the same frozen range as a recovery
@@ -270,7 +271,7 @@ export default function (pi: ExtensionAPI) {
   };
   // 19c: the phase whose run observed the eligible cache miss, so the run id can be linked to the
   // session's suppression once core has allocated it (the miss is seen before any run row exists).
-  const missDetected = new Set<"noting" | "consolidation">();
+  const missDetected = new Set<WorkerPhase>();
   // Consecutive eligible fork cache misses per memory session, in this process only (user ruling
   // 2026-09-09): a reopen starts at zero; the persisted latch itself is the session-scoped state.
   const cacheMisses = new Map<number, number>();
@@ -303,7 +304,7 @@ export default function (pi: ExtensionAPI) {
   /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
    * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
    * really select and not a larger set it will never freeze. */
-  type ForkTask = { kind: "noting" | "consolidation"; target: TaskTarget; boundary?: TaskBoundary };
+  type ForkTask = { kind: WorkerPhase; target: TaskTarget; boundary?: TaskBoundary };
   /** Ticket 29c "Noter fork eligibility by actual Raw availability" (parent 29). A requested Noter
    * fork runs as a fork exactly when every entry of its target is available in the inherited context
    * in a representation it may extract from — a source entry Pi retained, or the bounded view a
@@ -354,22 +355,24 @@ export default function (pi: ExtensionAPI) {
    * the requested mode is still what the run record keeps. */
   const effectiveMode = (requested: "fork" | "subagent", task?: ForkTask) =>
     forkRefused(requested, task) ? "subagent" as const : requested;
-  const modelName = (kind: "noting" | "consolidation") => String(flat[`${kind}Model`] && flat[`${kind}Model`] !== "session"
-    ? flat[`${kind}Model`] : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
+  const modelName = (kind: WorkerPhase) => {
+    const configured = flat[kind === "dreaming" ? "dreaming.model" : `${kind}Model`];
+    return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
+  };
   // Each phase configures its own mode, defaulting to subagent when no override is supplied.
   // This is the ordinary automatic path only. Borrowed closed-session
   // work and manual catchup ask for a subagent explicitly at their own call sites, and ticket 28's
   // recovery workers will do the same. Fork mode always runs on the session model, subagent mode on
   // the configured one.
-  const launch = (kind: "noting" | "consolidation") => {
-    const fork = memory.config[kind].forkModeDefault;
+  const launch = (kind: WorkerPhase) => {
+    const fork = kind !== "dreaming" && memory.config[kind].forkModeDefault;
     return { mode: fork ? "fork" as const : "subagent" as const, model: fork ? (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session") : modelName(kind) };
   };
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
-  const activity = { running: new Map<"noting" | "consolidation", number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
-  const runningKind = (kind: "noting" | "consolidation") => (activity.running.get(kind) ?? 0) > 0;
+  const activity = { running: new Map<WorkerPhase, number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
+  const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a). One status item, one line:
    *
    *     🧠 ● notes: 24->102 memory: 15->54 cost: $0.12
@@ -396,7 +399,7 @@ export default function (pi: ExtensionAPI) {
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
     if (!enabled()) { context.ui.setStatus(tag, `🧠 ${paint("dim", "○ off")}`); return; }
-    const indicator = activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
+    const indicator = activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") || runningKind("dreaming") ? paint("success", "●")
       : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
     let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined;
     if (state?.sessionId) {
@@ -419,10 +422,10 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target,
   // mode/model and admission flags differ. `boundary` is absent for ordinary automatic work.
   // The return type is written out because 27b/27c's re-admission re-enters this function.
-  const attemptPhase = (context: ExtensionContext, kind: "noting" | "consolidation", target: { sessionId: number; branch: string; headTurnId: number },
+  const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: { sessionId: number; branch: string; headTurnId: number },
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
       options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
-      ): Promise<NotingResult | ConsolidateResult | { outcome: "dropped"; permanent?: string }> => {
+      ): Promise<NotingResult | ConsolidateResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
     if (closed || !enabled() || options.signal?.aborted
         || (options.forkAttempt?.cancellation !== undefined && options.forkAttempt.cancellation < memory.cancellation))
       return Promise.resolve({ outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK } as const);
@@ -448,7 +451,7 @@ export default function (pi: ExtensionAPI) {
     const configuredModel = carried?.subagentModel ?? modelName(kind);
     const fallbackModel = configuredModel === "session" && context.model
       ? `${context.model.provider}/${context.model.id}` : configuredModel;
-    const configuredThinking = flat[`${kind}Thinking`];
+    const configuredThinking = flat[kind === "dreaming" ? "dreaming.thinking" : `${kind}Thinking`];
     const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
     const subagentThinking = carried ? carried.subagentThinkingLevel
       : configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;
@@ -468,7 +471,7 @@ export default function (pi: ExtensionAPI) {
     const effective = selection.fallbackReason ? "subagent" as const : selection.mode; // admission pauses by what will run, not by what was asked
     const [provider, ...id] = selection.model.split("/");
     const model = selection.model === "session" || selection.model === `${context.model?.provider}/${context.model?.id}` ? context.model : context.modelRegistry.find(provider!, id.join("/"));
-    const phase = kind === "noting" ? "Noting" : "Consolidation";
+    const phase = kind === "noting" ? "Noting" : kind === "dreaming" ? "Dreaming" : "Consolidation";
     // 27a: the allowance is the window minus the fixed headroom, so an invalid window and one that
     // cannot even hold the headroom fail here, before anything is sent. `model.maxTokens` is read
     // nowhere any more: it changes neither the allowance nor this verdict.
@@ -543,7 +546,7 @@ export default function (pi: ExtensionAPI) {
       // 27d: with it, the cancellation generation that attempt was admitted under — core drops this
       // admission when a cancellation happened in between.
       ...(carried ? { forkAttempt: carried, executionId: carried.executionId, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
-    const admitted = (kind === "consolidation" ? memory.consolidate(common) : memory.noting(common))
+    const admitted = (kind === "dreaming" ? memory.dream(common) : kind === "consolidation" ? memory.consolidate(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
     if (effective !== "fork") return admitted;
     // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
@@ -878,7 +881,7 @@ export default function (pi: ExtensionAPI) {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
     const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head };
-    for (const kind of ["noting", "consolidation"] as const) {
+    for (const kind of ["noting", "consolidation", "dreaming"] as const) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
       // The readiness wait follows the mode that will actually run: a session the cache-miss latch has
@@ -949,7 +952,7 @@ export default function (pi: ExtensionAPI) {
     if (c.runningPhase) return `Catchup: running ${c.runningPhase} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
     return `Catchup: idle (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
   };
-  const hasBackgroundWork = () => runningKind("noting") || runningKind("consolidation") || !!(catchup && !catchup.outcome);
+  const hasBackgroundWork = () => runningKind("noting") || runningKind("consolidation") || runningKind("dreaming") || !!(catchup && !catchup.outcome);
   const driveCatchup = () => {
     const c = catchup;
     if (!c || c.stopped || c.outcome || closed) return;

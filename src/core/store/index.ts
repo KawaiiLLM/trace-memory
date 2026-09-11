@@ -293,6 +293,8 @@ export interface TaskClaim {
 export type ClosedSessionScope = "off" | "project" | "global";
 
 export interface RunInput {
+  /** Host-only capability, never accepted from tool arguments or serialized as evidence. */
+  dreamingAuthority?: object;
   executionId?: string;
   /** Retained source range for Dreamer's immediate writes; not a new trigger source. */
   dreamingRangeId?: number;
@@ -414,6 +416,7 @@ export interface CommitGraph {
 
 /** Metadata for one synchronous projection. Rebuild after assignment changes; never cache across reads. */
 export interface ApplicabilityInput {
+  revisions?: Map<number, KnowledgeRevision>;
   runs: Map<number, number>;
   projects: Map<number, number>;
   facts: Map<number, { fact: Fact; sessionId: number; entries: number[] }>;
@@ -516,6 +519,7 @@ function toKnowledge(row: any): Knowledge {
 
 function toKnowledgeRevision(row: any): KnowledgeRevision {
   return {
+    ...(row.actor_role ? { actorRole: row.actor_role } : {}),
     id: row.id,
     knowledgeId: row.knowledge_id,
     parentId: row.parent_id,
@@ -554,6 +558,42 @@ function toRun(row: any): Run {
 export class Store {
   readonly db: DatabaseSync;
   closed = false;
+  private readonly dreamingAuthorities = new WeakMap<object, { rangeId: number; sessionId: number; token: string; executionId: string; runId: number }>();
+
+  /** Called only by admitted host execution, not by a model-facing tool. */
+  bindDreamingRun(run: RunInput): RunInput {
+    this.requireClaim(run);
+    const range = run.dreamingRangeId === undefined ? null : this.dreamingRange(run.dreamingRangeId);
+    if (run.kind !== "dreaming" || !run.claim || !run.executionId || !range || range.sessionId !== run.sessionId || range.branch !== run.branch)
+      throw new Error("Dreamer binding requires its admitted claim, execution and frozen range");
+    const authority = {};
+    const runId = this.recordRun({ ...run, outcome: "failure", response: JSON.stringify({ status: "admitted; maintenance not yet completed" }) }).id;
+    this.dreamingAuthorities.set(authority, { rangeId: range.id, sessionId: range.sessionId, token: run.claim.token, executionId: run.executionId, runId });
+    return { ...run, dreamingAuthority: authority };
+  }
+
+  isDreamingRun(run: RunInput): boolean {
+    const authority = run.dreamingAuthority && this.dreamingAuthorities.get(run.dreamingAuthority);
+    return !!authority && run.kind === "dreaming" && authority.rangeId === run.dreamingRangeId && authority.sessionId === run.sessionId
+      && authority.token === run.claim?.token && authority.executionId === run.executionId;
+  }
+
+  dreamingRunId(run: RunInput): number | undefined {
+    return this.isDreamingRun(run) ? this.dreamingAuthorities.get(run.dreamingAuthority!)!.runId : undefined;
+  }
+
+  validateDreamingRun(run: RunInput, path: KnowledgePath): DreamingRange {
+    if (!this.isDreamingRun(run)) throw new Error("trusted Dreamer run binding required");
+    this.requireEnabled(run.sessionId!);
+    this.requireClaim(run);
+    const range = this.dreamingRange(run.dreamingRangeId!);
+    if (!range || path.sessionId !== range.sessionId || path.branch !== range.branch || path.headTurnId !== range.headTurnId)
+      throw new Error("Dreamer target differs from its retained path");
+    const snapshot = this.pathSnapshot(path);
+    if (range.eventIds.some(id => { const event = this.knowledgeRevision(id); return !event || !this.commitApplies(event, path, snapshot); }))
+      throw new Error("Dreamer event no longer applies to its frozen path; do not settle the range");
+    return range;
+  }
 
   constructor(path: string) {
     this.db = new DatabaseSync(path);
@@ -564,6 +604,10 @@ export class Store {
       this.db.exec("PRAGMA busy_timeout = 5000;");
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db);
+      this.transaction(() => {
+        if (!this.db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(r => r.name === "actor_role"))
+          this.db.exec("ALTER TABLE knowledge_revisions ADD COLUMN actor_role TEXT CHECK(actor_role IS NULL OR actor_role = 'dreaming')");
+      });
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
     } catch (error) {
@@ -1184,6 +1228,7 @@ export class Store {
     const runIds = JSON.stringify([...new Set(revisions.flatMap(r => r.runId === null ? [] : [r.runId]))]);
     const factIds = JSON.stringify([...new Set(revisions.flatMap(r => r.supports))]);
     const metadata: ApplicabilityInput = {
+      revisions: new Map(revisions.map(r => [r.id, r])),
       runs: new Map(this.db.prepare("SELECT id, session_id FROM runs WHERE id IN (SELECT value FROM json_each(?))")
         .all(runIds).map(r => [Number(r.id), Number(r.session_id)])),
       projects: new Map(this.db.prepare("SELECT id, project_id FROM sessions").all().map(r => [Number(r.id), Number(r.project_id)])),
@@ -1282,6 +1327,12 @@ export class Store {
   }
 
   commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput, facts = new Map<number, boolean>()): boolean {
+    // Empty evidence is not universal applicability: maintenance retirement inherits the exact parent,
+    // including its original run-session attribution, even when another session hosts the Dreamer.
+    if (commit.actorRole === "dreaming" && commit.op === "archive" && !commit.supports.length) {
+      const parent = commit.parentId === null ? null : input?.revisions?.get(commit.parentId) ?? this.knowledgeRevision(commit.parentId);
+      return !!parent && this.commitApplies(parent, path, snapshot, input, facts);
+    }
     return this.admits(commit, path.sessionId, input) && commit.supports.every(id => {
       if (!facts.has(id)) facts.set(id, this.factOnPath(input ? input.facts.get(id)!.fact : this.getFact(id)!, path, snapshot, input));
       return facts.get(id)!;
@@ -1359,10 +1410,18 @@ export class Store {
         this.requireEnabled(sessionId);
         this.requireClaim(input.run);
         const projectId = this.getSession(sessionId)!.projectId;
-        const runId = this.insertRun({ ...input.run, outcome: "success" });
+        const runId = this.dreamingRunId(input.run) ?? this.insertRun({ ...input.run, outcome: "success" });
         const committed: CommittedKnowledgeOp[] = [];
+        const path = input.path === undefined ? this.knowledgePath(sessionId) : input.path;
+        if (this.isDreamingRun(input.run)) {
+          if (!path) throw new Error("Dreamer requires its frozen path");
+          const range = this.validateDreamingRun(input.run, path);
+          const parents = input.operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(a => a.knowledgeId)] : [op.knowledgeId]);
+          if (parents.some(id => !range.knowledgeIds.includes(id))) throw new Error("knowledge outside the frozen Dreamer family is read-only");
+          if (input.operations.some(op => op.op === "create") && !parents.length) throw new Error("Dreamer create must derive from a family update/archive in the same atomic batch");
+        }
         for (const op of input.operations) {
-          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, input.path === undefined ? this.knowledgePath(sessionId) : input.path);
+          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, this.isDreamingRun(input.run));
           if (outcome.ok) committed.push(outcome.value);
           else throw new Error(outcome.reason);
         }
@@ -1380,12 +1439,13 @@ export class Store {
         try { run.response = JSON.stringify({ ...JSON.parse(run.response), problems: [err instanceof Error ? err.message : String(err)] }); }
         catch { /* Preserve non-JSON responses supplied by direct store callers. */ }
       }
-      return { ok: false, ...this.recordFailure(run, err) };
+      const runId = this.dreamingRunId(run);
+      return { ok: false, ...(runId === undefined ? this.recordFailure(run, err) : { runId, problems: [err instanceof Error ? err.message : String(err)] }) };
     }
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
-    sessionId: number, path: KnowledgePath | null): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
+    sessionId: number, path: KnowledgePath | null, dreaming = false): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge") op = { ...op, absorb: op.absorb.filter((a, i, all) => all.findIndex(b => b.knowledgeId === a.knowledgeId && b.baseCommit === a.baseCommit) === i) };
     const targets = op.op === "create" ? [] : op.op === "merge"
@@ -1402,7 +1462,7 @@ export class Store {
     const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
     const scope = op.op === "archive" ? prior!.scope : op.scope;
     const supports = op.supports;
-    if (!supports.length) return { ok: false, reason: "supports must not be empty" };
+    if (!supports.length && !(dreaming && op.op === "archive")) return { ok: false, reason: "supports must not be empty; only a trusted Dreamer archive has an exception" };
     if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
     const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
@@ -1415,6 +1475,7 @@ export class Store {
       // 21b: labels belong to this immutable revision; an archive inherits its parent's, as it does category and scope.
       op.reason, JSON.stringify(op.op === "archive" ? prior!.topics : op.topics), runId, op.createdAt);
     const commitId = Number(info.lastInsertRowid);
+    if (dreaming) this.db.prepare("UPDATE knowledge_revisions SET actor_role = 'dreaming' WHERE id = ?").run(commitId);
     const range = this.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId);
     if (range) this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?, ?)").run(range.range_id!, knowledgeId);
     changeWeight(this, commitId);
@@ -1477,7 +1538,7 @@ export class Store {
     const text = [`Change events: ${events.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
       ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${renderKnowledge(v)}`),
       ...versions.map(v => v.revision.op === "archive"
-        ? `K${v.knowledge.id}@${v.revision.id} archived; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
+        ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
         : `${renderKnowledge(v)}\n  processed: ${v.processed}`)].join("\n");
     return { events, oldestId: range?.anchor ?? events[0]?.id ?? null, versions, predecessors, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
   }
@@ -1514,7 +1575,7 @@ export class Store {
     return row ? this.dreamingRange(Number(row.id)) : null;
   }
 
-  retainDreamingRange(target: TaskTarget, eventIds: number[]): DreamingRange {
+  retainDreamingRange(target: TaskTarget, eventIds: number[], suppliedKnowledgeIds: number[] = []): DreamingRange {
     return this.transaction(() => {
       const retained = this.openDreamingRange(target.sessionId, target.branch);
       if (retained) return retained;
@@ -1526,6 +1587,10 @@ export class Store {
       for (const event of pending.filter(e => ids.includes(e.id))) {
         this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, event.id);
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, event.knowledgeId);
+      }
+      for (const knowledgeId of suppliedKnowledgeIds) {
+        if (!this.currentCommit(knowledgeId, target).length) throw new Error("Dreamer family must be applicable at admission");
+        this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, knowledgeId);
       }
       return this.dreamingRange(id)!;
     });

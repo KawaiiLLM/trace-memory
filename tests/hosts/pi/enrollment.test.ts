@@ -189,6 +189,8 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
     "Consolidator mode: subagent (Project); Global=fork masked",
     "Consolidator model: fake/test (Global)",
     "Consolidator thinking: inherit (Default)",
+    "Dreamer model: follow foreground (Default)",
+    "Dreamer thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes

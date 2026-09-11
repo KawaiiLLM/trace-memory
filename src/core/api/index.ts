@@ -25,6 +25,8 @@ export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, Entry
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
+import { freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 import { freezeConsolidation, runConsolidation, CONSOLIDATION_MEMBERSHIP, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
 export { CONSOLIDATION_CAPACITY, CONSOLIDATION_MEMBERSHIP } from "../consolidation/index.ts";
 export type { ConsolidateInput, ConsolidateResult, ConsolidationAgentInput, ConsolidationMaterial, ConsolidationRange, NearPair, ConsolidationDiagnostic } from "../consolidation/index.ts";
@@ -53,8 +55,8 @@ export interface TraceMemoryConfig {
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
-  /** Positive safe integer; default 5,000 change tokens. Eligibility only, no worker launch. */
-  dreaming: { triggerTokens: number };
+  /** Bounded fresh-subagent maintenance; no fork mode. */
+  dreaming: { triggerTokens: number; maxToolRounds: number };
   consolidation: {
     /** 29e (parent 29 "Restore Consolidator fork without weakening review"): the same canonical
      * boolean the Noter has, for the phase that lost its mode preference in 25b. Default `false`:
@@ -99,7 +101,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     triggerTokens: 10_000,
     maxToolRounds: 0,
   },
-  dreaming: { triggerTokens: 5_000 },
+  dreaming: { triggerTokens: 5_000, maxToolRounds: 50 },
   consolidation: {
     forkModeDefault: false,
     triggerTokens: 5_000,
@@ -248,6 +250,7 @@ export function validateConfig(override: ConfigOverride): TraceMemoryConfig {
     }
     if ((key === "toolInputTokens" || key === "toolResultTokens") && (value as number) > TOOL_CALL_CEILING) throw new Error(`Invalid ${name}: at most ${TOOL_CALL_CEILING}`);
   }
+  if (cfg.dreaming.maxToolRounds < 1 || cfg.dreaming.maxToolRounds > 50) throw new Error("Invalid dreaming.maxToolRounds: expected 1..50");
   return cfg;
 }
 
@@ -401,6 +404,7 @@ export interface TraceMemory {
   tools(context: ToolContext): ToolDefinition[];
   noting(input: NotingInput): Promise<NotingResult>;
   consolidate(input: ConsolidateInput): Promise<ConsolidateResult>;
+  dream(input: DreamingInput): Promise<DreamingResult>;
   /** Committed lineage facts and unrecorded raw, without dropping facts. */
   branchSummary(sessionId: number, branch: string, headTurnId: number): string;
   /** Ticket 20, as 30 and 28a left it: the compaction result — the three allocated windows over one
@@ -601,7 +605,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       : phase === "dreaming" ? !!store.retryDreamingRange(target) || store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
       : consolidationDue(target) };
   };
-  const execute = async (phase: Exclude<Phase, "dreaming">, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult> => {
+  const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult | DreamingResult> => {
     // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
     // refused here by name. What stays subagent stays subagent where it is decided — borrowed work
     // and manual catchup request it explicitly, and ticket 28's recovery workers will too.
@@ -619,12 +623,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number;
     let executionId: string;
-    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | null;
+    let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | ReturnType<typeof freezeDreaming> | null;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
       if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
       const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId)
+        : phase === "dreaming" ? store.pendingKnowledgeEvents(target)
         : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
       const boundary = input.boundary;
       // A frozen manual target (18b) counts only entries/facts inside its snapshot; later arrivals
@@ -637,17 +642,20 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
             && (boundary.maxEntryId === undefined || (e as { id: number }).id <= boundary.maxEntryId))
         : !pendingNow.some(f => (!boundary.exactFactIds || boundary.exactFactIds.includes((f as { id: number }).id))
             && (!boundary.allowedFactIds || boundary.allowedFactIds.includes((f as { id: number }).id)));
+      if (phase === "dreaming" && store.retryDreamingRange(target)) empty = false;
       if (empty) return null;
       claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
         if (input.executorSessionId !== undefined && !store.enabled(input.executorSessionId)) return false;
+        if (phase === "dreaming") return taskEligibility(phase, target).due;
         if (!input.automatic || input.borrowed) return true;
         return taskEligibility(phase, target).due;
       });
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
-      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
-      const head = "entries" in frozen ? frozen.entries[0]?.id : frozen.rangeFacts[0]?.id;
+      const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText)
+        : phase === "dreaming" ? freezeDreaming(store, selected, cfg) : freezeConsolidation(store, selected, cfg);
+      const head = "entries" in frozen ? frozen.entries[0]?.id : "rangeFacts" in frozen ? frozen.rangeFacts[0]?.id : frozen.range.anchor;
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head }, input.executionId);
       return frozen;
     }); } catch (error) {
@@ -681,11 +689,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     };
     if (external?.aborted) onExternalAbort();
     else external?.addEventListener("abort", onExternalAbort, { once: true });
-    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview) => {
+    const bind = (context: ToolContext, run: import("../store/index.ts").RunInput, review?: import("../consolidation/memory.ts").MemoryReview, dreaming?: Parameters<typeof bindTools>[6]) => {
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
-      const binding = bindTools(store, read, context, run, review);
+      if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
+      const binding = bindTools(store, read, context, run, review, undefined, dreaming);
       task.close = binding.close;
       return binding;
     };
@@ -694,10 +703,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return Promise.race([runAgent({ ...raw as object, signal: controller.signal, thinkingLevel: input.thinkingLevel, subagentThinkingLevel: input.subagentThinkingLevel, fallbackReason: input.fallbackReason, forkAttempt: input.forkAttempt, cancellation: generation,
         reportProgress: (value: Partial<RunAgentResult>) => { Object.assign(progress, value); } }), forced]);
     };
-    let result: NotingResult | ConsolidateResult | undefined;
+    let result: NotingResult | ConsolidateResult | DreamingResult | undefined;
     try {
       result = phase === "noting"
         ? await runNoting(store, frozen as ReturnType<typeof freezeNoting>, agent, cfg, bind)
+        : phase === "dreaming" ? await runDreaming(store, frozen as ReturnType<typeof freezeDreaming>, agent, bind)
         : await runConsolidation(store, frozen as ReturnType<typeof freezeConsolidation>, agent, cfg, bind);
     } finally {
       external?.removeEventListener("abort", onExternalAbort);
@@ -723,7 +733,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       } finally {
         // Cleanup failure must neither roll back a terminal decision nor masquerade as one.
         try { if (!store.closed) store.transaction(() => {
-          if (result?.outcome === "dropped" && result.refused !== undefined) {
+          if (result?.outcome === "dropped" && "refused" in result && result.refused !== undefined) {
             if (owned()) result.executionId = executionId!;
             else result = { outcome: "dropped", reason: "task claim lost before fallback", ...(result.runId === undefined ? {} : { runId: result.runId }) };
           }
@@ -783,6 +793,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     },
     noting: input => execute("noting", input) as Promise<NotingResult>,
     consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
+    dream: input => execute("dreaming", { ...input, mode: "subagent", effectiveMode: "subagent" }) as Promise<DreamingResult>,
     ...read,
   };
 }

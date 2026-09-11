@@ -13,9 +13,9 @@
 import { isContextOverflow } from "@earendil-works/pi-ai";
 import { NotForkable, runNative, type CacheObservation, type NativeForkTask, type NativeResult, type ThinkingLevel, type Verification as NativeVerification } from "./native.ts";
 import type { Body } from "./fork.ts";
-import type { ConsolidationAgentInput, NotingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
+import type { ConsolidationAgentInput, NotingAgentInput, DreamingAgentInput, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 
-type Task = NotingAgentInput | ConsolidationAgentInput;
+type Task = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
 /** The model shape Pi's own child session takes, already resolved by the host's registry lookup. */
 export type WorkerModel = NativeForkTask["model"];
 /** Inherited context: the parent state a fork run is launched from, read by the host at launch. */
@@ -139,6 +139,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
       signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
+      ...(task.kind === "dreaming" ? { passEnd: task.passEnd, reportRounds: task.reportRounds } : {}),
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {
         if (state.thinking) thinking = state.thinking;

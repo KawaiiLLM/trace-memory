@@ -1,17 +1,17 @@
 import { sourceAddresses } from "../render/index.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
-import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision } from "../store/index.ts";
+import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import { DEFAULT_SEARCH_TOKENS, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
 
 export interface ToolDefinition {
-  name: "trace" | "search" | "note" | "memory";
+  name: "trace" | "search" | "note" | "memory" | "check";
   description: string;
   parameters: Record<string, unknown>;
   execute(input: unknown): string;
 }
 export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; readKnowledgeCommits?: { knowledgeId: number; commit: number }[] }
-  | { kind: "noting" | "consolidation"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
+  | { kind: "noting" | "consolidation" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
       readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
 type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
@@ -42,6 +42,17 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Update/archive and every merge participant require an explicit K1@57 handle whose complete body was supplied or read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
+export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
+  const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
+  const memory = tools.find(t => t.name === "memory")!;
+  memory.description = "Apply one atomic batch immediately within the frozen Dreamer family. No candidate/review resubmission. Create only as a split with a family update/archive in the same batch. All create/update/merge require factual supports. Only this trusted Dreamer may archive with supports: [] and an honest nonempty maintenance reason; scope and applicability inherit the exact parent. Every update/archive/merge participant requires an exact complete-body read K@commit. Reads outside the family remain read-only. Earlier valid batches survive failure; only a passing host check certifies completion.";
+  const operation = (memory.parameters.properties as any).operations.items;
+  operation.properties.supports.minItems = 0;
+  operation.allOf.push({ if: { properties: { op: { const: "archive" } } }, else: { properties: { supports: { minItems: 1 } } } });
+  tools.push({ name: "check", description: "Read-only completion check: exact events/results, family, current versions, claims and full shared scope totals, remaining rounds and repair availability. It never commits or certifies knowledge.", parameters: object({}) });
+  return tools;
+}
+
 export function validateReadInput(name: "trace" | "search", raw: unknown): Record<string, unknown> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("expected an object");
   const input = raw as Record<string, unknown>;
@@ -70,7 +81,7 @@ export function toolRejected(name: string, content: string): boolean {
 }
 
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview,
-  reads = new Map<number, KnowledgeWithRevision>()) {
+  reads = new Map<number, KnowledgeWithRevision>(), dreaming?: { path: KnowledgePath; check(): string }) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
@@ -94,11 +105,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const run: RunInput = metadata ?? { kind: context.kind, sessionId: session.id, branch: context.branch,
     rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
+  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
   if (context.kind === "consolidation" && !review) throw new Error("Consolidation tools require the frozen review context supplied by integrate()");
   // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
-    : review!.frozen.path;
+    : context.kind === "dreaming" ? dreaming!.path : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
   const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => sourceAddresses(e).includes(source));
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? store.sourcePath(session.id, context.branch, path.headTurnId!).filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
@@ -106,7 +118,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const frozenPath = new Set(context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
   const sourceEligible = (source: string) => frozenSources.has(source) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
     .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
-  if (context.kind === "manual") for (const handle of context.readKnowledgeCommits ?? []) {
+  if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
     if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
   }
@@ -119,7 +131,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
   const existingFact = (id: number) => !!store.getFact(id);
   const note = (input: Record<string, unknown>): string => {
-    if (context.kind === "consolidation") return "rejected: note is not the writer for an consolidation run";
+    if (context.kind === "consolidation" || context.kind === "dreaming") return "rejected: note is not available to this knowledge worker";
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
@@ -175,7 +187,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (context.kind === "noting") committed = committedRun;
     return result;
   };
-  const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...toolDefinitions.find(t => t.name === name)!,
+  const definitions = dreaming ? dreamingToolDefinitions() : toolDefinitions;
+  const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
       if (closed) return "rejected: run has finished";
       if ((name === "note" || name === "memory") && !store.enabled(session.id)) return "rejected: Trace Memory is Disabled; use /trace on to enable memory.";
@@ -204,7 +217,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
       if (typeof input.query !== "string") throw new Error("query must be a string");
       return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId });
     }),
-    definition("note", note),
+    ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
   return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },

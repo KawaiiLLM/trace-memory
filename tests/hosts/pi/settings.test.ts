@@ -41,7 +41,22 @@ test("32a: knowledge budgets use the existing core and flat validators, not Sett
     expect(() => parseLayer({ "consolidation.knowledgeTokens": value as number })).toThrow(/consolidation.knowledgeTokens/);
   }
   expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
-    "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "closedSessionScope"]);
+    "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]);
+});
+
+test("32d: Dreamer preferences reuse Settings with no mode or advanced page", async () => {
+  const h = setup();
+  seed(h, { "render.entryTokens": 222 });
+  await h.emit("session_start");
+  await edit(h, "Dreamer model: follow foreground (Default)", "fake/test-mini");
+  await edit(h, "Dreamer thinking: inherit (Default)", "high");
+  expect(globalFile(h)["trace-memory"]).toEqual({ "render.entryTokens": 222, "dreaming.model": "fake/test-mini", "dreaming.thinking": "high" });
+  expect(preferences.filter(p => p.phase === "dreaming").map(p => p.kind)).toEqual(["model", "thinking"]);
+  expect(() => parseLayer({ "dreaming.forkModeDefault": true })).toThrow(/Unknown setting/);
+  expect(() => parseLayer({ "dreaming.thinking": "unknown" })).toThrow(/dreaming.thinking/);
+  expect(() => validateConfig({ dreaming: { maxToolRounds: 0 } })).toThrow(/dreaming.maxToolRounds/);
+  expect(() => validateConfig({ dreaming: { maxToolRounds: 51 } })).toThrow(/dreaming.maxToolRounds/);
+  expect(h.requests).toEqual([]);
 });
 
 test("both modes default to subagent in Settings and ordinary execution; saving fork changes only that phase", async () => {
@@ -118,6 +133,8 @@ test("24b: each control writes only its canonical key, and every other setting i
     "Consolidator mode: subagent (Default)",
     "Consolidator model: fake/test (Global)",
     "Consolidator thinking: inherit (Default)",
+    "Dreamer model: follow foreground (Default)",
+    "Dreamer thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
   expect(h.requests).toEqual([]); // editing settings calls no model
@@ -148,6 +165,8 @@ test("26d: each phase's thinking level is saved under its own key, listed with i
     "Consolidator mode: subagent (Default)",
     "Consolidator model: follow foreground (Default)",
     "Consolidator thinking: minimal (Global)",
+    "Dreamer model: follow foreground (Default)",
+    "Dreamer thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
   // A level nothing accepts never reaches the file, and the refusal names the key and the list.

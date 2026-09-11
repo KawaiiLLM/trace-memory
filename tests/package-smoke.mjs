@@ -21,7 +21,7 @@ try {
   const [pack] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temporary],
     { cwd: root, encoding: "utf8", timeout: 60000 }));
   const files = pack.files.map(file => file.path);
-  for (const required of ["src/hosts/pi/index.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
+  for (const required of ["src/hosts/pi/index.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "src/core/prompts/dreaming.md", "src/core/dreaming/index.ts", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
     assert.ok(files.includes(required), `Missing runtime file: ${required}`);
   assert.deepEqual(files.filter(path => /\.test\.ts$|__snapshots__|^tests?\/|^src\/hosts\/cc\/|test-host|native-fixture|smoke\.ts$|^\.scratch\/|\.(sqlite|db)$/.test(path)), [], "Development files or databases must not ship");
 
@@ -59,7 +59,7 @@ try {
   // Reuse the native-worker smoke with the installed factory; only its test harness comes from source.
   process.stdout.write(execFileSync(process.execPath, [join(root, "tests/hosts/pi/smoke.ts"), entry],
     { cwd: consumer, encoding: "utf8", timeout: 30000 }));
-  console.log(`Package smoke passed: ${manifest.name}@${manifest.version}, ${files.length} shipped files, ${pack.size} packed bytes; offline tarball install, Pi discovery/load and native Noting.`);
+  console.log(`Package smoke passed: ${manifest.name}@${manifest.version}, ${files.length} shipped files, ${pack.size} packed bytes; offline tarball install, Pi discovery/load and native Noting/Dreaming.`);
 } finally {
   process.chdir(cwd);
   for (const [key, value] of Object.entries(environment)) {

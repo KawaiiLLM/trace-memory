@@ -28,9 +28,9 @@ function settings(cwd: string, agentDir = agentDirectory()) {
 // 26d added `notingThinking`/`consolidationThinking`: each phase's configured worker thinking level,
 // `inherit` (the default) or one of Pi's own levels. Subagent execution only — a fork keeps
 // inheriting the foreground level 26b freezes, so its request prefix still matches the parent's.
-const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir", "notingThinking", "consolidationThinking"];
+const hostStrings = ["dbPath", "notingModel", "consolidationModel", "runsDir", "notingThinking", "consolidationThinking", "dreaming.model", "dreaming.thinking"];
 export const thinkingChoices = ["inherit", ...THINKING_LEVELS];
-const thinkingKeys = ["notingThinking", "consolidationThinking"];
+const thinkingKeys = ["notingThinking", "consolidationThinking", "dreaming.thinking"];
 /** One flat `section.key` layer, checked exactly as the load path checks it: every known section key
  * typed against its default, unknown keys and misspellings rejected by name, host strings required to
  * be strings, and core's own `validateConfig` over the result. 24b's settings writer validates the
@@ -118,7 +118,7 @@ export function writeGlobal(settingsFile: string, key: string, value: string | b
 // Consolidator-mode entry; 29e restores it on the same select-and-write path, so each phase now shows
 // the same three lines.
 // 26d added each phase's thinking level beside its model, on the same select-and-write path.
-export type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" | "thinking" } | { phase?: never; kind: "scope" });
+export type Preference = { name: string; key: string } & ({ phase: "noting" | "consolidation"; kind: "mode" | "model" | "thinking" } | { phase: "dreaming"; kind: "model" | "thinking" } | { phase?: never; kind: "scope" });
 export const preferences: Preference[] = [
   { name: "Noter mode", key: "noting.forkModeDefault", phase: "noting", kind: "mode" },
   { name: "Noter model", key: "notingModel", phase: "noting", kind: "model" },
@@ -126,13 +126,15 @@ export const preferences: Preference[] = [
   { name: "Consolidator mode", key: "consolidation.forkModeDefault", phase: "consolidation", kind: "mode" },
   { name: "Consolidator model", key: "consolidationModel", phase: "consolidation", kind: "model" },
   { name: "Consolidator thinking", key: "consolidationThinking", phase: "consolidation", kind: "thinking" },
+  { name: "Dreamer model", key: "dreaming.model", phase: "dreaming", kind: "model" },
+  { name: "Dreamer thinking", key: "dreaming.thinking", phase: "dreaming", kind: "thinking" },
   { name: "Closed-session scope", key: "closedSessionScope", kind: "scope" },
 ];
 // Each phase stores "runs in fork mode": one preference reads that boolean without inventing a second
 // spelling of the same choice. Both phases default to subagent; each reads its own config section.
 export const modeName = (value: boolean) => value ? "fork" : "subagent";
 const preferenceDefault = (p: Preference) => p.kind === "scope" ? DEFAULT_CONFIG.closedSessionScope
-  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : DEFAULT_CONFIG[p.phase!].forkModeDefault;
+  : p.kind === "model" ? "session" : p.kind === "thinking" ? "inherit" : p.kind === "mode" ? DEFAULT_CONFIG[p.phase].forkModeDefault : false;
 export const preferenceValue = (flat: FlatConfig, p: Preference) => flat[p.key] ?? preferenceDefault(p);
 export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? modeName(raw as boolean)
   : raw === "session" ? "follow foreground" : String(raw);
@@ -140,8 +142,8 @@ export const shownValue = (p: Preference, raw: unknown) => p.kind === "mode" ? m
  * suppression, capacity/readiness fallback and — for Noting — Raw availability still decide what
  * actually runs (`effectiveMode`); a fallback does not grant a different model-selection policy, so
  * the display follows the configured mode. */
-export const configuredMode = (flat: FlatConfig, phase: "noting" | "consolidation") =>
-  modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode" && p.phase === phase)!) as boolean);
+export const configuredMode = (flat: FlatConfig, phase: "noting" | "consolidation" | "dreaming") =>
+  phase === "dreaming" ? "subagent" : modeName(preferenceValue(flat, preferences.find(p => p.kind === "mode" && p.phase === phase)!) as boolean);
 /** One Settings line: the effective value, its layer, the layers it masks, and — for a model whose
  * phase is configured to fork — the foreground model that fork would inherit instead. */
 export const preferenceLine = (p: Preference, loaded: Pick<Loaded, "flat" | "sources" | "layers">, foregroundModel: string) => {

@@ -569,7 +569,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
           : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
           : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
-        return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}`;
+        const retirement = successors.filter(r => r.op === "archive" && r.actorRole === "dreaming" && !r.supports.length)
+          .map(r => `\n  maintenance judgment: K${r.knowledgeId}@${r.id}; actor dreaming; run R${r.runId}; parent K${r.knowledgeId}@${r.parentId}; reason: ${r.reason}`).join("");
+        return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}${retirement}`;
       }).map(listingLine);
       return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_SEARCH_TOKENS : options.maxTokens }, "Search uses literal substring search. No hit does not mean absent.").text;
     },
