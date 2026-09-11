@@ -1,0 +1,163 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`actual Current session first viewport at 40 x 24 1`] = `
+"Current session
+up/down navigate · enter select ·
+escape/ctrl+c cancel
+pageUp/pageDown scroll status
+▪▪▪▪◦▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+Context: fake/test
+44,500 / 1,000,000 tokens (4.5%)
+Pi estimate (reported + trailing)
+▪ Used  ▫ Free  ◦ Partial
+100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000
+→ Off
+  Runs
+  Project
+  Mark"
+`;
+
+exports[`actual Current session first viewport at 40 x 24 2`] = `
+"Current session
+up/down navigate · enter select ·
+escape/ctrl+c cancel
+pageUp/pageDown scroll status
+Pi estimate (reported + trailing)
+▪ Used  ▫ Free  ◦ Partial
+100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000
+(0.0%)
+Dreaming: [..........] 0 / 5,000 (0.0%)
+Pending / trigger is not task completion
+or worker readiness.
+Cost: $0.0000
+Forks or clones carrying this memory
+identity share this switch.
+→ Off
+  Runs
+  Project
+  Mark"
+`;
+
+exports[`actual Current session first viewport at 80 x 24 1`] = `
+"Current session
+up/down navigate · enter select · escape/ctrl+c cancel
+pageUp/pageDown scroll status
+▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000 (0.0%)
+Dreaming: [..........] 0 / 5,000 (0.0%)
+Pending / trigger is not task completion or worker readiness.
+Cost: $0.0000
+Forks or clones carrying this memory identity share this switch.
+→ Off
+  Runs
+  Project
+  Mark
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 80 x 24 2`] = `
+"Current session
+up/down navigate · enter select · escape/ctrl+c cancel
+pageUp/pageDown scroll status
+▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000 (0.0%)
+Dreaming: [..........] 0 / 5,000 (0.0%)
+Pending / trigger is not task completion or worker readiness.
+Cost: $0.0000
+Forks or clones carrying this memory identity share this switch.
+→ Off
+  Runs
+  Project
+  Mark
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 1`] = `
+"Current session
+up/down navigate · enter select · escape/ctrl+c cancel
+pageUp/pageDown scroll status
+▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000 (0.0%)
+Dreaming: [..........] 0 / 5,000 (0.0%)
+Pending / trigger is not task completion or worker readiness.
+Cost: $0.0000
+Forks or clones carrying this memory identity share this switch.
+→ Off
+  Runs
+  Project
+  Mark
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 2`] = `
+"Current session
+up/down navigate · enter select · escape/ctrl+c cancel
+pageUp/pageDown scroll status
+▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: pi:pi-test (undeclared)
+Pending: / trigger — estimated tokens
+Noting: [+.........] 26 / 10,000 (0.3%)
+Consolidation: [..........] 0 / 5,000 (0.0%)
+Dreaming: [..........] 0 / 5,000 (0.0%)
+Pending / trigger is not task completion or worker readiness.
+Cost: $0.0000
+Forks or clones carrying this memory identity share this switch.
+→ Off
+  Runs
+  Project
+  Mark
+
+original footer"
+`;

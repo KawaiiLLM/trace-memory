@@ -256,16 +256,17 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   expect(h.memory.store.getSession(1)).toBeNull();
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->? cost: $?</dim>");
   await h.commands.get("trace")!.handler("", h.ctx);
-  expect(h.notices.at(-1)).toContain("no memory identity allocated");
-  expect(h.notices.at(-1)).not.toContain("Pending:");
+  expect(h.notices.at(-1)).toContain("Session: None (no assistant reply)");
+  expect(h.notices.at(-1)).toContain("Unknown / 1,000,000,000 (no session)");
 
   // With an identity and nothing imported yet, the same details carry real zeros — a different
   // condition, and still not a claim that no native history exists.
   await h.turn();
   expect(h.memory.store.getSession(1)).not.toBeNull();
   await h.commands.get("trace")!.handler("", h.ctx);
-  expect(h.notices.at(-1)).toContain("Pending: 2 imported entries to note, 0 of 0 applicable facts to consolidate; 0 current knowledge");
-  expect(h.notices.at(-1)).not.toContain("no memory identity allocated");
+  expect(h.notices.at(-1)).toContain("Session: S1");
+  expect(h.notices.at(-1)).toContain("Consolidation: [..........] 0 / 1,000,000,000 (0.0%)");
+  expect(h.notices.at(-1)).not.toContain("(no session)");
   expect(h.requests).toEqual([]);
 });
 

@@ -9,6 +9,7 @@ export { noVisibility, visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, InitialContext, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
+import { pendingEvents } from "../store/processing.ts";
 import { freezeNoting, notingBatch, notingPending, runNoting, NOTING_MEMBERSHIP, type NotingInput, type NotingResult } from "../noting/index.ts";
 import { finish, renderFact, renderFactGroups, renderRun, renderTrace, renderKnowledgeTrace, renderKnowledgeDiff, renderCommitHistory, renderNegationWalk, type NegationStep, type TurnOptions } from "../render/index.ts";
 import { tokens, renderEntry, rawResultText, type ResultExtractor } from "../render/index.ts";
@@ -378,6 +379,8 @@ export interface TraceMemory {
    * applies it wherever it renders an entry and never inspects envelope fields itself. */
   readonly resultText: ResultExtractor;
   taskEligibility(phase: Phase, target: TaskTarget): { due: boolean };
+  /** On-demand, read-only trigger material estimates; no admission, grants or cache writes. */
+  pendingTokens(phase: Phase, target?: TaskTarget): { tokens: number | null; trigger: number; state: "known" | "no session" | "unavailable" };
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
   settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
@@ -581,18 +584,34 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // separator, and the answer is given as soon as the joined estimate reaches the threshold. The
   // estimate is still of one joined string, exactly as before — independently estimated views are
   // never summed — but the work is bounded by `noting.triggerTokens` instead of by the backlog.
+  function* notingViews(target: TaskTarget) {
+    for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId))
+      yield renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
+  }
   const notingDue = (target: TaskTarget): boolean => {
     let joined = "";
-    for (const id of store.pendingEntryIds(target.sessionId, target.branch, target.headTurnId)) {
-      const view = renderEntry(store.getSourceEntry(id)!, cfg.render, resultText).content;
+    for (const view of notingViews(target)) {
       joined = joined ? `${joined}\n\n${view}` : view;
       if (tokens(joined) >= cfg.noting.triggerTokens) return true;
     }
     return false;
   };
-  const consolidationDue = (target: TaskTarget): boolean => {
+  const consolidationTokens = (target: TaskTarget): number => {
     const facts = store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-    return tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n")) >= cfg.consolidation.triggerTokens;
+    return tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n"));
+  };
+  const pendingTokens: TraceMemory["pendingTokens"] = (phase, target) => {
+    const trigger = cfg[phase].triggerTokens;
+    if (!target) return { tokens: null, trigger, state: "no session" };
+    try {
+      if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
+      // Unlike eligibility's short-circuit probe, measure the whole selected backlog once.
+      // Dreaming event weights are its trigger unit, not a rendered knowledge block's size.
+      const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n"))
+        : phase === "consolidation" ? consolidationTokens(target)
+        : pendingEvents(store, target, false).reduce((sum, event) => sum + event.tokens, 0);
+      return { tokens: count, trigger, state: "known" };
+    } catch { return { tokens: null, trigger, state: "unavailable" }; }
   };
   // 29d: eligibility is the trigger threshold and nothing else. The delivery pause that used to hold
   // a fork-mode Noting task until its predecessor's facts had been delivered to the foreground went
@@ -605,7 +624,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
       // historical facts and knowledge contribute nothing to the trigger.
       : phase === "dreaming" ? !!store.retryDreamingRange(target) || store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
-      : consolidationDue(target) };
+      : consolidationTokens(target) >= cfg.consolidation.triggerTokens };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult | DreamingResult> => {
     // 29e (parent 29, superseding 25b): both phases have two execution modes again, so no mode is
@@ -753,7 +772,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // this database instance and target branch, never in a process-global or cross-database cache.
   const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
-    store, executorId, resultText, cancelTasks, taskEligibility, settleExecution,
+    store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, settleExecution,
     get cancellation() { return cancellation; },
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,

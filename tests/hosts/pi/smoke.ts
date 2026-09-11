@@ -6,11 +6,17 @@ import { existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { host, notingFact, reply } from "./test-host.ts";
+import { TuiAltScreen, getKeybindings, stripTerminalSequences } from "@earendil-works/pi-tui";
 
 // Package smoke supplies the installed entry. Node refuses native type stripping under node_modules;
 // use Pi's installed TS loader instead, as Pi does for packaged extensions. No bundled loader dependency.
-const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
-const extension = process.argv[2] ? (await createJiti(import.meta.url).import(resolve(process.argv[2]))).default : undefined;
+const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const { createJiti } = piRequire("jiti");
+// Pi's extension loader supplies this documented module even in an isolated package consumer.
+// Match that alias in this factory seam; production discovery is checked separately by package-smoke.
+const extension = process.argv[2] ? (await createJiti(import.meta.url, {
+  alias: { "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui") },
+}).import(resolve(process.argv[2]))).default : undefined;
 const h = host({ "noting.triggerTokens": 20 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
@@ -34,6 +40,36 @@ try {
   assert.ok(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryNoted(e.id)));
   // 24b: the shipped command surface, through the same entry (the package smoke runs the installed one).
   const trace = (args: string) => h.commands.get("trace").handler(args, h.ctx);
+  const requestsBeforePanel = h.requests.length;
+  const terminal = { columns: 40, rows: 24, write() {}, hideCursor() {}, showCursor() {} };
+  const tui = new TuiAltScreen(terminal as never, false);
+  tui.requestRender = () => {};
+  h.ctx.ui.custom = async (factory, options) => {
+    assert.equal(options?.overlay, true, "installed panel must escape the editor dock");
+    const theme = { fg: (_color: string, text: string) => text };
+    let cancelled = false;
+    const component = await factory(tui, theme as never, getKeybindings() as never, value => {
+      assert.equal(value, undefined); cancelled = true;
+    });
+    const handle = tui.showOverlay(component, typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions);
+    try {
+      const seen: string[] = [];
+      for (let page = 0; page < 10; page++) {
+        // Real Pi compositor: no tests of merely unbounded component.render().
+        const screen = (tui as any).compositeOverlays(Array(24).fill("background"), terminal.columns, terminal.rows);
+        assert.equal(screen.length, terminal.rows);
+        const plain = screen.map(stripTerminalSequences);
+        for (const action of ["Off", "Runs", "Project", "Mark"])
+          assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
+        seen.push(...plain); component.handleInput?.("\x1b[6~");
+      }
+      assert.ok(seen.join(" ").includes("Context:") && seen.join(" ").includes("not task completion or worker"));
+      component.handleInput?.("\x1b"); assert.ok(cancelled);
+    } finally { handle.hide(); component.dispose?.(); }
+    return undefined as never;
+  };
+  h.ctx.mode = "tui"; h.ctx.hasUI = true; h.answers.push("Current session"); await trace(""); h.ctx.hasUI = false;
+  assert.equal(h.requests.length, requestsBeforePanel, "opening/cancelling Current session calls no model");
   await trace("off");
   assert.ok(h.memory.status(1).includes("Disabled (explicit choice)"), "/trace off disables this session at once");
   assert.equal(h.statuses.get("trace-memory"), "🧠 <dim>○ off</dim>", "the off footer is the compact line (the fake host's theme marks the role)");

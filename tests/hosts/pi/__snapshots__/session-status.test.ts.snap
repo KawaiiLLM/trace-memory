@@ -1,0 +1,48 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`exact capacity and trigger output at 40 columns 1`] = `
+"Current session
+▪▪▪▪◦▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
+Context: fake/test
+44,500 / 1,000,000 tokens (4.5%)
+Pi estimate (reported + trailing)
+▪ Used  ▫ Free  ◦ Partial
+100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: example (mark)
+Pending: / trigger — estimated tokens
+Noting: [##########] 12,000 / 10,000
+(120.0%)
+Consolidation: [..........] 0 / 5,000
+(0.0%)
+Dreaming: [#.........] 500 / 5,000
+(10.0%)
+Pending / trigger is not task completion
+or worker readiness.
+Cost: $0.0000
+Off | Runs | Project | Mark"
+`;
+
+exports[`exact capacity and trigger output at 100 columns 1`] = `
+"Current session
+▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
+▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
+Session: S1
+Enrollment: Enabled (default)
+Project: example (mark)
+Pending: / trigger — estimated tokens
+Noting: [##########] 12,000 / 10,000 (120.0%)
+Consolidation: [..........] 0 / 5,000 (0.0%)
+Dreaming: [#.........] 500 / 5,000 (10.0%)
+Pending / trigger is not task completion or worker readiness.
+Cost: $0.0000
+Off | Runs | Project | Mark"
+`;
