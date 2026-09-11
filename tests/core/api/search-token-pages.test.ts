@@ -132,12 +132,13 @@ test("model-facing schema and execution expose only search's token budget", () =
   expect(search!.execute({ query: "", cursor, maxTokens: 256 })).not.toContain("rejected:");
 });
 
-test("trace and search continuations retain the same default token budget", () => {
+test("search rejects trace-origin cursors without consumption; trace retains its default budget", () => {
   const { sessionId, turns } = corpus(["中文".repeat(4000), "second"]);
   expect(tokens(memory.trace(`T${turns[0]!.id}`))).toBeLessThanOrEqual(2000);
   const first = memory.trace(`S${sessionId}`, { cap: 1 });
   const cursor = cursorOf(first)!;
-  const next = memory.search("", "raw", { cursor });
+  expect(() => memory.search("", "raw", { cursor })).toThrow(/search cannot continue a trace cursor/);
+  const next = memory.trace(`cursor=${cursor}`);
   expect(tokens(next)).toBeLessThanOrEqual(2000);
   expect(() => memory.trace(`cursor=${cursor}`)).toThrow(/unknown or expired/);
 });

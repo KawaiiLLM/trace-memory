@@ -156,7 +156,7 @@ test("25d pagination: a wide interval pages by cap, completely and without dupli
   expect(paged("F1-F12,F1-F3", () => {}, 1).joined).toBe(memory.trace("F1-F12,F1-F3"));
 });
 
-test("a first page of an interval costs the page: one record rendered, one batched read for the rest", () => {
+test("a first page of an interval costs the page: one record rendered, one batched relation snapshot", () => {
   const { ids } = facts(200);
   const records = countFactReads(), relations = countRelationReads();
   try {
@@ -164,12 +164,12 @@ test("a first page of an interval costs the page: one record rendered, one batch
     const first = memory.trace(`F1-F${ids.length}`, { cap: 1 });
     expect(first).toContain("[F1]");
     expect(first).not.toContain("[F2]"); // the page, and only the page, was formatted
-    // One range query names the interval's facts; exactly one of them is read and rendered. The 199
-    // the reader has not asked for yet cost one batched relation read — what 22c's snapshot rule
-    // needs to keep a later page stable — and no record read at all.
+    // One range query names the interval's facts; exactly one body is read and rendered.
+    // All relations freeze in one batch under the transaction, before any rendering.
+    // The 199 deferred bodies cost no record read at all.
     expect(records.queries()).toBe(1);
     expect(records.records()).toBe(1);
-    expect(relations.single()).toBe(1);
+    expect(relations.single()).toBe(0);
     expect(relations.batched()).toBe(1);
     // A cap wide enough for every line is what it always was: every record in the interval.
     records.reset();

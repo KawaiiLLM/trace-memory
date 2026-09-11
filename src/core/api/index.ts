@@ -469,7 +469,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
     finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
   };
-  const trace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): string => {
+  // Freeze database values first; the returned renderer runs outside the read transaction.
+  const prepareTrace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): (() => string) => {
     const [target, ...flags] = address.trim().split(/\s+/);
     const invalid = () => new Error(`invalid trace address: ${address}`);
     const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.K([1-9]\d*)@([1-9]\d*))?|(\.\.))?$/.exec(target ?? "");
@@ -485,7 +486,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         if (!value) throw new Error(`commit K${id}@${commitId} does not exist`);
         return value;
       };
-      const describe = (r: typeof history[number]) => renderKnowledgeTrace({ knowledge, revision: r }, store.listKnowledgeMarks(id!), store.commitParents(r), store.commitChildren(r));
+      const marks = store.listKnowledgeMarks(id!);
+      const descriptions = new Map<number, () => string>();
+      const capture = (revisions: typeof history) => {
+        for (const r of revisions) {
+          if (descriptions.has(r.id)) continue;
+          const parents = store.commitParents(r), children = store.commitChildren(r);
+          descriptions.set(r.id, () => renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children));
+        }
+      };
+      const describe = (r: typeof history[number]) => descriptions.get(r.id)!();
       if (to !== undefined) {
         const a = commit(from!), b = commit(to);
         const ancestors = (tip: typeof a) => {
@@ -498,25 +508,31 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           return ids;
         };
         const left = ancestors(a), right = ancestors(b);
-        return renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)));
+        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)));
       }
       if (from !== undefined) {
         const revision = commit(from);
         reads?.push({ knowledgeId: id!, commits: [revision.id], replace: false });
-        return describe(revision);
+        capture([revision]);
+        return () => describe(revision);
       }
-      if (knowledgeMatch[5]) return `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
+      if (knowledgeMatch[5]) {
+        capture(history);
+        return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
+      }
       const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
       const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
       const tips = store.currentCommit(id!, path);
       reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
       const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
       const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path, snapshot)) : [];
-      return [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
+      const links = store.listKnowledgeLinks(id!);
+      capture([...(tips.length ? tips : history), ...otherTips]);
+      return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
         ...(tips.length ? [] : history.map(describe)),
-        ...store.listKnowledgeLinks(id!).map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
+        ...links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
         path ? "Applicable history on this path:" : "Commit history:", renderCommitHistory(applicable),
         ...(path ? ["Other branches' tips:", ...otherTips.map(describe)] : [])].join("\n");
     }
@@ -535,21 +551,23 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         steps.push({ fact, relations, depth, terminal: children.length === 0 });
         for (const child of children.reverse()) pending.push({ id: child.fromFact, depth: depth + 1 });
       }
-      return renderNegationWalk(steps);
+      return () => renderNegationWalk(steps);
     }
     const factMatch = /^F([1-9]\d*)$/.exec(target ?? "");
     if (factMatch && !flags.length) {
       if (!Number.isSafeInteger(Number(factMatch[1]))) throw invalid();
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
-      return renderFact(fact, store.listFactRelations(fact.id));
+      const relations = store.listFactRelations(fact.id);
+      return () => renderFact(fact, relations);
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
     if (runMatch) {
       if (flags.length) throw new Error("invalid trace address: use the full parameter");
       const run = store.getRun(Number(runMatch[1]));
       if (!run) throw new Error(`run ${target} does not exist`);
-      return renderRun(run, store.listFactsByRun(run.id).map((f) => f.id), store.listCommitsByRun(run.id), display.full === true);
+      const facts = store.listFactsByRun(run.id).map((f) => f.id), commits = store.listCommitsByRun(run.id);
+      return () => renderRun(run, facts, commits, display.full === true);
     }
     const turnMatch = /^(?:S([1-9]\d*)\/)?T([1-9]\d*)(?:#(user|assistant|t[1-9]\d*))?$/.exec(target ?? "");
     if (!turnMatch || !Number.isSafeInteger(Number(turnMatch[2]))) throw invalid();
@@ -576,10 +594,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const occurrences = display.entryIds
       ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
       : store.listSourceEntries(turn.sessionId, turn.id, options.full ? undefined : display.branch);
-    return finish(renderTrace(turn, occurrences, display.profile ?? cfg.render, options, options.full ? rawResultText : resultText));
+    const profile = { ...(display.profile ?? cfg.render) };
+    return () => finish(renderTrace(turn, occurrences, profile, options, options.full ? rawResultText : resultText));
   };
 
-  const read = readFacade(store, cfg, trace, resultText);
+  const read = readFacade(store, cfg, prepareTrace, resultText);
   // Ticket 22b: the pending entries are rendered one at a time and joined with the batch's own
   // separator, and the answer is given as soon as the joined estimate reaches the threshold. The
   // estimate is still of one joined string, exactly as before — independently estimated views are

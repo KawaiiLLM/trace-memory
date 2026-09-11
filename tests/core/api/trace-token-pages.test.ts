@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { drainTrace, tracePage, wholeTrace } from "../../trace-pages.ts";
 import { finish, listingLine, renderTrace, tokens } from "../../../src/core/render/index.ts";
+import * as rendering from "../../../src/core/render/index.ts";
 
 const time = "2026-09-11T00:00:00Z";
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -109,6 +110,7 @@ test("rejected continuations do not consume trace cursors or loosen frozen budge
   for (const maxTokens of [0, 1, -1, 1.5, Infinity, NaN, 257, null, "256"]) {
     expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: maxTokens as number })).toThrow(/maxTokens/);
   }
+  expect(() => memory.search("", "raw", { sessionId, cursor })).toThrow(/search cannot continue a trace cursor/);
   expect(() => memory.trace(`cursor=${cursor}`, { sessionId, cap: 0 })).toThrow(/cap/);
   expect(() => memory.trace(`T${turn.id},cursor=${cursor}`, { sessionId })).toThrow(/alone/);
   expect(() => memory.trace(`cursor=${cursor}`, { sessionId: sessionId + 1 })).toThrow(/unknown or expired/);
@@ -142,7 +144,7 @@ test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact k
     category: "mechanism", scope: "session", supports: [1], reason: "test", topics: [], createdAt: time }] });
   expect(created.ok).toBe(true);
   const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
-  const trace = tools.find(t => t.name === "trace")!, write = tools.find(t => t.name === "memory")!;
+  const trace = tools.find(t => t.name === "trace")!, search = tools.find(t => t.name === "search")!, write = tools.find(t => t.name === "memory")!;
   const edit = () => JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", text: "updated", category: "mechanism", scope: "session",
     supports: ["F1"], reason: "test", topics: [] }], skipped: [] }));
   let page = trace.execute({ address, full: true }), pages = 0;
@@ -152,6 +154,8 @@ test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact k
     const cursor = tracePage(page).cursor;
     if (!cursor) break;
     expect(edit().results[0]).toContain("knowledge was not read");
+    expect(search.execute({ query: "", cursor })).toContain("search cannot continue a trace cursor");
+    expect(edit().results[0]).toContain("knowledge was not read");
     page = trace.execute({ address: `cursor=${cursor}` });
     expect(++pages).toBeLessThan(100);
   }
@@ -159,7 +163,61 @@ test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact k
   expect(edit().committed[0]).toMatchObject({ knowledgeId: 1, commit: 2 });
 });
 
-test("large single-line full reads price page-sized prefixes, not their whole remainder", () => {
+test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page when they fit: %s emoji", count => {
+  const { sessionId, turn } = corpus();
+  const text = `needle ${"😀".repeat(count)}a`;
+  const t = memory.store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: text, startedAt: time });
+  expect(tokens("😀".repeat(128))).toBe(143);
+  expect(tokens("😀".repeat(128) + "a")).toBe(37);
+  const expected = `[T${t.id}#user]: ${text}`;
+  expect(memory.trace(`T${t.id}#user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
+  const search = memory.search("needle", "raw", { maxTokens: 1_000_000 });
+  expect(search).not.toContain("cursor=");
+  expect(memory.search("needle", "raw", { maxTokens: Math.max(128, tokens(search)) })).toBe(search);
+});
+
+test("named multi-address values freeze under the transaction, but rendering and estimation never run there", () => {
+  const { sessionId, turn } = corpus();
+  const store = memory.store;
+  const run = { kind: "manual" as const, sessionId, branch: "main", createdAt: time };
+  expect(store.commitNotingRun({ run, facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "original fact",
+    source: [`T${turn.id}#user`], createdAt: time }] }).ok).toBe(true);
+  expect(store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "h1", author: "fake", text: "original knowledge",
+    category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
+  const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1-F1`;
+  const expected = wholeTrace(memory, address);
+  const spies = (["renderTrace", "renderFact", "renderKnowledge", "renderKnowledgeTrace", "renderCommitHistory", "tokens"] as const).map(name => {
+    const original = rendering[name];
+    return vi.spyOn(rendering, name).mockImplementation(((...args: never[]) => {
+      expect(store.db.isTransaction, name).toBe(false);
+      return (original as Function)(...args);
+    }) as never);
+  });
+  const transaction = store.transaction.bind(store);
+  let changed = false;
+  const snapshot = vi.spyOn(store, "transaction").mockImplementation(body => {
+    const value = transaction(body);
+    if (!changed) {
+      changed = true;
+      store.mark(1, "flagged", time);
+      store.appendTurn({ sessionId, parentTurnId: turn.id, kind: "turn", userPrompt: "NEW-TURN", startedAt: time });
+      memory.appendEntry({ sessionId, turnId: turn.id, nativeLineage: "fixture", nativeId: "new-after-freeze", role: "toolResult", text: "", raw: "{}",
+        calls: [{ ordinal: 1, callId: "call-1", name: "bash", result: "NEW-RESULT", status: "success" }] });
+      expect(store.commitNotingRun({ run, facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "NEW-NEGATION",
+        source: [`T${turn.id}#user`], negate: [{ target: "F1", strength: "strong" }], createdAt: time }] }).ok).toBe(true);
+      memory.config.render.toolInputTokens = 1000;
+      memory.config.render.toolResultTokens = 1000;
+    }
+    return value;
+  });
+  try {
+    expect(wholeTrace(memory, address, { cap: 1 })).toBe(expected);
+    expect(changed).toBe(true);
+    for (const spy of spies) expect(spy).toHaveBeenCalled();
+  } finally { snapshot.mockRestore(); for (const spy of spies) spy.mockRestore(); }
+});
+
+test("large lines are priced whole once, then only page-sized prefixes on continuation", () => {
   const { turn } = corpus();
   const read = (size: number) => {
     const text = "abc123 中文😀 ".repeat(size);
@@ -170,9 +228,16 @@ test("large single-line full reads price page-sized prefixes, not their whole re
       if (separator instanceof RegExp) measured += this.length;
       return original.call(this, separator, limit);
     } as typeof original;
-    try { first = memory.trace(`T${t.id}#user`, { full: true }); }
-    finally { String.prototype.split = original; }
+    let initial = 0;
+    try {
+      first = memory.trace(`T${t.id}#user`, { full: true });
+      initial = measured;
+      measured = 0;
+      const cursor = tracePage(first).cursor!;
+      first = memory.trace(`cursor=${cursor}`);
+    } finally { String.prototype.split = original; }
     expect(tokens(first)).toBeLessThanOrEqual(2000);
+    expect(initial).toBeLessThan(text.length * 2 + 100_000);
     return measured;
   };
   expect(read(100_000)).toBeLessThan(read(1000) * 2);

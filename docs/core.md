@@ -295,8 +295,9 @@ excerpts. One marker family says what was left out: `[... N characters truncated
 `[<type> omitted]` for a non-text block; the honesty clause "the omitted middle was not
 inspected" is stated once in the Noter prompt instead of in every marker. Every consumer
 — Noting material, compaction, branch carry and the assembled `trace` — uses
-identical entry bytes, and `full` is the same renderer with no budget. The shared
-segment-based token estimator remains unchanged (ruling 2026-09-07).
+identical entry bytes, and `full` is the same renderer without content compression;
+the outer trace paginator still applies its default 2,000 estimated-token budget and
+line cap. The shared segment-based token estimator remains unchanged (ruling 2026-09-07).
 
 Hosts may store plain strings or JSON in tool input/result; no rule names a tool.
 Arguments render as `key=JSON.stringify(value)`, concatenated on the call's one line, so
@@ -559,9 +560,12 @@ while intervals keep fact identities and render only the page plus one lookahead
 The shared token budget and `cap`/`cursor` page that one line stream — no child
 cursor is nested inside a page and no remainder of an address is dropped. Deferred
 interval relations are frozen in one batched read, not by rendering all facts.
-A short transaction fixes the request snapshot; no transaction stays open between
-pages. The annotations 22c freezes for a search (a fact's relations, a commit's
-marks, a Turn's occurrences and Raw profile) cannot move under a later page either. A read through a run's tools is recorded and audited as
+A short transaction freezes the necessary values, relations and annotations for the
+request snapshot. Named rendering and page estimation happen after it exits; immutable
+interval fact bodies remain lazy. No transaction stays open between pages. The
+annotations 22c freezes for a search (a fact's relations, a commit's marks, a Turn's
+occurrences and Raw profile) cannot move under a later page either. A read through
+a run's tools is recorded and audited as
 the expression the model wrote, and the knowledge components of a mixed expression
 still update that run's knowledge read base.
 
@@ -822,7 +826,8 @@ without consuming the cursor. The same budget applies through `trace` continuati
 a trace-origin cursor cannot be continued through search. Continue a cursor alone,
 not inside a comma address list. Invalid parameters do not
 consume a valid cursor. Owner isolation and the shared 16-continuation cache remain
-unchanged. Trace's own default remains line-budgeted, with no new token limit.
+unchanged. Trace shares the default 2,000 estimated-token response budget and line
+cap; `full` preserves uncompressed content through lossless cursor pagination.
 
 Every search page states that no hit does not mean absent. A `cursor` continues the
 query that issued it, not the database as it now stands: the hits, the commit labels,
