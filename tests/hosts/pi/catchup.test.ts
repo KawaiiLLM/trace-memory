@@ -239,7 +239,7 @@ test("17c 2026-09-08: shared five-second shutdown deadline fences own and borrow
 });
 
 test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and never restarts a committed batch", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20, retry: { baseDelayMs: 60_000 } });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30, retry: { baseDelayMs: 60_000 } });
   try {
     h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "503 overloaded" } : notingFact(c), { autoStop: false });
     await h.turn();
@@ -258,7 +258,7 @@ test("17c 2026-09-08: shutdown cancels retry waits, retains available usage, and
 });
 
 test("17c 2026-09-08: late rejection after deadline is consumed, normal restore clears closure, and late results never touch the closed store", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   let reject!: (error: Error) => void;
   try {
     h.provider(async () => new Promise<Reply>((_, r) => { reject = r; }));
@@ -330,7 +330,7 @@ test("17c 2026-09-08: resume takes crashed claims immediately without inventing 
 });
 
 test("17c 2026-09-08: database contention cannot multiply shutdown deadline; cleanup errors are reported", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   let holder: ReturnType<typeof spawn> | undefined;
   let exited: Promise<unknown> | undefined;
   try {
@@ -393,13 +393,13 @@ test("17c 2026-09-08: disabled executors cannot acquire or commit borrowed work;
 
 
 test("17c 2026-09-08: failed own capacity admission leaves the slot free for a smaller closed tail", async () => {
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   try {
     // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
-    // reserve), so 15,000 leaves 5,000 for input — above the ~4,400 the small closed tail costs and
+    // reserve), so 16,000 leaves 6,000 for input — above the small closed tail's updated fixed cost and
     // below that plus this session's own entry view, which 30 caps at 2,000 tokens. That is the split
     // this case needs, at the sizes 30's profile produces.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 15000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 16000 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);

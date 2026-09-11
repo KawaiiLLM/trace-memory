@@ -7,7 +7,7 @@ import { call, fixture, say, submitted, worker } from "./native-fixture.ts";
 
 type Host = ReturnType<typeof host>;
 const at = "2026-09-09T00:00:00.000Z";
-const config = { "noting.forkModeDefault": false, "noting.triggerTokens": 20, "consolidation.triggerTokens": 1_000_000_000 };
+const config = { "noting.forkModeDefault": false, "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 };
 const command = (h: Host, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const notingRuns = (h: Host) => h.memory.store.listRuns(1).filter(r => r.kind === "noting");
 const disabled = (h: Host) => h.notices.filter(n => n.includes("off after three failures"));

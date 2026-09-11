@@ -296,7 +296,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     validateBudgets(options);
     const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
     if (options.cursor || cursor) {
-      if ((address.trim() && !cursor) || (options.cursor && cursor && options.cursor !== cursor[1])) throw new Error("continue a cursor alone, not with an address");
+      // Preserve the explicit-cursor placeholder convention without allowing malformed entry
+      // grammar to consume a read. A placeholder never changes the frozen query membership.
+      if (options.cursor && address.trim() && !cursor) {
+        const placeholders = traceTargets(address);
+        if (placeholders.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
+        placeholders.forEach(factInterval);
+      }
       return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     }
     const targets = traceTargets(address);

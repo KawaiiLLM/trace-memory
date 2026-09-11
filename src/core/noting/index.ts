@@ -303,7 +303,7 @@ function notingMaterial(frozen: { sessionId: number; entries: ReturnType<Store["
   // request a fork inherits stops before the reply it produced, so a withheld head entry is the one
   // body the view cannot be trusted for and the reply is restated (ruling 08:53's head reply, now
   // conditional). When the Raw block below carries that entry, its reply is already in it.
-  const headWithheld = entries.filter(entry => entry.turnId === head.id && entry.role === "assistant"
+  const headWithheld = entries.filter(entry => entry.turnId === head.id && entry.role === "assistant" && entry.text
     && initial.visible.raw.has(entry.nativeId));
   const material: NotingMaterial = {
     entries: supplied.map((entry, i) => ({ id: entry.id, view: raw[i]!.content })),

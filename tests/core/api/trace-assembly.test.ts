@@ -35,27 +35,23 @@ test("23b golden: a Turn with several assistant messages shows each one, in path
   const t = turn("what changed?", "first reply");
   occurrence(t.id, "second-reply", { text: "second reply" });
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id),
-    `[T${t.id}#user]: what changed?`,
-    `[T${t.id}#assistant]: first reply`,
-    `[T${t.id}#assistant]: second reply`].join("\n"));
+    `[T${t.id}#E1@text] user: what changed?`,
+    `[T${t.id}#E2@text] assistant: first reply`,
+    `[T${t.id}#E3@text] assistant: second reply`].join("\n"));
 });
 
 test("23b golden: a call with several native result occurrences shows each occurrence", () => {
   const t = turn("run it");
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo hi" }), result: "first result", status: "success" });
   occurrence(t.id, "retry", { role: "toolResult", calls: [{ ordinal: 1, name: "bash", callId: "call-1", result: "second result", status: "failure" }] });
-  expect(memory.trace(`T${t.id}`)).toBe([header(t.id),
-    `[T${t.id}#user]: run it`,
-    `[T${t.id}#t1] bash(command="echo hi")`,
-    `[T${t.id}#t1] bash success: first result`,
-    `[T${t.id}#t1] bash failure: second result`].join("\n"));
-  // Both occurrences are the same address, and 23c shows each as its own entry under `full` too —
-  // the `multiple results` merge that used to join them is gone with `renderTurn`.
-  expect(memory.trace(`T${t.id}`, { full: true })).toBe([header(t.id),
-    `[T${t.id}#user]: run it`,
-    `[T${t.id}#t1] bash(command="echo hi")`,
-    `[T${t.id}#t1] bash success: first result`,
-    `[T${t.id}#t1] bash failure: second result`].join("\n"));
+  const expected = [header(t.id),
+    `[T${t.id}#E1@text] user: run it`,
+    `[T${t.id}#E2@call-1] bash(command="echo hi")`,
+    `[T${t.id}#E3@call-1] bash success: first result`,
+    `[T${t.id}#E4@call-1] bash failure: second result`].join("\n");
+  // Results share a call ID, never an entry identity; full changes only compression.
+  expect(memory.trace(`T${t.id}`)).toBe(expected);
+  expect(memory.trace(`T${t.id}`, { full: true })).toBe(expected);
 });
 
 test("23b golden: a sibling branch's entries never appear in this branch's trace", () => {
@@ -66,8 +62,8 @@ test("23b golden: a sibling branch's entries never appear in this branch's trace
   memory.selectEntries(sessionId, "fork", [...shared, sibling.id]);
   const bound = { sessionId, headTurnId: t.id, branch: "main" };
   expect(memory.trace(`T${t.id}`, bound)).toBe([header(t.id),
-    `[T${t.id}#user]: shared question`,
-    `[T${t.id}#assistant]: shared reply`].join("\n"));
+    `[T${t.id}#E1@text] user: shared question`,
+    `[T${t.id}#E2@text] assistant: shared reply`].join("\n"));
   expect(memory.trace(`T${t.id}`, { ...bound, branch: "fork" })).toContain("abandoned reply");
   // An unbound read names no branch and stays unrestricted, as 17a ruled for shared-call fork results.
   expect(memory.trace(`T${t.id}`)).toContain("abandoned reply");
@@ -78,14 +74,15 @@ test("23b golden: tool selection renders one call and keeps every other call's l
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo one" }), result: "output one", status: "success" });
   memory.store.appendToolCall({ turnId: t.id, name: "read", input: JSON.stringify({ file_path: "/tmp/x.md" }), result: "y".repeat(40), status: "success" });
   expect(memory.trace(`T${t.id}`, { tool: 1 })).toBe([header(t.id),
-    `[T${t.id}#user]: two calls`,
-    `[T${t.id}#t1] bash(command="echo one")`,
-    `[T${t.id}#t1] bash success: output one`,
-    `[T${t.id}#t2] read(...)`, "[... 9 characters truncated]",
-    `[T${t.id}#t2] read success:`, "[... 40 characters truncated]",
+    `[T${t.id}#E1@text] user: two calls`,
+    `[T${t.id}#E2@call-1] bash(command="echo one")`,
+    `[T${t.id}#E3@call-1] bash success: output one`,
+    `[T${t.id}#E4@call-2] read(...)`, "[... 9 characters truncated]",
+    `[T${t.id}#E5@call-2] read success:`, "[... 40 characters truncated]",
     "", "Receipts:",
-    `T${t.id}: 1 omitted calls (including partial calls)`,
-    `expand: trace({"address":"T${t.id}#t2","full":true})`].join("\n"));
+    `T${t.id}: 2 omitted calls (including partial calls)`,
+    `expand: trace({"address":"T${t.id}#E4@call-2","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})`,
+    `expand: trace({"address":"T${t.id}#E5@call-2","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})`].join("\n"));
   // The unselected call is sealed at its floor even though its payload would have fitted the budget.
   expect(memory.trace(`T${t.id}`, { tool: 1 })).not.toContain("/tmp/x.md");
   expect(memory.trace(`T${t.id}`)).toContain(`file_path="/tmp/x.md"`); // no selection: every call renders
@@ -101,7 +98,7 @@ test("23c golden: full is the same renderer with no budget — the same labels, 
   // The arguments under the entry view's own labels, whole; the result text is the raw extractor's,
   // the stored string as it is, so a Pi envelope's `details` (an edit diff) appears here too.
   expect(memory.trace(`T${t.id}#t1`, { full: true }))
-    .toBe(`[T${t.id}#t1] bash(command=${JSON.stringify(command)}, timeout=30)\n[T${t.id}#t1] bash success: ${result}`);
+    .toBe(`[T${t.id}#E2@call-1] bash(command=${JSON.stringify(command)}, timeout=30)\n[T${t.id}#E3@call-1] bash success: ${result}`);
   expect(memory.trace(`T${t.id}#t1`)).not.toContain(command); // without full, the same evidence under B
   // Each of the Turn's native entries, in entry order, is the unbounded path's rendering of it.
   const entries = memory.store.listSourceEntries(sessionId, t.id);
@@ -109,7 +106,7 @@ test("23c golden: full is the same renderer with no budget — the same labels, 
     .toBe([header(t.id), ...entries.map(e => renderEntryWhole(e).content)].join("\n"));
 });
 
-test("23c: a full read through the registered trace tool keeps its unrestricted scope, the assembled read does not", () => {
+test("33: full is a compression alias and cannot change a bound read's selected branch",  () => {
   const t = turn("shared question", "shared reply");
   memory.store.appendToolCall({ turnId: t.id, name: "bash", input: JSON.stringify({ command: "echo main" }), result: "main result", status: "success" });
   const shared = memory.store.listSourceEntries(sessionId, t.id).map(e => e.id);
@@ -119,8 +116,9 @@ test("23c: a full read through the registered trace tool keeps its unrestricted 
   memory.selectEntries(sessionId, "fork", [...shared, sibling.id]);
   // The registered tool always passes the session's branch, so this is the bound reader's own read.
   const tool = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: t.id }).find(t => t.name === "trace")!;
-  expect(tool.execute({ address: `T${t.id}`, full: true })).toContain("fork result"); // 17a: full stays unrestricted
-  expect(tool.execute({ address: `T${t.id}` })).not.toContain("fork result"); // 23b: the branch narrows this one
+  expect(tool.execute({ address: `T${t.id}`, full: true })).not.toContain("fork result");
+  expect(memory.trace(`T${t.id}`, { full: true })).toContain("fork result"); // unbound reads remain unrestricted
+  expect(tool.execute({ address: `T${t.id}` })).not.toContain("fork result");
   expect(tool.execute({ address: `T${t.id}` })).toContain("main result");
 });
 
@@ -130,8 +128,8 @@ test("23c (GPT review 2026-09-09): a displayed non-text user address is readable
     raw: JSON.stringify({ role: "user", content: [{ type: "image", mimeType: "image/png", data: "synthetic" }] }), calls: [] });
   // The assembled read shows the address with the placeholder, so the explicit read of that one part
   // must agree — the existence check follows the displayed parts, not what a fact may cite.
-  expect(memory.trace(`T${t.id}`)).toContain(`[T${t.id}#user]: [non-text content omitted]`);
-  expect(memory.trace(`T${t.id}#user`)).toBe(`[T${t.id}#user]: [non-text content omitted]`);
+  expect(memory.trace(`T${t.id}`)).toContain(`[T${t.id}#E2] user: [non-text content omitted]`);
+  expect(memory.trace(`T${t.id}#user`)).toBe(`[T${t.id}#E2] user: [non-text content omitted]`);
   // An assistant entry with no text of its own — only tool calls — displays no text part, and its
   // `#assistant` address stays unreadable: the placeholder is the user message's, not thinking's.
   const quiet = turn("q");
@@ -146,7 +144,7 @@ test("23b: a read of a tool result without full is the entry renderer's tier-1 r
   const entries = memory.store.listSourceEntries(sessionId, t.id);
   const views = entries.map(e => renderEntry(e, memory.config.render, memory.resultText).content);
   expect(memory.trace(`T${t.id}`)).toBe([header(t.id), ...views].join("\n") +
-    `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}#t1","full":true})`);
+    `\n\nReceipts:\nT${t.id}: 1 omitted calls (including partial calls)\nexpand: trace({"address":"T${t.id}#E3@call-1","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})`);
   const result = entries.find(e => e.role === "toolResult")!;
   expect(memory.trace(`T${t.id}#t1`)).toContain(renderEntry(result, memory.config.render, memory.resultText).content);
 });
@@ -186,7 +184,7 @@ test("full trace prices bounded page prefixes, not the entire pending single-lin
   const huge = turn("two megabytes");
   const stored = "z".repeat(2_000_000);
   memory.store.appendToolCall({ turnId: huge.id, name: "bash", input: "{}", result: stored, status: "success" });
-  expect(wholeTrace(memory, `T${huge.id}#t1`, { full: true })).toBe(`[T${huge.id}#t1] bash()\n[T${huge.id}#t1] bash success: ${stored}`);
+  expect(wholeTrace(memory, `T${huge.id}#t1`, { full: true })).toBe(`[T${huge.id}#E2@call-2] bash()\n[T${huge.id}#E3@call-2] bash success: ${stored}`);
   expect(read(5_000_000, 1, { full: true })).toBe(small);
   expect(read(5_000, 20, {})).toBeGreaterThan(small);
 });

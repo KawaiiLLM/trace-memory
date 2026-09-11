@@ -52,6 +52,15 @@ export function parseTurnAddress(address: string): TurnAddress | null {
   }
   return result;
 }
+export function parseKnowledgeAddress(address: string): { id: number; from?: number; to?: number; history: boolean } | null {
+  const match = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.(?:K([1-9]\d*)@)?([1-9]\d*))?|(\.\.))?$/.exec(address);
+  if (!match) return null;
+  try {
+    const id = positive(match[1]!);
+    if (match[3] && positive(match[3]) !== id) throw new Error("different knowledge identities");
+    return { id, ...(match[2] ? { from: positive(match[2]) } : {}), ...(match[4] ? { to: positive(match[4]) } : {}), history: !!match[5] };
+  } catch { throw new Error(`invalid trace address: ${address}`); }
+}
 /** Scan commas outside JSON-quoted IDs, then retain inherited E items in their Turn target. */
 export function traceTargets(expression: string): string[] {
   const pieces: string[] = [];
@@ -75,6 +84,9 @@ export function traceTargets(expression: string): string[] {
   }
   for (const target of targets) if (/^(?:S\d+\/)?T\d/.test(target) && !/^[A-Z]\d+-[A-Z]\d+$/.test(target)) {
     if (!parseTurnAddress(target)) throw new Error(`invalid trace address: ${target}`);
+  }
+  for (const target of targets) {
+    if (/^K\d/.test(target) && !/^[A-Z]\d+-[A-Z]\d+$/.test(target) && !parseKnowledgeAddress(target)) throw new Error(`invalid trace address: ${target}`);
   }
   return targets;
 }

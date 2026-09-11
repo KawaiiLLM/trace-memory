@@ -1,5 +1,7 @@
 # Pi host reference
 
+The current [entry-address and budget contract](unified-entry.md) supersedes older ticket descriptions below of Raw labels, source previews, thinking-only entry storage and full-read scope. Pi normalizes its native ordered blocks once; rendering and exact citations share that authority. Thinking is stored for explicit reads but excluded from automatic Raw text. E ordinals are persisted, never recalculated from the selected branch.
+
 `index.ts` is a Pi extension: its default export takes `ExtensionAPI`. It opens
 one facade for the global database and uses only `src/core/api/index.ts`, including
 its exposed store. Both Noting and Consolidation use subagents by default and may be configured
@@ -214,7 +216,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   The host reconciles completed messages from the selected persisted ancestry on
   attach and at safe subsequent boundaries. Pi runs `message_end` extension hooks
   before `SessionManager.appendMessage`, so a completion event alone supplies no
-  entry identity. Streaming and thinking-only content, custom/plugin messages,
+  entry identity. Streaming content, custom/plugin messages,
   compaction summaries and worker messages are not source entries. Repeated text
   is never deduplicated. Earlier native history is imported on attach, known
   identities are reused, and missing native parents or owning user messages are
@@ -309,7 +311,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Main-agent registration and subagent requests use the exact same four definition
   objects, with façade descriptions and schema objects. Pi execution fields are
   non-enumerable so provider serialization includes only the shared metadata. `trace({address,
-  tool, full, cursor, cap})` and `search({query, layer, maxTokens, cursor, cap})` read session-visible
+  itemBudget, toolCallBudget, toolResultBudget, pageBudget, tool, full, cursor, cap})` and `search({query, layer, maxTokens, cursor, cap})` read session-visible
   evidence without visibility restrictions; one `address` may carry a comma list
   (`F81,F90,F95`, kinds mixable, request order and repeats kept) and inclusive fact-id
   intervals (`F81-F90`, combinable as `F81-F90,F95`), while `cap` counts output lines.

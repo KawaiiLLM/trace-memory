@@ -31,13 +31,13 @@ function facts(count: number, projectName = "p") {
 /** Count the fact rows a read materializes: the range query's ids and every record it then renders.
  * A read that probes the numeric span, or allocates by it, moves these counters with the span. */
 function countFactReads() {
-  const prototype = Store.prototype as { getFact: Store["getFact"]; listFactIdsInRange: Store["listFactIdsInRange"] };
-  const one = prototype.getFact, range = prototype.listFactIdsInRange;
+  const prototype = Store.prototype;
+  const one = prototype.getFact, range = prototype.factMetadataInRange;
   let records = 0, queries = 0;
   prototype.getFact = function (this: Store, id: number) { records++; return one.call(this, id); };
-  prototype.listFactIdsInRange = function (this: Store, from: number, to: number) { queries++; return range.call(this, from, to); };
+  prototype.factMetadataInRange = function (this: Store, from: number, to: number) { queries++; return range.call(this, from, to); };
   return { records: () => records, queries: () => queries, reset: () => { records = 0; queries = 0; },
-    restore: () => { prototype.getFact = one; prototype.listFactIdsInRange = range; } };
+    restore: () => { prototype.getFact = one; prototype.factMetadataInRange = range; } };
 }
 
 /** Count the two ways a fact's relations are read: once for a fact whose line is being printed now,
@@ -55,23 +55,25 @@ function countRelationReads() {
 test("25d goldens: single, list, interval and mixed expressions read the same records, in the order asked", () => {
   const { ids } = facts(5);
   const record = (id: number) => memory.trace(`F${id}`);
-  expect(memory.trace("F2-F4")).toBe([2, 3, 4].map(record).join("\n"));
-  expect(memory.trace("F2-F2")).toBe(record(2)); // one-element interval
+  const group = (ids: number[]) => `[T1] ${time} (selected facts)\n${ids.map(record).join("\n")}`;
+  expect(memory.trace("F2-F4")).toBe(group([2, 3, 4]));
+  expect(memory.trace("F2-F2")).toBe(group([2])); // a selected interval is a collection
   expect(memory.trace("F1,F3,F5")).toBe([1, 3, 5].map(record).join("\n"));
-  expect(memory.trace("F4-F5,F1")).toBe([4, 5, 1].map(record).join("\n")); // component order, not id order
-  expect(memory.trace("F2-F3,F2,F2-F3")).toBe([2, 3, 2, 2, 3].map(record).join("\n")); // repeats are kept, not deduplicated
+  expect(memory.trace("F4-F5,F1")).toBe([group([4, 5]), record(1)].join("\n")); // component order, not id order
+  expect(memory.trace("F2-F3,F2,F2-F3")).toBe([group([2, 3]), record(2), group([2, 3])].join("\n")); // repeats are kept, not deduplicated
   expect(ids).toEqual([1, 2, 3, 4, 5]);
 });
 
 test("25d goldens: sparse, empty and very wide intervals cover the records that exist", () => {
   const { ids } = facts(5);
   memory.store.db.exec("DELETE FROM facts WHERE id = 3"); // a gap inside the range
-  expect(memory.store.listFactIdsInRange(1, 5)).toEqual([1, 2, 4, 5]);
+  expect(memory.store.factMetadataInRange(1, 5).map(fact => fact.id)).toEqual([1, 2, 4, 5]);
   const record = (id: number) => memory.trace(`F${id}`);
-  expect(memory.trace("F1-F5")).toBe([1, 2, 4, 5].map(record).join("\n")); // no missing-record diagnostic for F3
+  const grouped = `[T1] ${time} (selected facts)\n${[1, 2, 4, 5].map(record).join("\n")}`;
+  expect(memory.trace("F1-F5")).toBe(grouped); // no missing-record diagnostic for F3
   expect(memory.trace("F3-F3")).toBe("F3-F3: no facts exist in this range");
   expect(memory.trace("F80-F90")).toBe("F80-F90: no facts exist in this range");
-  expect(memory.trace("F1-F1000000000")).toBe([1, 2, 4, 5].map(record).join("\n"));
+  expect(memory.trace("F1-F1000000000")).toBe(grouped);
   // An empty component disappears neither itself nor its neighbours from a mixed expression.
   expect(memory.trace("F1,F6-F9,F2")).toBe([record(1), "F6-F9: no facts exist in this range", record(2)].join("\n"));
   expect(ids).toHaveLength(5);
@@ -162,7 +164,7 @@ test("a first page of an interval costs the page: one record rendered, one batch
   try {
     records.reset(); relations.reset();
     const first = memory.trace(`F1-F${ids.length}`, { cap: 1 });
-    expect(first).toContain("[F1]");
+    expect(first).toContain(`[T1] ${time} (selected facts)`); // cap=1 admits the group heading first
     expect(first).not.toContain("[F2]"); // the page, and only the page, was formatted
     // One range query names the interval's facts; exactly one body is read and rendered.
     // All relations freeze in one batch under the transaction, before any rendering.

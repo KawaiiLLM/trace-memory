@@ -32,10 +32,19 @@ export const legacySources = (entry: Pick<SourceEntry, "turnId" | "role" | "text
   ...entry.calls.map(call => `T${entry.turnId}#t${call.ordinal}`),
 ];
 export const sourceAddresses = (entry: SourceEntry): string[] => [...legacySources(entry), ...preciseSources(entry)];
+/** Membership key only: preserve the authored citation string, but compare equivalent JSON
+ * spellings of an opaque ID against the same persisted block authority. */
+export function sourceKey(address: string): string {
+  let parsed;
+  try { parsed = parseTurnAddress(address); } catch { return address; }
+  if (!parsed || parsed.session !== undefined || parsed.legacy || parsed.entries?.length !== 1 || parsed.entries[0]!.to !== undefined) return address;
+  const base = `T${parsed.turn}#E${parsed.entries[0]!.from}`, selector = parsed.selector;
+  return selector?.kind === "call" ? `${base}@${callSelector(selector.id)}` : address;
+}
 export function exactSource(entry: SourceEntry, address: string): boolean {
   let parsed;
   try { parsed = parseTurnAddress(address); } catch { return false; }
-  if (!parsed || parsed.turn !== entry.turnId || parsed.legacy || parsed.entries?.length !== 1
+  if (!parsed || parsed.session !== undefined || parsed.turn !== entry.turnId || parsed.legacy || parsed.entries?.length !== 1
     || parsed.entries[0]!.to !== undefined || parsed.entries[0]!.from !== entry.entryOrdinal) return false;
   const selection = parsed.selector;
   if (!selection) return preciseSources(entry).includes(entryAddress(entry));

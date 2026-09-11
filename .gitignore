@@ -1,6 +1,6 @@
-node_modules/
+node_modules
 *.db
 *.db-journal
 .DS_Store
 .impeccable/
-/.scratch/v1/
+/.scratch/

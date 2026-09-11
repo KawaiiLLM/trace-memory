@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
-import { sourceAddresses, sourceBlocks, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
+import { sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
@@ -1038,10 +1038,6 @@ export class Store {
     return this.db.prepare("SELECT * FROM facts WHERE turn_id = ? ORDER BY id").all(turnId).map(toFact);
   }
 
-  listFactIdsInRange(from: number, to: number): number[] {
-    return (this.db.prepare("SELECT id FROM facts WHERE id BETWEEN ? AND ? ORDER BY id").all(from, to) as { id: number }[]).map(row => row.id);
-  }
-
   /**
    * Commit one noting run: the run record and its facts (with relations) as one transaction.
    * A relation target is either "F<id>" (an existing fact) or "$n" (the n-th fact of this
@@ -1371,8 +1367,9 @@ export class Store {
     }
     for (const fact of facts) {
       const bound = bindings.get(fact.id), addresses = sources.get(runs.get(fact.id)!);
-      if (!bound?.size || !fact.source.length || !addresses || !fact.source.every(a => addresses.has(a))) continue;
-      const expected = new Set(fact.source.flatMap(a => [...addresses.get(a)!]));
+      const keys = fact.source.map(sourceKey);
+      if (!bound?.size || !keys.length || !addresses || !keys.every(key => addresses.has(key))) continue;
+      const expected = new Set(keys.flatMap(key => [...addresses.get(key)!]));
       if (expected.size === bound.size && [...expected].every(id => bound.has(id) && covered.has(id))) result.add(fact.id);
     }
     return result;
@@ -1389,7 +1386,7 @@ export class Store {
     if (entries === null) return true;
     const bound = input ? input.facts.get(fact.id)!.entries : this.factEntries(fact.id);
     return bound.length ? bound.every(id => entries.ids.has(id))
-      : fact.source.every(source => entries.addresses(Number(/^T([1-9]\d*)#/.exec(source)![1])).has(source));
+      : fact.source.every(source => entries.addresses(Number(/^T([1-9]\d*)#/.exec(source)![1])).has(sourceKey(source)));
   }
 
   commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput, facts = new Map<number, boolean>()): boolean {
@@ -1904,7 +1901,7 @@ export class Store {
     return this.transaction(() => {
       this.requireEnabled(input.sessionId);
       if (typeof input.nativeLineage !== "string" || typeof input.nativeId !== "string" || typeof input.text !== "string" || typeof input.raw !== "string" ||
-          !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || typeof c.status !== "string" || !c.status ||
+          !Array.isArray(input.calls) || input.calls.some(c => !Number.isSafeInteger(c.ordinal) || c.ordinal < 1 || typeof c.name !== "string" || !c.name || typeof c.callId !== "string" || !c.callId || /[\uD800-\uDFFF]/u.test(c.callId) || typeof c.status !== "string" || !c.status ||
             (c.input !== undefined && typeof c.input !== "string") || (c.result !== undefined && typeof c.result !== "string")) ||
           new Set(input.calls.map(c => c.callId)).size !== input.calls.length || new Set(input.calls.map(c => c.ordinal)).size !== input.calls.length || (input.role === "user" && input.calls.length) || (input.role === "toolResult" && input.text)) throw new Error("invalid source entry content");
       if (!input.nativeLineage || !input.nativeId || !["user", "assistant", "toolResult"].includes(input.role) ||

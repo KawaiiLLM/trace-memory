@@ -34,7 +34,7 @@ const problemsOf = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).ma
  * the tool result — the synthetic later round the last check has to decide. Returns the measure it was
  * refused on, or undefined when the round went out. */
 async function laterRound(contextWindow: number) {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false, contextWindow });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, contextWindow });
   try {
     h.ctx.model = { ...h.ctx.model!, contextWindow };
     h.provider(async conversation => conversation.messages.some(m => m.role === "toolResult") ? reply("Done.")
@@ -51,7 +51,7 @@ async function laterRound(contextWindow: number) {
 test("27a 2026-09-10: the input allowance is the context window minus the 10,000-token headroom, and model.maxTokens enters neither it nor the verdict", async () => {
   // 30: one entry view is capped at 2,000 tokens, so this pending pair no longer reaches the default
   // trigger on its own; the trigger is lowered, and the allowance below is what the case is about.
-  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   try {
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("word ".repeat(15000)));
@@ -103,7 +103,7 @@ test("27a 2026-09-10: a fork's inherited prefix is Pi's context measure, and ima
   const captured = (chars: number) => ({ model: "test", messages: [{ role: "user", content: [{ type: "text", text: "look" },
     ...[0, 1].map(() => ({ type: "image_url", image_url: { url: `data:image/png;base64,${"A".repeat(chars)}` } }))] }] });
   const admission = async (payload: unknown) => {
-    const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20 });
+    const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30 });
     try {
       await h.emit("session_start");
       // 40,000 inherited tokens: with the Noter instructions they exceed the 50,000 - 10,000 allowance.
@@ -174,7 +174,7 @@ test("27a 2026-09-10: the fork measure is read once at admission, and a later fo
 }, 30000);
 
 test("27b 2026-09-10: an unknown context measure is not a fork base — the task is re-admitted once as a subagent, with that model's capacity", async () => {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20 });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30 });
   try {
     await h.emit("session_start");
     // What Pi reports right after a compaction, before a valid reply has answered on the new prefix.
@@ -209,7 +209,7 @@ test("27b 2026-09-10: an unknown context measure is not a fork base — the task
 });
 
 test("27a 2026-09-10: a subagent is priced by core's material accounting alone; the session's context measure never enters it", async () => {
-  const h = host({ "noting.triggerTokens": 20, "noting.forkModeDefault": false });
+  const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false });
   try {
     await h.emit("session_start");
     // A foreground context far past any window. A fresh child inherits none of it, so it prices

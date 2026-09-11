@@ -1,6 +1,6 @@
 [S1/T1] 2026-08-16 02:54 [turn]
-[T1#user]: 可以看最新的截图和txt，我发现本来是海的地格名不是海？
-[T1#assistant]: The full cell table with terrain **names** for all 40000 cells. Checking whether the name is even a function of our byte:
+[T1#E1@text] user: 可以看最新的截图和txt，我发现本来是海的地格名不是海？
+[T1#E2@text] assistant: The full cell table with terrain **names** for all 40000 cells. Checking whether the name is even a function of our byte:
 
 It's UTF-8, not GBK. Building the full value→name mapping over all 40000 cells:
 
@@ -36,10 +36,10 @@ That's it — you spotted a real swap. Noting it:
 **还有一处矛盾我照实记了**：mod 自己的说明文档写着「荒地地形改为丘陵地形」，和实测对不上。可能指的是别的版本，也可能指的是高处那部分。没猜，挂着。
 
 那张最新截图我还没看（只用了 txt）—— **你截的是哪一格？** 如果它正好是我上面说的边界情况，可能还能再钉死一个值。
-[T1#t1] mcp__plugin_claude-mnemo_mnemo__note(turn=S18993/T248)
-[T1#t2] Bash(command="cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'\n\n---"[... 133 characters truncated]"`，UTF-8，\n2,175,557 字节，取自 Windows 机 `makisekurisu@192.168.1.6` 的 `Downloads`）。\n**不入库")
-[T1#t2] Bash success: {"stdout":"MD5 (refs/san11/mapC.json) = de6783f8a71dff7b79273a1c9cdc8cea\n0cd0969 mapC §14：编辑器整表导出坐实「海与荒地被对调」","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}
+[T1#E3@call-1] mcp__plugin_claude-mnemo_mnemo__note(turn=S18993/T248)
+[T1#E4@call-2] Bash(command="cd /Users/zhaoqixuan/Projects/AI-NPC && cat >> refs/san11/mapC-notes.md <<'EOF'\n\n-"[... 137 characters truncated]"UTF-8，\n2,175,557 字节，取自 Windows 机 `makisekurisu@192.168.1.6` 的 `Downloads`）。\n**不入库")
+[T1#E5@call-2] Bash success: {"stdout":"MD5 (refs/san11/mapC.json) = de6783f8a71dff7b79273a1c9cdc8cea\n0cd0969 mapC §14：编辑器整表导出坐实「海与荒地被对调」","stderr":"","interrupted":false,"isImage":false,"noOutputExpected":false}
 
 Receipts:
 T1: 1 omitted calls (including partial calls)
-expand: trace({"address":"T1#t2","full":true})
+expand: trace({"address":"T1#E4@call-2","itemBudget":null,"toolCallBudget":null,"toolResultBudget":null})

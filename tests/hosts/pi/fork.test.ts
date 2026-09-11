@@ -10,7 +10,7 @@ import { host as createHost, reply, notingFact, consolidationReply } from "./tes
 const consolidationOutput = consolidationReply();
 
 test("17:01 2026-09-08: a model switch during the consolidation candidate round does not redirect or break the final round", async () => {
-  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
+  const h = createHost({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
   try {
     await h.emit("session_start");
     let release!: () => void;
@@ -36,7 +36,7 @@ test("17:01 2026-09-08: a model switch during the consolidation candidate round 
 // 25b withdrew this phase's fork preference, so there is no capture to be missing and no fallback to
 // announce: both rounds run in a fresh child on the configured Consolidator model, with no notice.
 test("25b: consolidation runs both rounds in a fresh child on its own model, with nothing to fall back from", async () => {
-  const h = createHost({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
+  const h = createHost({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false, notingModel: "fake/noter", consolidationModel: "fake/Consolidator" });
   try {
     h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationOutput : notingFact(c));
     await h.turn();

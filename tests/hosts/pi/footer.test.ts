@@ -106,7 +106,7 @@ test("24a: notes is entries-to-note over applicable facts, memory is facts-to-co
 });
 
 test("24a: an in-flight batch is still pending, a failed run advances nothing, a commit moves both queues and a post-commit failure restores nothing", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 });
   let release!: (value: Reply) => void;
   h.provider(async () => new Promise(resolve => { release = resolve; }));
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
@@ -147,7 +147,7 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
 });
 
 test("24a: a cancelled batch advances nothing, and another connection's commits appear at the next refresh", async () => {
-  const h = host({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 1_000_000_000 });
+  const h = host({ "noting.triggerTokens": 30, "consolidation.triggerTokens": 1_000_000_000 });
   h.provider(async () => new Promise(() => {}), { ignoreAbort: false }); // never answers
   await h.prompt(); await h.answer(); await h.emit("agent_settled"); await h.drain();
   const running = footer(h);

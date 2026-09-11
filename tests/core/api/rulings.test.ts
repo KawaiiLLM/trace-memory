@@ -99,8 +99,12 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("fork");
   // The premise repair supplies the missing final reply and the source index as their own parts.
-  expect(branch!.material.head).toBe(`[T${t.id}#assistant]: 好的。`);
-  expect(branch!.material.sources).toEqual([`T${t.id}#user 用 pnpm，不要 npm | T${t.id}#assistant 好的。 | T${t.id}#t1 tool=Bash {"command":"pnpm install"}`]);
+  expect(branch!.material.head).toBe(`[T${t.id}#E2@text] assistant: 好的。`);
+  expect(branch!.material.sources).toEqual([
+    `[T${t.id}#E1@text] user:\n[... 13 characters truncated]`,
+    `[T${t.id}#E2@text] assistant:\n[... 3 characters truncated]`,
+    `[T${t.id}#E3@call-1] Bash(...)\n[... 12 characters truncated]`,
+    `[T${t.id}#E4@call-1] Bash success:\n[... 29 characters truncated]`]);
   // 29b: one builder, not one material. The frozen target is the same in both modes; the parts differ
   // by exactly what the child could already see, so the fresh child gets the Raw and no repair parts.
   expect(subagent!.material.head).toBe(null);
@@ -374,15 +378,19 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
     visible: visibleTarget(memory, s.id, "main", head.id) });
   const input = calls[0]!;
   expect(input.mode).toBe("fork");
-  expect(input.material.head).toBe(`[T${head.id}#assistant]: ${head.assistantText}`);
+  expect(input.material.head).toBe(`[T${head.id}#E2@text] assistant: ${head.assistantText}`);
   expect(input.material.sources).toEqual([
-    `T2#user 012345678901234567890123456789012345678901234567890123456789 | T2#assistant Earlier reply`,
-    `T3#user Check it | T3#assistant Final-only finding: result result result result result resul | T3#t1 tool=Bash {"command":"check"}`]);
+    `[T2#E1@text] user:\n[... 78 characters truncated]`,
+    `[T2#E2@text] assistant:\n[... 13 characters truncated]`,
+    `[T3#E1@text] user:\n[... 8 characters truncated]`,
+    `[T3#E2@text] assistant:\n[... 99 characters truncated]`,
+    `[T3#E3@call-2] Bash(...)\n[... 5 characters truncated]`,
+    `[T3#E4@call-2] Bash success:\n[... 19 characters truncated]`]);
   expect(input.material.head).not.toContain("PRIVATE USER TAIL");
   expect(input.material.sources.join("\n")).not.toContain("PRIVATE TOOL RESULT");
 });
 
-test("2026-09-07: branch source previews keep one line and at most 60 Unicode characters without a final reply", async () => {
+test("33: a branch source index uses shared entry floors, not a separate 60-character preview",  async () => {
   const { s } = session();
   const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
@@ -390,7 +398,10 @@ test("2026-09-07: branch source previews keep one line and at most 60 Unicode ch
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
   expect(calls[0]!.material.head).toBe(null);
-  expect(calls[0]!.material.sources).toEqual([`T2#user ${"😀".repeat(59)}  | T2#t1 tool=Bash ${"x".repeat(60)}`]);
+  expect(calls[0]!.material.sources).toEqual([
+    "[T2#E1@text] user:\n[... 64 characters truncated]",
+    "[T2#E2@call-2] Bash(...)\n[... 65 characters truncated]"]);
+  expect(calls[0]!.material.sources.join("\n")).not.toContain("TAIL");
 });
 
 test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix #%s renders only its part", (part) => {
@@ -398,9 +409,9 @@ test.each(["user", "assistant", "t1"] as const)("2026-09-07: trace source suffix
   const tool = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })[0]!;
   // 23b: a source part reads as the entry view of that part — the addresses its labels carry, and for
   // a call both of its parts: the arguments the assistant sent and the result that came back.
-  const expected = part === "user" ? `[T${t.id}#user]: 用 pnpm，不要 npm`
-    : part === "assistant" ? `[T${t.id}#assistant]: 好的。`
-    : `[T${t.id}#t1] Bash(command="pnpm install")\n[T${t.id}#t1] Bash success: {"stdout":"done","stderr":""}`;
+  const expected = part === "user" ? `[T${t.id}#E1@text] user: 用 pnpm，不要 npm`
+    : part === "assistant" ? `[T${t.id}#E2@text] assistant: 好的。`
+    : `[T${t.id}#E3@call-1] Bash(command="pnpm install")\n[T${t.id}#E4@call-1] Bash success: {"stdout":"done","stderr":""}`;
   for (const base of [`T${t.id}`, `S${s.id}/T${t.id}`]) {
     expect(memory.trace(`${base}#${part}`)).toBe(expected);
     expect(tool.execute({ address: `${base}#${part}` })).toBe(expected);
@@ -419,7 +430,7 @@ test("2026-09-07: trace source suffix keeps standard tool cuts unless full", () 
   // 17a preserves the full argument object, including fields beyond command.
   const full = memory.trace(`T${t.id}#t2`, { full: true });
   // 23c: `full` is the same renderer with no budget — the same labels, the stored bytes uncut.
-  expect(full).toBe(`[T${t.id}#t2] Bash(command="second")\n[T${t.id}#t2] Bash success: ${output}`);
+  expect(full).toBe(`[T${t.id}#E5@call-2] Bash(command="second")\n[T${t.id}#E6@call-2] Bash success: ${output}`);
   expect(memory.trace(`T${t.id}#t2`, { tool: 2, full: true })).toBe(full);
   expect(() => memory.trace(`T${t.id}#t2`, { tool: 1 })).toThrow("conflicts");
 });
@@ -648,7 +659,7 @@ test("search previews and cursor fragments never refresh a knowledge write base"
   expect(count).toBeGreaterThan(1);
   expect(edit().results[0]).toContain("current: K1@2");
   expect(edit("K1@2").results[0]).toContain("knowledge was not read");
-  page = other.tools[0]!.execute({ address: "K1" });
+  page = other.tools[0]!.execute({ address: "K1", full: true });
   for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
     expect(tokens(page)).toBeLessThanOrEqual(2000);
     expect(edit("K1@2").results[0]).toContain("knowledge was not read");
@@ -861,7 +872,9 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
   expect(memory.trace("K1@2..K1@3")).toContain("[-C-]{+D+} version");
   expect(memory.trace("K1@3..K1@2")).toContain("[-D-]{+C+} version");
   expect(memory.trace("K1@2..K1@2")).toContain("Commits: none");
-  for (const address of ["K1@1..2", "K1@2..3", "K1@2..K2@3", "K1@2..", "K1@2..K1@9007199254740992"]) {
+  expect(memory.trace("K1@2..3")).toBe(memory.trace("K1@2..K1@3"));
+  expect(memory.trace("K1@3..2")).toBe(memory.trace("K1@3..K1@2"));
+  for (const address of ["K1@2..K2@3", "K1@2..", "K1@2..K1@9007199254740992"]) {
     expect(() => memory.trace(address)).toThrow("invalid trace address");
     expect(c.tools[0]!.execute({ address })).toContain("rejected: invalid trace address");
   }

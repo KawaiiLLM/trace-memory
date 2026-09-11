@@ -358,7 +358,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
 export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
-  const source = /\[(T\d+#user)\]:/.exec(input)?.[1] ?? `T${address[2]}#user`;
+  const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#user`;
   if (conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
   return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "note-1", name: "note", arguments: { facts: [
     { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [source] },
@@ -366,4 +366,9 @@ export function notingFact(conversation: Conversation) {
 }
 
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };
-export const consolidationReply = (): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory", arguments: consolidationBatch }] });
+export const consolidationReply = (conversation?: Conversation): Reply => {
+  const range = conversation ? String(conversation.messages[0]!.content).split("Range facts:\n")[1]?.split("\nNegated-evidence")[0] ?? "" : "";
+  const facts = [...new Set(range.match(/\bF[1-9]\d*\b/g) ?? [])];
+  const batch = conversation ? { operations: [], skipped: facts.map(fact => ({ fact, because: "Not durable." })) } : consolidationBatch;
+  return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory", arguments: batch }] };
+};

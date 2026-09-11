@@ -1,7 +1,7 @@
 export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
-import { parseTurnAddress } from "../model/address.ts";
+import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
@@ -476,11 +476,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const target = address.trim(), flags = /^(?:S\d+\/)?T\d/.test(target) ? [] : target.split(/\s+/).slice(1);
     const invalid = () => new Error(`invalid trace address: ${address}`);
     const itemCap = readProfile(display, display.profile ?? cfg.render).entryTokens;
-    const knowledgeMatch = /^K([1-9]\d*)(?:@([1-9]\d*)(?:\.\.K([1-9]\d*)@([1-9]\d*))?|(\.\.))?$/.exec(target ?? "");
+    const knowledgeMatch = parseKnowledgeAddress(target);
     if (knowledgeMatch) {
-      const [id, from, other, to] = knowledgeMatch.slice(1, 5).map(n => n === undefined ? undefined : Number(n));
-      if (flags.length || [id, from, other, to].some(n => n !== undefined && !Number.isSafeInteger(n)) ||
-          (other !== undefined && other !== id)) throw invalid();
+      const { id, from, to } = knowledgeMatch;
       const knowledge = store.getKnowledge(id!);
       if (!knowledge) throw new Error(`knowledge K${id} does not exist`);
       const history = store.listKnowledgeRevisions(id!);
@@ -516,7 +514,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           return ids;
         };
         const left = ancestors(a), right = ancestors(b);
-        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)));
+        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap);
       }
       if (from !== undefined) {
         const revision = commit(from);
@@ -524,7 +522,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         capture([revision]);
         return () => describe(revision);
       }
-      if (knowledgeMatch[5]) {
+      if (knowledgeMatch.history) {
         capture(history);
         return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       }
@@ -567,8 +565,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
       const relations = store.listFactRelations(fact.id);
-      const times = store.factTurnTimes([fact]);
-      return () => renderFactGroups([fact], f => renderFact(f, relations, itemCap), times).join("\n");
+      return () => renderFact(fact, relations, itemCap);
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
     if (runMatch) {
@@ -584,7 +581,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const part = parsed.legacy;
     if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
     if ((parsed.entries || parsed.selector) && display.tool !== undefined) throw new Error("tool parameter conflicts with hierarchical selection; use an exact @toolCallId");
-    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !!parsed.selector && parsed.selector.kind !== "role" || parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
+    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !parsed.selector && parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
@@ -598,12 +595,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     // rendered by the entry renderer under the configured profile — 22c's Turn-scoped read is what it
     // assembles, and `branch` (when the caller is bound to one) is what keeps a sibling branch's
     // occurrences out of it.
-    // 23c ruling 4: `full` is the same assembly through the renderer's unbounded path and the raw
-    // extractor (the stored string as is), and its read scope is unchanged — unrestricted, every
-    // native occurrence of the Turn's calls whatever branch selected them (17a), which is also why
-    // each occurrence shows as its own entry instead of a merged `multiple results` call.
-    // 22c: `entryIds` is a paged read's own frozen occurrence membership for this Turn, supplied
-    // instead of a branch; without it the branch selects (never for `full`), exactly as 23b left it.
+    // Full is now only a content-ceiling alias: it never widens a bound selection. Unbound reads
+    // still include every occurrence. A paged read's exact entryIds override branch discovery,
+    // so no continuation can pick up a newly added sibling.
     let occurrences = display.entryIds
       ? display.entryIds.map(id => store.getSourceEntry(id)).filter(entry => entry !== null)
       : store.listSourceEntries(turn.sessionId, turn.id, display.branch);
@@ -616,6 +610,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return [entry];
       });
     }
+    if (turn.kind === "compaction" && parsed.entries) return () => "";
     const selector = parsed.selector;
     if (selector?.kind === "role") occurrences = occurrences.filter(entry => entry.role === selector.role);
     else if (selector && selector.kind !== "facts") {

@@ -239,8 +239,8 @@ test("full expands selected calls; cap is the listing budget and address flags a
   expect(full).toContain(fixture[0]!.calls[1]!.result!);
   // 23c: `full` is the entry renderer's unbounded path, so the selected call carries the same labels
   // every other view uses; the unselected one keeps its floor and its receipt.
-  expect(full).toContain("[T1#t2] Bash success: ");
-  expect(full).toContain("[T1#t1] mcp__plugin_claude-mnemo_mnemo__note(...)");
+  expect(full).toContain("[T1#E5@call-2] Bash success: ");
+  expect(full).toContain("[T1#E3@call-1] mcp__plugin_claude-mnemo_mnemo__note(...)");
   expect(memory.trace(`T${t.id}`, { cap: 1 })).toContain("cursor=");
   expect(() => memory.trace("T1", { tool: 99 })).toThrow("does not exist");
   expect(() => memory.trace("T1 cap=0")).toThrow("invalid trace address");

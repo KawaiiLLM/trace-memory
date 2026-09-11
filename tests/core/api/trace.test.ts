@@ -95,7 +95,7 @@ test("negation walk branches, repeats shared descendants, excludes weak and supp
   expect(memory.trace("F4..")).toBe(memory.trace("F4") + "\n  no later strong negation recorded");
 });
 
-test.each(["", "K0", "K01", "K1@0", "K1@1..", "K1@3..1", "K1 full", "F1.. full", "F0..", "F01..", "K9007199254740992", "K1@9007199254740992", "F9007199254740992..", "garbage"])("rejects invalid address %j", (address) => {
+test.each(["", "K0", "K01", "K1@0", "K1@1..", "K1@3...1", "K1 full", "F1.. full", "F0..", "F01..", "K9007199254740992", "K1@9007199254740992", "F9007199254740992..", "garbage"])("rejects invalid address %j", (address) => {
   create(); expect(() => memory.trace(address)).toThrow(/invalid trace address/);
 });
 test.each(["K99", "K99@1", "K1@99", "K1@1..K1@99", "F99.."])("reports missing target %s", (address) => {

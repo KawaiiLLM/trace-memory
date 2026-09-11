@@ -108,7 +108,9 @@ export async function fixture(config: Record<string, unknown> = {}, provider = "
   let manager: SessionManager | undefined;
   // `fetch: false`: this fixture stubs the wire itself (above), for both the real parent session and
   // the child the adapter builds.
-  const h = host({ "noting.triggerTokens": 20, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
+  // Exact E labels price the default user alone above 20; 30 keeps this fixture's trigger
+  // after the complete prompt/reply pair. Production's 10k threshold is unchanged.
+  const h = host({ "noting.triggerTokens": 30, ...config }, { native: () => manager as never, fetch: false, inflight: () => inflight });
   // 24c: the parent lives where real Pi puts a foreground session — one directory level under the
   // agent's own sessions root — so the worker logs the host writes are its siblings, exactly as they
   // are in production, and an external reader of that root sees the same tree a user would have.

@@ -361,7 +361,7 @@ export type PartChoice = "render" | "floor" | "drop";
  * omissions in line, in the `[... N characters truncated]` family the run audit detects. */
 export interface EntryView extends Rendered { omitted: number[] }
 
-/** The parts of one entry in order: at most one natural-text part and one part per tool call the
+/** The parts of one entry in native block order, including interleaved text and calls the
  * caller keeps. Both paths below build them here, so the budgeted view and `full` speak the same
  * lines; only the budgeted path builds the `Part` machinery — and its character arrays — around them,
  * which is what makes `full` free of every budget device (23c ruling 4). */
@@ -383,8 +383,8 @@ function sourceParts(entry: SourceEntry, resultText: ResultExtractor, choose: (a
     const legacy = `T${entry.turnId}#${tool ? `t${block.call.ordinal}` : entry.role === "user" ? "user" : "assistant"}`;
     const choice = choose(legacy);
     if (choice === "drop") continue;
-    const address = entry.entryOrdinal ? fragmentAddress(entry, block) : legacy;
-    const role = entry.entryOrdinal ? ` ${entry.role}` : "";
+    const address = fragmentAddress(entry, block);
+    const role = ` ${entry.role}`;
     if ("text" in block) {
       const label = `[${address}]${role}`, body = block.text;
       sources.push({ ordinal: null, choice, whole: () => bodyLine(label, body),
@@ -416,8 +416,8 @@ export function renderEntryWhole(entry: SourceEntry, resultText: ResultExtractor
 
 /** One immutable view of one source entry (ticket 23, one profile since 30), used by Noting material,
  * compaction, branch carry and the explicit `trace` assembly. An entry is a list of parts: at most one
- * natural-text part and one part per tool call. No call id and no native-identity header enters the
- * model-facing text — native identity and lineage stay in storage and in the run's entry audit, and the
+ * ordered text/call/result blocks. Exact labels include opaque call IDs, while native message
+ * identity and lineage stay in storage and in the run's entry audit. The
  * addresses the Noter cites are the ones the labels carry. Allocation is staged (30 "Rendering
  * contract"): each tool part is capped first by its own allowance, `C` for a call and `R` for a result,
  * neither borrowed from the other; if the entry is still over `E`, result payloads give way first,
@@ -478,19 +478,16 @@ export function renderEntry(entry: SourceEntry, profile: EntryProfile, resultTex
  * fetches it whole, which is the metadata 22c preserved. A `#user`, `#assistant` or `#t<n>` suffix
  * reads that one source part and drops the rest. `full` is the same assembly through the unbounded
  * path and the raw extractor (23c ruling 4): the same labels, the stored arguments, result text and
- * `details` uncut, and each native occurrence of a call as its own entry — which is how an
- * unrestricted `full` trace still retains both fork results of a shared call (17a). */
+ * `details` uncut. Each selected native occurrence remains its own entry; compression never changes
+ * membership. An unbound read can still include both fork results of a shared call. */
 export function renderTrace(turn: Turn, entries: SourceEntry[], profile: EntryProfile, options: TurnOptions = {},
   resultText: ResultExtractor = rawResultText): Rendered {
   const part = options.part;
-  // A compaction Turn's stored summary has no source entry — it is deliberately not Raw evidence —
-  // yet it is what the Turn holds, so it is readable here as the same text line every entry view
-  // emits (review 2026-09-09). Only a compaction Turn: an ordinary Turn's text is its entries, and a
-  // paged read that froze those entries must not pick up a reply completed after its query.
-  const carried = entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#assistant`));
-  const stored: SourceEntry[] = turn.kind === "compaction" && turn.assistantText !== null && !carried
-    ? [{ id: 0, entryOrdinal: 0, sessionId: turn.sessionId, turnId: turn.id, nativeLineage: "", nativeId: "", role: "assistant", text: turn.assistantText, raw: "", calls: [] }] : [];
-  entries = [...entries, ...stored];
+  // A legacy summary is readable, but has no native entry or source address. Never route it
+  // through Raw rendering, which would fabricate a citable-looking identity.
+  if (turn.kind === "compaction" && turn.assistantText !== null && !options.selector && !options.blocks
+    && (!part || part === "assistant")) return { content: renderSemantic(
+      `[T${turn.id}] compaction summary (not Raw evidence): `, turn.assistantText, "", options.full ? Infinity : profile.entryTokens), receipts: [] };
   // The check agrees with the parts the assembly displays, not with what a fact may cite (finding 3).
   if (part && !entries.some((entry) => displayedAddresses(entry).includes(`T${turn.id}#${part}`))) throw new Error(`source T${turn.id}#${part} does not exist`);
   const choose = (address: string): PartChoice => {
@@ -654,8 +651,9 @@ function diffText(before: string, after: string): string {
   return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
 }
 
-export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[]): string {
-  return [`[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]`, `  text: ${diffText(a.text, b.text)}`,
+export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity): string {
+  const text = diffText(a.text, b.text), prefix = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]\n  text: `;
+  const whole = [prefix + text,
     `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
@@ -663,6 +661,7 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),
     ...(JSON.stringify(a.topics) === JSON.stringify(b.topics) ? [] : [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`]),
     renderCommitHistory(revisions)].join("\n");
+  return renderSemantic(prefix, text, whole.slice(prefix.length + text.length), cap);
 }
 
 export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }

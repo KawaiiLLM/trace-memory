@@ -16,7 +16,7 @@ import { call, forkFixture, noteBatch, say, toolResults, worker } from "./native
 
 const long = (word: string) => `${word} ` + "word ".repeat(200);
 const quiet = { "noting.triggerTokens": 1_000_000_000 };
-const eager = { "noting.triggerTokens": 20 };
+const eager = { "noting.triggerTokens": 30 };
 const lastRun = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).at(-1)!;
 const response = (h: ReturnType<typeof host>) => JSON.parse(lastRun(h).response!);
 /** A Noter that always fails leaves its entries pending, which is the state compact escalates over
@@ -150,7 +150,7 @@ test("20c 2026-09-08 scenario 13 (rule replaced in 29c): a persisted compaction 
     expect(String(response(h).fallbackReason)).toContain(`Raw availability: entry ${dropped.id} (T${dropped.turnId}, native ${dropped.nativeId})`);
     expect(h.memory.store.forkSuppression(1)).toBeNull(); // not the cache-miss latch, and no enrollment change
     const sent = String(h.conversations.at(-1)!.messages[0]!.content);
-    expect(sent).toContain("[T1#user]: "); // full primary material for the whole batch
+    expect(sent).toContain("[T1#E1@text] user: "); // full primary material for the whole batch
     expect(sent).toContain("HEAD"); expect(sent).toContain("after");
     // Reopening re-reads the context: the view is not cached across it, and the answer does not change.
     await h.emit("session_start");

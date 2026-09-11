@@ -71,11 +71,11 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     const entries = memory.store.listSourceEntries(long.sessionId).filter(e => e.turnId === long.heavy).length;
     expect(a.reads).toBeLessThanOrEqual(entries);
     // Ordinal 1 has two native result occurrences; the selected call renders both, in entry order.
-    expect(b.text).toContain(`[T${long.heavy}#t1] read success: result 12.0`);
+    expect(b.text).toContain(`[T${long.heavy}#E3@call-30] read success: result 12.0`);
     expect(b.text.indexOf("result 12.0")).toBeGreaterThan(-1);
     expect(b.text.indexOf("the second occurrence")).toBeGreaterThan(b.text.indexOf("result 12.0"));
     // The other 11 calls are still named as metadata, and they are not full results.
-    for (let ordinal = 2; ordinal <= 12; ordinal++) expect(b.text).toContain(`#t${ordinal}`);
+    for (let ordinal = 2; ordinal <= 12; ordinal++) expect(b.text).toContain(`#E${ordinal * 2}@call-${ordinal + 29}`);
     expect(b.text).not.toContain("result 12.11");
     // 23b assembles the read without `full` from the same Turn-scoped occurrences, at the same cost,
     // and shows each of them in entry order instead of merging them into one call's evidence.
@@ -87,7 +87,7 @@ test("22c: a full trace obtains the Turn's occurrences once, whatever the sessio
     // Every ordinal of the Turn is traceable at the same Turn-scoped cost.
     for (let ordinal = 1; ordinal <= 12; ordinal++) {
       counter.reset();
-      expect(memory.trace(`T${long.heavy}`, { tool: ordinal, full: true })).toContain(`#t${ordinal}`);
+      expect(memory.trace(`T${long.heavy}`, { tool: ordinal, full: true })).toContain(`#E${ordinal * 2}@call-${ordinal + 29}`);
       expect(counter.reads()).toBe(a.reads);
     }
   } finally { counter.restore(); }

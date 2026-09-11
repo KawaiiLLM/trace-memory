@@ -52,7 +52,7 @@ test("29d case 23: a published Beta database's delivery rows pause nothing, deli
   const directory = mkdtempSync(join(tmpdir(), "trace-memory-beta-"));
   const beta = betaDatabase(directory);
   // Fork mode with a low trigger: the exact configuration the retired pause used to hold back.
-  const h = host({ dbPath: beta.dbPath, "noting.triggerTokens": 20, "noting.forkModeDefault": true });
+  const h = host({ dbPath: beta.dbPath, "noting.triggerTokens": 30, "noting.forkModeDefault": true });
   try {
     const target = { sessionId: beta.sessionId, branch: "main", headTurnId: beta.headTurnId };
     // The undelivered row belongs to this very session and branch. Eligibility is the trigger alone.

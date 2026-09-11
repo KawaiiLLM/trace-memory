@@ -53,7 +53,7 @@ test("27b 2026-09-10: a fork prefix the freeze cannot fit is re-admitted once as
   // cannot fit its 40,000-token allowance. `notingModel` names a different model, whose own capacity
   // (the fixture's 200,000-token window) prices the second admission — and which the audit must name,
   // because it is the model that was charged.
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     h.ctx.model = { ...h.ctx.model!, contextWindow: 50_000 };
@@ -374,7 +374,7 @@ test.each([
   // `notingModel` is a model the foreground is not on, so the run record's model is the whole point:
   // before 27c only the requested mode decided it, and an effective-subagent task was frozen on — and
   // charged to — the foreground model at the foreground's own capacity.
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     // A first turn too small to be due: it allocates the memory session the arrangement below needs.
@@ -663,7 +663,7 @@ test.each([
 });
 
 test("29: a Noter forks only when its whole target is available in the inherited context (an unknown view, and an incomplete tool group)", async () => {
-  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 20, notingModel: "fake/test-mini" });
+  const h = host({ "noting.forkModeDefault": true, "noting.triggerTokens": 30, notingModel: "fake/test-mini" });
   try {
     await h.emit("session_start");
     await h.prompt("hi"); await h.answer("ok"); await h.emit("agent_settled"); await h.drain();
