@@ -450,8 +450,8 @@ the same operations the menu performs, not hidden aliases of a menu entry.
 
 Bare `/trace` opens four native dialogs:
 
-- **Current session:** the status text (enrollment, 24a's pending counts, runs, spend, catchup
-  state, fork suppression) as the dialog's own title, then
+- **Current session:** a compact context-capacity map and pending/trigger estimates,
+  enrollment, project, cost and recovery warnings as the dialog's own title, then
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
   `Project` with a name input, `Mark` with an address input and a kind selection, and
   `Retry fork` only while this session is automatically downgraded.
@@ -465,6 +465,38 @@ command paths call the same functions, so validation, confirmations and core's o
 rejections (an ambiguous mark address, a project without an assistant reply) are
 identical from either. The catchup handler starts the cancellable drain and returns
 immediately, so stop can be invoked while it runs.
+
+#### Current session measurements
+
+The context map has 100 cells (1% each), with used, free and partial-cell glyphs.
+It uses Pi's public `getContextUsage()` tokens and window, not database totals.
+Pi estimates from reported assistant usage plus trailing messages; this is not
+an exact provider-payload census. Unknown usage is a question-mark map, not free
+space. Model identity comes from the active Pi model. No reserve, auto-compaction
+buffer or token categories are inferred. Wide terminals put the summary beside
+five grid rows; narrow terminals use an unspaced grid and put the summary below.
+Pi's width utilities and native dialog wrapping handle display width.
+
+The separate **Pending / trigger** bars are estimated trigger material, not task
+completion. Bars cap at 100%; numbers and percentages do not:
+
+- **Noting:** joined rendered pending entries on the selected branch/head, under
+  the effective entry profile and Pi result extractor. Only imported evidence counts.
+- **Consolidation:** applicable unconsolidated facts, including group framing and
+  relations, through the same renderer and threshold calculation as eligibility.
+- **Dreaming:** applicable unsettled knowledge-event weights, summed exactly as
+  eligibility does. These are change tokens, not a rendered knowledge-block size.
+  This base has eligibility only and no Dreaming worker; a threshold alone does
+  not imply executable work. Frozen retries are not a percentage of this threshold.
+
+Thresholds come from the live core configuration. Off retains stored measurements;
+no memory identity and unavailable reads are shown separately from zero. Opening
+or cancelling the panel neither imports history nor freezes/claims tasks, grants
+read handles, changes visibility, writes weight caches or calls a model. Cold
+weights are computed with the existing renderer without caching. Measurements are
+read once per opening, not refreshed by a timer or footer updates. Run history
+stays under **Runs**; automatic-off reasons and fork recovery remain in the panel.
+Headless bare `/trace` prints the same unstyled overview plus command forms.
 
 #### Global preferences
 
@@ -1512,8 +1544,8 @@ not expected model-request counts:
 While this session's automatic Noting is paused by the incomplete-Noting guard (26a) the line
 ends with ` noting: paused`; nothing else about it is inferable from the counts, which do not move.
 A disabled session shows the compact line `🧠 ○ off`, with no counting at all;
-the stored counts and diagnostics stay available under Current session, which
-also prints them as a `Pending:` line. A value that cannot be read is `?` — an
+stored pending material and diagnostics stay available under Current session,
+whose `Pending: / trigger` bars measure estimated tokens rather than these counts. A value that cannot be read is `?` — an
 unknown is never a fabricated zero — and a Pi session that has not yet allocated
 a memory identity shows `notes: ?->? memory: ?->? cost: $?` and says so in its
 status details rather than claiming four zeros.

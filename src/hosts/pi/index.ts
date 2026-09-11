@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
+import { contextMap, pendingBar, statusBody, type Paint } from "./session-status.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
@@ -1426,6 +1427,42 @@ export default function (pi: ExtensionAPI) {
     if (index < 0) return;
     await editPreference(preferences[index]!);
   };
+  // Only opened on demand. No reconciliation, compact allocation, tool grants or worker admission.
+  const sessionStatus = (styled = false) => {
+    const width = Math.max(1, (process.stdout.columns ?? 100) - 2);
+    const paint: Paint = (color, text) => {
+      try { return styled ? ctx.ui.theme.fg(color, text) : text; } catch { return text; }
+    };
+    let usage: ReturnType<ExtensionContext["getContextUsage"]>;
+    try { usage = ctx.getContextUsage(); } catch { /* unavailable, never zero */ }
+    const lines = ["Current session", ...contextMap(usage, ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown", width, paint)];
+    const e = enrollment();
+    lines.push(`Session: ${state.sessionId ? `S${state.sessionId}` : "None (no assistant reply)"}`,
+      `Enrollment: ${enabled() ? "Enabled" : "Disabled"} (${e.choice === null ? "default" : "explicit choice"})`);
+    try {
+      const s = state.sessionId ? memory.store.getSession(state.sessionId) : null;
+      lines.push(`Project: ${s ? `${memory.store.getProject(s.projectId)!.name} (${memory.store.projectDeclaration(s.id)})` : state.project ?? "Unassigned"}`);
+      if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
+        lines.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
+    } catch { lines.push("Project / recovery: Unknown (unavailable)"); }
+    const target = state.sessionId && state.head ? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head } : undefined;
+    lines.push(`Pending: / trigger — estimated tokens${enabled() ? "" : " (Off; stored evidence only)"}`);
+    for (const phase of ["noting", "consolidation", "dreaming"] as const)
+      lines.push(pendingBar(phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], memory.pendingTokens(phase, target)));
+    lines.push("Dreaming: eligibility only; no worker. Not task completion.");
+    try { lines.push(`Cost: ${state.sessionId ? `$${memory.spend(state.sessionId).cost.toFixed(4)}` : "N/A (no session)"}`); }
+    catch { lines.push("Cost: Unknown (unavailable)"); }
+    const downgrade = suppressed();
+    if (downgrade) lines.push(`Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu`);
+    if (lastCompaction) lines.push(`Compaction: ${lastCompaction}`);
+    const catchupStatus = catchupLine();
+    if (catchupStatus) lines.push(catchupStatus);
+    lines.push(state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
+      : "Forks or clones carrying this memory identity share this switch.");
+    // Native select wraps titles with Chalk bold/accent. A combined SGR reset is not rewritten
+    // by Chalk's single-code close/reopen handling, so this overview stays normal-weight and dim.
+    return (styled ? "\u001b[22;39m" : "") + statusBody(lines, width, paint);
+  };
   // ---- 24b: the menu ----
   const sessionMenu = async () => {
     const shared = state.shared ? " Shared identity: this switch also affects forks or clones carrying this memory identity." : " Forks or clones carrying this memory identity share this switch.";
@@ -1433,7 +1470,7 @@ export default function (pi: ExtensionAPI) {
     // No slash subcommand and no permanent menu item; it clears the suppression only.
     const downgrade = suppressed();
     const participation = enabled() ? "Off" : "On";
-    const choice = await ctx.ui.select(`${status()}${shared}`,
+    const choice = await ctx.ui.select(sessionStatus(true),
       [participation, "Runs", "Project", "Mark", ...(downgrade ? ["Retry fork"] : [])]);
     if (choice === undefined) return; // cancellation is inert: no write, no request
     if (choice === "Retry fork") {
@@ -1483,7 +1520,7 @@ export default function (pi: ExtensionAPI) {
       const parts = args.trim() ? args.trim().split(/\s+/) : [];
       // Bare `/trace` opens the menu; without dialog-capable UI (`-p`, rpc scripting) it prints the
       // status the menu would have shown and the forms that replace the retired subcommands.
-      if (!parts.length) { if (context.hasUI) await menu(); else context.ui.notify(`${status()}\n${commands}`, "info"); return; }
+      if (!parts.length) { if (context.hasUI) await menu(); else context.ui.notify(`${sessionStatus()}\n${commands}`, "info"); return; }
       const [verb, ...rest] = parts;
       if ((verb === "on" || verb === "off") && !rest.length) { toggle(verb === "on"); return; }
       if (verb === "catchup" && !rest.length) { startCatchup(); return; }

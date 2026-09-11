@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
 export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number }
 export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; knowledgeIds: number[] }
 
-export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION): number {
+export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION, cache = true): number {
   const cached = store.db.prepare("SELECT tokens FROM knowledge_weights WHERE commit_id = ? AND view_version = ?").get(commitId, version);
   if (cached) return Number(cached.tokens);
   const row = store.db.prepare("SELECT knowledge_id FROM knowledge_revisions WHERE id = ?").get(commitId);
@@ -61,18 +61,18 @@ export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE
   const revision = event.op === "archive" ? store.getKnowledgeRevision(event.knowledgeId, event.parentId!) : event;
   if (!revision) throw new Error(`K${event.knowledgeId}@${commitId}: archive predecessor is unavailable; repair attribution before maintenance`);
   const weight = tokens(renderKnowledge({ knowledge: store.getKnowledge(event.knowledgeId)!, revision }));
-  store.db.prepare("INSERT OR IGNORE INTO knowledge_weights VALUES (?, ?, ?)").run(commitId, version, weight);
+  if (cache) store.db.prepare("INSERT OR IGNORE INTO knowledge_weights VALUES (?, ?, ?)").run(commitId, version, weight);
   return weight;
 }
 
-export function pendingEvents(store: Store, path: KnowledgePath): KnowledgeEvent[] {
+export function pendingEvents(store: Store, path: KnowledgePath, cache = true): KnowledgeEvent[] {
   const candidates = store.pendingKnowledgeRevisions(path);
   if (!candidates.length) return [];
   const snapshot = store.pathSnapshot(path);
   const retained = new Set(store.db.prepare(`SELECT e.event_id FROM dreaming_range_events e JOIN dreaming_ranges r ON r.id = e.range_id
     WHERE r.session_id = ? AND r.branch = ? AND r.completed_run IS NULL`).all(path.sessionId, path.branch ?? "").map(r => Number(r.event_id)));
   return candidates.filter(r => retained.has(r.id) || store.commitApplies(r, path, snapshot))
-    .map(r => ({ id: r.id, knowledgeId: r.knowledgeId, tokens: changeWeight(store, r.id) }));
+    .map(r => ({ id: r.id, knowledgeId: r.knowledgeId, tokens: changeWeight(store, r.id, KNOWLEDGE_VIEW_VERSION, cache) }));
 }
 
 /** Full block, never a truncated budget selection. Shared by placement and final certification. */

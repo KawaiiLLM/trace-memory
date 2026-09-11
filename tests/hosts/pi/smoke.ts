@@ -9,8 +9,13 @@ import { host, notingFact } from "./test-host.ts";
 
 // Package smoke supplies the installed entry. Node refuses native type stripping under node_modules;
 // use Pi's installed TS loader instead, as Pi does for packaged extensions. No bundled loader dependency.
-const { createJiti } = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"))("jiti");
-const extension = process.argv[2] ? (await createJiti(import.meta.url).import(resolve(process.argv[2]))).default : undefined;
+const piRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const { createJiti } = piRequire("jiti");
+// Pi's extension loader supplies this documented module even in an isolated package consumer.
+// Match that alias in this factory seam; production discovery is checked separately by package-smoke.
+const extension = process.argv[2] ? (await createJiti(import.meta.url, {
+  alias: { "@earendil-works/pi-tui": piRequire.resolve("@earendil-works/pi-tui") },
+}).import(resolve(process.argv[2]))).default : undefined;
 const h = host({ "noting.triggerTokens": 20 }, { extension });
 try {
   // The default data directory must never be interpreted as a project marker file.
@@ -34,6 +39,14 @@ try {
   assert.ok(h.memory.store.sourcePath(1, "main", 1).every(e => h.memory.store.entryNoted(e.id)));
   // 24b: the shipped command surface, through the same entry (the package smoke runs the installed one).
   const trace = (args: string) => h.commands.get("trace").handler(args, h.ctx);
+  const requestsBeforePanel = h.requests.length;
+  const paint = h.ctx.ui.theme.fg;
+  h.ctx.ui.theme.fg = (_color, text) => text; // fake <dim> tags are not zero-width terminal escapes
+  h.ctx.hasUI = true; h.answers.push("Current session", undefined); await trace(""); h.ctx.hasUI = false;
+  h.ctx.ui.theme.fg = paint;
+  assert.ok(h.dialogs.at(-1)!.title.includes("Context:") && h.dialogs.at(-1)!.title.includes("eligibility only; no worker"));
+  assert.deepEqual(h.dialogs.at(-1)!.options, ["Off", "Runs", "Project", "Mark"]);
+  assert.equal(h.requests.length, requestsBeforePanel, "opening/cancelling Current session calls no model");
   await trace("off");
   assert.ok(h.memory.status(1).includes("Disabled (explicit choice)"), "/trace off disables this session at once");
   assert.equal(h.statuses.get("trace-memory"), "🧠 <dim>○ off</dim>", "the off footer is the compact line (the fake host's theme marks the role)");

@@ -35,7 +35,7 @@ test("smoke: the default extension loads and registers the Pi hooks, tools, and 
   for (const name of ["agent_settled", "session_before_compact", "before_agent_start", "message_update", "message_end", "tool_result", "session_start", "session_before_tree", "session_tree"]) expect(h.hooks.has(name)).toBe(true);
   await h.emit("session_start");
   await h.commands.get("trace").handler("", h.ctx);
-  expect(h.notices.at(-1)).toContain("no session id");
+  expect(h.notices.at(-1)).toContain("Session: None (no assistant reply)");
   expect(h.memory.store.getSession(1)).toBeNull();
   expect(h.requests).toHaveLength(0);
 });

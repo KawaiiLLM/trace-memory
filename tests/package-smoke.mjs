@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { DefaultPackageManager, discoverAndLoadExtensions, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -21,7 +22,7 @@ try {
   const [pack] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", temporary],
     { cwd: root, encoding: "utf8", timeout: 60000 }));
   const files = pack.files.map(file => file.path);
-  for (const required of ["src/hosts/pi/index.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
+  for (const required of ["src/hosts/pi/index.ts", "src/hosts/pi/session-status.ts", "src/hosts/pi/native.ts", "src/hosts/pi/fork.ts", "src/core/prompts/noting.md", "src/core/prompts/consolidation.md", "docs/core.md", "docs/pi.md", "docs/live-verification.md", "CONTEXT.md", "README.md", "LICENSE"])
     assert.ok(files.includes(required), `Missing runtime file: ${required}`);
   assert.deepEqual(files.filter(path => /\.test\.ts$|__snapshots__|^tests?\/|^src\/hosts\/cc\/|test-host|native-fixture|smoke\.ts$|^\.scratch\/|\.(sqlite|db)$/.test(path)), [], "Development files or databases must not ship");
 
@@ -47,6 +48,9 @@ try {
   assert.equal(resources.extensions.length, 1, "Pi must discover exactly one extension");
   assert.equal(resources.extensions[0].enabled, true);
   const entry = resources.extensions[0].path;
+  // No checkout node_modules or ambient NODE_PATH is needed: pi-tui is supplied by Pi's loader,
+  // not by the tarball's consumer. A plain Node resolution from the installed file must fail.
+  assert.throws(() => createRequire(entry).resolve("@earendil-works/pi-tui"), { code: "MODULE_NOT_FOUND" });
   const loaded = await discoverAndLoadExtensions([entry], consumer, agentDir);
   try {
     assert.deepEqual(loaded.errors, [], "The installed extension must load without errors");
@@ -58,7 +62,7 @@ try {
   }
   // Reuse the native-worker smoke with the installed factory; only its test harness comes from source.
   process.stdout.write(execFileSync(process.execPath, [join(root, "tests/hosts/pi/smoke.ts"), entry],
-    { cwd: consumer, encoding: "utf8", timeout: 30000 }));
+    { cwd: consumer, encoding: "utf8", timeout: 30000, env: { ...process.env, NODE_PATH: "" } }));
   console.log(`Package smoke passed: ${manifest.name}@${manifest.version}, ${files.length} shipped files, ${pack.size} packed bytes; offline tarball install, Pi discovery/load and native Noting.`);
 } finally {
   process.chdir(cwd);
