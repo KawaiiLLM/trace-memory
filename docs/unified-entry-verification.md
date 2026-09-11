@@ -2,6 +2,8 @@
 
 Worktree: `/private/tmp/tm-unified-entry-raw-budget`, branch `feat/unified-entry-raw-budget`. Baseline: `dfdeda694c9f280680e2ef018cdb37e9d3c35bdd`. Implementation and regressions: `3f88f32c6bcb2b8c48c69cc8cfa8a5c7487a3db9`. No main-branch integration, publishing, production database, host configuration or live provider work is part of this change.
 
+The original acceptance record below is retained unchanged. The [Sol repair record](#sol-review-repairs) records the subsequent fixes and their validation.
+
 ## Fixed-fixture token drift
 
 `tests/fixtures/unified-entry.ts` defines 60 bilingual engineering exchanges: 240 native entries and 60 complete facts. Each exchange contains a review request, an assistant text/call message, a test result and an assistant finding. Bodies, ordering, thresholds and the estimator are fixed. The comparison executes the actual baseline renderer from an isolated `git archive`, not a reimplementation kept beside production code.
@@ -84,3 +86,77 @@ Performance observations on Node 24.6.0, darwin/arm64: the large fixture has 3,9
 The complete old/new comparison is `.scratch/final-unified-drift.json`, SHA-256 `37efa88b093b2cef1bf05027510f665394a696abd9cc3cde586a3f451dcf83b8`. Earlier logs remain in place; the prior passing check sequence was also retained under `verification-pass1-*`. Generated artifacts and the existing dependency symlink are ignored, not deleted.
 
 Unverified boundaries: real provider extraction quality, billing/cache reuse, real-user interactive acceptance, other SDK/runtime versions and unsupported older development schemas. All database upgrades exercised synthetic fixtures, never production data. No merge, publish, live installation or host configuration change was performed.
+
+## Sol review repairs
+
+Implementation: `db97a2191ee5d45d0bd4d8f597e9c4fad7dfa9b7`, an ordinary new commit after the reviewed `94bdf393c979748bb6638148926b8e863b995f53`. The baseline remains `dfdeda694c9f280680e2ef018cdb37e9d3c35bdd`. Only this worktree and branch were changed; no amend, reset, merge, release, production database, real installation or host configuration change was performed.
+
+**Withdrawn finding — deliberately unchanged.** The reviewer withdrew the initial claim that truncated Raw falsely covers facts. Optional consolidated facts still deduplicate against bounded Raw using complete entry bindings; pending facts remain complete. No change was made to `visible.ts`, no word-for-word coverage mechanism was introduced, and this existing contract was neither widened nor narrowed.
+
+The five remaining findings have the following dispositions:
+
+| Finding | Disposition | Regression evidence |
+| --- | --- | --- |
+| Empty path selection widened to the whole session | Fixed: stored path existence, not selected-row count, decides fallback. Empty collections remain empty; an absent exact E errors. Full changes ceilings only. Unbound and missing-path legacy reads remain available, including cross-session reads. | `sol-repairs.test.ts`: empty Turn selection, explicit empty path, sibling, full, exact E, legacy and unbound reads |
+| Single E with selector shared its block budget | Fixed: child-budget level follows the selected E container independently of its selector. Turn/list/range entry budgets and automatic whole-entry E2k remain unchanged; call/result ceilings remain independently 100. | Multiple text blocks, role/text selectors, ranges/lists, default/null and call/result leaf ceilings |
+| Fork material repeated earlier head bodies | Fixed: only the actual path-tail assistant entry can be a missing head supplement, and only when selected and withheld from Raw. The entire frozen index remains, as identity mapping. Head and index count toward episodic/model capacity; the audit records the actual head view. | Mixed visible/supplied entries, several assistant messages, shorter batch than path, one body per increment, full index membership and one-token capacity boundary |
+| Mixed whole-entry citation bypassed completion checks | Fixed: one cached citation resolution supplies entry/block hits for eligibility, binding and completion; one live path read serves a submission. Every cited dispatch needs a cited result with the same Turn/call ID on this path. Text-only delivery sources and historical text aliases remain valid; no natural-language success classifier was added. | Manual/Noter parity; mixed entry, pure call, explicit call/text, matching/unrelated/sibling results, reported/dispatched/attempted, legacy and multiple sources |
+| Semantic previews added framing after fitting | Fixed: the shared semantic fitter measures group headings/separators and walk indentation/terminal text before fitting the body. Identity/evidence metadata cannot be truncated to fit. Automatic fact/knowledge selection remains whole. | Single F, grouped Turn facts, intervals, multiple groups, project facts, walks, small-cap errors, pagination, and existing complete-K-handle regressions |
+
+The index premise needed correction: the reviewed `renderEntryIndex` already emitted omission floors, not complete Raw bodies. The repair replaces those floors with smaller identity-only mappings; it does not claim to have removed a second full-Raw renderer. The actual head duplication was the restatement of earlier assistant entries already inherited in the captured context. Three older fixture assertions were updated because their synthetic order ends with a tool result, not the earlier assistant text they had called the final reply.
+
+### Token and capacity evidence
+
+Both comparisons use synthetic fixtures, never real conversation logs. `tests/perf/unified-entry-drift.ts` reran against the original baseline renderer. Raw and complete fact bytes, estimates and trigger/batch boundaries are unchanged by these repairs:
+
+| Fixed 240-entry / 60-fact fixture | Original baseline | After repairs |
+| --- | ---: | ---: |
+| Joined Raw bytes / tokens | 106,606 / 24,180 | 108,406 / 25,500 |
+| First 10k Noting crossing | Entry 99 | Entry 94 |
+| 10k whole-entry batch ends | 98, 196, 240 | 93, 187, 240 |
+| Grouped complete fact bytes / tokens | 27,932 / 7,079 | 28,952 / 7,499 |
+| First 5k Consolidation crossing | Fact 43 | Fact 41 |
+| 10k whole-fact content prefix | 60 | 60 |
+
+Thus the original Raw +5.46% and facts +5.93% estimates remain fixture observations, not claims about real logs. The additional Noter guidance changes the reviewed prompt from 14,496 bytes / 3,300 tokens to 14,920 / 3,385, a fixed +85-token cost. Tool metadata remains 7,293 bytes / 1,743 tokens. No threshold, estimator, E2k/C100/R100 profile or material-window limit changed.
+
+`tests/perf/unified-entry-sol.ts` compares the actual pre-repair and repaired freezes from isolated archives. Both select the same oldest 93 entries from this fixture; their indexes retain all 93 identities. In mixed mode, 31 entries are supplied in Raw. Neither batch includes the actual path-tail reply, so both correctly have zero head tokens in this fixture; the head-supplement cases are separate regressions.
+
+| Source-index / increment measure | Reviewed implementation | Repaired implementation |
+| --- | ---: | ---: |
+| Index bytes / tokens | 6,905 / 2,410 | 3,648 / 2,063 |
+| All-visible increment tokens | 2,432 | 2,085 |
+| Mixed increment tokens | 5,759 | 5,412 |
+| All-visible exact input capacity, including prompt and 173 inherited tokens | 5,905 | 5,643 |
+| Mixed exact input capacity, same accounting | 9,232 | 8,970 |
+
+The index saves 347 tokens; after the +85-token instruction change, each tested fork's total input floor falls by 262 tokens. Each freeze succeeds at its measured capacity and rejects one token below it with exact membership, rather than shrinking the target. Pending status still measures 25,500 joined Raw tokens and triggers from the same rendered bytes.
+
+### Changes and checks
+
+Relative to the reviewed commit, production source changes are **+112 / −79 lines, net +33** across nine files. Relative to the original baseline, production totals are **+557 / −204, net +353** across twelve files. These counts exclude tests and documentation. Removed duplicate work includes separate citation reparsing for eligibility/binding/completion, repeated per-citation path scans, body-based index rendering, and replaying every assistant body in the batch's last Turn. The shared Raw renderer, source-block authority and semantic fitter remain the common primitives.
+
+Checks ran in the requested order. Logs are retained under `.scratch/sol-repair/`:
+
+| Check | Result | Log |
+| --- | --- | --- |
+| Targeted regressions | 9 files, 269 tests passed | `targeted-final.log` |
+| TypeScript | Passed | `typecheck-1.log` |
+| Full Vitest, one worker, cache disabled | 91 files, 1,342 tests passed; no unhandled errors | `full-1.log` |
+| Pi fake-provider smoke | Native Noting, Dreamer recovery, carrier persistence and long-history checks passed | `pi-smoke-1.log` |
+| Isolated offline package smoke | Tarball install, Pi discovery/load and native workers passed; 40 shipped files | `package-smoke-1.log` |
+| Serial performance, isolated temporary cache | Both sizes passed, three samples per scenario | `perf-1.log` |
+| Fixed drift and source-index capacity | Passed against the original and reviewed archives | `unified-drift.json`, `source-index.json` and their stderr logs |
+| Working, baseline and staged diff checks | Passed | `diff-1.log`, `staged-diff.log` |
+| Ordinary implementation commit | Preserved | `implementation-commit.log` |
+
+Performance observations on Node 24.6.0, darwin/arm64: the 3,951-entry fixture has 28.7M Raw characters. Warm heavy-Turn full trace is 21.4 ms; bounded assembly is 170.0 ms. Eligibility for a 3,948-entry pending backlog reads only 88 sources in 138.9 ms; the smaller backlog also reads 88. Fifty unchanged-leaf streaming updates take 0.6 ms with zero source reads. These are small fixture samples, not statistically established tail percentiles or production latency guarantees.
+
+Failure logs remain intact: `targeted-initial.log` records four obsolete head/index fixture expectations; `new-regressions-1.log` records a test that initially charged the next block's separator to the previous block. The subsequent targeted logs retain the passing reruns. Earlier `.scratch/` logs and commits were not deleted or rewritten. An initial exploratory parent-directory `find` encountered OS read denials on unrelated temporary mounts; those locations were not pursued. No approval refusal was bypassed.
+
+Evidence hashes (SHA-256):
+
+- `unified-drift.json`: `08965e3aa4f29c7fafcd305f20655281cbf6b970446049b38240d6118601d859`
+- `source-index.json`: `4adfa10dfd47f1248f7dcc400fc8970e515bd3bfea862079f7b820b9cedab5d1`
+
+Unverified boundaries remain real-provider extraction quality, billing/cache reuse, interactive user acceptance, other SDK/runtime versions and unsupported old schemas. Completion validation establishes structural result evidence, not that the result semantically proves every authored claim. The host's existing fork gate remains responsible for rejecting a captured-context mismatch. Main-branch integration, publishing, real installation and the independent cleanup branch are outside this work. Sol re-review is still pending.
