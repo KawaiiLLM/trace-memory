@@ -111,6 +111,13 @@ test.each([false, true])("own legal commit and external merge=%s retain audit/co
   const run = f.store.getRun(result.runId)!;
   expect(run.outcome).toBe("conflict");
   expect(JSON.parse(run.response!).check.externalSuccessors).toEqual([{ knowledgeId: external.knowledgeId, commit: external.commit }]);
+  expect(f.store.getClaim(f.target.sessionId, "dreaming")).toBeNull();
+  expect(f.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toBeUndefined();
+  const status = f.memory.status(f.target.sessionId, f.target.branch, f.target.headTurnId);
+  expect(status).toContain(`Last dreaming: run ${result.runId} conflict`);
+  expect(status).toContain("Knowledge: 1 visible active");
+  expect(status).not.toContain("Automatic off:");
+  expect(f.memory.branchSummary(f.target.sessionId, f.target.branch, f.target.headTurnId)).toContain(merge ? "external merged result" : `external update after ${own}`);
   const execution = String(f.store.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(result.runId)!.execution_id);
   f.memory.close();
   const reopened = TraceMemory(f.db, async raw => {

@@ -18,9 +18,11 @@ function legacy() {
   const removed = store.recordRun({ kind: "manual", sessionId: session.id, outcome: "success", createdAt: "removed" });
   store.db.prepare("DELETE FROM runs WHERE id = ?").run(removed.id);
   store.db.exec(`CREATE TABLE migration_child(run_id INTEGER REFERENCES runs(id), execution_id TEXT REFERENCES task_executions(id));
+    CREATE TABLE pending_deliveries(run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT, delivered_at TEXT);
     CREATE TABLE migration_audit(id INTEGER);
     CREATE TRIGGER execution_update AFTER UPDATE ON task_executions BEGIN INSERT INTO migration_audit VALUES (new.terminal_run); END;`);
   store.db.prepare("INSERT INTO migration_child VALUES (?,?)").run(run.id, executionId);
+  store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(run.id, session.id);
   // Reconstruct the actual old CHECKs, not a mocked migration flag. Keep every column and FK.
   store.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
   try {
@@ -49,6 +51,8 @@ test("old runs/execution CHECKs migrate together, preserving audits, streaks, re
   expect(s.taskFailures(f.sessionId)).toEqual(before);
   expect(s.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   expect(s.db.prepare("SELECT * FROM migration_child").get()).toMatchObject({ run_id: f.runId, execution_id: f.executionId });
+  expect(s.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()?.sql).toContain("REFERENCES runs(id)");
+  expect(s.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual([{ run_id: f.runId, session_id: f.sessionId, branch: "main", delivered_at: null }]);
   expect(s.db.prepare("SELECT run_id FROM execution_runs WHERE execution_id = ?").get(f.executionId)?.run_id).toBe(f.runId);
   expect(s.db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_execution_task'").get()).toBeTruthy();
   s.db.prepare("UPDATE task_executions SET reason = 'updated' WHERE id = ?").run(f.executionId);
@@ -62,6 +66,7 @@ test("old runs/execution CHECKs migrate together, preserving audits, streaks, re
   const again = new Store(f.file); stores.push(again);
   expect(again.getRun(next.id)?.outcome).toBe("conflict");
   expect(again.taskFailures(f.sessionId)).toEqual(before);
+  expect(again.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual([{ run_id: f.runId, session_id: f.sessionId, branch: "main", delivered_at: null }]);
 });
 
 test("failed conflict CHECK migration rolls back both tables and restores foreign-key enforcement", () => {
