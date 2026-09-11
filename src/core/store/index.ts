@@ -1596,7 +1596,7 @@ export class Store {
         this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, event.id);
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, event.knowledgeId);
       }
-      const current = new Set(this.commitGraph(target).current.map(r => r.knowledgeId));
+      const current = new Set(suppliedKnowledgeIds.length ? this.commitGraph(target).current.map(r => r.knowledgeId) : []);
       for (const knowledgeId of suppliedKnowledgeIds) {
         if (!current.has(knowledgeId)) throw new Error("Dreamer family must be applicable at admission");
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, knowledgeId);
