@@ -1,10 +1,16 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
+import * as tui from "@earendil-works/pi-tui";
 import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding-agent";
 import { contextMap, pendingBar, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import { host } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
+
+vi.mock("@earendil-works/pi-tui", async importOriginal => {
+  const actual = await importOriginal<typeof import("@earendil-works/pi-tui")>();
+  return { ...actual, visibleWidth: vi.fn(actual.visibleWidth) };
+});
 
 const hosts: ReturnType<typeof host>[] = [];
 const setup = (config: Record<string, unknown> = {}) => { const h = host(config); h.ctx.ui.theme.fg = (_color, text) => text; hosts.push(h); return h; };
@@ -19,22 +25,58 @@ test.each([0, 0.001, 0.25, 1, 1.25])("capacity map and pending bars preserve %s 
   expect(lines).toHaveLength(5);
   expect(lines.join("\n")).toContain(`${(ratio * 100).toFixed(1)}%`);
   const grid = lines.map(line => line.split("   ")[0]).join("");
-  expect([...grid].filter(c => c === "▪")).toHaveLength(Math.floor(Math.min(ratio, 1) * 100));
-  expect([...grid].filter(c => c === "◦")).toHaveLength(ratio === 0.001 ? 1 : 0);
+  expect([...grid].filter(c => c === "⛁")).toHaveLength(Math.floor(Math.min(ratio, 1) * 100));
+  expect([...grid].filter(c => c === "⛀")).toHaveLength(ratio === 0.001 ? 1 : 0);
   const bar = pendingBar("Noting", { tokens: ratio * 10000, trigger: 10000, state: "known" });
-  expect(bar.match(/\[([^\]]+)\]/)![1]).toHaveLength(10);
+  expect(bar.match(/[█░]+/)![0]).toHaveLength(10);
+  expect(bar.match(/█/g) ?? []).toHaveLength(Math.min(10, Math.floor(ratio * 10)));
   expect(bar).toContain(`${(ratio * 100).toFixed(1)}%`);
 });
 
 test("exact zero/equal/over/unknown output", () => {
   expect([0, 5000, 6000].map(tokens => pendingBar("Dreaming", { tokens, trigger: 5000, state: "known" }))).toEqual([
-    "Dreaming: [..........] 0 / 5,000 (0.0%)",
-    "Dreaming: [##########] 5,000 / 5,000 (100.0%)",
-    "Dreaming: [##########] 6,000 / 5,000 (120.0%)",
+    "Dreaming      ░░░░░░░░░░   0.0% 0/5k",
+    "Dreaming      ██████████ 100.0% 5k/5k",
+    "Dreaming      ██████████ 120.0% 6k/5k",
   ]);
   expect(pendingBar("Noting", { tokens: null, trigger: 10000, state: "unavailable" }))
-    .toBe("Noting: [??????????] Unknown / 10,000 (unavailable)");
+    .toBe("Noting        ?????????? Unknown/10k (unavailable)");
   expect(contextMap(undefined, "Model: Unknown", 40).slice(0, 5)).toEqual(Array(5).fill("?".repeat(20)));
+});
+
+test("preferred glyphs are one Pi cell; width anomaly alone selects ASCII fallback", () => {
+  expect(["⛁", "⛀", "⛶"].map(visibleWidth)).toEqual([1, 1, 1]);
+  vi.mocked(tui.visibleWidth).mockReturnValueOnce(1).mockReturnValueOnce(2);
+  const lines = contextMap({ tokens: 1500, contextWindow: 100000, percent: 1.5 }, "test", 40);
+  expect(lines[0]).toBe("#+" + ".".repeat(18));
+  expect(lines.join("\n")).not.toMatch(/[⛁⛀⛶]/);
+});
+
+test("bars align columns, only glyphs carry color, and width anomalies fall back", () => {
+  const paint = (color: string, text: string) => `<${color}>${text}</${color}>`;
+  const bars = ["Noting", "Consolidation", "Dreaming"].map(label => pendingBar(label, { tokens: 5800, trigger: 10000, state: "known" }));
+  for (const bar of bars) {
+    expect(bar.indexOf("█")).toBe(14);
+    expect(bar.indexOf("58.0%")).toBe(26);
+    expect(bar).toContain("5.8k/10k");
+  }
+  expect(pendingBar("Noting", { tokens: 5800, trigger: 10000, state: "known" }, true, paint)).toContain("<accent>█████</accent><dim>░░░░░</dim>");
+  vi.mocked(tui.visibleWidth).mockReturnValueOnce(2);
+  expect(pendingBar("Noting", { tokens: 5800, trigger: 10000, state: "known" })).toContain("#####.....");
+});
+
+test("context legend labels only known capacity, not invented content categories", () => {
+  const paint = (color: string, text: string) => `<${color}>${text}</${color}>`;
+  const map = contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "test", 40, paint).join("\n");
+  expect(map).toContain("<accent>⛁</accent><dim> Used 44.5k (4.5%)</dim>");
+  expect(map).toContain("<dim>⛶ Free 955.5k (95.5%)</dim>");
+  expect(map).not.toMatch(/System|Tools|Skills|Memory|Partial/);
+});
+
+test.each([9999, 10000, 10001])("pending %i never rounds onto its trigger", tokens => {
+  const bar = pendingBar("Noting", { tokens, trigger: 10000, state: "known" });
+  expect(bar).toContain(`${tokens === 10000 ? "10k" : tokens.toLocaleString("en-US")}/10k`);
+  expect(bar).toContain(tokens === 10000 ? "100.0%" : tokens < 10000 ? "<100%" : ">100%");
 });
 
 test("wide and narrow native Text layouts stay within Pi visible width", () => {
@@ -50,17 +92,17 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   const h = setup(); await h.emit("session_start");
   h.setContextUsage(undefined);
   let title = await open(h);
-  expect(title).toContain("Session: None"); expect(title).toContain("(no session)"); expect(title).toContain("Unknown / Unknown tokens");
+  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("Unknown / Unknown");
   await h.turn();
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);
-  expect(title).toContain("Consolidation: [..........] 0 /");
+  expect(title).toContain("Consolidation ░░░░░░░░░░   0.0% 0/5k");
   expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]);
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries); expect(h.statuses.get("trace-memory")).toBe(footer);
   await h.commands.get("trace").handler("off", h.ctx);
   expect(await open(h)).toContain("Off; stored evidence only");
   vi.spyOn(Store.prototype, "pendingEntryIds").mockImplementation(() => { throw Error("unreadable"); });
-  expect(await open(h)).toContain("Noting: [??????????] Unknown / 10,000 (unavailable)");
+  expect(await open(h)).toContain("Noting        ?????????? Unknown/10k (unavailable)");
   expect(h.requests).toEqual([]);
 });
 
@@ -81,7 +123,7 @@ test("cold and warm Dreaming weights show identical data without any DB writes o
   const coldBefore = changes(h), entries = structuredClone(h.entries);
   const toolBinding = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: turn.id });
   const cold = await open(h);
-  expect(cold).toContain("/ 1,234"); expect(cold).toContain("/ 4,321");
+  expect(cold).toContain("/1,234"); expect(cold).toContain("/4,321");
   expect(store.db.prepare("SELECT * FROM knowledge_weights").all()).toEqual([]);
   expect(changes(h)).toBe(coldBefore); expect(h.entries).toEqual(entries);
   const update = () => toolBinding[3]!.execute({ operations: [{ op: "update", id: `K1@${committed.committed[0]!.commit}`, text: "new", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "test" }], skipped: [] });
@@ -92,6 +134,28 @@ test("cold and warm Dreaming weights show identical data without any DB writes o
   expect(changes(h)).toBe(warmBefore);
   expect(update()).toContain("not read");
   expect(h.requests).toEqual([]);
+});
+
+test("shared identity stays concise in overview and complete in On/Off confirmation", async () => {
+  const h = setup(); await h.turn();
+  h.ctx.sessionManager.getSessionId = () => "cloned-session";
+  await h.emit("session_start");
+  expect(await open(h)).toContain("Shared identity");
+  h.answers.push("Current session", "Off", false);
+  await h.commands.get("trace").handler("", h.ctx);
+  expect(h.dialogs.at(-1)!.title).toContain("this switch also affects forks or clones carrying this memory identity.");
+  expect(h.memory.store.enabled(1)).toBe(true);
+});
+
+test("headless keeps its original verbose status", async () => {
+  const h = setup(); await h.turn();
+  await h.commands.get("trace").handler("", h.ctx);
+  const status = h.notices.at(-1)!;
+  expect(status).toContain("Context: fake/test");
+  expect(status).toContain("Pi estimate (reported + trailing)");
+  expect(status).toContain("100 cells; 1% each");
+  expect(status).toContain("Enrollment: Enabled (default)");
+  expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
 });
 
 test("real Pi selector wraps the dim body and keeps every original action", async () => {
@@ -112,11 +176,10 @@ test("real Pi selector wraps the dim body and keeps every original action", asyn
 
 test.each([100, 40])("exact capacity and trigger output at %i columns", width => {
   const lines = ["Current session", ...contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "fake/test", width),
-    "Session: S1", "Enrollment: Enabled (default)", "Project: example (mark)", "Pending: / trigger — estimated tokens",
+    "Session: S1 | Enabled | Cost: $0.0000", "Project: example", "Pending / trigger (~tokens)",
     pendingBar("Noting", { tokens: 12000, trigger: 10000, state: "known" }),
     pendingBar("Consolidation", { tokens: 0, trigger: 5000, state: "known" }),
     pendingBar("Dreaming", { tokens: 500, trigger: 5000, state: "known" }),
-    "Pending / trigger is not task completion or worker readiness.", "Cost: $0.0000",
     "Off | Runs | Project | Mark"];
   expect(statusBody(lines, width)).toMatchSnapshot();
 });
@@ -147,7 +210,8 @@ test("panel queries occur only on open; failure and shared-identity recovery rem
   const start = performance.now(); await open(h);
   expect(pending).toHaveBeenCalledTimes(2);
   expect(performance.now() - start).toBeLessThan(1000);
-  expect(h.dialogs.at(-1)!.title).toContain("Forks or clones carrying this memory identity share this switch.");
+  expect(h.dialogs.at(-1)!.title).not.toContain("Shared identity");
   expect(h.dialogs.at(-1)!.title).not.toContain("Last noting:");
-  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger is not task completion or worker readiness.");
+  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
+  expect(h.dialogs.at(-1)!.title).not.toContain("worker readiness");
 });

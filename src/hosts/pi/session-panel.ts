@@ -53,15 +53,17 @@ export class SessionPanel implements Component {
   }
   render(width: number): string[] {
     const height = Math.max(1, Math.floor(this.height()));
-    const hint = (key: Parameters<KeybindingsManager["getKeys"]>[0]) => this.kb.getKeys(key).join("/");
+    const hint = (key: Parameters<KeybindingsManager["getKeys"]>[0]) => this.kb.getKeys(key).join("/") || "disabled";
     if (height < 3) return wrapTextWithAnsi(`Resize (3+ rows); ${hint("tui.select.cancel")} cancel`, width).slice(0, height);
-    const help = wrapTextWithAnsi(`${hint("tui.select.up")}/${hint("tui.select.down")} navigate · ${hint("tui.select.confirm")} select · ${hint("tui.select.cancel")} cancel\n${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} scroll status`, width);
+    const help = wrapTextWithAnsi(`${hint("tui.select.up")}/${hint("tui.select.down")} Select | ${hint("tui.select.confirm")} Open | ${hint("tui.select.cancel")} Back`, width);
+    const lines = this.body(width, (color, text) => this.theme.fg(color, text)).split("\n");
+    if (height >= 10 && lines.length > height - 1 - help.length - this.actions.length)
+      help.push(...wrapTextWithAnsi(`${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} Scroll`, width));
     // Keep a body row and the selected action even in very short terminals. At 24 rows
     // all original actions and help fit; the remaining rows belong to the scrollable body.
     const chrome = height >= 10 ? [this.theme.fg("accent", "Current session"), ...help.slice(0, 3).map(s => this.theme.fg("dim", s))] : [this.theme.fg("dim", `${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} · ${hint("tui.select.cancel")} cancel`)];
     const actionRows = Math.min(this.actions.length, Math.max(1, height - chrome.length - 5));
     this.pageSize = Math.max(1, height - chrome.length - actionRows);
-    const lines = this.body(width, (color, text) => this.theme.fg(color, text)).split("\n");
     this.maxOffset = Math.max(0, lines.length - this.pageSize);
     this.offset = Math.min(this.offset, this.maxOffset);
     const first = Math.min(this.selected, this.actions.length - actionRows);

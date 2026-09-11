@@ -1,78 +1,24 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`actual Current session first viewport at 40 x 24 1`] = `
+exports[`actual Current session first viewport at 40 x 24 'fullscreen' 1`] = `
 "Current session
-up/down navigate · enter select ·
-escape/ctrl+c cancel
-pageUp/pageDown scroll status
-▪▪▪▪◦▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
-▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
-▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
-▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
-▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫▫
-Context: fake/test
-44,500 / 1,000,000 tokens (4.5%)
-Pi estimate (reported + trailing)
-▪ Used  ▫ Free  ◦ Partial
-100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000
-→ Off
-  Runs
-  Project
-  Mark"
-`;
-
-exports[`actual Current session first viewport at 40 x 24 2`] = `
-"Current session
-up/down navigate · enter select ·
-escape/ctrl+c cancel
-pageUp/pageDown scroll status
-Pi estimate (reported + trailing)
-▪ Used  ▫ Free  ◦ Partial
-100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000
-(0.0%)
-Dreaming: [..........] 0 / 5,000 (0.0%)
-Pending / trigger is not task completion
-or worker readiness.
-Cost: $0.0000
-Forks or clones carrying this memory
-identity share this switch.
-→ Off
-  Runs
-  Project
-  Mark"
-`;
-
-exports[`actual Current session first viewport at 80 x 24 1`] = `
-"Current session
-up/down navigate · enter select · escape/ctrl+c cancel
-pageUp/pageDown scroll status
-▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000 (0.0%)
-Dreaming: [..........] 0 / 5,000 (0.0%)
-Pending / trigger is not task completion or worker readiness.
-Cost: $0.0000
-Forks or clones carrying this memory identity share this switch.
+up/down Select | enter Open |
+escape/ctrl+c Back
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+test
+~44.5k / 1M (4.5%)
+⛁ Used 44.5k (4.5%)
+⛶ Free 955.5k (95.5%)
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -81,25 +27,25 @@ Forks or clones carrying this memory identity share this switch.
 original footer"
 `;
 
-exports[`actual Current session first viewport at 80 x 24 2`] = `
+exports[`actual Current session first viewport at 40 x 24 'fullscreen' 2`] = `
 "Current session
-up/down navigate · enter select · escape/ctrl+c cancel
-pageUp/pageDown scroll status
-▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000 (0.0%)
-Dreaming: [..........] 0 / 5,000 (0.0%)
-Pending / trigger is not task completion or worker readiness.
-Cost: $0.0000
-Forks or clones carrying this memory identity share this switch.
+up/down Select | enter Open |
+escape/ctrl+c Back
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+test
+~44.5k / 1M (4.5%)
+⛁ Used 44.5k (4.5%)
+⛶ Free 955.5k (95.5%)
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -108,56 +54,272 @@ Forks or clones carrying this memory identity share this switch.
 original footer"
 `;
 
-exports[`actual Current session first viewport at 100 x 24 1`] = `
+exports[`actual Current session first viewport at 40 x 24 'regular' 1`] = `
 "Current session
-up/down navigate · enter select · escape/ctrl+c cancel
-pageUp/pageDown scroll status
-▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000 (0.0%)
-Dreaming: [..........] 0 / 5,000 (0.0%)
-Pending / trigger is not task completion or worker readiness.
-Cost: $0.0000
-Forks or clones carrying this memory identity share this switch.
+up/down Select | enter Open |
+escape/ctrl+c Back
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+test
+~44.5k / 1M (4.5%)
+⛁ Used 44.5k (4.5%)
+⛶ Free 955.5k (95.5%)
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
   Mark
+editor
+original footer"
+`;
+
+exports[`actual Current session first viewport at 40 x 24 'regular' 2`] = `
+"Current session
+up/down Select | enter Open |
+escape/ctrl+c Back
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+test
+~44.5k / 1M (4.5%)
+⛁ Used 44.5k (4.5%)
+⛶ Free 955.5k (95.5%)
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+editor
+original footer"
+`;
+
+exports[`actual Current session first viewport at 80 x 24 'fullscreen' 1`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+transcript
+transcript
+
+editor
+
 
 original footer"
 `;
 
-exports[`actual Current session first viewport at 100 x 24 2`] = `
+exports[`actual Current session first viewport at 80 x 24 'fullscreen' 2`] = `
 "Current session
-up/down navigate · enter select · escape/ctrl+c cancel
-pageUp/pageDown scroll status
-▪ ▪ ▪ ▪ ◦ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Context: fake/test
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   44,500 / 1,000,000 tokens (4.5%)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   Pi estimate (reported + trailing)
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   ▪ Used  ▫ Free  ◦ Partial
-▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫ ▫   100 cells; 1% each
-Session: S1
-Enrollment: Enabled (default)
-Project: pi:pi-test (undeclared)
-Pending: / trigger — estimated tokens
-Noting: [+.........] 26 / 10,000 (0.3%)
-Consolidation: [..........] 0 / 5,000 (0.0%)
-Dreaming: [..........] 0 / 5,000 (0.0%)
-Pending / trigger is not task completion or worker readiness.
-Cost: $0.0000
-Forks or clones carrying this memory identity share this switch.
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
   Mark
+transcript
+transcript
 
+editor
+
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 80 x 24 'regular' 1`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+editor
+original footer"
+`;
+
+exports[`actual Current session first viewport at 80 x 24 'regular' 2`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+editor
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 'fullscreen' 1`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+transcript
+transcript
+
+editor
+
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 'fullscreen' 2`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+transcript
+transcript
+
+editor
+
+
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 'regular' 1`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+editor
+original footer"
+`;
+
+exports[`actual Current session first viewport at 100 x 24 'regular' 2`] = `
+"Current session
+up/down Select | enter Open | escape/ctrl+c Back
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Used 44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Free 955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+Session: S1 | Enabled | Cost: $0.0000
+Project: pi:pi-test
+Pending / trigger (~tokens)
+Noting        █████░░░░░  52.0% 26/50
+Consolidation ░░░░░░░░░░   0.0% 0/5k
+Dreaming      ░░░░░░░░░░   0.0% 0/5k
+→ Off
+  Runs
+  Project
+  Mark
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+regular transcript
+editor
 original footer"
 `;

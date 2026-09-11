@@ -63,7 +63,8 @@ try {
           assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
         seen.push(...plain); component.handleInput?.("\x1b[6~");
       }
-      assert.ok(seen.join(" ").includes("Context:") && seen.join(" ").includes("not task completion or worker"));
+      assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)") && seen.join(" ").includes("Dreaming      ░░░░░░░░░░"));
+      assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
       component.handleInput?.("\x1b"); assert.ok(cancelled);
     } finally { handle.hide(); component.dispose?.(); }
     return undefined as never;

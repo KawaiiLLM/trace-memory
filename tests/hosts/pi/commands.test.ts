@@ -56,8 +56,8 @@ test("24b: before the first reply, on and off persist the provisional choice and
   expect(h.notices.at(-1)).toContain("Enabled (explicit choice)");
   await h.turn();
   expect(h.memory.store.enrollment(1)).toEqual({ defaultEnabled: false, choice: true }); // transferred at allocation
-  // The shared fork/clone scope is disclosed wherever the switch is offered.
-  h.ctx.hasUI = true; h.answers.push("Current session", undefined);
+  // Keep the shared fork/clone scope in the confirmation, not permanent overview prose.
+  h.ctx.hasUI = true; h.answers.push("Current session", "Off", false);
   await command(h, "");
   expect(h.dialogs.at(-1)!.title).toContain("Forks or clones carrying this memory identity share this switch.");
 });
@@ -119,7 +119,7 @@ test("24b: the menu has four entries and Current session keeps status, participa
   await command(h, "");
   expect(h.dialogs.at(-1)!.options).toEqual(["Off", "Runs", "Project", "Mark"]); // no Retry fork while not downgraded
   expect(h.dialogs.at(-1)!.title).toContain("Session: S1");                      // status, with 24a's counts
-  expect(h.dialogs.at(-1)!.title).toContain("Pending:");
+  expect(h.dialogs.at(-1)!.title).toContain("Pending / trigger (~tokens)");
   expect(h.notices).toHaveLength(quiet);                                          // cancelling wrote nothing
   // Runs, with its count selection.
   h.answers.push("Current session", "Runs", "3");

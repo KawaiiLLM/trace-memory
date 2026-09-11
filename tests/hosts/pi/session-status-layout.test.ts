@@ -81,7 +81,7 @@ test.each([40, 80, 100])("real overlay at %i x 24 keeps every action executable 
     if (action === 0 && mode === "fullscreen") console.log(`${width}x24 fixed overlay\n${lines.join("\n")}`);
     const viewed = [...lines];
     for (let i = 0; i < 20; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    for (const phrase of ["Use /trace on to resume.", "Fork:", "Compaction:", "Catch up:", "Context:", "Pending:", "Final detail:"])
+    for (const phrase of ["Use /trace on to resume.", "Fork:", "Compaction:", "Catch up:", "fake/test", "Pending:", "Final detail:"])
       expect(viewed.join(" ").replace(/\s+/g, " ")).toContain(phrase);
     for (let i = 0; i < action; i++) s.key("\x1b[B");
     lines = s.frame(); expect(lines.some(line => line.trim() === `→ ${actions[action]}`)).toBe(true);
@@ -138,7 +138,9 @@ test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding r
   for (const action of ["Off", "Retry fork"]) {
     const done = vi.fn();
     const panel = new SessionPanel(overview, [action], () => 24, { fg: (_color, text) => text }, kb, done, () => {});
-    panel.render(40);
+    const help = panel.render(80).join("\n");
+    expect(help).toContain(binding === "ctrl+y" ? "ctrl+y Open" : "disabled Open");
+    expect(help).not.toContain("enter Open");
     for (const key of oldConfirmKeys) {
       expect(kb.matches(key, "tui.select.confirm")).toBe(false);
       panel.handleInput(key);
@@ -204,8 +206,8 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
     await new Promise(resolve => setImmediate(resolve));
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
     try {
-      expect(s.frame().join("\n")).toContain("Context: fake/test");
-      s.terminal.columns = 40; expect(s.frame().join("\n")).toContain("Context: fake/test");
+      expect(s.frame().join("\n")).toContain("test");
+      s.terminal.columns = 40; expect(s.frame().join("\n")).toContain("test");
       for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); s.frame(); }
       s.key("\x1b"); await command;
       expect(prepare).not.toHaveBeenCalled();
@@ -246,7 +248,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];
     for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); viewed.push(...s.frame()); }
-    expect(viewed.join(" ")).toMatch(/Dreaming:.*1.*\//);
+    expect(viewed.join(" ")).toMatch(/Dreaming\s+.*1.*\//);
     s.key("\x1b"); await command; await h.drain();
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests); expect(h.statuses.get("trace-memory")).toBe(footer);
@@ -291,17 +293,57 @@ test("TUI keyboard actions retain confirmations, inputs and conditional Retry fo
   } finally { await h.dispose(); }
 });
 
-test.each([40, 80, 100])("actual Current session first viewport at %i x 24", async width => {
-  const h = host();
+test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => ({ width, mode: mode as "fullscreen" | "regular" }))))("actual Current session first viewport at $width x 24 $mode", async ({ width, mode }) => {
+  const h = host({ "noting.triggerTokens": 50 });
   try {
     await h.turn(); h.setContextUsage({ tokens: 44500, contextWindow: 1000000, percent: 4.45 });
+    h.ctx.mode = "tui"; h.ctx.hasUI = true;
+    const s = screenHarness(width, 24, mode); h.ctx.ui.custom = s.ctx.ui.custom;
+    h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
+    await new Promise(resolve => setImmediate(resolve));
+    const first = s.frame().map(line => line.trimEnd()).join("\n");
+    expect(first).toContain("~44.5k / 1M (4.5%)");
+    expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
+    expect(first).toContain("Noting        █████░░░░░  52.0% 26/50");
+    expect(first).toContain("Dreaming      ░░░░░░░░░░");
+    expect(first).toContain("Consolidation ░░░░░░░░░░");
+    expect(first).toContain("Free 955.5k (95.5%)");
+    if (width >= 80) expect(first).not.toContain("Scroll");
+    expect(first).toMatchSnapshot();
+    s.key("\x1b[6~");
+    expect(s.frame().map(line => line.trimEnd()).join("\n")).toMatchSnapshot();
+    s.key("\x1b"); await command;
+  } finally { await h.dispose(); }
+});
+
+test.each([40, 80, 100])("long project and actual recovery remain reachable at %i x 24", async width => {
+  const h = host();
+  try {
+    await h.turn();
+    const project = "long-project-".repeat(12) + "END";
+    await h.commands.get("trace").handler(`project ${project}`, h.ctx);
+    const store = h.memory.store;
+    for (let i = 0; i < 3; i++) {
+      const execution = store.beginExecution({ sessionId: 1, phase: "noting", head: 1 });
+      const run = store.recordRun({ kind: "noting", sessionId: 1, executionId: execution, outcome: "failure", createdAt: "now" });
+      store.settleExecution(execution, "failure", run.id, "incomplete submission");
+    }
+    store.suppressFork(1, "2026-09-11T00:00:00Z");
     h.ctx.mode = "tui"; h.ctx.hasUI = true;
     const s = screenHarness(width, 24); h.ctx.ui.custom = s.ctx.ui.custom;
     h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
-    expect(s.frame().map(line => line.trimEnd()).join("\n")).toMatchSnapshot();
-    s.key("\x1b[6~");
-    expect(s.frame().map(line => line.trimEnd()).join("\n")).toMatchSnapshot();
+    expect(s.frame().join(" ")).toContain("Automatic off:");
+    const seen: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const frame = s.frame(); seen.push(...frame);
+      for (const label of actions) expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
+      s.key("\x1b[6~");
+    }
+    const text = seen.join(" ").replace(/\s+/g, " ");
+    for (const phrase of ["Use /trace on to resume.", "Retry fork", "Off; stored evidence only", "Dreaming", "END"])
+      expect(text).toContain(phrase);
+    expect(seen.join("").replace(/\s+/g, "")).toContain(project);
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });
