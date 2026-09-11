@@ -11,6 +11,8 @@ pageUp/pageDown Scroll
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
+SDK mismatch: 44.5k > text ~1.4k; gap
+Unknown
 ~44.5k / 1M (4.5%)
 ⛁ Tools ~1.4k (0.1%)
 ⛁ Conversation ~12 (<0.1%)
@@ -19,8 +21,6 @@ fake/test
 
 Memory ~0
 No retained memory
-
-Pi rebuilt text estimate (not provider
 → Off
   Runs
   Project
@@ -65,6 +65,8 @@ pageUp/pageDown Scroll
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
+SDK mismatch: 44.5k > text ~1.4k; gap
+Unknown
 ~44.5k / 1M (4.5%)
 ⛁ Tools ~1.4k (0.1%)
 ⛁ Conversation ~12 (<0.1%)
@@ -73,8 +75,6 @@ fake/test
 
 Memory ~0
 No retained memory
-
-Pi rebuilt text estimate (not provider
 → Off
   Runs
   Project
@@ -111,11 +111,14 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 80 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
+pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.4k; gap
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Conversation ~12 (<0.1%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -126,9 +129,6 @@ Pi rebuilt text estimate (not provider wire)
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
-Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -138,11 +138,11 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 80 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Conversation ~12 (<0.1%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -165,11 +165,14 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 80 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
+pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.4k; gap
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Conversation ~12 (<0.1%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -180,9 +183,6 @@ Pi rebuilt text estimate (not provider wire)
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
-Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -192,11 +192,11 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 80 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Conversation ~12 (<0.1%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -219,11 +219,13 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 100 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
+pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.4k; gap Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -235,8 +237,6 @@ S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
 Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -246,11 +246,11 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 100 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -273,11 +273,13 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 100 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
+pageUp/pageDown Scroll
 ⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.4k; gap Unknown
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0
@@ -289,8 +291,6 @@ S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
 Noting        █████░░░░░  52.0% 26/50
-Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -300,11 +300,11 @@ Dreaming      ░░░░░░░░░░   0.0% 0/5k
 exports[`actual Current session first viewport at 100 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+pageUp/pageDown Scroll
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.4k (0.1%)
 ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Unknown ~43.1k (4.3%)
+                                          ⛁ Unknown ~43.1k (4.3%)
                                           ⛶ Free ~955.5k (95.5%)
 
 Memory ~0

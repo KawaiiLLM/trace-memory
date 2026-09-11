@@ -205,13 +205,16 @@ test("actual TUI command opens custom panel, reflow never scans, and Escape writ
     h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+    const census = vi.spyOn(h.ctx.sessionManager, "buildContextEntries");
+    const usage = vi.spyOn(h.ctx, "getContextUsage");
     try {
       expect(s.frame().join("\n")).toContain("test");
       s.terminal.columns = 40; expect(s.frame().join("\n")).toContain("test");
       for (let i = 0; i < 10; i++) { s.key("\x1b[6~"); s.frame(); }
       s.key("\x1b"); await command;
       expect(prepare).not.toHaveBeenCalled();
-    } finally { prepare.mockRestore(); }
+      expect(census).not.toHaveBeenCalled(); expect(usage).not.toHaveBeenCalled();
+    } finally { prepare.mockRestore(); census.mockRestore(); usage.mockRestore(); }
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries); expect(h.requests).toEqual([]);
     expect(h.statuses.get("trace-memory")).toBe(footer);
   } finally { await h.dispose(); }
@@ -244,6 +247,13 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
       .map(row => [row.name, store.db.prepare(`SELECT * FROM "${row.name}"`).all()]));
     const before = snapshot(), entries = structuredClone(h.entries), requests = h.requests.length;
     const footer = h.statuses.get("trace-memory");
+    h.ctx.hasUI = false;
+    await h.commands.get("trace").handler("", h.ctx);
+    await h.drain();
+    expect(h.notices.at(-1)).toContain("Pi rebuilt text estimate");
+    expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
+    expect(h.requests).toHaveLength(requests);
+    h.ctx.hasUI = true;
     h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const viewed = [...s.frame()];

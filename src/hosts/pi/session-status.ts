@@ -64,15 +64,21 @@ const colors: Record<string, Parameters<Paint>[0]> = { System: "syntaxKeyword", 
 
 export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
   const window = value.window, known = window !== undefined;
-  const free = known && value.complete ? Math.max(0, window - value.total) : 0;
+  const measured = Object.entries(value.amounts).reduce((sum, [name, n]) => sum + (name === "Unknown" ? 0 : n), 0);
+  const reconciled = value.sdkTokens !== undefined && value.sdkTokens >= measured;
+  const capacityKnown = known && value.complete && reconciled;
+  const free = capacityKnown ? Math.max(0, window - value.total) : 0;
+  const sdk = value.sdkTokens === undefined ? "SDK unknown; free unknown"
+    : value.sdkTokens === measured ? `SDK matches text: ${compactNumber(value.sdkTokens)}`
+    : `SDK mismatch: ${compactNumber(value.sdkTokens)} ${value.sdkTokens < measured ? "<" : ">"} text ~${estimate(measured)}; ${reconciled ? "gap Unknown" : "free unknown"}`;
   const items = [...Object.entries(value.amounts), ["Free", free] as const];
   const counts = allocateCells(items.map(([, n]) => n), 100);
   const glyph = visibleWidth("⛁") === 1 ? "⛁" : "#";
   const empty = visibleWidth("⛶") === 1 ? "⛶" : ".";
   const cells = items.flatMap(([name], i) => Array(counts[i]).fill(paint(colors[name]!, name === "Free" ? empty : glyph)));
-  const grid = Array.from({ length: 5 }, (_, row) => known && value.complete
+  const grid = Array.from({ length: 5 }, (_, row) => capacityKnown
     ? cells.slice(row * 20, row * 20 + 20).join(width >= 80 ? " " : "") : paint("dim", Array(20).fill("?").join(width >= 80 ? " " : "")));
-  const legend = [model, `~${estimate(value.total)}${value.complete ? "" : " + Unknown"} / ${known ? estimate(window) : "Unknown"}${known ? ` (${share(value.total, window)})` : ""}`,
+  const legend = [model, sdk, `~${estimate(value.total)}${value.complete ? "" : " + Unknown"} / ${known ? estimate(window) : "Unknown"}${known ? ` (${share(value.total, window)})` : ""}`,
     ...items.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, name === "Free" ? empty : glyph)} ${name === "Skills" ? "Skill catalog" : name} ~${estimate(n)}${known ? ` (${share(n, window)})` : ""}`)];
   const gridWidth = visibleWidth(grid[0]!);
   const right = legend.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width - gridWidth - 3)));

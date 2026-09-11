@@ -41,6 +41,13 @@ try {
   // 24b: the shipped command surface, through the same entry (the package smoke runs the installed one).
   const trace = (args: string) => h.commands.get("trace").handler(args, h.ctx);
   const requestsBeforePanel = h.requests.length;
+  h.setContextUsage({ tokens: 1, contextWindow: 200000, percent: 0 });
+  await trace("");
+  assert.ok(h.notices.at(-1)!.includes("SDK mismatch: 1"));
+  assert.ok(h.notices.at(-1)!.includes("free unknown"));
+  assert.ok(!h.notices.at(-1)!.includes("Free ~"));
+  assert.ok(h.notices.at(-1)!.includes("Pi rebuilt text estimate"));
+  h.setContextUsage({ tokens: 44500, contextWindow: 200000, percent: 22.25 });
   const terminal = { columns: 40, rows: 24, write() {}, hideCursor() {}, showCursor() {} };
   const tui = new TuiAltScreen(terminal as never, false);
   tui.requestRender = () => {};

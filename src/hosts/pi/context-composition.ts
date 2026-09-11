@@ -3,6 +3,7 @@ import { memoryBodyHash, tokens } from "../../core/api/index.ts";
 
 export type ContextComposition = ReturnType<typeof contextComposition>;
 const valid = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+const validPart = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" ? value as Record<string, unknown> : {};
 
 /** One read-only snapshot of Pi's selected, rebuilt text, not provider wire or a tokenizer bill.
@@ -17,7 +18,13 @@ export function contextComposition(ctx: ExtensionContext & Partial<Pick<Extensio
     // Only an unambiguous, byte-exact occurrence establishes a catalog actually in this prompt.
     // Modified/removed catalogs remain System, rather than guessed or counted twice.
     let catalog = "";
-    try { catalog = formatSkillsForPrompt(ctx.getSystemPromptOptions?.().skills ?? []); } catch { /* Uncertain catalog stays System. */ }
+    try {
+      const options = ctx.getSystemPromptOptions?.();
+      // Pi's native prompt builder prefers read, falls back to bash, and omits the
+      // catalog if neither is selected. Missing selectedTools uses Pi's read default.
+      const reader = (["read", "bash"] as const).find(tool => (options?.selectedTools ?? ["read", "bash", "edit", "write"]).includes(tool));
+      if (reader) catalog = formatSkillsForPrompt(options?.skills ?? [], reader);
+    } catch { /* Uncertain catalog stays System. */ }
     const at = catalog ? system.indexOf(catalog) : -1;
     if (at >= 0 && system.indexOf(catalog, at + catalog.length) < 0) {
       const skills = tokens(catalog);
@@ -54,7 +61,7 @@ export function contextComposition(ctx: ExtensionContext & Partial<Pick<Extensio
           : message.role === "custom" && typeof message.content === "string" ? message.content : undefined;
         const parts = record(carrier.composition);
         const values = [parts.knowledge, parts.facts, parts.raw];
-        const classified = values.every(valid) ? (values as number[]).reduce((sum, n) => sum + n, 0) : Infinity;
+        const classified = values.every(validPart) ? (values as number[]).reduce((sum, n) => sum + n, 0) : Infinity;
         if (body !== undefined && parts.bodyHash === memoryBodyHash(body) && classified <= tokens(body)) {
           memory.Knowledge += parts.knowledge as number; memory.Facts += parts.facts as number; memory.Raw += parts.raw as number;
           memory.Unclassified += amount - classified;
@@ -64,12 +71,16 @@ export function contextComposition(ctx: ExtensionContext & Partial<Pick<Extensio
   } catch { complete = false; }
   const measured = Object.values(amounts).reduce((sum, n) => sum + n, 0);
   let window = ctx.model?.contextWindow;
+  let sdkTokens: number | undefined;
   try {
     const usage = ctx.getContextUsage();
     if (valid(usage?.contextWindow) && usage.contextWindow > 0) window = usage.contextWindow;
     // Never scale measured categories to a reported total. A positive gap has no known owner.
-    if (valid(usage?.tokens)) amounts.Unknown = Math.max(0, usage.tokens - measured);
+    if (valid(usage?.tokens)) {
+      sdkTokens = usage.tokens;
+      amounts.Unknown = Math.max(0, sdkTokens - measured);
+    }
   } catch { /* Pi's usage is optional; the text census remains usable. */ }
-  return { amounts, memory, complete, window: valid(window) && window > 0 ? window : undefined,
+  return { amounts, memory, complete, sdkTokens, window: valid(window) && window > 0 ? window : undefined,
     total: measured + amounts.Unknown };
 }

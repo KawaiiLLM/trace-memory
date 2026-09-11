@@ -7,6 +7,9 @@ import { contextComposition, type ContextComposition } from "../../../src/hosts/
 import { allocateCells, compositionMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import { host } from "./test-host.ts";
 
+// Exercise the installed native builder as an oracle; production uses only public APIs.
+const { buildSystemPrompt } = await import(new URL("core/system-prompt.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+
 const skills = [{ name: "test", description: "Load test instructions", filePath: "/virtual/test/SKILL.md", baseDir: "/virtual/test", source: "test", disableModelInvocation: false,
   sourceInfo: { path: "/virtual/test", source: "test", scope: "temporary" as const, origin: "top-level" as const } }];
 function fixture() {
@@ -33,6 +36,47 @@ test("catalog requires one exact actual-system occurrence; hidden/modified/dupli
   f.ctx.getSystemPromptOptions = () => { throw Error("unavailable options"); };
   expect(f.read().complete).toBe(true);
   expect(f.read().amounts.Skills).toBe(0);
+});
+
+test.each([undefined, ["read"], ["bash"], ["bash", "read"], [], ["edit"], ["powershell"]].map(selectedTools => ({ selectedTools })))("catalog follows Pi selectedTools $selectedTools", ({ selectedTools }) => {
+  const f = fixture();
+  const options = { cwd: "/virtual", skills, selectedTools };
+  f.ctx.getSystemPromptOptions = () => options;
+  const system = buildSystemPrompt(options);
+  f.ctx.getSystemPrompt = () => system;
+  const expected = selectedTools === undefined || selectedTools.includes("read") ? formatSkillsForPrompt(skills, "read")
+    : selectedTools.includes("bash") ? formatSkillsForPrompt(skills, "bash") : "";
+  expect(f.read().amounts.Skills).toBe(tokens(expected));
+  expect(f.read().amounts.System + f.read().amounts.Skills).toBe(tokens(system));
+  // A stale or edited prompt must not be deducted using the other reader's wording.
+  if (expected) {
+    f.ctx.getSystemPrompt = () => formatSkillsForPrompt(skills, expected.includes("Use bash") ? "read" : "bash");
+    expect(f.read().amounts.Skills).toBe(0);
+  }
+});
+
+test.each([0.5, -1, Number.MAX_SAFE_INTEGER + 1, undefined, NaN, Infinity, -Infinity, "1", null])("malformed composition value %s rejects the entire carrier", invalid => {
+  for (const key of ["knowledge", "facts", "raw"]) {
+    const f = fixture();
+    f.sm.appendCustomMessageEntry("trace-memory", measured.text, false, {
+      traceMemory: { composition: { ...measured.composition, [key]: invalid } },
+    });
+    const value = f.read();
+    expect(value.memory).toEqual({ Knowledge: 0, Facts: 0, Raw: 0, Unclassified: value.amounts.Memory });
+  }
+});
+
+test("zero composition parts are valid; their sum cannot exceed the body", () => {
+  const f = fixture();
+  f.sm.appendCustomMessageEntry("trace-memory", measured.text, false, {
+    traceMemory: { composition: { ...measured.composition, facts: 0, raw: 0 } },
+  });
+  expect(f.read().memory.Knowledge).toBe(measured.composition.knowledge);
+  const g = fixture();
+  g.sm.appendCustomMessageEntry("trace-memory", measured.text, false, {
+    traceMemory: { composition: { ...measured.composition, knowledge: tokens(measured.text), facts: 1, raw: 0 } },
+  });
+  expect(g.read().memory.Unclassified).toBe(g.read().amounts.Memory);
 });
 
 test("retained occurrences count repeatedly, independent of carrier IDs, database, project or enrollment", () => {
@@ -103,6 +147,48 @@ test("reported totals never rescale measured categories; unknown gap, missing AP
   expect(compositionMap(f.read(), "test", 80).join("\n")).not.toContain("Free ~");
 });
 
+test.each([1, 102, 150, null, undefined, -1, NaN, Infinity])("SDK total %s is disclosed without rescaling or invented Free", reported => {
+  const f = fixture();
+  f.ctx.getSystemPrompt = () => "x".repeat(714); // exactly 102 rebuilt tokens
+  f.ctx.getContextUsage = () => ({ tokens: reported, contextWindow: 1000, percent: 99 }) as any;
+  const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
+  const valid = typeof reported === "number" && Number.isFinite(reported) && reported >= 0;
+  expect(value.amounts.System).toBe(102);
+  expect(value.amounts.Unknown).toBe(valid ? Math.max(0, reported - 102) : 0);
+  expect(text).toContain(!valid ? "SDK unknown" : reported === 102 ? "SDK matches text" : "SDK mismatch");
+  expect(text.includes("Free ~")).toBe(valid && reported >= 102);
+  if (!valid || reported < 102) {
+    expect(text).toContain("free unknown");
+    expect(text).not.toContain("89.8%");
+    expect(text).toContain("?".repeat(20));
+  }
+});
+
+test("usage exceptions, unknown windows, fractional SDK estimates and overcapacity stay honest", () => {
+  const f = fixture();
+  f.ctx.getContextUsage = () => { throw Error("usage unavailable"); };
+  expect(compositionMap(f.read(), "test", 40).join("\n")).toContain("SDK unknown");
+  f.ctx.getSystemPrompt = () => "x".repeat(714);
+  for (const window of [undefined, 0, -1, NaN, Infinity]) {
+    f.ctx.model!.contextWindow = window as number;
+    f.ctx.getContextUsage = () => ({ tokens: 102, contextWindow: window, percent: null }) as any;
+    const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
+    expect(value.window).toBeUndefined();
+    expect(text).toContain("/ Unknown");
+    expect(text).not.toContain("Free ~");
+  }
+  f.ctx.getContextUsage = () => ({ tokens: 102.5, contextWindow: 100, percent: 102.5 });
+  const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
+  expect(value.sdkTokens).toBe(102.5); // SDK estimates are not persisted composition integers.
+  expect(value.amounts.Unknown).toBe(0.5);
+  expect(text).toContain("SDK mismatch");
+  expect(text).toContain("102.5%");
+  expect(text).not.toContain("Free ~");
+  expect(compositionMap(value, "test", 40).slice(0, 5).join("")).toBe("⛁".repeat(100));
+  f.ctx.getContextUsage = () => ({ tokens: 1e30, contextWindow: 1000, percent: 0 });
+  expect(compositionMap(f.read(), "test", 40).join("\n")).toContain("> text ~102"); // No cancellation from subtracting a huge SDK gap.
+});
+
 test("only active tool schemas count; image capacity is not fabricated from base64", () => {
   const f = fixture();
   const tool = { name: "read", description: "Read", parameters: { type: "object", properties: {} },
@@ -133,9 +219,11 @@ test("shared rounding gives 100 cells without tiny-category minimums; zero and o
     expect(allocateCells(values, 100).reduce((sum, n) => sum + n, 0)).toBe(100);
   }
   const f = fixture(); f.ctx.getSystemPrompt = () => "";
+  f.ctx.getContextUsage = () => ({ tokens: 0, contextWindow: 500000, percent: 0 });
   expect(compositionMap(f.read(), "test", 40).slice(0, 5).join("")).toBe("⛶".repeat(100));
   f.sm.appendCustomMessageEntry("trace-memory", "raw ".repeat(100), false);
   f.ctx.model!.contextWindow = 1;
+  f.ctx.getContextUsage = () => ({ tokens: 100, contextWindow: 1, percent: 10000 });
   const lines = compositionMap(f.read(), "test", 40);
   expect(lines.slice(0, 5).join("")).toBe("⛁".repeat(100));
   expect(lines.join("\n")).not.toContain("Free ~");
@@ -143,7 +231,7 @@ test("shared rounding gives 100 cells without tiny-category minimums; zero and o
 
 test.each([1, 20, 40, 80, 100])("composition and single continuous Memory bar fit %i columns", width => {
   const value: ContextComposition = { amounts: { System: 800, Skills: 300, Tools: 0, Memory: 24000, Conversation: 0, Other: 0, Unknown: 0 },
-    memory: { Knowledge: 12000, Facts: 6000, Raw: 6000, Unclassified: 0 }, window: 500000, total: 25100, complete: true };
+    memory: { Knowledge: 12000, Facts: 6000, Raw: 6000, Unclassified: 0 }, window: 500000, total: 25100, sdkTokens: 25100, complete: true };
   const paint = (color: string, text: string) => `\x1b[${color === "syntaxKeyword" ? 31 : color === "syntaxString" ? 32 : 33}m${text}\x1b[39m`;
   const lines = compositionMap(value, "fake/test", width, paint);
   const rendered = statusBody(lines, width);

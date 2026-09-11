@@ -192,15 +192,41 @@ test("shared identity stays concise in overview and complete in On/Off confirmat
   expect(h.memory.store.enabled(1)).toBe(false);
 });
 
-test("headless keeps its original verbose status", async () => {
+test("headless shares composition while retaining verbose explanations and command forms", async () => {
   const h = setup(); await h.turn();
   await h.commands.get("trace").handler("", h.ctx);
   const status = h.notices.at(-1)!;
-  expect(status).toContain("Context: fake/test");
-  expect(status).toContain("Pi estimate (reported + trailing)");
-  expect(status).toContain("100 cells; 1% each");
+  expect(status).toContain("fake/test");
+  expect(status).toContain("Pi rebuilt text estimate (not provider wire)");
+  expect(status).toContain("Memory ~");
+  expect(status).toContain("/trace project");
   expect(status).toContain("Enrollment: Enabled (default)");
   expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
+});
+
+test("headless and UI read the same composition once per opening without writes or grants", async () => {
+  const h = setup(); await h.turn();
+  h.ctx.getSystemPrompt = () => "x".repeat(408);
+  h.setContextUsage({ tokens: 1, contextWindow: 1000, percent: 0.1 });
+  h.memory.store.suppressFork(1, "2026-09-11T00:00:00Z");
+  const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
+  const usage = vi.spyOn(h.ctx, "getContextUsage");
+  const census = vi.spyOn(h.ctx.sessionManager, "buildContextEntries");
+  await h.commands.get("trace").handler("", h.ctx);
+  const headless = h.notices.at(-1)!;
+  expect(usage).toHaveBeenCalledTimes(1); expect(census).toHaveBeenCalledTimes(1);
+  const title = await open(h);
+  expect(usage).toHaveBeenCalledTimes(2); expect(census).toHaveBeenCalledTimes(2);
+  const composition = (text: string) => text.slice(text.indexOf("fake/test"), text.indexOf("Pi rebuilt text estimate") + "Pi rebuilt text estimate (not provider wire)".length);
+  expect(composition(headless)).toBe(composition(title));
+  for (const text of [headless, title]) {
+    expect(text).toContain("SDK mismatch: 1");
+    expect(text).toContain("free unknown");
+    expect(text).not.toContain("Free ~");
+    expect(text).toContain("Fork: suppressed");
+  }
+  expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);
+  expect(h.statuses.get("trace-memory")).toBe(footer); expect(h.requests).toEqual([]);
 });
 
 test("real Pi selector wraps the dim body and keeps every original action", async () => {

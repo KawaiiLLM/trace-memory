@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { hash, snapshot, type Body } from "./fork.ts";
 import { contextComposition } from "./context-composition.ts";
-import { compositionMap, contextMap, pendingBar, statusBody } from "./session-status.ts";
+import { compositionMap, pendingBar, statusBody } from "./session-status.ts";
 import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
@@ -1506,10 +1506,8 @@ export default function (pi: ExtensionAPI) {
   };
   // Only opened on demand. No reconciliation, compact allocation, tool grants or worker admission.
   const sessionStatus = (compact = false): SessionBody => {
-    let usage: ReturnType<ExtensionContext["getContextUsage"]>;
-    if (!compact) try { usage = ctx.getContextUsage(); } catch { /* unavailable, never zero */ }
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "Model: Unknown";
-    const composition = compact ? contextComposition(ctx, pi) : undefined;
+    const composition = contextComposition(ctx, pi);
     const lines: (string | ((paint: Parameters<SessionBody>[1]) => string))[] = [], recovery: string[] = [];
     const e = enrollment();
     lines.push(compact ? `${state.sessionId ? `S${state.sessionId}` : "Session: No session"} | ${enabled() ? "On" : "Off"}(${e.choice === null ? "default" : "explicit"})`
@@ -1540,7 +1538,7 @@ export default function (pi: ExtensionAPI) {
     if (compact) { if (state.shared) lines.push("Shared identity"); }
     else lines.push(state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
       : "Forks or clones carrying this memory identity share this switch.");
-    return (width, paint) => statusBody([...recovery, ...(composition ? compositionMap(composition, model, width, paint) : contextMap(usage, model, width, paint, compact)), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
+    return (width, paint) => statusBody([...recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
   };
   // ---- 24b: the menu ----
   const sessionMenu = async () => {

@@ -489,18 +489,23 @@ or an exact tokenizer bill. It reads the selected `buildContextEntries()` snapsh
 projects entries with Pi's public message APIs, and uses the core text estimator.
 It includes the current system prompt and active tool definitions. A positive gap
 between these estimates and `getContextUsage()` is **Unknown**, never distributed
-proportionally among categories. A lower Pi total never shrinks measured content.
-Missing text or unpriced non-text content makes free capacity unknown.
+proportionally among categories. The SDK total is shown separately as matching the text,
+mismatched (in either direction), or unknown. A lower, missing, invalid or unavailable
+SDK total never shrinks measured content and leaves free capacity unknown; the matrix
+uses question marks while retaining the estimated category legends and Memory bar.
+Missing text or unpriced non-text content also makes free capacity unknown.
 
 - **Memory:** every retained initial injection, on/project supplement and marked custom
   compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
   changing project or disabling enrollment does not subtract text still retained.
 - **Memory's continuous bar:** Knowledge, Facts and Raw estimates captured from the
-  same assembled material, checked against its body hash. Titles, receipts and other
+  same assembled material, checked against its body hash, nonnegative safe-integer parts,
+  and a sum no larger than the body estimate. Titles, receipts and other
   framing remain Unclassified. Old, malformed or body-mismatched metadata makes that
   entire carrier Unclassified. Coverage IDs and database inventory never measure capacity.
 - **Skill catalog:** Pi's formatted names, descriptions and locations, deducted from
-  System only when the full catalog has one exact occurrence in the actual prompt.
+  System only when the full catalog has one exact occurrence in the actual prompt,
+  using Pi's selected-tools semantics (read preferred, bash fallback, neither omits it).
   An uncertain match stays System. Loaded SKILL.md and reference bodies remain Conversation.
 - **Conversation / Other:** retained ordinary messages and native summaries / other
   extensions' custom messages. Pi-excluded bash executions contribute nothing.
@@ -542,7 +547,9 @@ read handles, changes visibility, writes weight caches or calls a model. Cold
 weights are computed with the existing renderer without caching. Measurements are
 read once per opening, not refreshed by a timer or footer updates. Run history
 stays under **Runs**; automatic-off reasons and fork recovery remain in the panel.
-Headless bare `/trace` retains its verbose Pi reported-plus-trailing usage view and command forms.
+Headless bare `/trace` uses the same read-only composition snapshot and classification as
+the UI, retaining its verbose enrollment, pending/trigger, shared-identity and recovery
+explanations and command forms. Both paths read once per opening, never per render.
 
 #### Global preferences
 
