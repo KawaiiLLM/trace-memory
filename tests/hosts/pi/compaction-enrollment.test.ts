@@ -2,16 +2,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { piSession, say, worker } from "./native-fixture.ts";
-import extension from "../../../src/hosts/pi/index.ts";
+import { piSession, say } from "./native-fixture.ts";
+import { dreamerRecoveryExtension } from "./recovery-fixture.ts";
+
+const worker = (body: unknown) => JSON.stringify(body).includes("# Dreamer");
 
 // Exercise persistence, not just the hook result: Pi accepts extension commands while compacting.
 test("disabling memory during recovery delegates without persisting an empty custom replacement", async () => {
   const directory = mkdtempSync(join(tmpdir(), "trace-memory-compact-off-"));
-  const f = await piSession({ extensions: [extension as never], compaction: { enabled: false },
+  const f = await piSession({ extensions: [dreamerRecoveryExtension(join(directory, "trace.db")) as never], compaction: { enabled: false },
     env: { TRACE_MEMORY_CONFIG: JSON.stringify({ dbPath: join(directory, "trace.db"),
       "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-      "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1000, "compaction.rawTokens": 1, "compaction.overflowTokens": 50 }) },
+      "render.knowledgeBlockTokens": 100, "compaction.factsTokens": 10000, "compaction.rawTokens": 10000, "compaction.overflowTokens": 50 }) },
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   try {
     f.script(() => say("ANSWER_SENTINEL"));

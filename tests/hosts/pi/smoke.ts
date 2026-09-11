@@ -51,14 +51,15 @@ try {
   await h.dispose();
 }
 
-// 32d: the distributable must execute the new role through the same native child, not merely load.
-const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000, "dreaming.triggerTokens": 1 }, { extension });
+// 32f: the distributable must reach native Dreamer through actual bounded compaction recovery.
+const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000,
+  "dreaming.triggerTokens": 5000, "render.knowledgeBlockTokens": 100, "compaction.overflowTokens": 50 }, { extension });
 try {
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;
   const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, facts: [{ turnId: 1, category: "decision", actor: "user", text: "Remember the choice", source: ["T1#user"], createdAt: "smoke" }] });
   assert.ok(facts.ok);
-  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, operations: [{ op: "create", handle: "$1", author: "smoke", text: "Remember the choice", category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke" }] });
+  const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, operations: [{ op: "create", handle: "$1", author: "smoke", text: "Remember the choice ".repeat(2000), category: "constraint", scope: "project", supports: [facts.facts[0]!.id], topics: [], reason: "initial", createdAt: "smoke" }] });
   assert.ok(created.ok);
   const item = created.committed[0]!;
   dreamer.provider(async conversation => {
@@ -66,7 +67,8 @@ try {
     assert.ok(!conversation.tools?.some(t => t.name === "note"));
     return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: `K${item.knowledgeId}@${item.commit}`, supports: [], reason: "Deliberate active-memory retirement; history preserved" }], skipped: [] } }] };
   });
-  await dreamer.turn(); await dreamer.drain();
+  const compacted = await dreamer.emit("session_before_compact", { preparation: { tokensBefore: 100000 } });
+  assert.ok(compacted?.compaction?.details?.traceMemory, "recovery returns the exact custom carrier");
   const runs = store.listRuns(1).filter(run => run.kind === "dreaming");
   assert.equal(runs.length, 1);
   assert.equal(runs[0]!.outcome, "success");
@@ -76,7 +78,7 @@ try {
   assert.deepEqual(archive.supports, []);
   assert.ok(store.isKnowledgeProcessed(archive.id));
   assert.ok(dreamer.memory.trace(`K${item.knowledgeId}`).includes("maintenance judgment"));
-  console.log("Dreamer smoke passed: native fresh child, immediate trusted archive, automatic final check and exact certification.");
+  console.log("Dreamer recovery smoke passed: native fresh child, immediate trusted archive, final certification and custom compaction carrier.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under

@@ -1,5 +1,19 @@
 import { expect, test, vi } from "vitest";
-import { host, reply, type Reply } from "./test-host.ts";
+import { host as createHost, reply, type Reply } from "./test-host.ts";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+// Seed quietly, then enable real thresholds through the existing settings reload. These legacy
+// fixtures test ownership/cancellation, not a below-threshold compaction exemption (removed by 32f).
+const host = (config: Record<string, unknown>) => {
+  const { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, ...rest } = config;
+  const h = createHost(rest);
+  const file = join(h.dir, "agent", "settings.json");
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  settings["trace-memory"] = { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation };
+  writeFileSync(file, JSON.stringify(settings));
+  return h;
+};
 
 // Ticket 28b — the bounded recovery inside Pi's compaction hook. 28a's allocator decides that a
 // REQUIRED window (the pending facts, the pending Raw) does not fit; this file pins what the adapter
@@ -27,8 +41,15 @@ type Host = ReturnType<typeof host>;
  * not work anyone did here. */
 const runs = (h: Host, kind?: string) => h.memory.store.listRuns(1).filter(r => r.createdAt !== "seed" && (!kind || r.kind === kind));
 const facts = (h: Host) => h.memory.store.listSessionFacts(1);
-const compact = (h: Host, signal?: AbortSignal) =>
-  h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 }, ...(signal ? { signal } : {}) }) as Promise<any>;
+const compact = async (h: Host, signal?: AbortSignal): Promise<any> => {
+  const file = join(h.dir, "agent", "settings.json");
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  for (const key of ["noting.triggerTokens", "consolidation.triggerTokens"])
+    if (settings["trace-memory"][key] === 1_000_000_000) settings["trace-memory"][key] = 20;
+  writeFileSync(file, JSON.stringify(settings));
+  await h.emit("session_tree", {}); // reload on the unchanged path; does not reopen or steal claims
+  return h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 }, ...(signal ? { signal } : {}) });
+};
 
 /** Turns whose entries stay pending: `quiet` starts no automatic Noting, so every entry is Raw the
  * compaction must represent. */
@@ -355,6 +376,7 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
     h.provider(async conversation => { await held; return notes(conversation, "the other operation's fact"); });
     await h.prompt(long("FIRST")); await h.answer(); // the ordinary trigger takes the Noting slot
     await vi.waitFor(() => expect(h.requests.length).toBe(1));
+    await h.prompt(long("SECOND")); await h.answer(); // enough real Raw remains eligible after the capacity wait
     const attempt = compact(h);
     await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the occupied Noting slot"))).toBe(true));
     expect(h.requests).toHaveLength(1); // nothing of ours was launched into an occupied slot
@@ -506,5 +528,56 @@ test("28b acceptance 10: a foreground entry arriving during recovery does not ex
     expect(late.length).toBeGreaterThan(0);
     expect(late.every(e => !h.memory.store.entryNoted(e.id))).toBe(true); // outside this task's range
     expect(frozen.every(id => h.memory.store.entryNoted(id))).toBe(true); // and the frozen range was processed
+  } finally { await h.dispose(); }
+});
+
+const knowledge = (h: Host) => {
+  const c = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [facts(h)[0]!.id], topics: [], reason: "seed evidence", createdAt: "seed" }] });
+  if (!c.ok) throw Error(c.problems.join());
+};
+const archive = (h: Host): Reply => {
+  const k = h.memory.store.listCurrentKnowledge(h.memory.store.knowledgePath(1))[0]!;
+  return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: `K${k.knowledge.id}@${k.revision.id}`, supports: [], reason: "Deliberate retirement for hard budgets" }], skipped: [] } }] };
+};
+
+test("32f: independently eligible N/C/D overlap; each phase is used once with no fourth round", async () => {
+  const h = host({ ...quiet, ...windows(100, 1, 1) });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await turns(h, 1); noted(h, 10); await turns(h, 2, "NEW"); knowledge(h);
+    const inFlight = new Set<string>();
+    h.provider(async c => {
+      const kind = c.systemPrompt?.startsWith("# Dreamer") ? "D" : isNoting(c) ? "N" : "C";
+      inFlight.add(kind); if (inFlight.size === 3) release();
+      await held;
+      return kind === "N" ? notes(c, "concurrent new fact remains pending " + "word ".repeat(100)) : kind === "C" ? consolidates(h, c) : archive(h);
+    });
+    const attempt = compact(h);
+    await vi.waitFor(() => expect([...inFlight].sort()).toEqual(["C", "D", "N"]));
+    expect(await attempt).toBeUndefined(); // new N facts missed the already-used C batch
+    expect(runs(h).map(r => r.kind).sort()).toEqual(["consolidation", "dreaming", "noting"]);
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
+  } finally { release(); await h.dispose(); }
+});
+
+test("32f: exactly three real rounds cover N enables C enables D, then stop", async () => {
+  const h = host({ ...quiet, ...windows(100, 1, 1) });
+  try {
+    await turns(h, 1);
+    const starts: string[] = [];
+    h.provider(async c => {
+      if (isNoting(c)) { starts.push("N"); return notes(c, "new evidence " + "word ".repeat(6000)); }
+      if (c.systemPrompt?.startsWith("# Dreamer")) { starts.push("D"); return archive(h); }
+      starts.push("C");
+      if (c.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "memory").length >= 2) return reply("Done.");
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "create", name: "memory", arguments: { operations: [{ op: "create", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: facts(h).map(f => `F${f.id}`), topics: [], reason: "new durable evidence" }], skipped: [] } }] };
+    });
+    const result = await compact(h);
+    expect([...new Set(starts)]).toEqual(["N", "C", "D"]);
+    expect(runs(h).map(r => r.kind)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect(runs(h).every(r => r.outcome === "success")).toBe(true);
+    expect(result.compaction.summary).toBeTruthy();
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
   } finally { await h.dispose(); }
 });

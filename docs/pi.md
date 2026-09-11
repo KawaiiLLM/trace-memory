@@ -600,22 +600,26 @@ processing receipt.
 
 ### Bounded recovery inside the hook (28b)
 
-A required window over budget is the one case that starts memory work from a compaction — one
-bounded recovery operation attached to this attempt, not a second scheduler. The handler is
-asynchronous, and Pi awaits it (`extensions/runner.js:632`):
+Recovery starts only when the sum of required knowledge/facts/Raw excesses above their fixed
+20k/10k/10k bases exceeds the shared 10k allowance. A covered base excess launches no worker.
+Each useful phase must also pass its existing `taskEligibility` check: pending Raw ≥10k,
+pending facts ≥5k, or pending knowledge-change weight ≥5k at defaults (configured thresholds
+and retained Dreamer retry eligibility are preserved). Overflow is not eligibility.
+Pi awaits this one bounded operation inside its asynchronous hook:
 
 ```text
 freeze (the selected path, its pending entries, its initially applicable pending facts)
-  -> allocate -> `over`? -> one Noting for the Raw window and/or one Consolidation for the
-     facts window, launched together when both are over
-  -> await -> reallocate, which is how committed progress is re-read (nothing is subtracted
-     because a task merely ran)
-  -> facts now over with Consolidation still unused? -> run it once -> reallocate
+  -> allocate -> shared allowance insufficient? -> admit unused eligible N/C/D phases
+     for the overflowing Raw/facts/knowledge windows, independently and concurrently
+  -> await -> reallocate from committed progress and exact processed versions; no launch credit
+  -> still over? -> recheck unused phases (N can enable C, C can enable D); at most three rounds
   -> persist the replacement with its carrier, or delegate to Pi with the reason
 ```
 
-**One use per phase per attempt**, whatever that use ended as: two rounds are the whole shape
-the rule needs (28 amendment 1 — one flag per phase plus the promises the host already holds).
+**One use per phase per attempt**, including compatible reuse: at most three rounds cover the
+N→C→D dependency chain, with no fourth round or phase restart. Dreamer's 50 tool rounds and one
+system repair remain one task. No eligible unused phase or useful compatible wait means bounded
+native fallback, never waiting for future foreground activity.
 Each task is one ordinary bounded batch admitted through `attemptPhase`: subagent mode on the
 configured phase model, at the levels admission freezes (26d), in a child whose own automatic
 compaction is off (27b), so a recovery worker can never compact recursively and never forks the
@@ -626,6 +630,7 @@ against `noting.batchTokens` and would refuse every batch an overflowing Raw win
 ids are allocated in order, so the ceiling is the frozen set minus whatever gets noted. The
 Consolidation allowance is the frozen pending facts plus the facts committed by the exact
 Noting task this operation launched or compatibly reused; unrelated task outputs never join it.
+Dreamer freezes its exact retained event/family range at admission through the existing worker.
 
 **Slots, claims and reuse.** The executor's one slot per phase is unchanged, but its entry now
 carries the task's target and frozen boundary beside its promise. A compatible task — same
@@ -634,7 +639,9 @@ use (28 amendment 2), because its commits are exactly what the reallocation read
 slot holding anything else is waited out as capacity: not counted as progress, not cancelled,
 and its claim is never taken. After that capacity wait, the new occupant is checked once: a
 compatible task is reused; another unrelated owner ends this recovery opportunity without
-spending the phase allowance or reporting recovery. There is no repeated capacity queue.
+spending the phase allowance or reporting recovery. Eligibility is rechecked before admission
+after the wait. Dreamer reuse checks the retained range identity, exact target path and project.
+C/D share no global seat. There is no repeated capacity queue.
 A foreign claim on the target refuses this task at admission as
 it refuses any other. The awaited phase is named through the existing `ui.notify` lines and the
 footer's own running indicator; there is no second dialog and no wait loop.
@@ -647,12 +654,14 @@ touches nothing else; cancelling a reused wait cancels the wait, never the task.
 compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted (`:1509`,
 `:1770`): nothing is published, and no native fallback is started, because cancellation is not
 a capacity failure. Committed progress — an explicit empty Noting commit included (26a) —
-survives. A worker failure keeps its run audit and delegates only once the other task is
-terminal, which awaiting both settles by construction. If the selected path moved while
-recovery ran, the attempt is not retargeted: it delegates, and nothing prepared for the old
-path is published into the new one. Enrollment is checked again before reallocation and
-publication: `/trace off` during recovery supplies no plugin override, never an empty custom
-replacement.
+survives. After a failure, all admitted work settles and material is remeasured: a fitting custom
+replacement may succeed with the diagnostic, otherwise native compaction takes over. A third
+terminal business failure disables the target through the existing idempotent execution
+settlement; multiple waiters count no extra failures. Recovery then takes the native failure
+route, never an empty disabled-memory custom result; user cancellation still takes precedence.
+The final coherent reprice checks exact processed versions and the selected path/project binding.
+A changed binding cannot publish into a sibling or another project, and newly required knowledge
+cannot hide behind an earlier fit. `/trace off` likewise supplies no custom replacement.
 
 All three of Pi's automatic triggers reach this sequence — after `agent_end`
 (`agent-session.js:1634`), before prompt submission (`:891`) and between tool rounds (`:274`),
