@@ -532,10 +532,12 @@ function object(text: string | null): Record<string, unknown> | null {
 }
 const string = (value: unknown): string => typeof value === "string" ? value : value == null ? "" : JSON.stringify(value);
 
-/** An inherited-context index is framing, not another Raw body or evidence receipt. It uses the
- * same parts and exact labels, sealed at their honest omission skeleton, without a second formatter. */
-export function renderEntryIndex(entry: SourceEntry, profile: EntryProfile, resultText: ResultExtractor = rawResultText): string {
-  return renderEntry(entry, profile, resultText, () => "floor").content;
+/** Identity mapping only, never another Raw preview. Fragment labels share persisted source
+ * authority with rendering and citations; repeated text blocks need only one index address. */
+export function renderEntryIndex(entry: SourceEntry): string {
+  const addresses = [...new Set(sourceBlocks(entry).filter(block => block.kind !== "thinking")
+    .map(block => fragmentAddress(entry, block)))];
+  return `[${entryAddress(entry)}] ${entry.role}: ${addresses.join(", ")}`;
 }
 
 /** How a stored run mode reads (ticket 19 "Historical truth"). New work records `fork` (inherited
@@ -580,23 +582,23 @@ export function finish(rendered: Rendered): string {
 
 /** Trace-only content ceiling. Automatic facts/knowledge leave this unbounded; identity and
  * evidence metadata are never truncated to make a semantic body appear complete. */
-export function renderSemantic(prefix: string, body: string, suffix: string, cap = Infinity): string {
-  const whole = prefix + body + suffix;
+export function renderSemantic(prefix: string, body: string, suffix: string, cap = Infinity, frame: (text: string) => string = text => text): string {
+  const whole = frame(prefix + body + suffix);
   if (tokens(whole) <= cap) return whole;
   const cut = cutUnits(body, false);
   const build = (kept: number) => {
     const { head, tail, omitted } = halves(cut, kept);
-    return prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix;
+    return frame(prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix);
   };
   if (tokens(build(0)) > cap) throw new Error("semantic item capacity cannot hold identity and evidence metadata");
   return build(fit(build, cut.list.length, cap));
 }
-export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity): string {
+export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity, frame: (text: string) => string = text => text): string {
   const edges = relations.map((r) => r.fromFact === fact.id
     ? `${r.kind} F${r.toFact} ${r.strength}` : `inbound ${r.kind} F${r.fromFact} ${r.strength}`);
   return renderSemantic(`[F${fact.id}] ${fact.createdAt} [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`, fact.text,
     `${edges.length ? ` · ${edges.join(" · ")}` : ""}\n` + [...(fact.quote === null ? [] : [`  quote: ${JSON.stringify(fact.quote)}`]),
-      `  source: ${fact.source.join(", ")}`].join("\n"), cap);
+      `  source: ${fact.source.join(", ")}`].join("\n"), cap, frame);
 }
 
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
@@ -666,10 +668,9 @@ export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, 
 
 export interface NegationStep { fact: Fact; relations: FactRelation[]; depth: number; terminal: boolean }
 export function renderNegationWalk(steps: NegationStep[], cap = Infinity): string {
-  return steps.flatMap(({ fact, relations, depth, terminal }) => [
-    ...renderFact(fact, relations, cap).split("\n").map((line) => "  ".repeat(depth) + line),
-    ...(terminal ? ["  ".repeat(depth + 1) + "no later strong negation recorded"] : []),
-  ]).join("\n");
+  return steps.map(({ fact, relations, depth, terminal }, index) => renderFact(fact, relations, cap, text =>
+    (index ? "\n" : "") + text.split("\n").map(line => "  ".repeat(depth) + line).join("\n")
+      + (terminal ? `\n${"  ".repeat(depth + 1)}no later strong negation recorded` : ""))).join("");
 }
 
 // A block joins its parts with one separator and the estimator prices that separator at one token, so
@@ -761,8 +762,11 @@ export function factGroupLayout<T extends Pick<Fact, "id" | "turnId">>(facts: re
   return ordered.flatMap(({ group, header }) => group.sort((a, b) => a.id - b.id)
     .map((fact, index) => ({ fact, header: index === 0 ? `${header}\n` : "" })));
 }
-export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact) => string, turns: FactTurns): string[] {
-  return factGroupLayout(facts, turns).map(({ fact, header }) => header + line(fact));
+export function renderFactGroups(facts: readonly Fact[], line: (fact: Fact, frame: (text: string) => string) => string, turns: FactTurns, preview = false): string[] {
+  return factGroupLayout(facts, turns).map(({ fact, header }, index) => preview
+    // The enclosing list emits the separator; measure it with its owning item before removing it.
+    ? line(fact, text => (index ? "\n" : "") + header + text).slice(index ? 1 : 0)
+    : header + line(fact, text => text));
 }
 
 /** Selection follows the caller's history priority, not display order. Charge each group heading

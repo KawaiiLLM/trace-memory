@@ -98,13 +98,13 @@ test("19b 2026-09-08 for ruling 08:53: core freezes one material; the parts an i
   await memory.noting({ sessionId: s.id, branch: "b2", headTurnId: t.id, mode: "subagent" });
   const [branch, subagent] = calls;
   expect(branch!.mode).toBe("fork");
-  // The premise repair supplies the missing final reply and the source index as their own parts.
-  expect(branch!.material.head).toBe(`[T${t.id}#E2@text] assistant: 好的。`);
+  // This older fixture ends with a result: its earlier assistant text is not a missing head reply.
+  expect(branch!.material.head).toBeNull();
   expect(branch!.material.sources).toEqual([
-    `[T${t.id}#E1@text] user:\n[... 13 characters truncated]`,
-    `[T${t.id}#E2@text] assistant:\n[... 3 characters truncated]`,
-    `[T${t.id}#E3@call-1] Bash(...)\n[... 12 characters truncated]`,
-    `[T${t.id}#E4@call-1] Bash success:\n[... 29 characters truncated]`]);
+    `[T${t.id}#E1] user: T${t.id}#E1@text`,
+    `[T${t.id}#E2] assistant: T${t.id}#E2@text`,
+    `[T${t.id}#E3] assistant: T${t.id}#E3@call-1`,
+    `[T${t.id}#E4] toolResult: T${t.id}#E4@call-1`]);
   // 29b: one builder, not one material. The frozen target is the same in both modes; the parts differ
   // by exactly what the child could already see, so the fresh child gets the Raw and no repair parts.
   expect(subagent!.material.head).toBe(null);
@@ -378,29 +378,29 @@ test("2026-09-07: branch input premise repair appends the missing final reply an
     visible: visibleTarget(memory, s.id, "main", head.id) });
   const input = calls[0]!;
   expect(input.mode).toBe("fork");
-  expect(input.material.head).toBe(`[T${head.id}#E2@text] assistant: ${head.assistantText}`);
+  expect(input.material.head).toBeNull(); // The last native entry is a result, not E2's earlier reply.
   expect(input.material.sources).toEqual([
-    `[T2#E1@text] user:\n[... 78 characters truncated]`,
-    `[T2#E2@text] assistant:\n[... 13 characters truncated]`,
-    `[T3#E1@text] user:\n[... 8 characters truncated]`,
-    `[T3#E2@text] assistant:\n[... 99 characters truncated]`,
-    `[T3#E3@call-2] Bash(...)\n[... 5 characters truncated]`,
-    `[T3#E4@call-2] Bash success:\n[... 19 characters truncated]`]);
-  expect(input.material.head).not.toContain("PRIVATE USER TAIL");
+    `[T2#E1] user: T2#E1@text`,
+    `[T2#E2] assistant: T2#E2@text`,
+    `[T3#E1] user: T3#E1@text`,
+    `[T3#E2] assistant: T3#E2@text`,
+    `[T3#E3] assistant: T3#E3@call-2`,
+    `[T3#E4] toolResult: T3#E4@call-2`]);
+  expect(input.text).not.toContain("PRIVATE USER TAIL");
   expect(input.material.sources.join("\n")).not.toContain("PRIVATE TOOL RESULT");
 });
 
-test("33: a branch source index uses shared entry floors, not a separate 60-character preview",  async () => {
+test("33: a branch source index uses shared identities, not a separate body preview",  async () => {
   const { s } = session();
   const t = memory.store.appendTurn({ sessionId: s.id, parentTurnId: null, kind: "turn",
     userPrompt: "😀".repeat(59) + "\nTAIL", assistantText: null, startedAt: time });
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "x".repeat(60) + "\nTAIL", result: null, status: "attempted" });
   await memory.noting({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "fork",
     visible: visibleTarget(memory, s.id, "main", t.id) });
-  expect(calls[0]!.material.head).toBe(null);
+  expect(calls[0]!.material.head).toContain("[T2#E2@call-2] Bash(");
   expect(calls[0]!.material.sources).toEqual([
-    "[T2#E1@text] user:\n[... 64 characters truncated]",
-    "[T2#E2@call-2] Bash(...)\n[... 65 characters truncated]"]);
+    "[T2#E1] user: T2#E1@text",
+    "[T2#E2] assistant: T2#E2@call-2"]);
   expect(calls[0]!.material.sources.join("\n")).not.toContain("TAIL");
 });
 

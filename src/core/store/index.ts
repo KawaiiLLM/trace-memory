@@ -1936,15 +1936,16 @@ export class Store {
    * call loads that Turn instead of the whole session. The order — by entry id — is the same.
    * 23b: `branch` answers from that branch's selected native ancestry instead, in the branch's own
    * order, so an occurrence only a sibling branch selected is not part of this branch's trace. A
-   * branch that selected none of the asked-for entries does not restrict them: explicit reads stay
-   * unrestricted (17a "shared-call fork results retain both originals"). Neither form loads a Raw
-   * payload to decide membership. */
+   * stored path restricts membership even when its selection is empty. Only an unbound read or
+   * legacy data without a stored path falls back to session occurrences. Neither form loads Raw
+   * payloads to decide membership. */
   listSourceEntries(sessionId: number, turnId?: number, branch?: string): SourceEntry[] {
     const selected = branch === undefined ? [] : this.db.prepare(
       `SELECT e.id FROM source_paths p JOIN json_each(p.entry_ids) j JOIN source_entries e ON e.id = j.value
        WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`)
       .all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
-    const rows = selected.length ? selected
+    const hasPath = branch !== undefined && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
+    const rows = hasPath ? selected
       : this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id")
         .all(sessionId, turnId ?? null, turnId ?? null) as { id: number }[];
     return rows.map(r => this.getSourceEntry(r.id)!);
@@ -1980,6 +1981,9 @@ export class Store {
     const rows = (row ? this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value ORDER BY j.key").all(row.entry_ids)
       : this.db.prepare("SELECT id, turn_id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId)) as { id: number; turn_id: number }[];
     return rows.filter(r => turns.has(r.turn_id)).map(r => r.id);
+  }
+  sourceHeadEntryId(sessionId: number, branch: string, headTurnId: number, prepared?: PathSnapshot): number | undefined {
+    return this.pathEntryIds(sessionId, branch, headTurnId, prepared).at(-1);
   }
   sourcePath(sessionId: number, branch: string, headTurnId: number): SourceEntry[] {
     return this.pathEntryIds(sessionId, branch, headTurnId).map(id => this.getSourceEntry(id)!);

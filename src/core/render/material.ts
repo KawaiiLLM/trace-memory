@@ -81,12 +81,12 @@ export interface NotingMaterial extends SharedMaterial {
    * so this is a subset of the frozen target and is empty when the whole target is visible. */
   entries: { id: number; view: string }[];
   facts: string[];
-  /** The head turn's final assistant reply, rendered; null when this run does not restate it. 29b:
+  /** The selected path's last native entry, when it is an assistant reply in this batch; otherwise null. 29b:
    * it is restated only when the head entry's own body was withheld as visible, because the captured
    * request a fork inherits stops before that reply. When the Raw block carries the head entry, the
    * reply is in it already and a second copy is the duplicate parent 29 forbids. */
   head: string | null;
-  /** One source-index line per turn of the frozen range, in range order. 29b: emitted only when some
+  /** One identity-only source-index line per entry of the frozen range, in source order. 29b: emitted only when some
    * target entry's body was withheld — the mandatory source mapping that identifies a body the child
    * must find in its own context. With the whole target supplied, the Raw block carries those
    * addresses itself and the index would be a second copy of them. */

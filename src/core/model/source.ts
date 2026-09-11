@@ -41,14 +41,35 @@ export function sourceKey(address: string): string {
   const base = `T${parsed.turn}#E${parsed.entries[0]!.from}`, selector = parsed.selector;
   return selector?.kind === "call" ? `${base}@${callSelector(selector.id)}` : address;
 }
-export function exactSource(entry: SourceEntry, address: string): boolean {
+export interface SourceResolution { entry: SourceEntry; blocks: SourceBlock[] }
+/** Resolve once against a writer's path. The returned blocks serve eligibility, immutable binding
+ * and completion checks alike. Legacy role aliases select text, not their entry's dispatches. */
+export function resolveSource(entries: readonly SourceEntry[], address: string): SourceResolution[] {
   let parsed;
-  try { parsed = parseTurnAddress(address); } catch { return false; }
-  if (!parsed || parsed.session !== undefined || parsed.turn !== entry.turnId || parsed.legacy || parsed.entries?.length !== 1
-    || parsed.entries[0]!.to !== undefined || parsed.entries[0]!.from !== entry.entryOrdinal) return false;
-  const selection = parsed.selector;
-  if (!selection) return preciseSources(entry).includes(entryAddress(entry));
-  if (!entry.blocks || selection.kind === "role" || selection.kind === "facts") return false;
-  if (selection.kind === "call") return sourceBlocks(entry).some(block => (block.kind === "call" || block.kind === "result") && block.call.callId === selection.id);
-  return preciseSources(entry).includes(`${entryAddress(entry)}@${selection.kind}`);
+  try { parsed = parseTurnAddress(address); } catch { return []; }
+  if (!parsed || parsed.session !== undefined) return [];
+  const { turn, legacy, selector, entries: selection } = parsed;
+  if (!legacy && (selection?.length !== 1 || selection[0]!.to !== undefined)) return [];
+  return entries.flatMap(entry => {
+    if (entry.turnId !== turn) return [];
+    let blocks = sourceBlocks(entry).filter(block => block.kind !== "marker");
+    if (legacy) {
+      if (!legacySources(entry).includes(address)) return [];
+      blocks = blocks.filter(block => legacy === "user" || legacy === "assistant" ? block.kind === "text"
+        : (block.kind === "call" || block.kind === "result") && legacy === `t${block.call.ordinal}`);
+    } else {
+      if (entry.entryOrdinal !== selection![0]!.from) return [];
+      if (selector) {
+        if (!entry.blocks) return [];
+        blocks = blocks.filter(block => selector.kind === "call"
+          ? (block.kind === "call" || block.kind === "result") && block.call.callId === selector.id
+          : selector.kind === "text" ? block.kind === "text" || block.kind === "result" && blockText(block).length > 0
+          : selector.kind === "thinking" && block.kind === "thinking");
+      }
+    }
+    return blocks.length ? [{ entry, blocks }] : [];
+  });
+}
+export function exactSource(entry: SourceEntry, address: string): boolean {
+  return !/#(?:user|assistant|t\d+)$/.test(address) && resolveSource([entry], address).length > 0;
 }

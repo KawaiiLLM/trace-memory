@@ -69,8 +69,9 @@ test("29b 2026-09-10: a fork whose whole target is visible injects no Raw and ke
     visible: visibleTarget(memory, s.id, "main", t.id) });
   const input = calls[0]! as NotingAgentInput;
   expect(input.text).toBe(["Recent facts (by Turn):", `[T1] ${time} (selected facts)\n${memory.trace("F1")}`,
-    `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`, `[T${t.id}#E2@text] assistant: 好的。`,
-    `Sources:\n[T${t.id}#E1@text] user:\n[... 13 characters truncated]\n[T${t.id}#E2@text] assistant:\n[... 3 characters truncated]\n[T${t.id}#E3@call-1] Bash(...)\n[... 12 characters truncated]\n[T${t.id}#E4@call-1] Bash success:\n[... 29 characters truncated]`].join("\n\n"));
+    `Range: S${s.id}/T${t.id}..S${s.id}/T${t.id}`,
+    `Sources:\n[T${t.id}#E1] user: T${t.id}#E1@text\n[T${t.id}#E2] assistant: T${t.id}#E2@text\n[T${t.id}#E3] assistant: T${t.id}#E3@call-1\n[T${t.id}#E4] toolResult: T${t.id}#E4@call-1`].join("\n\n"));
+  expect(input.material.head).toBeNull(); // This synthetic sequence ends with a result, not E2.
   // The raw turns and the injected knowledge are already in that conversation.
   expect(input.text).not.toContain("Raw:");
   expect(input.text).not.toContain("<knowledge>");

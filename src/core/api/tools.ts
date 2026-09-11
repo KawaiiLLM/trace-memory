@@ -1,6 +1,4 @@
-import { sourceAddresses } from "../render/index.ts";
-import { exactSource, sourceBlocks } from "../model/source.ts";
-import { parseTurnAddress } from "../model/address.ts";
+import { resolveSource, type SourceResolution } from "../model/source.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
@@ -118,13 +116,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
     : context.kind === "dreaming" ? dreaming!.path : review!.frozen.path;
   const sourceTurns = store.pathTurns(path);
-  const matchesSource = (entry: NonNullable<ReturnType<Store["getSourceEntry"]>>, source: string) => exactSource(entry, source) || sourceAddresses(entry).includes(source);
-  const manualSourceEligible = (source: string) => store.sourcePath(session.id, context.branch, path.headTurnId!).some(e => matchesSource(e, source));
-  const frozenEntries = context.kind === "noting" ? (context.entryIds ?? store.sourcePath(session.id, context.branch, path.headTurnId!).filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
-  const frozenSources = new Set(frozenEntries.flatMap(id => { const entry = store.getSourceEntry(id)!; return sourceAddresses(entry); }));
-  const frozenPath = new Set(context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!).map(e => e.id) : []);
-  const sourceEligible = (source: string) => (frozenSources.has(source) || frozenEntries.some(id => exactSource(store.getSourceEntry(id)!, source))) && !store.sourcePath(session.id, context.branch, path.headTurnId!)
-    .some(e => !frozenPath.has(e.id) && sourceAddresses(e).includes(source));
+  const initialPath = context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
+  const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
+  const frozenIds = new Set(frozenEntries), frozenPath = new Set(initialPath.map(e => e.id));
   if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
     if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
@@ -142,19 +136,35 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
+    // One live path scan per submission, not per citation or validation phase. A later legacy
+    // occurrence outside the admitted path still invalidates an ambiguous frozen citation.
+    const currentPath = store.sourcePath(session.id, context.branch, path.headTurnId!);
+    const candidates = context.kind === "noting" ? initialPath.filter(entry => frozenIds.has(entry.id)) : currentPath;
+    const currentIds = new Set(currentPath.map(entry => entry.id));
+    const authority = [...currentPath, ...candidates.filter(entry => !currentIds.has(entry.id))];
+    const resolution = new Map<string, SourceResolution[]>();
+    const resolve = (source: string) => {
+      if (!resolution.has(source)) {
+        const matches = resolveSource(authority, source);
+        resolution.set(source, context.kind !== "noting" ? matches : matches.some(hit => !frozenPath.has(hit.entry.id))
+          ? [] : matches.filter(hit => frozenIds.has(hit.entry.id)));
+      }
+      return resolution.get(source)!;
+    };
     const commits: FactCommitInput[] = [];
     const results = input.facts.map((raw, index) => {
       const errors: string[] = [];
       const fact = validateNotingFact(`facts[${index}]`, raw, errors);
       if (fact) {
         let first = 0;
+        const cited: SourceResolution[] = [];
         if (Array.isArray(fact.source)) for (const source of fact.source) {
-          let parsed: ReturnType<typeof parseTurnAddress> = null;
-          try { parsed = typeof source === "string" ? parseTurnAddress(source) : null; } catch { /* Invalid source becomes an atomic refusal. */ }
-          const turn = parsed ? store.getTurn(parsed.turn) : null;
-          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || (context.kind === "manual" && !manualSourceEligible(source)) || (context.kind === "noting" && !sourceEligible(source)) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
+          const matches = resolve(source);
+          const turn = matches.length ? store.getTurn(matches[0]!.entry.turnId) : null;
+          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
           else {
             if (!first) first = turn.id;
+            cited.push(...matches);
             // Membership and actual block existence above are authoritative, never aggregate Turn text.
           }
         }
@@ -168,18 +178,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           }
         }
         if (first) {
-          // Bind the citations to the entries they resolve to in the writer's set (review 2026-09-08).
-          const candidates = context.kind === "noting" ? frozenEntries.map(id => store.getSourceEntry(id)!) : store.sourcePath(session.id, context.branch, path.headTurnId!);
-          const entryIds = candidates.filter(e => fact.source.some(source => matchesSource(e, source))).map(e => e.id);
-          const cited = candidates.filter(entry => entryIds.includes(entry.id));
-          if (fact.status === "completed" && cited.length && cited.every(entry => entry.role === "assistant"
-            && fact.source.filter(source => matchesSource(entry, source)).every(source => {
-              const parsed = parseTurnAddress(source);
-              return parsed?.selector?.kind === "call" || parsed?.entries && !parsed.selector
-                && sourceBlocks(entry).some(block => block.kind === "call")
-                && sourceBlocks(entry).every(block => block.kind === "call" || block.kind === "marker");
-            })))
-            errors.push("completed requires result evidence, not only an assistant tool-call dispatch; cite the separate toolResult entry");
+          const entryIds = candidates.filter(entry => cited.some(hit => hit.entry.id === entry.id)).map(entry => entry.id);
+          const results = new Set(cited.flatMap(({ entry, blocks }) => blocks.flatMap(block => block.kind === "result" ? [`${entry.turnId}:${block.call.callId}`] : [])));
+          if (fact.status === "completed" && cited.some(({ entry, blocks }) => blocks.some(block => block.kind === "call" && !results.has(`${entry.turnId}:${block.call.callId}`))))
+            errors.push("completed requires result evidence for each cited dispatch; cite the corresponding toolResult on this path, or use an explicit text source for a text deliverable or reported/dispatched status");
           commits.push({ ...fact, turnId: first, createdAt: store.getTurn(first)!.startedAt, entryIds });
         }
       }

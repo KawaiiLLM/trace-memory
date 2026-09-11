@@ -331,7 +331,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             const whole = knowledgeLine(value, knowledge.find(k => k.value.revision.id === value.revision.id)!.marks);
             const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
             return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), profile.entryTokens);
-          }).groups), ...renderFactGroups(facts.map(f => f.fact), fact => renderFact(fact, relations.get(fact.id)!, profile.entryTokens), times)].filter(Boolean).join("\n");
+          }).groups), ...renderFactGroups(facts.map(f => f.fact), (fact, frame) => renderFact(fact, relations.get(fact.id)!, profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
         }
         return prepare(target, { ...options, profile }, reads);
       };
@@ -349,7 +349,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
-      .flatMap(unit => ("fact" in unit ? (unit.header ?? "") + renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens) : unit.render()).split("\n"));
+      .flatMap(unit => ("fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens, text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render()).split("\n"));
     return page({ items, format }, options, "", reads);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).

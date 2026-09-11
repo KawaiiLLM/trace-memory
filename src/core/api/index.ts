@@ -581,13 +581,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     const part = parsed.legacy;
     if (part && display.tool !== undefined && part !== `t${display.tool}`) throw new Error("source suffix conflicts with tool parameter");
     if ((parsed.entries || parsed.selector) && display.tool !== undefined) throw new Error("tool parameter conflicts with hierarchical selection; use an exact @toolCallId");
-    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: !parsed.selector && parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
+    const options: TurnOptions = { tool: display.tool, full: display.full, part, selector: parsed.selector, blocks: parsed.entries?.length === 1 && parsed.entries[0]!.to === undefined };
     const turn = store.getTurn(parsed.turn);
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     if (parsed.selector?.kind === "facts") {
       const facts = store.listTurnFacts(turn.id), relations = store.listFactRelationsOf(facts.map(f => f.id)), times = store.factTurnTimes(facts);
-      return () => renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? [], itemCap), times).join("\n");
+      return () => renderFactGroups(facts, (f, frame) => renderFact(f, relations.get(f.id) ?? [], itemCap, frame), times, true).join("\n");
     }
     const calls = store.listToolCalls(turn.id);
     if (options.tool !== undefined && !calls.some((c) => c.ordinal === options.tool)) throw new Error(`tool #t${options.tool} does not exist in ${target}`);
