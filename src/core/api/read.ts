@@ -501,17 +501,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";
-      // Every pending entry, not Noting's next batch (review 2026-09-08: the batch cap silently cut the tail).
-      // Newest kept whole within the episodic budget; older ones are named in a receipt, never dropped silently.
+      // Carry is optional, unlike compact's required pending Raw. Consider the whole pending set,
+      // not Noting's next batch, and keep a newest whole suffix under the shared view profile.
+      // Charge the Raw title, separators and omission receipt too; even the newest entry may not fit.
+      const title = "Pending raw:";
       const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render, resultText));
-      let kept = pending.length, used = 0;
-      for (let i = pending.length - 1; i >= 0; i--) {
-        used += tokens(pending[i]!.content);
-        if (used > config.render.episodicBlockTokens && i < pending.length - 1) { kept = pending.length - 1 - i; break; }
-      }
-      const raw = pending.slice(pending.length - kept);
-      const omitted = pending.length - kept;
-      if (omitted) raw.push({ content: "", receipts: [`[... ${omitted} earlier pending entries beyond the carry budget truncated; read them with trace]`], omitted: [] });
+      const costs = pending.map(view => charge([view.content, ...view.receipts]));
+      let omitted = 0, used = charge([title]) + costs.reduce((sum, cost) => sum + cost, 0);
+      const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with trace]`] : [];
+      while (used + charge(receipt()) > config.render.episodicBlockTokens && omitted < pending.length)
+        used -= costs[omitted++]!;
+      if (used + charge(receipt()) > config.render.episodicBlockTokens)
+        throw new Error(`Branch carry capacity: Raw framing and omission receipt exceed render.episodicBlockTokens (${config.render.episodicBlockTokens})`);
+      const raw = pending.slice(omitted);
       const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));
@@ -520,9 +522,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
         "Facts:", ...factGroups(facts), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
-        "Pending raw:", ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts)].join("\n");
-      // Escape payload markup so injected content cannot close or nest the carry boundary.
-      return xmlBlock("branch_carry", content); // like every block: tags delimit, lines are byte-for-byte trace lines (ruling 15:14)
+        title, ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts), ...receipt()].join("\n");
+      return xmlBlock("branch_carry", content); // Tags delimit; content stays byte-identical to shared trace lines.
     },
     search: (query: string, scope: SearchScope = "all", options: ListingOptions & { sessionId?: number } = {}): string => {
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
