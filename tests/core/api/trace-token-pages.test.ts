@@ -117,6 +117,29 @@ test("rejected continuations do not consume trace cursors or loosen frozen budge
   expect(drainTrace(memory, first, options).joined).toBe(rendered(turn.id, true, "t1"));
 });
 
+test.each(["facade", "tool"])("%s preserves explicit-cursor address compatibility and priority", entry => {
+  const { sessionId, turn } = corpus();
+  const address = `T${turn.id}#t1`;
+  const trace = memory.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" }).find(t => t.name === "trace")!;
+  const read = (address: string, cursor?: string) => entry === "facade"
+    ? memory.trace(address, { sessionId, full: true, cursor }) : trace.execute({ address, full: true, cursor });
+  let page = read(address), joined = "", fragment = false, pages = 0;
+  const placeholders = [address, "unused placeholder", "", "K1,T1", "cursor=bogus"];
+  for (;;) {
+    expect(page).not.toContain("rejected:");
+    const parsed = tracePage(page);
+    joined += joined && !fragment ? `\n${parsed.body}` : parsed.body;
+    fragment = parsed.fragment;
+    if (!parsed.cursor) break;
+    expect(trace.execute({ cursor: parsed.cursor })).toContain("rejected: address must be a string");
+    // Explicit options.cursor retains priority over a standalone address cursor.
+    page = read(placeholders[pages++ % placeholders.length]!, parsed.cursor);
+    expect(pages).toBeLessThan(100);
+  }
+  expect(pages).toBeGreaterThanOrEqual(placeholders.length);
+  expect(joined).toBe(rendered(turn.id, true, "t1"));
+});
+
 test.each([64, 80, 96, 128])("tiny shared budget %s advances losslessly with Unicode and escapes", maxTokens => {
   const { turn } = corpus();
   const options = { full: true, maxTokens };
@@ -147,12 +170,22 @@ test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact k
   const trace = tools.find(t => t.name === "trace")!, search = tools.find(t => t.name === "search")!, write = tools.find(t => t.name === "memory")!;
   const edit = () => JSON.parse(write.execute({ operations: [{ op: "update", id: "K1@1", text: "updated", category: "mechanism", scope: "session",
     supports: ["F1"], reason: "test", topics: [] }], skipped: [] }));
-  let page = trace.execute({ address, full: true }), pages = 0;
+  const expected = wholeTrace(memory, address, { full: true, sessionId, branch: "main", headTurnId: turn.id });
+  let page = trace.execute({ address, full: true }), pages = 0, joined = "", fragment = false;
   for (;;) {
     expect(page).not.toContain("rejected:");
     expect(tokens(page)).toBeLessThanOrEqual(2000);
-    const cursor = tracePage(page).cursor;
+    const parsed = tracePage(page), cursor = parsed.cursor;
+    joined += joined && !fragment ? `\n${parsed.body}` : parsed.body;
+    fragment = parsed.fragment;
     if (!cursor) break;
+    // Exercise every pending position, including the continuation that completes the K read.
+    // Both entry points must refuse before consuming the real cursor or delivering a handle.
+    for (const invalid of ["K1,cursor=bogus", `cursor=${cursor},K1`, " K1 , cursor=bogus "]) {
+      expect(() => memory.trace(invalid, { sessionId, cursor })).toThrow(/continue a cursor alone/);
+      expect(trace.execute({ address: invalid, cursor })).toContain("rejected: continue a cursor alone");
+      expect(edit().results[0]).toContain("knowledge was not read");
+    }
     expect(edit().results[0]).toContain("knowledge was not read");
     expect(search.execute({ query: "", cursor })).toContain("search cannot continue a trace cursor");
     expect(edit().results[0]).toContain("knowledge was not read");
@@ -160,6 +193,7 @@ test.each(["K1", "K1@1", "F1-F1,K1@1,T1#t1"])("token-paged %s grants its exact k
     expect(++pages).toBeLessThan(100);
   }
   expect(pages).toBeGreaterThan(3);
+  expect(joined).toBe(expected);
   expect(edit().committed[0]).toMatchObject({ knowledgeId: 1, commit: 2 });
 });
 

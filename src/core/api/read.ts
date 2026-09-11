@@ -273,15 +273,14 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     return { from: first, to: last };
   };
   const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
+    const targets = address.split(",").map((a) => a.trim());
+    // Validate the request shape before either cursor entry point can consume a page.
+    if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     const cursor = /^cursor=(\S+)$/.exec(address.trim());
     if (options.cursor || cursor) return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     options = { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens };
     const reads: KnowledgeRead[] = [];
     const items = store.transaction(() => {
-      const targets = address.split(",").map((a) => a.trim());
-      // A continuation is already one bounded response, not a component to unwrap into a new
-      // unbudgeted comma listing. Refuse before any child can consume its cursor.
-      if (targets.length > 1 && targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
       const intervals = targets.map(factInterval);
       // Freeze only values under the write lock. Renderers close over these values, not queries.
       const named = (target: string): (() => string) => {
