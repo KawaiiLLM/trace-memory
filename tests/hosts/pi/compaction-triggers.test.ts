@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { call, piSession, say, submitted, usage, worker } from "./native-fixture.ts";
-import extension from "../../../src/hosts/pi/index.ts";
+import { call, piSession, say, submitted, usage } from "./native-fixture.ts";
+import { dreamerRecoveryExtension } from "./recovery-fixture.ts";
 
 // Ticket 28 amendment 4: "Pi checks automatic compaction after `agent_end`, before prompt submission
 // and between tool rounds … tests cover all three triggers, not only `agent_end`." These cases run
@@ -19,36 +19,43 @@ import extension from "../../../src/hosts/pi/index.ts";
 // abort controller's `signal` and honours `{cancel: true}` (:1770).
 
 const big = "word ".repeat(4_000);
-/** The real extension, on its own database, with an envelope one turn of Raw cannot fit — so every
- * compaction below reaches 28b's recovery, not just the allocator. */
+const worker = (body: unknown) => JSON.stringify(body).includes("# Dreamer");
+/** The real extension and a temporary DB. The hook seeds eligible knowledge beyond this envelope,
+ * so every compact reaches Dreamer recovery, with small/below-threshold N/C left untouched. */
 const traceMemory = (dir: string) => ({
   dbPath: join(dir, "trace.db"),
   "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000,
-  "render.knowledgeBlockTokens": 1, "compaction.factsTokens": 1_000, "compaction.rawTokens": 1, "compaction.overflowTokens": 50,
+  "render.knowledgeBlockTokens": 100, "compaction.factsTokens": 10_000, "compaction.rawTokens": 10_000, "compaction.overflowTokens": 50,
 });
-const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number } = {}) => {
+const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number; automatic?: boolean } = {}) => {
   const store = mkdtempSync(join(tmpdir(), "trace-memory-triggers-"));
-  const f = await piSession({ extensions: [extension as never], contextWindow: options.contextWindow ?? 200_000,
+  const notices: string[] = [];
+  const observe = (context: any) => ({ ...context, ui: { ...context.ui, notify: (message: string) => notices.push(message) } });
+  const factory = (pi: any) => dreamerRecoveryExtension(join(store, "trace.db"))({ ...pi,
+    on: (name: string, handler: any) => pi.on(name, (event: any, context: any) => handler(event, observe(context))),
+    registerCommand: (name: string, command: any) => pi.registerCommand(name, { ...command,
+      handler: (args: string, context: any) => command.handler(args, observe(context)) }),
+  });
+  const f = await piSession({ extensions: [factory], contextWindow: options.contextWindow ?? 200_000,
     // The threshold is `contextWindow - reserveTokens` (compaction.js:163), so a large reserve makes a
     // tiny session compact while the model still declares a window a memory worker can be admitted on
     // (27a's 10,000-token headroom).
-    compaction: { enabled: true, keepRecentTokens: options.keepRecentTokens ?? 1, reserveTokens: 199_900 }, ...(options.tools ? { tools: options.tools } : {}),
+    compaction: { enabled: options.automatic ?? true, keepRecentTokens: options.keepRecentTokens ?? 1, reserveTokens: 199_900 }, ...(options.tools ? { tools: options.tools } : {}),
     env: { TRACE_MEMORY_CONFIG: JSON.stringify(traceMemory(store)) },
     // A session created after this host's enrollment baseline is enrolled by default (18a), which is
     // what a fresh real session is; the baseline of a fresh agent directory would otherwise be `now`.
     prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")) });
   const dispose = f.dispose;
-  return { ...f, store, dispose: () => { try { dispose(); } finally { rmSync(store, { recursive: true, force: true }); } } };
+  return { ...f, store, notices, dispose: () => { try { dispose(); } finally { rmSync(store, { recursive: true, force: true }); } } };
 };
 
 /** The compaction entries this session persisted, and the memory carrier each one holds (29a). */
 const compactions = (f: Awaited<ReturnType<typeof session>>) =>
   f.manager.getEntries().filter(e => e.type === "compaction") as { summary: string; details?: { traceMemory?: unknown } }[];
 
-/** The recovery Noter's own reply: one fact against a source address of the batch it was given. */
-const noted = (body: Record<string, any>) =>
-  call("note-1", "note", { facts: [{ category: "observation", actor: "user", text: "a recovered fact",
-    source: [/\[(T\d+#user)\]:/.exec(JSON.stringify(body).replace(/\\"/g, '"'))?.[1] ?? "T1#user"] }] });
+/** Dreamer's trusted archive retires the exact seeded version; no fake completion is injected. */
+const noted = (_body: Record<string, any>) =>
+  call("archive-1", "memory", { operations: [{ op: "archive", id: "K1@1", supports: [], reason: "Deliberate budget retirement" }], skipped: [] });
 const scripted = (f: Awaited<ReturnType<typeof session>>, replies: ((signal?: AbortSignal) => Response | Promise<Response>)[]) => {
   let round = 0;
   f.script((body, signal) => {
@@ -63,10 +70,11 @@ test("28 amendment 4: the trigger after agent_end reaches the recovery sequence,
   try {
     scripted(f, [() => say("answered", usage(2_950, 2))]); // usage over the threshold: the post-run check compacts
     await f.session.prompt(`${big} FIRST`);
-    // The hook ran the recovery Noter inside Pi's own compaction, and Pi wrote the result it returned.
-    expect(f.sent.some(body => JSON.stringify(body).includes("Noting (fact extraction)"))).toBe(true);
+    // The hook ran native Dreamer inside Pi's own compaction, and Pi wrote its exact result.
+    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy(); // a custom replacement, not Pi's own summary
+    await completedStatus(f);
   } finally { f.dispose(); }
 });
 
@@ -93,9 +101,10 @@ test("28 amendment 4: the trigger before prompt submission reaches the recovery 
     expect(compactions(f)).toHaveLength(0); // and the aborted reply is skipped after `agent_end`
     const before = f.sent.length;
     await f.session.prompt("THIRD");
-    expect(f.sent.slice(before).some(body => JSON.stringify(body).includes("Noting (fact extraction)"))).toBe(true);
+    expect(f.sent.slice(before).some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
+    await completedStatus(f);
   } finally { f.dispose(); }
 });
 
@@ -116,6 +125,59 @@ test("28 amendment 4: the trigger between tool rounds reaches the recovery seque
     // The compaction happened while preparing the round after the tool result, not after `agent_end`.
     expect(compactions(f)).toHaveLength(1);
     expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
-    expect(f.sent.some(body => JSON.stringify(body).includes("Noting (fact extraction)"))).toBe(true);
+    await completedStatus(f);
+    expect(f.sent.some(body => JSON.stringify(body).includes("# Dreamer"))).toBe(true);
+  } finally { f.dispose(); }
+});
+
+test("32f: manual compact reaches native Dreamer recovery and persists its exact carrier", async () => {
+  const f = await session({ automatic: false });
+  try {
+    scripted(f, [() => say("answered", usage(10, 2))]);
+    await f.session.prompt(`${big} FIRST`);
+    expect(compactions(f)).toHaveLength(0);
+    await f.session.compact();
+    expect(f.sent.some(worker)).toBe(true);
+    expect(compactions(f)).toHaveLength(1);
+    expect(compactions(f)[0]!.details?.traceMemory).toBeTruthy();
+    await completedStatus(f);
+  } finally { f.dispose(); }
+});
+
+async function completedStatus(f: Awaited<ReturnType<typeof session>>, native = false) {
+  const expected = native ? "native delegation" : "bounded entry views (after recovery: Dreamer)";
+  expect(f.notices.filter(n => n.includes("compaction used"))).toHaveLength(1);
+  expect(f.notices.at(-1)).toContain(`compaction used ${expected}`);
+  await f.session.prompt("/trace");
+  expect(f.notices.at(-1)).toContain(`Compaction: ${expected}`);
+}
+
+test.each(["success", "failure", "cancel"] as const)("32f: real Pi native delegation terminal event (%s)", async terminal => {
+  const f = await session({ automatic: false });
+  try {
+    f.script(() => say("answered", usage(10, 2)));
+    await f.session.prompt(`${big} FIRST`);
+    f.script((body, signal) => {
+      if (worker(body) || terminal === "failure") return new Response(JSON.stringify({ error: { message: "terminal provider failure" } }), { status: 400, headers: { "content-type": "application/json" } });
+      expect(f.notices.some(n => n.includes("compaction used"))).toBe(false);
+      if (terminal === "cancel") {
+        setTimeout(() => f.session.abortCompaction(), 0);
+        return new Promise<Response>((_, reject) => signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true }));
+      }
+      return say("native summary");
+    });
+    if (terminal === "success") {
+      await f.session.compact();
+      expect(compactions(f)).toHaveLength(1);
+      expect(compactions(f)[0]!.details?.traceMemory).toBeUndefined();
+      await completedStatus(f, true);
+    } else {
+      await expect(f.session.compact()).rejects.toThrow();
+      expect(compactions(f)).toHaveLength(0);
+      expect(f.notices.some(n => n.includes("compaction used"))).toBe(false);
+      expect(f.notices.at(-1)).toContain(terminal === "cancel" ? "cancelled" : "compaction failed");
+      await f.session.prompt("/trace");
+      expect(f.notices.at(-1)).not.toContain("Compaction:");
+    }
   } finally { f.dispose(); }
 });

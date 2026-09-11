@@ -1,11 +1,25 @@
 import { expect, test, vi } from "vitest";
-import { host, reply, type Reply } from "./test-host.ts";
+import { host as createHost, reply, type Reply } from "./test-host.ts";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
-// Ticket 28b — the bounded recovery inside Pi's compaction hook. 28a's allocator decides that a
-// REQUIRED window (the pending facts, the pending Raw) does not fit; this file pins what the adapter
-// does with that verdict: at most one Noting task and one Consolidation task, concurrent when both
-// windows are over, awaited inside the hook, then one reallocation over the frozen path and either
-// the custom replacement or the native delegation.
+// Seed quietly, then enable real thresholds through the existing settings reload. These legacy
+// fixtures test ownership/cancellation, not a below-threshold compaction exemption (removed by 32f).
+const host = (config: Record<string, unknown>) => {
+  const { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, ...rest } = config;
+  const h = createHost(rest);
+  const file = join(h.dir, "agent", "settings.json");
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  settings["trace-memory"] = { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation };
+  writeFileSync(file, JSON.stringify(settings));
+  return h;
+};
+
+// Tickets 28b/32f — bounded recovery inside Pi's compaction hook. 32e's allocator checks required
+// knowledge/facts/Raw against fixed 20k/10k/10k bases plus shared required-only 10k overflow.
+// A shortfall permits at most one eligible Noting, Consolidation and Dreamer task, including reuse.
+// Independently useful phases overlap; up to three rounds cover N→C→D. Committed progress is
+// repriced on the frozen path before custom replacement or native delegation; failure stops recovery.
 //
 // The Pi lines the sequence is mapped onto (0.85.1 `dist/`, the installed package):
 //   agent-session.js:1496-1509  manual `compact()`: the hook, its `signal`, and `{cancel: true}`
@@ -27,8 +41,15 @@ type Host = ReturnType<typeof host>;
  * not work anyone did here. */
 const runs = (h: Host, kind?: string) => h.memory.store.listRuns(1).filter(r => r.createdAt !== "seed" && (!kind || r.kind === kind));
 const facts = (h: Host) => h.memory.store.listSessionFacts(1);
-const compact = (h: Host, signal?: AbortSignal) =>
-  h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 }, ...(signal ? { signal } : {}) }) as Promise<any>;
+const compact = async (h: Host, signal?: AbortSignal): Promise<any> => {
+  const file = join(h.dir, "agent", "settings.json");
+  const settings = JSON.parse(readFileSync(file, "utf8"));
+  for (const key of ["noting.triggerTokens", "consolidation.triggerTokens"])
+    if (settings["trace-memory"][key] === 1_000_000_000) settings["trace-memory"][key] = 20;
+  writeFileSync(file, JSON.stringify(settings));
+  await h.emit("session_tree", {}); // reload on the unchanged path; does not reopen or steal claims
+  return h.emit("session_before_compact", { preparation: { tokensBefore: 100_000 }, ...(signal ? { signal } : {}) });
+};
 
 /** Turns whose entries stay pending: `quiet` starts no automatic Noting, so every entry is Raw the
  * compaction must represent. */
@@ -104,7 +125,7 @@ test("28b acceptance 5: a facts-only overflow runs one awaited Consolidation and
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     // The reallocation after the task saw the emptied window and the replacement was persisted.
     expect(result.compaction.summary).toBeTruthy();
-    expect(h.notices.at(-1)).toContain("compaction used bounded entry views (after recovery: Consolidation)");
+    expect(h.notices.at(-1)).toContain("compaction preparing bounded entry views (after recovery: Consolidation)");
   } finally { await h.dispose(); }
 });
 
@@ -121,7 +142,7 @@ test("28b acceptance 5: a Raw-only overflow runs one awaited Noting and persists
     expect(runs(h, "noting")[0]!.mode).toBe("subagent"); // never a fork of the context being compacted
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
     expect(result.compaction.summary).toBeTruthy();
-    expect(h.notices.at(-1)).toContain("compaction used bounded entry views (after recovery: Noting)");
+    expect(h.notices.at(-1)).toContain("compaction preparing bounded entry views (after recovery: Noting)");
   } finally { await h.dispose(); }
 });
 
@@ -180,7 +201,7 @@ test("28b acceptance 6: with both phases used, the facts a Noting run added trig
     expect(result).toBeUndefined(); // the new facts are still pending and still over: this delegates
     expect(runs(h, "consolidation")).toHaveLength(1); // and never twice
     expect(runs(h, "noting")).toHaveLength(1);
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
     expect(h.notices.at(-1)).toContain("(after recovery: Noting, Consolidation)");
   } finally { await h.dispose(); }
 });
@@ -200,7 +221,7 @@ test("28b acceptance 7: a successful but insufficient recovery delegates, and it
     const after = h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length;
     expect(after).toBeLessThan(before); // the batch it did process stays processed
     expect(facts(h)).toHaveLength(1);
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
   } finally { await h.dispose(); }
 });
 
@@ -226,7 +247,7 @@ test("28b acceptance 7: a worker failure delegates only after the other task has
     expect(settled).toHaveLength(2);
     expect(settled.every(r => r.outcome !== null)).toBe(true);
     expect(settled.find(r => r.kind === "noting")!.outcome).toBe("failure"); // the failed run keeps its audit
-    expect(h.notices.at(-1)).toContain("compaction used native delegation");
+    expect(h.notices.at(-1)).toContain("compaction preparing native delegation");
     // 27b: the failing child never compacts privately — the only requests are the two workers' own.
     expect(h.requests.length).toBeGreaterThan(0);
     expect(h.requests.every(body => JSON.stringify(body).includes("extraction"))).toBe(true);
@@ -339,8 +360,8 @@ test("28: one Noting and one Consolidation per compaction, reuse counts, cancell
     // Its completion is this phase's progress and its one use: nothing of this compaction's own ran.
     expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
     expect(result).toBeUndefined(); // one batch was not enough, and the allowance is spent
-    expect(h.notices.filter(n => n.includes("compaction used")).at(-1)).toContain("native delegation");
-    expect(h.notices.filter(n => n.includes("compaction used")).at(-1)).toContain("(after recovery: Noting)");
+    expect(h.notices.filter(n => n.includes("compaction preparing")).at(-1)).toContain("native delegation");
+    expect(h.notices.filter(n => n.includes("compaction preparing")).at(-1)).toContain("(after recovery: Noting)");
   } finally { await h.dispose(); }
 });
 
@@ -355,6 +376,7 @@ test("28b acceptance 9: an unrelated occupied slot is waited out as capacity, ne
     h.provider(async conversation => { await held; return notes(conversation, "the other operation's fact"); });
     await h.prompt(long("FIRST")); await h.answer(); // the ordinary trigger takes the Noting slot
     await vi.waitFor(() => expect(h.requests.length).toBe(1));
+    await h.prompt(long("SECOND")); await h.answer(); // enough real Raw remains eligible after the capacity wait
     const attempt = compact(h);
     await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the occupied Noting slot"))).toBe(true));
     expect(h.requests).toHaveLength(1); // nothing of ours was launched into an occupied slot
@@ -431,7 +453,7 @@ test("a second unrelated slot owner ends the capacity wait without false recover
     expect(await attempt).toBeUndefined(); // do not queue behind another unrelated task
     expect(h.notices.some(n => n.includes("after recovery:"))).toBe(false);
     expect(h.notices.some(n => n.includes("compaction is running Noting"))).toBe(false);
-    expect(h.notices.some(n => n.includes("compaction used native delegation"))).toBe(true);
+    expect(h.notices.some(n => n.includes("compaction preparing native delegation"))).toBe(true);
   } finally { releaseFirst(); releaseRest(); await h.dispose(); }
 });
 
@@ -506,5 +528,56 @@ test("28b acceptance 10: a foreground entry arriving during recovery does not ex
     expect(late.length).toBeGreaterThan(0);
     expect(late.every(e => !h.memory.store.entryNoted(e.id))).toBe(true); // outside this task's range
     expect(frozen.every(id => h.memory.store.entryNoted(id))).toBe(true); // and the frozen range was processed
+  } finally { await h.dispose(); }
+});
+
+const knowledge = (h: Host) => {
+  const c = h.memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$1", author: "test", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: [facts(h)[0]!.id], topics: [], reason: "seed evidence", createdAt: "seed" }] });
+  if (!c.ok) throw Error(c.problems.join());
+};
+const archive = (h: Host): Reply => {
+  const k = h.memory.store.listCurrentKnowledge(h.memory.store.knowledgePath(1))[0]!;
+  return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "archive", name: "memory", arguments: { operations: [{ op: "archive", id: `K${k.knowledge.id}@${k.revision.id}`, supports: [], reason: "Deliberate retirement for hard budgets" }], skipped: [] } }] };
+};
+
+test("32f: independently eligible N/C/D overlap; each phase is used once with no fourth round", async () => {
+  const h = host({ ...quiet, ...windows(100, 1, 1) });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await turns(h, 1); noted(h, 10); await turns(h, 2, "NEW"); knowledge(h);
+    const inFlight = new Set<string>();
+    h.provider(async c => {
+      const kind = c.systemPrompt?.startsWith("# Dreamer") ? "D" : isNoting(c) ? "N" : "C";
+      inFlight.add(kind); if (inFlight.size === 3) release();
+      await held;
+      return kind === "N" ? notes(c, "concurrent new fact remains pending " + "word ".repeat(100)) : kind === "C" ? consolidates(h, c) : archive(h);
+    });
+    const attempt = compact(h);
+    await vi.waitFor(() => expect([...inFlight].sort()).toEqual(["C", "D", "N"]));
+    expect(await attempt).toBeUndefined(); // new N facts missed the already-used C batch
+    expect(runs(h).map(r => r.kind).sort()).toEqual(["consolidation", "dreaming", "noting"]);
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
+  } finally { release(); await h.dispose(); }
+});
+
+test("32f: exactly three real rounds cover N enables C enables D, then stop", async () => {
+  const h = host({ ...quiet, ...windows(100, 1, 1) });
+  try {
+    await turns(h, 1);
+    const starts: string[] = [];
+    h.provider(async c => {
+      if (isNoting(c)) { starts.push("N"); return notes(c, "new evidence " + "word ".repeat(6000)); }
+      if (c.systemPrompt?.startsWith("# Dreamer")) { starts.push("D"); return archive(h); }
+      starts.push("C");
+      if (c.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "memory").length >= 2) return reply("Done.");
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "create", name: "memory", arguments: { operations: [{ op: "create", text: "rule ".repeat(6000), category: "constraint", scope: "project", supports: facts(h).map(f => `F${f.id}`), topics: [], reason: "new durable evidence" }], skipped: [] } }] };
+    });
+    const result = await compact(h);
+    expect([...new Set(starts)]).toEqual(["N", "C", "D"]);
+    expect(runs(h).map(r => r.kind)).toEqual(["noting", "consolidation", "dreaming"]);
+    expect(runs(h).every(r => r.outcome === "success")).toBe(true);
+    expect(result.compaction.summary).toBeTruthy();
+    expect(h.notices.filter(n => n.includes("compaction is running"))).toHaveLength(3);
   } finally { await h.dispose(); }
 });

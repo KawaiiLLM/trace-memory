@@ -5,7 +5,7 @@ one facade for the global database and uses only `src/core/api/index.ts`, includ
 its exposed store. Both Noting and Consolidation use subagents by default and may be configured
 to use verified fork mode. Dreamer is always a fresh subagent. Each reconciled eligible entry
 completion checks all three phase queues. Shutdown and tree navigation launch no phase;
-compaction recovery remains limited to the previously implemented Noting/Consolidation path.
+compaction uses bounded, threshold-gated Noting/Consolidation/Dreamer recovery (32f).
 
 **One runner (19c).** Every memory task runs inside a real Pi child `AgentSession`
 (`native.ts`): fork mode in a child forked from the parent session file at its persisted
@@ -61,15 +61,17 @@ For example, either settings file can contain:
     "consolidation.knowledgeTokens": 10000,
     "render.knowledgeBlockTokens": 20000,
     "compaction.factsTokens": 10000,
-    "compaction.rawTokens": 10000
+    "compaction.rawTokens": 10000,
+    "compaction.overflowTokens": 10000
   }
 }
 ```
 
 `compaction.factsTokens` and `compaction.rawTokens` are 28a's two compaction material windows;
-the third is `render.knowledgeBlockTokens`, and the envelope one custom compaction may charge is
-the sum of the three: 20,000 + 10,000 + 10,000 = 40,000 at defaults (see "Compaction and the
-post-compaction boundary"). `render.knowledgeBlockTokens` also caps initial knowledge injection and
+the third is `render.knowledgeBlockTokens`. Their fixed bases total 40,000 tokens at defaults;
+`compaction.overflowTokens` adds a shared 10,000-token allowance for required unprocessed excess
+only, for a derived maximum of 50,000. No base lends its spare to another window (see "Compaction
+and the post-compaction boundary"). `render.knowledgeBlockTokens` also caps initial knowledge injection and
 the one-shot supplement. Consolidator references, including inherited status lines, instead use
 `consolidation.knowledgeTokens` (default 10,000). Both keys accept positive safe integers through the
 existing configuration layers; explicit values are retained. Neither appears in interactive Settings.
@@ -608,23 +610,30 @@ rather than a string:
 
 | Outcome | When | What the adapter returns |
 |---|---|---|
-| `{text, supplied, charged}` | the knowledge block at its baseline, the pending facts and every pending entry's bounded view fit the envelope | the text, as `compaction.summary` |
-| `{native: true, reason, over?}` | a required window overflows after lending, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
+| `{text, supplied, charged}` | all required unprocessed knowledge, complete pending facts and pending entry views fit the fixed bases plus shared allowance | the text, as `compaction.summary` |
+| `{native: true, reason, over?}` | required excesses exceed the shared allowance, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
 
-Ticket 28a introduced three material windows; 32a raises only the main knowledge default:
-knowledge 20,000 (`render.knowledgeBlockTokens`), pending facts 10,000 (`compaction.factsTokens`)
-and pending Raw 10,000 (`compaction.rawTokens`) — over
-one envelope that is their sum (40,000 at the defaults), not a fourth configuration key. Unused allowance is lent freely
-between them and the charged total never passes the envelope; optional knowledge above its
-own baseline yields before a required window can be declared over; a required window is never
-trimmed to fit. Whatever is left after the required material is filled first by the knowledge
-block, then by the most recent already-consolidated facts, then by the most recent
-already-extracted source entries in source order. Both refills are optional: an item that does
-not fit is simply absent, which starts no worker, causes no delegation and enters no carrier.
+32e allocates three fixed bases: knowledge 20,000 (`render.knowledgeBlockTokens`), facts 10,000
+(`compaction.factsTokens`) and Raw 10,000 (`compaction.rawTokens`). Required unprocessed material
+alone may use the shared 10,000-token `compaction.overflowTokens` allowance: required material
+fits exactly when `sum(max(required_i - base_i, 0)) <= overflowTokens`, including framing.
+The bases total 40,000 and the derived maximum is 50,000 at defaults. No window lends its unused
+base to another. Current unprocessed knowledge and unfinished Dreamer outputs remain protected;
+required bodies are never trimmed to fit.
+
+Price all required material before optional fill. Processed knowledge uses only its own base
+remainder. Select recent already-extracted Raw first within the Raw base remainder, then select
+already-consolidated facts within the facts base remainder. Before fact budget selection, exclude
+an optional fact only when its complete, nonempty source binding is contained in the final Raw
+coverage set (retained sources, required Raw and selected historical Raw). Incomplete or unknown
+bindings remain eligible; required pending facts are never filtered. Display whole recent Raw
+in source order and facts in chronological Turn groups. Optional bodies and their framing use
+neither another window's spare nor shared overflow. An optional omission starts no worker,
+causes no delegation and supplies no carrier identity.
 `render.episodicBlockTokens` and `noting.batchTokens` keep their one meaning each — the
 Noter's history envelope and the Noter's batch ceiling — and compaction reads neither.
 
-The adapter passes the native ids the post-compaction context will keep, so refill (b) never
+The adapter passes the native ids the post-compaction context will keep, so historical Raw never
 supplies an entry twice. The custom replacement represents every pending entry itself, so it
 returns `firstKeptEntryId: ""` and keeps none of them: that retained set is empty today and is
 derived from the same value the adapter returns, never from Pi's own preparation proposal.
@@ -633,7 +642,7 @@ Ticket 30 retired the second, tighter rendering that used to stand between the c
 replacement and the delegation: the views compaction emits are `renderEntry` under the one
 configured profile — the same bytes a Noter, the token counters and `trace` use, under the
 ordinary `Raw:` title — and there is no second profile and no second block title (28 amendment 9;
-the one worker a compaction may start is 28b's recovery above, which changes what is pending, never
+the bounded N/C/D recovery changes what is pending, never
 how a view is rendered). It stays deterministic local work: entry order, the source
 addresses, user boundaries and the non-text placeholder are preserved; each tool part keeps its
 name, its `T<id>#t<n>` address and, for a result, its status; text is cut with the same
@@ -642,22 +651,26 @@ processing receipt.
 
 ### Bounded recovery inside the hook (28b)
 
-A required window over budget is the one case that starts memory work from a compaction — one
-bounded recovery operation attached to this attempt, not a second scheduler. The handler is
-asynchronous, and Pi awaits it (`extensions/runner.js:632`):
+Recovery starts only when the sum of required knowledge/facts/Raw excesses above their fixed
+20k/10k/10k bases exceeds the shared 10k allowance. A covered base excess launches no worker.
+Each useful phase must also pass its existing `taskEligibility` check: pending Raw ≥10k,
+pending facts ≥5k, or pending knowledge-change weight ≥5k at defaults (configured thresholds
+and retained Dreamer retry eligibility are preserved). Overflow is not eligibility.
+Pi awaits this one bounded operation inside its asynchronous hook:
 
 ```text
 freeze (the selected path, its pending entries, its initially applicable pending facts)
-  -> allocate -> `over`? -> one Noting for the Raw window and/or one Consolidation for the
-     facts window, launched together when both are over
-  -> await -> reallocate, which is how committed progress is re-read (nothing is subtracted
-     because a task merely ran)
-  -> facts now over with Consolidation still unused? -> run it once -> reallocate
+  -> allocate -> shared allowance insufficient? -> admit unused eligible N/C/D phases
+     for the overflowing Raw/facts/knowledge windows, independently and concurrently
+  -> await -> reallocate from committed progress and exact processed versions; no launch credit
+  -> still over? -> recheck unused phases (N can enable C, C can enable D); at most three rounds
   -> persist the replacement with its carrier, or delegate to Pi with the reason
 ```
 
-**One use per phase per attempt**, whatever that use ended as: two rounds are the whole shape
-the rule needs (28 amendment 1 — one flag per phase plus the promises the host already holds).
+**One use per phase per attempt**, including compatible reuse: at most three rounds cover the
+N→C→D dependency chain, with no fourth round or phase restart. Dreamer's 50 tool rounds and one
+system repair remain one task. No eligible unused phase or useful compatible wait means bounded
+native fallback, never waiting for future foreground activity.
 Each task is one ordinary bounded batch admitted through `attemptPhase`: subagent mode on the
 configured phase model, at the levels admission freezes (26d), in a child whose own automatic
 compaction is off (27b), so a recovery worker can never compact recursively and never forks the
@@ -668,6 +681,7 @@ against `noting.batchTokens` and would refuse every batch an overflowing Raw win
 ids are allocated in order, so the ceiling is the frozen set minus whatever gets noted. The
 Consolidation allowance is the frozen pending facts plus the facts committed by the exact
 Noting task this operation launched or compatibly reused; unrelated task outputs never join it.
+Dreamer freezes its exact retained event/family range at admission through the existing worker.
 
 **Slots, claims and reuse.** The executor's one slot per phase is unchanged, but its entry now
 carries the task's target and frozen boundary beside its promise. A compatible task — same
@@ -676,7 +690,11 @@ use (28 amendment 2), because its commits are exactly what the reallocation read
 slot holding anything else is waited out as capacity: not counted as progress, not cancelled,
 and its claim is never taken. After that capacity wait, the new occupant is checked once: a
 compatible task is reused; another unrelated owner ends this recovery opportunity without
-spending the phase allowance or reporting recovery. There is no repeated capacity queue.
+spending the phase allowance or reporting recovery. Eligibility is rechecked before admission
+after the wait. Dreamer reuse checks the retained range identity, applicable frozen members,
+live claim and project. A foreground head advance does not change that retained task's identity;
+Noting and Consolidation retain their own exact head/boundary rules.
+C/D share no global seat. There is no repeated capacity queue.
 A foreign claim on the target refuses this task at admission as
 it refuses any other. The awaited phase is named through the existing `ui.notify` lines and the
 footer's own running indicator; there is no second dialog and no wait loop.
@@ -689,12 +707,14 @@ touches nothing else; cancelling a reused wait cancels the wait, never the task.
 compaction returns `{cancel: true}`, which is how Pi ends a compaction as aborted (`:1509`,
 `:1770`): nothing is published, and no native fallback is started, because cancellation is not
 a capacity failure. Committed progress — an explicit empty Noting commit included (26a) —
-survives. A worker failure keeps its run audit and delegates only once the other task is
-terminal, which awaiting both settles by construction. If the selected path moved while
-recovery ran, the attempt is not retargeted: it delegates, and nothing prepared for the old
-path is published into the new one. Enrollment is checked again before reallocation and
-publication: `/trace off` during recovery supplies no plugin override, never an empty custom
-replacement.
+survives. After a failure, all admitted work settles and material is remeasured: a fitting custom
+replacement may succeed with the diagnostic, otherwise native compaction takes over. A third
+terminal business failure disables the target through the existing idempotent execution
+settlement; multiple waiters count no extra failures. Recovery then takes the native failure
+route, never an empty disabled-memory custom result; user cancellation still takes precedence.
+The final coherent reprice checks exact processed versions and the selected path/project binding.
+A changed binding cannot publish into a sibling or another project, and newly required knowledge
+cannot hide behind an earlier fit. `/trace off` likewise supplies no custom replacement.
 
 All three of Pi's automatic triggers reach this sequence — after `agent_end`
 (`agent-session.js:1634`), before prompt submission (`:891`) and between tool rounds (`:274`),
@@ -707,9 +727,23 @@ either custom publication or native delegation. On native delegation, the adapte
 the custom replacement and Pi's own summarizer runs, succeeds, fails or
 is cancelled under its own outcome handling. The adapter manufactures no summary, appends
 no oversized block to Pi's result and starts no extraction flush; an unused custom summary
-prepared before the fallback confirms no injection. What was used
-and its reason go to a `ui.notify` info line and to a `Compaction:` line in the status text
-(the menu's Current session, or headless bare `/trace`).
+prepared before the fallback confirms no injection.
+
+**Preparation is not completion.** `session_before_compact` sends only Preparing/progress
+notifications, including candidate delegation reasons and recovery diagnostics. Their callbacks
+run before the final coherent reprice and cancellation/path/project check. No notification or
+await separates that final check from constructing the returned carrier. Returning a custom
+replacement or declining it does not yet update `Compaction:` or announce success.
+
+Only `session_compact`, after Pi saves the replacement, updates `lastCompaction`, sends the
+completion notification and supplies the `Compaction:` field in Current session or headless
+bare `/trace`. The actual saved, identity-bound carrier determines the path; custom recovery
+labels travel with that carrier. A native success is reported as saved without Trace Memory
+material coverage. Its earlier candidate reason stays in the progress notifications, not an
+unbound cache that could attach one attempt's reason to another. The adapter reads the latest
+saved compaction on the selected ancestry, not summary-text equality (Pi 0.85.1's event lookup
+can select an older equal-summary entry). `session_compact_failed` reports failure or cancellation
+separately and leaves the last successfully saved result unchanged.
 
 **Post-compaction worker mode (rule replaced in 29c).** Ticket 20 refused a fork whenever a
 selected entry preceded the last persisted compaction on the ancestry. That was a position

@@ -257,7 +257,7 @@ export default function (pi: ExtensionAPI) {
    * frozen boundary beside the promise, because 28b's recovery has to tell a task it may reuse
    * (same target, same frozen boundary, so its completion IS this phase's progress) from unrelated
    * work it may neither count nor cancel. `done` is assigned in the same tick the slot is taken. */
-  type Slot = { target: TaskTarget; boundary?: TaskBoundary; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
+  type Slot = { target: TaskTarget; boundary?: TaskBoundary; dreamingRangeId?: number; projectId?: number; claimToken?: string; result?: Promise<NotingResult | ConsolidateResult | { outcome: string } | undefined>; done?: Promise<unknown> };
   type WorkerPhase = "noting" | "consolidation" | "dreaming";
   const slots = new Map<WorkerPhase, Slot>();
   /** Same target and same frozen boundary — the compatibility 28 amendment 2 defines, field by field
@@ -550,6 +550,17 @@ export default function (pi: ExtensionAPI) {
       ...(carried ? { forkAttempt: carried, executionId: carried.executionId, ...(carried.cancellation !== undefined ? { cancellation: carried.cancellation } : {}) } : {}) };
     const admitted = (kind === "dreaming" ? memory.dream(common) : kind === "consolidation" ? memory.consolidate(common) : memory.noting(common))
       .then(result => { if (result.automaticOff) context.ui.notify(result.automaticOff, "warning"); return result; });
+    if (kind === "dreaming") {
+      // Core freezes synchronously at admission. Keep the retained identity beside this slot so
+      // recovery reuses that exact family, not arbitrary same-path knowledge work.
+      const slot = slots.get(kind);
+      if (slot) {
+        slot.target = target;
+        slot.projectId = memory.store.getSession(target.sessionId)?.projectId;
+        slot.dreamingRangeId = memory.store.retryDreamingRange(target)?.id;
+        slot.claimToken = memory.store.getClaim(target.sessionId, kind)?.token;
+      }
+    }
     if (effective !== "fork") return admitted;
     // 27b: the freeze priced this batch as a fork — the inherited context plus the instructions — and
     // refused it. The same evidence under a fresh child's own price often fits, so that one refusal
@@ -923,6 +934,7 @@ export default function (pi: ExtensionAPI) {
         }
       };
       const promise = work();
+      slot.result = promise;
       pending.add(promise); activity.running.set(kind, 1); showSpend(context);
       // The handled promise includes cleanup; no detached rejecting finally chain survives disposal.
       const settled = promise.then(result => reportProblems(result, context), error => {
@@ -1048,7 +1060,7 @@ export default function (pi: ExtensionAPI) {
     const at = entries.findIndex(entry => entry.id === first);
     return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
-  const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation" } as const;
+  const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation", dreaming: "Dreamer" } as const;
   /** A wait that ends when the work ends or when the user cancels the compaction, whichever comes
    * first. Cancelling the wait never touches the work: this operation may wait for capacity it does
    * not own, and Pi's Esc must not end another operation's task (28 "Execution and interaction").
@@ -1074,16 +1086,39 @@ export default function (pi: ExtensionAPI) {
    * Reuse and actual admission consume one use. A capacity-only wait consumes none. After one
    * capacity wait, inspect the new occupant once: reuse compatible work, but do not queue behind
    * another unrelated owner or turn recovery into a drain. */
-  const recoverPhase = async (context: ExtensionContext, kind: "noting" | "consolidation", target: TaskTarget,
-      boundary: TaskBoundary, valid: () => boolean, signal?: AbortSignal): Promise<{ used: boolean; result?: NotingResult | ConsolidateResult | { outcome: string } }> => {
+  const recoverPhase = async (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
+      boundary: TaskBoundary | undefined, valid: () => boolean, signal: AbortSignal | undefined, needed: () => boolean): Promise<{ used: boolean; result?: NotingResult | ConsolidateResult | { outcome: string } }> => {
     const phase = PHASE_LABEL[kind];
+    const compatible = (slot: Slot) => {
+      if (kind !== "dreaming") return sameTask(slot, target, boundary);
+      const range = memory.store.retryDreamingRange(target);
+      const claim = memory.store.getClaim(target.sessionId, kind);
+      // D admits the retained range's head, not the moving foreground leaf. N/C above keep their
+      // original head/boundary comparison. The range, live ownership and applicable frozen members
+      // must still match; ignoring the leaf alone would also accept a rewind or a lost claim.
+      if (!range || range.id !== slot.dreamingRangeId || range.branch !== target.branch
+          || !sameTask(slot, { ...target, headTurnId: slot.target.headTurnId }, boundary)
+          || slot.projectId !== memory.store.getSession(target.sessionId)?.projectId
+          || !claim || claim.reserved || claim.token !== slot.claimToken
+          || claim.executorId !== memory.executorId || claim.expiresAt <= Date.now()) return false;
+      const snapshot = memory.store.pathSnapshot(target);
+      if (!snapshot.turns.has(range.headTurnId)) return false;
+      const frozenPath = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
+      const frozen = memory.store.pathSnapshot(frozenPath);
+      return range.eventIds.every(id => {
+        const event = memory.store.knowledgeRevision(id);
+        return !!event && memory.store.commitApplies(event, target, snapshot)
+          && memory.store.commitApplies(event, frozenPath, frozen);
+      });
+    };
     let occupied = slots.get(kind);
-    if (occupied && !sameTask(occupied, target, boundary)) {
+    if (occupied && !compatible(occupied)) {
       context.ui.notify(`Trace Memory: compaction is waiting for the occupied ${phase} slot.`, "info");
       await untilSettled(occupied.done, signal);
       if (!valid() || signal?.aborted) return { used: false };
       occupied = slots.get(kind);
-      if (occupied && !sameTask(occupied, target, boundary)) return { used: false };
+      if (occupied && !compatible(occupied)) return { used: false };
+      if (!occupied && !needed()) return { used: false }; // capacity work may already have made it fit
     }
     if (occupied) {
       // 28 item 7: the awaited phase is named through the existing notify, beside the footer's own
@@ -1092,20 +1127,28 @@ export default function (pi: ExtensionAPI) {
       await untilSettled(occupied.done, signal);
       if (!valid() || signal?.aborted) return { used: false };
       const result = await occupied.result;
+      if (result?.outcome === "failure" && "problems" in result)
+        context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
       return { used: !!result && "runId" in result, result };
     }
     if (!valid() || signal?.aborted) return { used: false };
-    const remaining = kind === "noting"
-      ? memory.pendingEntries(target.sessionId, target.branch, target.headTurnId).some(e => boundary.maxEntryId === undefined || e.id <= boundary.maxEntryId)
-      : memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).some(f => !boundary.allowedFactIds || boundary.allowedFactIds.includes(f.id));
+    // Eligibility is rechecked after a capacity wait, before admission. Overflow never waives it.
+    if (!memory.taskEligibility(kind, target).due) return { used: false };
+    const remaining = kind === "dreaming" || (kind === "noting"
+      ? memory.pendingEntries(target.sessionId, target.branch, target.headTurnId).some(e => boundary?.maxEntryId === undefined || e.id <= boundary.maxEntryId)
+      : memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).some(f => !boundary?.allowedFactIds || boundary.allowedFactIds.includes(f.id)));
     if (!remaining) return { used: false };
     const slot: Slot = { target, boundary };
     slots.set(kind, slot); activity.running.set(kind, 1); showSpend(context);
-    context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : "facts"}.`, "info");
+    context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : kind === "dreaming" ? "knowledge" : "facts"}.`, "info");
     const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
       { borrowed: false, automatic: false, boundary, signal });
     pending.add(promise);
-    const settled = promise.then(result => { reportProblems(result, context); return result; },
+    const settled = promise.then(result => {
+      reportProblems(result, context);
+      if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
+      return result;
+    },
       error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; })
       .finally(() => { slots.delete(kind); pending.delete(settled); activity.running.delete(kind); showSpend(context);
         if (catchup) driveCatchup(); }); // 18b: this slot release is a resumption event like any other
@@ -1120,13 +1163,13 @@ export default function (pi: ExtensionAPI) {
   // window overflows, runs ticket 28's bounded recovery before deciding:
   //
   //   freeze (path, the pending entries, the initially applicable pending facts)
-  //     -> allocate -> over? -> one Noting for Raw and/or one Consolidation for facts, concurrently
-  //     -> await -> re-read committed progress by reallocating on the frozen path
-  //     -> new facts overflowing with Consolidation unused? -> run it once -> reallocate
+  //     -> allocate -> shared shortfall? -> unused, eligible N/C/D phases, concurrently
+  //     -> await -> re-read committed progress and exact processed versions on the frozen path
+  //     -> still over? -> unused downstream eligibility (N enables C, C enables D), then reallocate
   //     -> persist the replacement with its carrier, or delegate to Pi with the reason.
   //
-  // One use per phase per attempt, whatever its outcome: `used` below is that flag, and two rounds
-  // are the whole shape the rule needs (28 amendment 1 — no state machine, one flag per phase plus
+  // One use per phase per attempt, whatever its outcome: `used` below is that flag, and three rounds
+  // cover the dependency chain (32f — no state machine, one flag per phase plus
   // the promises this host already holds). No larger-than-normal batch is ever built to avoid the
   // delegation: each task is one ordinary bounded batch, and a batch that leaves backlog behind
   // simply delegates. Nothing else changes: ordinary triggers, drains, borrowed work and manual
@@ -1140,13 +1183,17 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_before_compact", async (event, context) => {
     ensure(context); if (!enabled()) return; flush();
     const signal = (event as { signal?: AbortSignal }).signal;
-    const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head };
+    const initial = { sessionId: state.sessionId, branch: state.branch, head: state.head, projectId: state.projectId };
     const valid = () => !closed && enabled() && state.sessionId === initial.sessionId
-      && state.branch === initial.branch && state.head === initial.head;
+      && state.branch === initial.branch && state.head === initial.head && state.projectId === initial.projectId
+      && (!initial.sessionId || memory.store.getSession(initial.sessionId)?.projectId === initial.projectId);
     const allocate = (): ReturnType<typeof memory.compact> => {
       try {
         if (!valid()) return { native: true, reason: "memory enrollment or the selected path changed during recovery" };
-        if (state.sessionId) return memory.compact(state.sessionId, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
+        if (state.sessionId) return memory.store.transaction(() => {
+          if (!valid()) return { native: true as const, reason: "memory enrollment, project or the selected path changed during recovery" };
+          return memory.compact(state.sessionId!, state.branch, state.head, retainedView(context, KEPT_AFTER_CUSTOM_COMPACTION));
+        });
         const block = memory.injection({ projectId: state.projectId });
         return { text: block.text, supplied: { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds } };
       } catch (error) { return { native: true, reason: String(error) }; } // a capacity error is a reason to delegate, never oversized material
@@ -1168,15 +1215,19 @@ export default function (pi: ExtensionAPI) {
       // exact launched or compatible reused Noting task commits (28 "Recovery sequence" step 5).
       // Slot results preserve task identity; unrelated completed work never contributes facts here.
       const factIds = new Set(memory.store.consolidationBatch(path.sessionId, path.branch, path.headTurnId).map(f => f.id));
-      const used = { noting: false, consolidation: false };
-      for (let round = 0; round < 2; round++) {
+      const used = { noting: false, consolidation: false, dreaming: false };
+      for (let round = 0; round < 3; round++) {
         if (!("native" in result) || !result.over) break;
         const over = result.over;
-        const wanted = (["noting", "consolidation"] as const).filter(kind => !used[kind]
-          && (kind === "noting" ? over.raw && maxEntryId !== undefined : over.facts && factIds.size > 0));
+        const wanted = (["noting", "consolidation", "dreaming"] as const).filter(kind => !used[kind]
+          && (kind === "noting" ? over.raw && maxEntryId !== undefined : kind === "dreaming" ? over.knowledge : over.facts && factIds.size > 0)
+          && memory.taskEligibility(kind, path).due);
         if (!wanted.length) break; // the allowed tasks are exhausted: the delegation below is the outcome
         const results = await Promise.all(wanted.map(async kind => ({ kind,
-          ...await recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : { allowedFactIds: [...factIds] }, valid, signal),
+          ...await recoverPhase(context, kind, path, kind === "noting" ? { maxEntryId } : kind === "dreaming" ? undefined : { allowedFactIds: [...factIds] }, valid, signal, () => {
+            const fresh = allocate();
+            return "native" in fresh && !!fresh.over?.[kind === "noting" ? "raw" : kind === "dreaming" ? "knowledge" : "facts"];
+          }),
         })));
         if (signal?.aborted || !valid()) break;
         for (const settled of results) {
@@ -1184,7 +1235,8 @@ export default function (pi: ExtensionAPI) {
           for (const fact of (settled.result as { facts?: { id: number }[] } | undefined)?.facts ?? []) factIds.add(fact.id);
         }
         result = allocate(); // re-read committed progress on the frozen path; nothing is subtracted merely because a task ran
-        if (!results.some(settled => settled.used)) break; // capacity is not a recovery use or a retry trigger
+        if (!results.some(settled => settled.used) || results.some(settled => settled.result?.outcome === "failure")) break;
+        // Capacity is not a use; a terminal failure gets the final reprice, not another recovery task.
       }
     }
     // 28 "Failure and persistence": user cancellation cancels this operation's own work — the signal
@@ -1195,25 +1247,45 @@ export default function (pi: ExtensionAPI) {
       return { cancel: true };
     }
     if (closed) return { cancel: true };
-    if (!enabled()) return; // /trace off supplies no override, including after a held recovery
+    // Disabled during recovery is a native failure route, never core's empty disabled summary.
+    if (!valid()) result = { native: true, reason: "memory enrollment, project or the selected path changed during recovery" };
     // A tree switch during recovery abandons the path this replacement was prepared for. The attempt
     // is never retargeted: it delegates, and a late result of the old path publishes nothing here.
-    if (path && (state.sessionId !== path.sessionId || state.branch !== path.branch || state.head !== path.headTurnId))
+    if (path && (state.sessionId !== path.sessionId || state.branch !== path.branch || state.head !== path.headTurnId
+        || state.projectId !== initial.projectId || memory.store.getSession(path.sessionId)?.projectId !== initial.projectId))
       result = { native: true, reason: `the selected path changed during recovery (S${path.sessionId}/${path.branch}/T${path.headTurnId} is no longer selected); nothing prepared for it is published into the new one` };
-    lastCompaction = ("native" in result ? `native delegation — ${result.reason}` : "bounded entry views")
-      + (recovered.length ? ` (after recovery: ${[...new Set(recovered)].join(", ")})` : "");
-    context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
-    if ("native" in result) return; // no custom replacement: Pi's own compaction runs and reports
+    const recovery = recovered.length ? ` (after recovery: ${[...new Set(recovered)].join(", ")})` : "";
+    context.ui.notify(`Trace Memory: compaction preparing ${"native" in result ? `native delegation — ${result.reason}` : "bounded entry views"}${recovery}.`, "info");
+    // Notification callbacks may themselves cancel or change the binding. No await or callback
+    // separates this final coherent reprice from constructing the exact publication carrier.
+    if (signal?.aborted || closed) return { cancel: true };
+    result = allocate();
+    if (signal?.aborted || closed) return { cancel: true };
+    if ("native" in result) return;
     // 29a "Receipt and content are one carrier": the identities this replacement supplies ride on the
     // compaction entry Pi appends for it, so a cancelled or failed attempt — which appends no entry —
     // leaves the earlier baseline untouched, and a native delegation carries no `traceMemory` at all.
-    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: carrier(result.supplied) } };
+    return { compaction: { summary: result.text, firstKeptEntryId: KEPT_AFTER_CUSTOM_COMPACTION, tokensBefore: event.preparation.tokensBefore, details: { traceMemory: { ...carrier(result.supplied).traceMemory, recovery } } } };
   });
-  pi.on("session_compact", event => {
+  pi.on("session_compact", (_event, context) => {
+    // Pi 0.85.1 finds its event entry by the first equal summary. Read the actual appended
+    // compaction on the selected ancestry instead: equal text is never carrier identity.
+    const entry = context.sessionManager.getBranch().filter(entry => entry.type === "compaction").at(-1);
+    if (!entry || entry.type !== "compaction") return;
+    const own = (entry.details as { traceMemory?: VisibleBinding & { recovery?: unknown } } | undefined)?.traceMemory;
+    const custom = own?.db === dbPath && own.pi === state.piId && own.session === (state.sessionId ?? null);
+    lastCompaction = custom ? `bounded entry views${typeof own?.recovery === "string" ? own.recovery : ""}`
+      : "native delegation — saved without Trace Memory material coverage";
     if (enabled() && state.sessionId) {
-      const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: event.compactionEntry.summary, startedAt: now(), endedAt: now() });
+      const turn = memory.store.appendTurn({ sessionId: state.sessionId, parentTurnId: state.head, kind: "compaction", assistantText: entry.summary, startedAt: now(), endedAt: now() });
       state.head = turn.id; save();
     }
+    context.ui.notify(`Trace Memory: compaction used ${lastCompaction}.`, "info");
+  });
+  pi.on("session_compact_failed", (event, context) => {
+    // An unsuccessful attempt does not replace the last successfully saved result.
+    context.ui.notify(event.aborted ? "Trace Memory: compaction was cancelled; no completed replacement."
+      : `Trace Memory: compaction failed. ${event.errorMessage ?? "No completed replacement."}`, event.aborted ? "info" : "warning");
   });
   // Pi tears the extension runtime down and re-runs the factory for every reason, including
   // session replacement (new, resume, fork); this instance never serves the next session.

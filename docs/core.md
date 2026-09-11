@@ -764,7 +764,9 @@ smaller rendering profile. Nothing here selects a smaller pending set, advances 
 injection state, and a native delegation builds no custom summary at all.
 Compaction never hides a selected entry to fit, falsifies an omission count or relaxes a cap;
 the core allocator calls no provider and contains no summarizer. Host-managed bounded recovery may
-run model-backed Noting or Consolidation before either a custom replacement or native fallback.
+run eligible Noting, Consolidation and Dreaming tasks before either a custom replacement or native
+fallback. Each phase is used at most once; at most three rounds accommodate newly eligible downstream
+work, while independently eligible phases may overlap.
 
 The views it emits are `renderEntry` under the configured profile, the same bytes Noter input,
 the token counters and `trace` use, and no view or summary
@@ -931,12 +933,13 @@ own compaction `AbortSignal` (28b): Esc during a compaction ends that compaction
 recovery work and nothing else. Nothing else about admission, freezing, claims, slots or
 `cancelTasks(stopping?)` changes.
 
-`compact`'s native arm gains `over?: { facts: boolean; raw: boolean }`, present exactly when a
-required-window excess exceeds the shared overflow allowance — the one delegation reason bounded recovery can
-act on. A delegation for any other reason (an entry whose minima exceed the view profile)
-carries none, and the host starts no worker for it. It is a discriminator, not a second
-verdict: the outcome is still the custom replacement or the delegation, and the prose of
-`reason` is unchanged.
+`compact`'s native arm carries `over?: { knowledge: boolean; facts: boolean; raw: boolean }` when
+the sum of required-window excesses exceeds the shared overflow allowance. Each flag identifies a
+positive excess above that window's own base, not whether its processing phase meets the trigger.
+The host separately checks phase eligibility before recovery. A delegation for another reason
+(such as an entry whose minima exceed the view profile) carries no `over` and starts no recovery
+worker. The two outcomes remain a custom replacement or native delegation; `reason` explains the
+required demands, per-window excesses and shared-allowance shortfall.
 
 ## Manual catchup boundary (18b)
 
