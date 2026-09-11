@@ -1593,14 +1593,17 @@ export class Store {
 
   /** Event weight is cumulative; changed input supplies each current exact body only once.
    * A bounded caller selects eventIds first and settles only those actually supplied. */
-  dreamingInput(path: KnowledgePath, eventIds?: number[]) {
+  dreamingInput(path: KnowledgePath, eventIds?: number[], ownCommits?: number[]) {
     const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
-    // Retry reads live revisions on the retained path, not the caller's advancing head.
+    // Retry reads live revisions on the retained path, not the caller's advancing head. An exact
+    // event selection may name a range event another target just settled: it remains a graph root
+    // for this frozen read even though it no longer appears in the unsettled-event heading.
     const inputPath = range ? { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId } : path;
     const selected = eventIds && new Set(eventIds);
     const events = this.pendingKnowledgeEvents(inputPath).filter(e => !selected || selected.has(e.id));
     const graph = this.commitGraph(inputPath);
-    const versions = this.dreamingResults(graph, events.map(e => e.id), range).map(revision => ({
+    const roots = eventIds ?? events.map(e => e.id);
+    const versions = this.dreamingResults(graph, roots, range, ownCommits).map(revision => ({
       knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
     }));
     const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
@@ -1624,15 +1627,17 @@ export class Store {
       WHERE d.range_id = ? ORDER BY r.id`).all(rangeId).map(r => Number(r.id));
   }
 
-  /** Read successors across merge edges; this never adds their identities to the writable family
-   * or grants certification. The worker separately freezes exact admission versions and own outputs. */
-  private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null) {
-    const roots = new Set([...events, ...(range?.eventIds ?? [])]);
-    const family = new Set(range?.knowledgeIds ?? []);
-    for (const revision of graph.revisions) if (family.has(revision.knowledgeId)) roots.add(revision.id);
-    const descendants = new Set<number>();
-    for (const id of roots) if (!descendants.has(id)) for (const child of graph.descendants(id)) descendants.add(child);
-    return graph.current.filter(r => descendants.has(r.id));
+  /** Resolve the current results of this admission's exact event batch plus unprocessed outputs
+   * retained from its earlier attempts. Merely reading processed knowledge put its identity in the
+   * writable family, but neither that read nor a later external successor makes it changed input or
+   * a certification candidate. Merge descendants remain results without widening write authority. */
+  private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null, ownCommits?: number[]) {
+    const eventDescendants = new Set<number>();
+    for (const id of events) for (const child of graph.descendants(id)) eventDescendants.add(child);
+    const ownDescendants = new Set<number>();
+    if (range) for (const id of ownCommits ?? this.dreamingOwnCommits(range.id))
+      for (const child of graph.descendants(id)) ownDescendants.add(child);
+    return graph.current.filter(r => eventDescendants.has(r.id) || (ownDescendants.has(r.id) && !this.isKnowledgeProcessed(r.id)));
   }
 
   /** A frozen unfinished range retries independently of new-event weight and shared settlement. */
@@ -1642,7 +1647,7 @@ export class Store {
     if (this.db.prepare(`SELECT 1 FROM dreaming_range_events e WHERE range_id = ?
       AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id) LIMIT 1`).get(range.id)) return range;
     const graph = this.commitGraph({ sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId }, undefined, undefined, input);
-    return this.dreamingResults(graph, [], range).some(r => !this.isKnowledgeProcessed(r.id)) ? range : null;
+    return this.dreamingResults(graph, [], range).length ? range : null;
   }
 
   dreamingRange(id: number, includeCompleted = false): DreamingRange | null {

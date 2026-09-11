@@ -195,7 +195,8 @@ test.each([false, true])("32b frozen path: head advance ignores later-only suppo
   a.store.completeDreaming(b.success(), [c.commit], [own.commit]);
   expect(input().events).toEqual([]);
   expect(input().oldestId).toBe(c.commit);
-  expect(input().versions.map(v => [v.revision.id, v.processed])).toEqual([[own.commit, true], [derived.commit, false]]);
+  expect(input().versions.map(v => [v.revision.id, v.processed])).toEqual(selected
+    ? [[own.commit, true], [derived.commit, false]] : [[derived.commit, false]]);
   expect(a.store.retryDreamingRange(advanced)).toMatchObject({ id: range.id, headTurnId: a.t.id, anchor: c.commit });
   a.store.completeDreaming(a.success(), [], [derived.commit]);
   expect(a.store.dreamingRange(range.id)).toBeNull();

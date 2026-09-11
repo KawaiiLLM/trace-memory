@@ -123,8 +123,8 @@ test("32: completion is transactional and hard-capped; edits committed by a fail
   const changed = f.store.currentCommit(f.item.knowledgeId, f.target)[0]!;
   expect(f.store.isKnowledgeProcessed(changed.id)).toBe(false);
   expect(f.store.retryDreamingRange(f.target)?.anchor).toBe(f.item.commit);
-  // Retry never trims the oversized retained body to manufacture a fit, even if archive could fix it.
-  await expect(f.memory.dream(f.target)).rejects.toThrow(/retained changed family exceeds 10000/);
+  // One indivisible oversized own result is never clipped or certified without being supplied.
+  await expect(f.memory.dream(f.target)).rejects.toThrow(/retained task output .* exceeds 10000/);
 });
 
 test("32d: full reads outside the family cannot expand writes; split and merge stay atomic", async () => {

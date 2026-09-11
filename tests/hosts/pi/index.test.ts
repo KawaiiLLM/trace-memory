@@ -724,7 +724,7 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
-  await h.turn();
+  await h.turn(); await h.drain();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.notices.some(n => n.includes("committed with problems") && n.includes("after commit"))).toBe(true);

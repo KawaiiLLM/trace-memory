@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
+import { tokens } from "../../../src/core/render/index.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [], dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) m.close(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
@@ -12,7 +13,7 @@ class Barrier {
   release!: () => void;
   readonly wait = new Promise<void>(resolve => { this.release = resolve; });
 }
-function fixture() {
+function fixture(body = "durable rule") {
   const dir = mkdtempSync(join(tmpdir(), "dreamer-external-conflict-")); dirs.push(dir);
   const db = join(dir, "memory.sqlite");
   let agent: (task: DreamingAgentInput) => Promise<RunAgentResult> = async () => success;
@@ -20,11 +21,11 @@ function fixture() {
   const store = memory.store;
   const p = store.createProject({ name: "shared", declaredBy: "mark" });
   const s = store.createSession({ host: "offline", projectId: p.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
-  const t = store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "durable rule", startedAt: "now" });
+  const t = store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: body, startedAt: "now" });
   const target = { sessionId: s.id, branch: "main", headTurnId: t.id };
-  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, facts: [{ turnId: t.id, text: "durable rule", category: "decision", actor: "user", source: [`T${t.id}#user`], createdAt: "now" }] });
+  const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, facts: [{ turnId: t.id, text: body, category: "decision", actor: "user", source: [`T${t.id}#user`], createdAt: "now" }] });
   if (!facts.ok) throw Error(facts.problems.join());
-  const content = { text: "durable rule", category: "constraint" as const, scope: "project" as const, supports: [facts.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" };
+  const content = { text: body, category: "constraint" as const, scope: "project" as const, supports: [facts.facts[0]!.id], topics: [], reason: "evidence", createdAt: "now" };
   const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
   if (!created.ok) throw Error(created.problems.join());
   const item = created.committed[0]!;
@@ -132,6 +133,159 @@ test.each([false, true])("own legal commit and external merge=%s retain audit/co
   expect(reopened.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
   expect(reopened.store.retryDreamingRange(f.target)).toBeNull();
   expect(reopened.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toContain(external.commit);
+});
+
+test.each([false, true])("a successor of processed read-only material does not enlarge the retained changed batch (merge=%s)", async merge => {
+  const f = fixture("pending ".repeat(6000));
+  const created = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
+    operations: [{ op: "create", handle: "$processed", author: "external", ...f.content, text: "processed ".repeat(4500) }] });
+  if (!created.ok) throw Error(created.problems.join());
+  const processed = created.committed[0]!;
+  const certified = f.other.store.recordRun({ kind: "dreaming", sessionId: f.otherPath.sessionId, outcome: "success", createdAt: "now" });
+  f.other.store.completeDreaming(certified.id, [processed.commit], [processed.commit]);
+
+  const frozen = new Barrier(), changed = new Barrier();
+  const materials: string[] = [];
+  let attempt = 0;
+  f.setAgent(async task => {
+    materials.push(task.material.changed);
+    if (attempt++ === 0) { frozen.release(); await changed.wait; }
+    expect(task.material.changed).toContain(`K${f.item.knowledgeId}@${f.item.commit}`);
+    return success;
+  });
+  const first = f.memory.dream(f.target);
+  await frozen.wait;
+  const base = f.other.store.currentCommit(processed.knowledgeId, f.otherPath)[0]!;
+  let operations: Parameters<typeof f.other.store.commitConsolidationRun>[0]["operations"];
+  if (merge) {
+    const survivor = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
+      operations: [{ op: "create", handle: "$survivor", author: "external", ...f.content, text: "survivor" }] });
+    if (!survivor.ok) throw Error(survivor.problems.join());
+    operations = [{ op: "merge", intoKnowledgeId: survivor.committed[0]!.knowledgeId, intoBaseCommit: survivor.committed[0]!.commit,
+      absorb: [{ knowledgeId: processed.knowledgeId, baseCommit: base.id }], ...f.content, text: "successor ".repeat(4500) }];
+  } else operations = [{ op: "update", knowledgeId: processed.knowledgeId, baseCommit: base.id, ...f.content, text: "successor ".repeat(4500) }];
+  const successor = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" }, path: f.otherPath, operations });
+  if (!successor.ok) throw Error(successor.problems.join());
+  changed.release();
+
+  const conflicted = await first;
+  expect(conflicted.outcome).toBe("conflict");
+  if (!("runId" in conflicted)) throw Error("missing run");
+  const firstCheck = JSON.parse(f.store.getRun(conflicted.runId)!.response!).check;
+  expect(firstCheck.resultIds).toEqual([f.item.commit]);
+  expect(firstCheck.externalSuccessors).toEqual([{ knowledgeId: successor.committed[0]!.knowledgeId, commit: successor.committed[0]!.commit }]);
+  expect(f.store.isKnowledgeProcessed(processed.commit)).toBe(true);
+  expect(f.count()).toBe(0);
+  const retained = f.store.retryDreamingRange(f.target)!;
+  expect(retained.anchor).toBe(f.item.commit);
+  const resumed = await f.memory.dream(f.target);
+  expect(resumed.outcome).toBe("success");
+  expect(materials[1]).not.toContain(`K${successor.committed[0]!.knowledgeId}@${successor.committed[0]!.commit}`);
+  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(true);
+  expect(f.store.isKnowledgeProcessed(successor.committed[0]!.commit)).toBe(false);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+
+  const independent = await f.memory.dream(f.target);
+  expect(independent.outcome).toBe("failure");
+  if (!('problems' in independent)) throw Error("missing problems");
+  expect(independent.problems.join()).toContain("exceeds 10000");
+  expect(f.store.taskFailures(f.target.sessionId).some(row => row.head !== f.item.commit && row.count === 1)).toBe(true);
+});
+
+test("an enlarged retained range is rebatched and all of its events complete without changing its anchor", async () => {
+  const f = fixture("first ".repeat(2500));
+  const originals = [f.item];
+  for (const [handle, word] of [["$second", "second"], ["$third", "third"]] as const) {
+    const created = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" },
+      operations: [{ op: "create", handle, author: "test", ...f.content, text: `${word} `.repeat(2500) }] });
+    if (!created.ok) throw Error(created.problems.join());
+    originals.push(created.committed[0]!);
+  }
+  const originalEventIds = originals.map(item => item.commit);
+  const frozen = new Barrier(), changed = new Barrier();
+  f.setAgent(async () => { frozen.release(); await changed.wait; return success; });
+  const first = f.memory.dream(f.target);
+  await frozen.wait;
+  const successors = [];
+  for (const item of originals) {
+    const current = f.other.store.currentCommit(item.knowledgeId, f.otherPath)[0]!;
+    const updated = f.other.store.commitConsolidationRun({ path: f.otherPath,
+      run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
+      operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: current.id, ...f.content, text: "expanded ".repeat(3500) }] });
+    if (!updated.ok) throw Error(updated.problems.join());
+    successors.push(updated.committed[0]!);
+  }
+  changed.release();
+  expect((await first).outcome).toBe("conflict");
+  const retained = f.store.retryDreamingRange(f.target)!;
+  expect(retained.anchor).toBe(f.item.commit);
+  expect(retained.eventIds).toEqual(originalEventIds);
+
+  const changedSizes: number[] = [], maintainedBatchSizes: number[] = [];
+  let maintainedRuns = 0;
+  f.setAgent(async task => {
+    changedSizes.push(tokens(task.material.changed));
+    const handles = [...task.material.changed.matchAll(/\[K(\d+)@(\d+)\]/g)]
+      .map(match => ({ knowledgeId: Number(match[1]), commit: Number(match[2]) }));
+    const current = maintainedRuns++ < 2 ? handles.filter(handle => f.store.knowledgeRevision(handle.commit)?.op !== "archive") : [];
+    maintainedBatchSizes.push(current.length);
+    if (current.length) {
+      const receipt = tool(task, "memory").execute({ operations: current.map(handle => ({ op: "archive", id: `K${handle.knowledgeId}@${handle.commit}`,
+        supports: [], reason: "Retire test material after verifying the rebatch" })), skipped: [] });
+      expect(receipt).toContain('"committed"');
+    }
+    return success;
+  });
+  const outcomes = [];
+  for (let guard = 0; guard < 10 && (f.store.retryDreamingRange(f.target) || f.store.pendingKnowledgeEvents(f.target).length); guard++)
+    outcomes.push((await f.memory.dream(f.target)).outcome);
+  expect(outcomes).toEqual(["success", "success", "success", "success"]);
+  expect(changedSizes.every(size => size <= 10000)).toBe(true);
+  expect(maintainedBatchSizes.slice(0, 2)).toEqual([2, 1]);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+  expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([]);
+  expect(f.store.dreamingRange(retained.id, true)).toMatchObject({ anchor: f.item.commit, eventIds: originalEventIds });
+  const heads = f.store.db.prepare("SELECT head FROM task_executions ORDER BY rowid").all().map(row => Number(row.head));
+  expect(heads.slice(0, 3)).toEqual([f.item.commit, f.item.commit, f.item.commit]);
+  for (const item of successors) expect(f.store.isKnowledgeProcessed(f.store.currentCommit(item.knowledgeId, f.target)[0]!.id)).toBe(true);
+  expect(f.store.taskFailures(f.target.sessionId).every(row => row.count === 0)).toBe(true);
+});
+
+test("one indivisible oversized successor stays pending without pinning other retained events", async () => {
+  const f = fixture("first ".repeat(2500));
+  const originals = [f.item];
+  for (const handle of ["$second", "$third"]) {
+    const created = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" },
+      operations: [{ op: "create", handle, author: "test", ...f.content, text: "later ".repeat(2500) }] });
+    if (!created.ok) throw Error(created.problems.join());
+    originals.push(created.committed[0]!);
+  }
+  const frozen = new Barrier(), changed = new Barrier();
+  f.setAgent(async () => { frozen.release(); await changed.wait; return success; });
+  const first = f.memory.dream(f.target);
+  await frozen.wait;
+  const base = f.other.store.currentCommit(f.item.knowledgeId, f.otherPath)[0]!;
+  const successor = f.other.store.commitConsolidationRun({ path: f.otherPath,
+    run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
+    operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: base.id, ...f.content, text: "oversized ".repeat(11000) }] });
+  if (!successor.ok) throw Error(successor.problems.join());
+  changed.release();
+  expect((await first).outcome).toBe("conflict");
+
+  f.setAgent(async task => {
+    expect(task.material.changed).not.toContain(`K${f.item.knowledgeId}@${successor.committed[0]!.commit}`);
+    return success;
+  });
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+  const range = f.store.retryDreamingRange(f.target)!;
+  expect(range.anchor).toBe(f.item.commit);
+  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events ORDER BY event_id").all().map(row => Number(row.event_id)))
+    .toEqual(originals.slice(1).map(item => item.commit));
+  const runs = f.store.listRuns(f.target.sessionId).length;
+  await expect(f.memory.dream(f.target)).rejects.toThrow(`retained changes K@${f.item.commit} each exceed 10000`);
+  expect(f.store.listRuns(f.target.sessionId)).toHaveLength(runs);
+  expect(f.store.isKnowledgeProcessed(successor.committed[0]!.commit)).toBe(false);
+  expect(f.store.taskFailures(f.target.sessionId).every(row => row.count === 0)).toBe(true);
 });
 
 test.each(["provider", "request", "invalid", "scope", "stale", "tool", "budget"])("external successor cannot hide unresolved %s failure", async problem => {

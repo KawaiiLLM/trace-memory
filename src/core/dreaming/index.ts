@@ -30,7 +30,8 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   const retained = store.retryDreamingRange(store.knowledgePath(input.sessionId, input.branch, input.headTurnId));
   const path = retained ? { sessionId: retained.sessionId, branch: retained.branch, headTurnId: retained.headTurnId }
     : { sessionId: input.sessionId, branch: input.branch, headTurnId: input.headTurnId! };
-  let ids = retained?.eventIds ?? [];
+  let ids: number[] = [];
+  const ownCommits = retained ? store.dreamingOwnCommits(retained.id) : undefined;
   const changedText = (value: ReturnType<Store["dreamingInput"]>) => `Changed knowledge (unsettled events):\n${value.text}`;
   if (!retained) {
     const events = store.pendingKnowledgeEvents(path);
@@ -45,9 +46,28 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
     }
     ids = events.slice(0, low).map(e => e.id);
     if (!ids.length) throw new Error("Dreaming capacity: oldest change with its current body and framing exceeds 10000; left pending");
+  } else {
+    // The range is immutable audit/authority, not an immutable batch. A conflict can make current
+    // descendants larger, so every later admission selects again from its still-unsettled events.
+    // Earlier legal outputs are mandatory candidates and are certified first if they leave no room.
+    const own = store.dreamingInput(path, [], ownCommits);
+    if (tokens(changedText(own)) > 10000)
+      throw new Error("Dreaming capacity: retained task output with its current body and framing exceeds 10000; left pending");
+    const pending = new Set(store.pendingKnowledgeEvents(path).map(event => event.id));
+    const blocked: number[] = [];
+    for (const id of retained.eventIds.filter(eventId => pending.has(eventId))) {
+      const candidate = [...ids, id];
+      if (tokens(changedText(store.dreamingInput(path, candidate, ownCommits))) <= 10000) { ids = candidate; continue; }
+      if (ids.length || own.versions.length) break;
+      // One enlarged item is not allowed to pin every other independently fit retained event. It
+      // remains unsettled and keeps the same logical anchor; no omission is certified as progress.
+      blocked.push(id);
+    }
+    if (!ids.length && !own.versions.length)
+      throw new Error(`Dreaming capacity: retained changes ${blocked.map(id => `K@${id}`).join(", ") || "(none)"} each exceed 10000 with their current body and framing; left pending`);
   }
-  const changed = store.dreamingInput(path, ids);
-  if (tokens(changedText(changed)) > 10000) throw new Error("Dreaming capacity: retained changed family exceeds 10000; membership stays pending");
+  const changed = store.dreamingInput(path, ids, ownCommits);
+  if (tokens(changedText(changed)) > 10000) throw new Error("Dreaming capacity: selected retained changed material exceeds 10000; left pending");
   const processed = store.listCurrentKnowledge(path).filter(v => store.isKnowledgeProcessed(v.revision.id));
   let old = processedBlock(processed), oldIds = processed.map(v => v.revision.id);
   if (tokens(`Processed knowledge:\n${old}`) > 20000) {
@@ -77,7 +97,7 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   const supplied = [...processed.filter(v => oldIds.includes(v.revision.id)), ...changed.versions];
   const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id));
-  return { sessionId: path.sessionId, branch: path.branch, path, range, changed, material, text,
+  return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, changed, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const,
     readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),
     commitBoundary: Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id),
@@ -86,7 +106,7 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
   bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
-  const { sessionId, branch, path, range, readKnowledgeCommits } = frozen;
+  const { sessionId, branch, path, range, eventIds, readKnowledgeCommits } = frozen;
   let rounds = 0, repaired = false;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
     promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${range.eventIds.at(-1)}`, createdAt: new Date().toISOString() };
@@ -99,9 +119,9 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
     let family = range.knowledgeIds;
     try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { problems.push(String(error)); }
-    const state = store.dreamingInput(path, range.eventIds);
+    const own = store.dreamingOwnCommits(range.id);
+    const state = store.dreamingInput(path, eventIds, own);
     const graph = store.commitGraph(path);
-    const current = graph.current.filter(v => family.includes(v.knowledgeId));
     const descendantsOfFrozen = new Set<number>();
     for (const handle of readKnowledgeCommits) if (family.includes(handle.knowledgeId) || changedAtFreeze.has(handle.commit)) {
       const descendants = graph.descendants(handle.commit);
@@ -109,14 +129,13 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
       if (!graph.current.some(r => r.knowledgeId === handle.knowledgeId || descendants.has(r.id)))
         problems.push(`K${handle.knowledgeId}@${handle.commit}: no applicable result remains on the frozen path`);
     }
-    const own = store.dreamingOwnCommits(range.id);
     const eligible = new Set([...admitted, ...own]);
     for (const id of own) if (!descendantsOfFrozen.has(id))
       for (const child of graph.descendants(id)) descendantsOfFrozen.add(child);
-    // Settled events may disappear from state after another target completes them. Their
-    // actual current descendants still block this execution's certification of external versions.
-    const results = [...new Map([...current, ...state.versions.map(v => v.revision),
-      ...graph.current.filter(r => descendantsOfFrozen.has(r.id))].map(r => [r.id, r])).values()];
+    // Settled event labels may disappear from state after another target completes them. The
+    // actual current descendants of exactly what this execution read still decide staleness, while
+    // only the selected changed results are candidates for a new processing certificate.
+    const results = graph.current.filter(r => descendantsOfFrozen.has(r.id));
     for (const revision of results) if (!eligible.has(revision.id)) {
       if (revision.id > frozen.commitBoundary && descendantsOfFrozen.has(revision.id))
         externalSuccessors.push({ knowledgeId: revision.knowledgeId, commit: revision.id });
@@ -124,12 +143,14 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     }
     // A later execution may freeze the actual merge result without adding its identity to the
     // writable family. A trace during this execution still grants no certification.
-    const resultIds = results.filter(v => eligible.has(v.id)).map(v => v.id).sort((a, b) => a - b);
-    const affected = new Set([...current, ...frozen.changed.versions.map(v => v.revision)].map(revision => placementOwner(store, { revision })));
+    const resultIds = state.versions.map(v => v.revision).filter(v => eligible.has(v.id)).map(v => v.id).sort((a, b) => a - b);
+    // Recheck every scope touched by the frozen handles, including a read-only successor, but add
+    // only true changed-result candidates to the tentative processed set.
+    const affected = new Set([...results, ...frozen.changed.versions.map(v => v.revision)].map(revision => placementOwner(store, { revision })));
     const scopes = checkProcessedScopes(store, resultIds, affected);
     problems.push(...scopes.problems);
-    return { family, eventIds: range.eventIds, resultIds, pendingEventIds: state.events.map(e => e.id),
-      versions: current.map(v => ({ knowledgeId: v.knowledgeId, commit: v.id, processed: store.isKnowledgeProcessed(v.id) })),
+    return { family, eventIds, retainedEventIds: range.eventIds, resultIds, pendingEventIds: state.events.map(e => e.id),
+      versions: state.versions.map(v => ({ knowledgeId: v.revision.knowledgeId, commit: v.revision.id, processed: store.isKnowledgeProcessed(v.revision.id) })),
       ...scopes, externalSuccessors, failures: problems,
       problems: [...problems, ...externalSuccessors.map(v => `K${v.knowledgeId}@${v.commit}: external successor after freeze${family.includes(v.knowledgeId) ? "" : " outside frozen family; read-only"}; reading alone cannot certify it`)],
       remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired };
@@ -168,7 +189,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         run.response = JSON.stringify({ ...JSON.parse(run.response!), check: final, problems: final.problems });
         store.updateRun(runId, { ...run, outcome });
         if (outcome === "conflict") store.settleDreamingConflict(run, final.problems.join("; "));
-        else store.completeDreaming(runId, range.eventIds, final.resultIds);
+        else store.completeDreaming(runId, eventIds, final.resultIds);
         return { outcome, runId, problems: final.problems };
       });
     } catch (error) { problems.push(String(error)); }

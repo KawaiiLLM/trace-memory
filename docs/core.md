@@ -36,11 +36,15 @@ visible as requested-versus-actual.
 
 `dream({sessionId, branch, headTurnId, model?, thinkingLevel?, subagentThinkingLevel?})`
 uses the existing claim/admission/cancellation path, always in subagent mode. Eligibility is
-rechecked at admission. The retained range keeps its original anchor, path and writable family
-through retries; the current exact versions are resolved afresh. Admission freezes material,
-model/thinking and profile. It supplies processed knowledge within 20k, changed knowledge within
-10k and whole direct facts within 10k, with framing and explicit omitted-fact receipts. Runtime
-reads never extend the family. A retained body too large for admission stays pending, not clipped.
+rechecked at admission. The retained range keeps its original anchor, path, event membership and
+writable family through retries; the current exact versions are resolved afresh. Its event membership
+is audit and authority, not a permanently indivisible input batch: a later admission reselects whole
+current results for still-unsettled events within 10k. An enlarged event that cannot fit alone remains
+pending with a capacity diagnostic, without preventing independently fitting retained events from
+completing first. No event omitted from the supplied batch is settled. Earlier legal Dreamer outputs
+remain mandatory candidates. Admission freezes material, model/thinking and profile. It supplies
+processed knowledge within 20k, changed knowledge within 10k and whole direct facts within 10k,
+with framing and explicit omitted-fact receipts. Runtime reads never extend the family or batch.
 Only processed material exceeding 20k uses lexical relevance, with stable category/time/id ties.
 The shared `budgetKnowledge` keeps optional `required` exact-commit IDs in its fifth argument and
 an optional priority comparator in its sixth: required bodies are protected before optional selection,
@@ -70,19 +74,24 @@ automatic compaction remains disabled through the existing in-memory Settings ov
 
 The check tool and final host check use the existing full `checkProcessedScopes` routine:
 global 4k, each project 10k, each session 1k, applicable 15k, framing included. No truncated view
-proves fit. Current versions must be exact admission versions or this retained range's own outputs;
-reading alone never certifies an external successor, and outside-family identities remain read-only. Completion
-updates the run outcome, revalidates claims/versions/totals, settles exact event IDs, certifies
-separate result IDs and settles the execution in one transaction. Replay has no second streak
+proves fit. Current versions must be exact changed-result admission versions or this retained range's
+own outputs. Processed read material remains part of the real processed projection, but an unprocessed
+successor of that read is neither a processing candidate nor an extra changed body; it remains its own
+pending event. Reading alone never certifies an external successor, and outside-family identities
+remain read-only. Completion updates the run outcome, revalidates claims/versions/totals, settles only
+the exact event IDs in this supplied batch, certifies separate result IDs and settles the execution in
+one transaction. Replay has no second streak
 effect. Failed/cancelled tasks keep prior commits and pending ranges without certification.
 
 The [external-successor ruling](dreamer-external-conflict.md) adds a real `conflict` terminal outcome
 only when a post-freeze external descendant is the sole acceptance blocker. Core records exact
 successor identities separately from other failures, rechecks transactionally, and settles through
 its live Dreamer capability. This preserves the streak, including its previous reason/run/time,
-without certification or cancellation labeling. Provider, request, illegal-operation and capacity
-failures cannot be hidden by that classification. A later admission can certify freshly supplied
-merge survivors while retaining the original writable family. No scheduler or retry loop is added.
+without certification or cancellation labeling. Provider, request, illegal-operation and real
+processed-scope/capacity failures cannot be hidden by that classification. A later admission can
+certify freshly supplied merge survivors while retaining the original range history and writable
+family; it can also shrink an enlarged multi-event range without treating unrelated read successors
+as processed. No scheduler or retry loop is added.
 
 Prompt lineage: pi-om `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
 `src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
