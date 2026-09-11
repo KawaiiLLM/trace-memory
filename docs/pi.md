@@ -448,10 +448,10 @@ project declaration, no mark, no worker. The four retained forms exist because `
 and rpc sessions have no menu (parent 24, amendment 1); they are documented forms of
 the same operations the menu performs, not hidden aliases of a menu entry.
 
-Bare `/trace` opens four native dialogs:
+Bare `/trace` opens a native menu with four entries:
 
 - **Current session:** a compact context-capacity map and pending/trigger estimates,
-  enrollment, project, cost and recovery warnings as the dialog's own title, then
+  enrollment, project, cost and recovery warnings in a scrollable Pi-themed panel, with
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
   `Project` with a name input, `Mark` with an address input and a kind selection, and
   `Retry fork` only while this session is automatically downgraded.
@@ -475,7 +475,17 @@ an exact provider-payload census. Unknown usage is a question-mark map, not free
 space. Model identity comes from the active Pi model. No reserve, auto-compaction
 buffer or token categories are inferred. Wide terminals put the summary beside
 five grid rows; narrow terminals use an unspaced grid and put the summary below.
-Pi's width utilities and native dialog wrapping handle display width.
+Pi's width utilities handle display width. In the TUI, this panel alone uses the
+public `ui.custom` overlay API, not an oversized native selector title. The overlay
+uses the terminal's available screen rather than the fullscreen editor dock.
+Recovery warnings lead the scrollable body; the action list stays visible. The
+usual arrows (or `j`/`k`), Enter and Escape retain selection/cancellation semantics;
+Page Up/Down scroll status without moving the selected action. Configured Pi
+selection keys are honored. At 24 rows all actions fit; shorter screens show the
+selected action and let navigation reveal the others. Below three rows the panel
+accepts only cancellation until resized. Resizing reflows the same snapshot,
+including switching between side-by-side and stacked context layouts. No footer
+content or configuration changes.
 
 The separate **Pending / trigger** bars are estimated trigger material, not task
 completion. Bars cap at 100%; numbers and percentages do not:

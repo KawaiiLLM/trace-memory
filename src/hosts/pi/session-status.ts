@@ -41,7 +41,7 @@ export function pendingBar(label: string, value: ReturnType<TraceMemory["pending
   return `${label}: [${"#".repeat(filled)}${partial ? "+" : ""}${".".repeat(10 - filled - Number(partial))}] ${number(value.tokens)} / ${number(value.trigger)} (${percent(ratio)})`;
 }
 
-/** Native select's Text handles resize; pre-wrap makes the initial narrow layout deterministic. */
+/** Wrap the current snapshot at the width allocated by Pi. */
 export function statusBody(lines: string[], width: number, paint: Paint = plain): string {
   return lines.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width))).map(line => paint("dim", truncateToWidth(line, Math.max(1, width), ""))).join("\n");
 }

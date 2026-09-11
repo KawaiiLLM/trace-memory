@@ -106,7 +106,7 @@ test("real Pi selector wraps the dim body and keeps every original action", asyn
       expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
       expect(lines.join("\n")).toContain("Runs"); expect(lines.join("\n")).toContain("Mark");
     }
-    expect(title.startsWith("\u001b[22;39m")).toBe(true);
+    expect(title.startsWith("Current session")).toBe(true);
   } finally { selector.dispose(); }
 });
 
