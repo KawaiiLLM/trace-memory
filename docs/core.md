@@ -357,6 +357,7 @@ charged once, to the block that emits it:
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
 | compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
 | compact's Raw window — the pending entry views, then the already-extracted refill, with the Raw title | `compaction.rawTokens` | 10,000 |
+| compact's shared allowance — required excess only, never optional refill | `compaction.overflowTokens` | 10,000 |
 | Consolidator: its titles, range line, mandatory review cues and receipts, charged with the facts they frame | `consolidation.batchTokens` | 10,000 |
 
 The current material and the mandatory cues are reserved first; historical facts then fill whatever
@@ -622,30 +623,41 @@ three windows since 28a):
 
 | Outcome | Condition | Result |
 | --- | --- | --- |
-| `{text, supplied, charged}` | the knowledge block at its own baseline, the pending facts and the pending entries' bounded views fit the envelope | knowledge, `<episodic>` with the facts in chronological Turn groups, then the entry views under `Raw:`, with the spare filled by the two refills |
-| `{native: true, reason}` | a required window overflows after lending, or an entry's minima exceed the profile | an explicit ask that the host decline and let its own native compaction run, naming the overflowing window and its numbers |
+| `{text, supplied, charged}` | the complete required set fits the fixed bases plus shared overflow | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order |
+| `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies all contributing required windows, including knowledge |
 
-**Three windows, one envelope (28a, defaults raised by 32a).** Compaction's baseline windows are
-knowledge 20,000 (`render.knowledgeBlockTokens`), pending facts 10,000 (`compaction.factsTokens`)
-and pending Raw 10,000 (`compaction.rawTokens`) — and one envelope that is their sum, 40,000 at the
-defaults. There is no fourth key. Lending is free between them: a window needing less than its
-baseline leaves the difference in the envelope, a window needing more spends it, and the charged total
-never passes the envelope. Two rules make that safe. The fit test measures knowledge **at its own
-baseline**, so optional knowledge beyond it yields before a required window can be declared over, and
-a large knowledge corpus can never manufacture an overflow. And a required window is never trimmed:
-if the pending facts or the pending Raw still do not fit, the operation delegates to native compaction
-naming the window and the numbers rather than dropping one of them. (Ticket 28b interposes the bounded
-recovery at exactly that point; this slice starts no worker.)
+**Fixed bases and required-only overflow (32e).** Bases are knowledge 20,000
+(`render.knowledgeBlockTokens`), facts 10,000 (`compaction.factsTokens`) and Raw 10,000
+(`compaction.rawTokens`). `compaction.overflowTokens` defaults to 10,000 and is shared only by
+required excess. The maximum is their derived sum, 50,000, not a separate total-budget key.
+For charged required sizes U and bases B, admission requires `sum(max(U_i - B_i, 0)) <= overflowTokens`.
+Equality fits; no window lends its unused base. Required 20k/14k/16k fits, but 5k/20k/15k fails
+with 15k excess despite a 40k total. Diagnostics give per-window excess and shared shortfall.
 
-Once the required material is placed, the rest of the envelope is filled in a fixed priority: the
-knowledge block grows into it first, then **refill (a)** — the most recent already-consolidated facts
-of the path, whole, in `listSessionFacts`' freshness order, deduplicated against the pending facts by
-construction and charged to the facts window — then **refill (b)** — the most recent already-extracted
-source entries of the path, whole, through the same E/C/R profile, displayed in source order and
-charged to the Raw window. Refill (b) excludes exactly two things: entries that are pending (they are
-already required material) and entries whose native ids the caller passes as `retainedNativeIds`,
-which are what the post-compaction context keeps. An entry whose only earlier visibility was the
-summary this compaction discards is *not* excluded on that account.
+Required knowledge is each current applicable exact version not certified by Dreamer, including
+legacy unclassified knowledge and committed unfinished edits. Consolidating its supporting facts
+does not make it optional. Unprocessed archives retain required accounting/status until completion;
+retained superseded versions receive required status framing. Bodies are never truncated or replaced
+by an ID or omission receipt to pass admission. Titles, labels, source references, status lines,
+separators and emitted receipts are charged to their owning window.
+
+Processed knowledge uses the existing category/version priority, within its own positive base
+remainder. Each optional increment is at most `max(B_i - U_i, 0)`, including extra framing; optional
+material cannot use overflow. Required 25k/8k/6k leaves optional capacities 0/2k/4k.
+
+**Raw-first refill.** Select newest already-extracted Raw as whole bounded E/C/R views, excluding
+exact pending entries and originals or recognized bounded carriers actually retained after compact.
+The optional `retainedNativeIds` argument also accepts the existing `VisibleView` for retained fact
+and knowledge identities. The discarded summary establishes no retained coverage. Display selected
+Raw in source order.
+
+Then filter already-consolidated facts before budget selection: exclude only facts whose nonempty,
+complete `fact_sources` bindings are fully covered by retained Raw, required pending Raw or selected
+historical Raw. Unknown, incomplete or partly covered bindings remain eligible. Required pending
+facts are never removed. Select eligible whole facts newest first, deduplicated against pending and
+retained fact IDs, and display chronological Turn groups. Excluded facts gain no supplied fact IDs.
+Raw-first affects filtering, not the independent facts remainder. Pending membership is exact
+processing membership, never a timestamp tail; old pending holes remain protected.
 
 Both refills are optional in the strict sense: an item that does not fit is left out, and that
 omission starts no worker, causes no native delegation, resets no processing and enters no carrier.
@@ -831,7 +843,7 @@ recovery work and nothing else. Nothing else about admission, freezing, claims, 
 `cancelTasks(stopping?)` changes.
 
 `compact`'s native arm gains `over?: { facts: boolean; raw: boolean }`, present exactly when a
-required window is over budget after lending — the one delegation reason bounded recovery can
+required-window excess exceeds the shared overflow allowance — the one delegation reason bounded recovery can
 act on. A delegation for any other reason (an entry whose minima exceed the view profile)
 carries none, and the host starts no worker for it. It is a discriminator, not a second
 verdict: the outcome is still the custom replacement or the delegation, and the prose of

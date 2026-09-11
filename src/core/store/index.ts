@@ -1247,6 +1247,23 @@ export class Store {
     return (this.db.prepare("SELECT entry_id FROM fact_sources WHERE fact_id = ? ORDER BY entry_id").all(factId) as { entry_id: number }[]).map(r => r.entry_id);
   }
 
+  /** Exact optional-history redundancy: unknown or partially bound citations cannot prove coverage.
+   * Reuse source metadata/address projection, not Turn times or text equivalence. */
+  factCoveredByRaw(fact: Fact, covered: ReadonlySet<number>): boolean {
+    const bound = this.factEntries(fact.id);
+    if (!bound.length || !fact.source.length || !bound.every(id => covered.has(id))) return false;
+    const entries = this.db.prepare("SELECT id, turn_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(bound));
+    if (entries.length !== bound.length) return false;
+    const turns = new Set(fact.source.map(source => Number(/^T([1-9]\d*)#/.exec(source)?.[1])));
+    const addresses = new Set<string>();
+    for (const turn of turns) {
+      const ids = entries.filter(entry => Number(entry.turn_id) === turn).map(entry => Number(entry.id));
+      for (const address of this.addressesOf(turn, ids)) addresses.add(address);
+    }
+    return fact.source.every(source => addresses.has(source));
+  }
+
   /** A fact is on a path when its Turn and every cited Turn are on the ancestry and, when the branch has a
    * selected native ancestry, the source entries it was bound to when written are all in it (review
    * 2026-09-08: T1#assistant is shared by every assistant entry of T1, so identity decides, not the address).

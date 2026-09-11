@@ -3,7 +3,7 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactGroups, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, FACTS_TITLE, RAW_TITLE } from "../render/material.ts";
+import { budgetMaterial, injectionText, compactText, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
@@ -33,8 +33,8 @@ export interface TopicGroups {
  * every pending fact and every pending entry is represented in it, the entries in the one bounded
  * view, with the spare allowance refilled by recent consolidated facts and recent already-extracted
  * Raw. `native` is the explicit ask that the host decline the custom summary and let Pi's own
- * compaction run, with the reason it could not be avoided: which required window overflowed after
- * lending, and by how much. There is no third outcome: compact never trims a pending window to make
+ * compaction run, with the reason it could not be avoided: each required-window excess and the
+ * shared overflow shortfall. There is no third outcome: compact never trims a pending window to make
  * the block fit, and core never summarizes with a model.
  *
  * 29a "Renderers return what they kept": beside the replacement text, the identities it actually
@@ -44,19 +44,19 @@ export interface TopicGroups {
 export type CompactResult = { text: string; supplied: SuppliedMaterial; charged?: ChargedWindows }
   /** 28b: `over` says which required window overflowed, so the host's bounded recovery can decide
    * which phase to run without reading the prose of `reason`. It is present exactly when a required
-   * window is over after lending — the one condition recovery can act on. A delegation for any other
+   * window excess cannot fit the shared allowance — the one condition recovery can act on. A delegation for any other
    * reason (an entry whose minima exceed the view profile, a store error the host caught) carries
    * none, and recovery starts nothing for it. */
-  | { native: true; reason: string; over?: { facts: boolean; raw: boolean } };
+  | { native: true; reason: string; over?: { knowledge: boolean; facts: boolean; raw: boolean } };
 
 /** 28a item 6: what one custom replacement charged, window by window, beside the text it produced.
  * Diagnostics — the outcome is still the custom replacement or the native delegation, and nothing
- * reads this to decide between them. `envelope` is the sum of the three baselines, the ceiling the
+ * reads this to decide between them. `envelope` is the sum of the three bases and shared overflow, the ceiling the
  * three charges together may never exceed. */
 export interface ChargedWindows { knowledge: number; facts: number; raw: number; envelope: number;
-  /** What the required material alone charges — the pending facts and the pending Raw with their
+  /** What the required material alone charges — the unprocessed knowledge, pending facts and pending Raw with their
    * framing, before either refill. `facts`/`raw` above minus these is what the refills took. */
-  required: { facts: number; raw: number } }
+  required: { knowledge: number; facts: number; raw: number } }
 /** 29a: the initial knowledge block and the exact commits it carries. */
 export interface Injection { text: string; knowledgeCommitIds: number[] }
 
@@ -370,31 +370,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
     // explicit read, never because a worker finished.
     injection,
     inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
-    // Ticket 28a "Compaction allocator": one allocator over three material windows and one envelope,
-    // filled in the ruled priority (28 amendment 7, 30 "Compaction and historical refill"):
-    //
-    //   1. current knowledge, by the existing priority selection;
-    //   2. the pending facts and the pending Raw of the path, which are required;
-    //   3. refill (a): the most recent already-consolidated facts of the path;
-    //   4. refill (b): the most recent already-extracted source entries of the path.
-    //
-    // Baselines are `render.knowledgeBlockTokens`, `compaction.factsTokens` and `compaction.rawTokens`;
-    // the envelope is their sum and there is no fourth key. Compaction no longer reads
-    // `render.episodicBlockTokens`, which stayed the Noter's history envelope. Lending is what the two
-    // comparisons below express: a window needing less than its baseline leaves the difference in the
-    // envelope, a window needing more may spend it, and no borrower pushes the charged total past the
-    // envelope. Knowledge is the only window another's demand can reduce, and only above its own
-    // baseline — the fit test measures it at that baseline (`atBaseline.cost`), so optional knowledge
-    // yields before a required window is declared over, and nothing knowledge held at its baseline is
-    // lost. A required window is never trimmed: pending facts and pending Raw are represented whole,
-    // or the operation delegates to native compaction with the window and the numbers (28b interposes
-    // the bounded recovery there; this slice launches no worker). Refills are optional in the strict
-    // sense — an omitted refill item starts nothing, delegates nothing and enters no carrier, and
-    // spare space left over simply stays empty.
-    //
-    // Nothing here waits for, cancels or starts a memory worker, touches a claim or advances any
-    // progress: a Noter finishing concurrently may make this snapshot redundant, never incomplete.
-    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedNativeIds: readonly string[] = []): CompactResult => {
+    // One allocator: required exact versions/facts/Raw first, fixed bases plus shared required-only
+    // overflow, then processed knowledge and Raw-first historical refill in each own base remainder.
+    // No worker, processing mark or coverage persistence is performed by this synchronous render.
+    compact: (sessionId: number, branch = "main", headTurnId?: number, retainedNativeIds: readonly string[] | VisibleView = []): CompactResult => {
       if (!store.enabled(sessionId)) return { text: "", supplied: { entries: [], factIds: [], knowledgeCommitIds: [] } };
       const path = store.knowledgePath(sessionId, branch, headTurnId);
       const snapshot = store.pathSnapshot(path); // one membership for this operation, knowledge and facts alike
@@ -404,24 +383,33 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       const sourced = head === undefined ? [] : store.sourcePath(sessionId, branch, head);
       const pending = head === undefined ? [] : store.pendingEntries(sessionId, branch, head);
       const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
+      const requiredCommits = new Set(knowledge.filter(k => !store.isKnowledgeProcessed(k.revision.id)).map(k => k.revision.id));
+      const visible = Array.isArray(retainedNativeIds) ? noVisibility() : retainedNativeIds as VisibleView;
+      const retained = new Set(Array.isArray(retainedNativeIds) ? retainedNativeIds : visible.raw.keys());
+      // Archives remain real immediately, but unprocessed retirement must retain its accounting.
+      // Reuse the applicable graph (including archives), never the active-only knowledge list.
+      const archives = store.commitGraph(path, undefined, snapshot).current.filter(r => r.op === "archive" && !store.isKnowledgeProcessed(r.id));
+      const notes = [...knowledgeStatusNotes(store, knowledge, visible.knowledgeCommitIds, path),
+        ...archives.map(r => `K${r.knowledgeId}@${r.id} archived; maintenance not completed; parent K${r.knowledgeId}@${r.parentId}; supports: ${r.supports.map(id => `F${id}`).join(", ") || "none"}; reason: ${r.reason}`)];
+      const noteCost = notes.length ? charge([KNOWLEDGE_STATUS_TITLE, ...notes]) : 0;
       // 26 amendment 2: the facts are the ones applicable on the selected path, never the whole
       // session's — a sibling branch's fact is not history here. `listSessionFacts`'s freshness order
       // is what the refill selects by, so it is filtered, not replaced by `listBranchFacts`.
       const applicable = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot));
       const pendingFacts = store.unconsolidated(applicable, path, snapshot);
       const pendingFactIds = new Set(pendingFacts.map(f => f.id));
-      // Refill (a)'s candidates: the already-consolidated facts of the path, deduplicated against the
+      // Optional facts candidates: the already-consolidated facts of the path, deduplicated against the
       // pending ones by construction, still in the freshness order the selection wants.
-      const consolidated = applicable.filter(f => !pendingFactIds.has(f.id));
+      let consolidated = applicable.filter(f => !pendingFactIds.has(f.id) && !visible.factIds.has(f.id));
       const factTurns = store.factTurnTimes(applicable);
-      // Refill (b)'s candidates: the already-extracted entries of the path — the path minus what is
+      // Optional Raw candidates: the already-extracted entries of the path — the path minus what is
       // still pending — minus what the post-compaction context retains, so nothing is supplied twice.
       // An entry whose only earlier visibility was the summary this compaction discards is NOT
       // excluded on that account (30 case 10): the exclusions are these two and no other.
-      const pendingIds = new Set(pending.map(e => e.id)), retained = new Set(retainedNativeIds);
+      const pendingIds = new Set(pending.map(e => e.id));
       const extracted = sourced.filter(e => !pendingIds.has(e.id) && !retained.has(e.nativeId));
       const caps = { knowledge: config.render.knowledgeBlockTokens, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
-      const envelope = caps.knowledge + caps.facts + caps.raw;
+      const envelope = caps.knowledge + caps.facts + caps.raw + config.compaction.overflowTokens;
       // Every emitted component is charged inside the window that owns it: the `<episodic>` tag and
       // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
       // with their own block. The `Receipts:` heading `finish` emits is charged to each window that
@@ -440,22 +428,31 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
       if (!views) return { native: true, reason: `bounded views of ${pending.length} pending entries exceed the entry view profile `
         + `(E ${config.render.entryTokens}, C ${config.render.toolInputTokens}, R ${config.render.toolResultTokens} tokens): their labels and omission markers do not fit it` };
       const requiredFacts = factsCharge(pendingFacts, []), requiredRaw = rawCharge(views.map(v => v.content));
-      // Required first. Knowledge is measured at its baseline here, so a knowledge corpus larger than
-      // its own window can never make a required window overflow, and a knowledge block within it is
-      // never dropped to make room (28 "Material and allocation").
-      const atBaseline = budgetKnowledge(knowledge, caps.knowledge, knowledgeLine);
-      if (atBaseline.cost + requiredFacts + requiredRaw > envelope) {
-        const over = [requiredFacts > caps.facts ? `the facts window (${pendingFacts.length} pending facts need ${requiredFacts} tokens, compaction.factsTokens ${caps.facts})` : "",
-          requiredRaw > caps.raw ? `the Raw window (bounded views of ${pending.length} pending entries need ${requiredRaw} tokens, compaction.rawTokens ${caps.raw})` : ""].filter(Boolean);
-        return { native: true, over: { facts: requiredFacts > caps.facts, raw: requiredRaw > caps.raw },
-          reason: `required material does not fit after lending: ${over.join(" and ") || "the required windows"} exceed the `
-          + `${envelope}-token envelope beside ${atBaseline.cost} tokens of knowledge, by ${atBaseline.cost + requiredFacts + requiredRaw - envelope} tokens` };
+      const requiredKnowledge = budgetKnowledge(knowledge.filter(k => requiredCommits.has(k.revision.id)), Infinity, knowledgeLine).cost + noteCost;
+      const excess = { knowledge: Math.max(0, requiredKnowledge - caps.knowledge),
+        facts: Math.max(0, requiredFacts - caps.facts), raw: Math.max(0, requiredRaw - caps.raw) };
+      const totalExcess = excess.knowledge + excess.facts + excess.raw;
+      if (totalExcess > config.compaction.overflowTokens) return { native: true,
+        over: { knowledge: excess.knowledge > 0, facts: excess.facts > 0, raw: excess.raw > 0 },
+        reason: `required material exceeds shared overflow: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, render.knowledgeBlockTokens ${caps.knowledge}); `
+          + `${pendingFacts.length} pending facts need ${requiredFacts} tokens (excess ${excess.facts}, compaction.factsTokens ${caps.facts}); `
+          + `bounded views of ${pending.length} pending entries need ${requiredRaw} tokens (excess ${excess.raw}, compaction.rawTokens ${caps.raw}); `
+          + `shared allowance ${config.compaction.overflowTokens}, charged excess ${totalExcess}, shortfall ${totalExcess - config.compaction.overflowTokens}` };
+      const active = budgetKnowledge(knowledge, Math.max(caps.knowledge, requiredKnowledge) - noteCost,
+        knowledgeLine, "render.knowledgeBlockTokens", requiredCommits);
+      // Raw first, independently of facts' spare. The discarded summary is not retained coverage.
+      let rawSpare = Math.max(0, caps.raw - requiredRaw);
+      const refilledRaw: { entry: SourceEntry; content: string }[] = [];
+      for (const entry of [...extracted].reverse()) {
+        let content: string;
+        try { content = view(entry).content; } catch (error) { if (/capacity/.test(String(error))) continue; throw error; }
+        if (tokens(content) + 1 > rawSpare) break;
+        refilledRaw.push({ entry, content }); rawSpare -= tokens(content) + 1;
       }
-      // It fits, so the rest of the envelope is knowledge's to grow into before the refills see it
-      // (28 amendment 7's priority 1). `budgetKnowledge` keeps more as the cap rises and this cap is
-      // at least the baseline's cost, so the block can only gain items here, never lose one.
-      const active = budgetKnowledge(knowledge, envelope - requiredFacts - requiredRaw, knowledgeLine);
-      let spare = envelope - active.cost - requiredFacts - requiredRaw;
+      const coverage = new Set([...sourced.filter(e => retained.has(e.nativeId)).map(e => e.id),
+        ...pendingIds, ...refilledRaw.map(s => s.entry.id)]);
+      consolidated = consolidated.filter(f => !store.factCoveredByRaw(f, coverage));
+      const spare = Math.max(0, caps.facts - requiredFacts);
       // Refill (a): whole facts, freshness order, into the spare, charged to the facts window and the
       // envelope. The receipt for what is left out is charged with them; when even that receipt does
       // not fit, the refill is empty and silent — optional material may be omitted, never overspent.
@@ -468,17 +465,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         refilledFacts = next; factReceipts = receipts;
       }
       const facts = [...pendingFacts, ...refilledFacts];
-      spare -= factsCharge(facts, factReceipts) - requiredFacts;
-      // Refill (b): whole already-extracted entries, most recent first, through the same profile,
-      // charged to the Raw window and the envelope; selection stops at the remaining budget and there
-      // is no smaller profile to fall back to (30). One that cannot hold its own labels is left out.
-      const refilledRaw: { entry: SourceEntry; content: string }[] = [];
-      for (const entry of [...extracted].reverse()) {
-        let content: string;
-        try { content = view(entry).content; } catch (error) { if (/capacity/.test(String(error))) continue; throw error; }
-        if (tokens(content) + 1 > spare) break;
-        refilledRaw.push({ entry, content }); spare -= tokens(content) + 1;
-      }
       // Displayed in source order, pending and refilled alike (30: "display the selected Raw entries
       // in source order"; no new relevance ranking).
       const order = new Map(sourced.map((entry, index) => [entry.id, index]));
@@ -486,15 +472,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, expand: (add
         .sort((a, b) => order.get(a.entry.id)! - order.get(b.entry.id)!);
       return { text: compactText({ knowledge: active.groups, facts: lines(facts),
           entries: supplied.map(s => ({ id: s.entry.id, view: s.content })),
-          receipts: [...views.flatMap(v => v.receipts), ...factReceipts, ...active.receipts] }),
+          receipts: [...views.flatMap(v => v.receipts), ...factReceipts, ...active.receipts] }, RAW_TITLE, notes),
         // 29a "Renderers return what they kept": exactly the identities this replacement carries,
         // pending and refilled alike. What a budget left out is absent here (28a item 7).
         supplied: { entries: supplied.map(s => ({ id: s.entry.id, nativeId: s.entry.nativeId, view: "bounded" as const })),
           factIds: facts.map(f => f.id), knowledgeCommitIds: active.commits },
         // 28a item 6: the per-window accounting beside the text, for the acceptance probe and for
         // 28b's recovery decision. It is diagnostics, not a second outcome.
-        charged: { knowledge: active.cost, facts: factsCharge(facts, factReceipts), raw: rawCharge(supplied.map(s => s.content)),
-          envelope, required: { facts: requiredFacts, raw: requiredRaw } } };
+        charged: { knowledge: active.cost + noteCost, facts: factsCharge(facts, factReceipts), raw: rawCharge(supplied.map(s => s.content)),
+          envelope, required: { knowledge: requiredKnowledge, facts: requiredFacts, raw: requiredRaw } } };
     },
     branchSummary: (sessionId: number, branch: string, headTurnId: number): string => {
       if (!store.enabled(sessionId)) return "";

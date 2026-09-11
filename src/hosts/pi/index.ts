@@ -1070,11 +1070,11 @@ export default function (pi: ExtensionAPI) {
   const KEPT_AFTER_CUSTOM_COMPACTION = "";
   /** The native ids the post-compaction context retains: the ordinary conversation entries from
    * `first` onwards in Pi's own compaction-aware view (28a item 5, so nothing is supplied twice). */
-  const retainedNativeIds = (context: ExtensionContext, first: string): string[] => {
-    if (!first) return [];
+  const retainedNativeIds = (context: ExtensionContext, first: string): VisibleView => {
+    if (!first) return visibleView([], binding());
     const entries = context.sessionManager.buildContextEntries() as ContextEntry[];
     const at = entries.findIndex(entry => entry.id === first);
-    return at < 0 ? [] : entries.slice(at).filter(entry => entry.type === "message").map(entry => entry.id);
+    return visibleView(at < 0 ? [] : entries.slice(at), binding());
   };
   const PHASE_LABEL = { noting: "Noting", consolidation: "Consolidation" } as const;
   /** A wait that ends when the work ends or when the user cancels the compaction, whichever comes
