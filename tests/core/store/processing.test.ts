@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
-import { KNOWLEDGE_VIEW_VERSION } from "../../../src/core/store/processing.ts";
+import { KNOWLEDGE_VIEW_VERSION, checkProcessedProjection, processedBlock } from "../../../src/core/store/processing.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { migrateDreaming } from "../../../src/core/store/migration.ts";
 import * as rendering from "../../../src/core/render/index.ts";
@@ -48,6 +48,83 @@ test("32b review: unchanged eligibility avoids graph loading; scope checks load 
   expect(scopeGraphs).toBe(1);
   expect(render).toHaveBeenCalledTimes(10);
   memory.close();
+});
+
+test("32b performance: metadata and fact checks are bounded per projection, placement uses two projections", () => {
+  const a = fixture(), b = fixture(a.store, "B");
+  for (let i = 0; i < 8; i++) fixture(a.store);
+  let c = a.create();
+  for (let i = 0; i < 40; i++) c = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content });
+  const sql = vi.spyOn(a.store.db, "prepare"), facts = vi.spyOn(a.store, "factOnPath"), graphs = vi.spyOn(a.store, "commitGraph");
+  a.store.completeDreaming(a.success(), [c.commit], [c.commit]);
+  const points = () => sql.mock.calls.filter(([s]) => /SELECT (\*|session_id) FROM (facts|turns|runs|sessions) WHERE id = \?/.test(s)).length;
+  expect(points()).toBeLessThan(30);
+  expect(facts.mock.calls.length).toBeLessThanOrEqual(graphs.mock.calls.length);
+  sql.mockClear(); facts.mockClear(); graphs.mockClear();
+  a.store.declareProject(a.s.id, b.p.name, "mark");
+  expect(sql.mock.calls.filter(([s]) => s === "SELECT * FROM knowledge_revisions ORDER BY id")).toHaveLength(2);
+  expect(points()).toBeLessThan(50);
+  expect(facts.mock.calls.length).toBeLessThanOrEqual(graphs.mock.calls.length);
+  sql.mockClear();
+  a.store.mergeProject(b.p.id, a.p.id);
+  expect(sql.mock.calls.filter(([s]) => s === "SELECT * FROM knowledge_revisions ORDER BY id")).toHaveLength(2);
+  expect(a.store.db.prepare("SELECT * FROM knowledge_placement_validations").all()).toHaveLength(2);
+});
+
+test.each([2, 12])("32b performance: %s settled ranges keep their own branch/head and unfinished derived results", count => {
+  const a = fixture(), c = a.create();
+  const readers = Array.from({ length: count }, () => fixture(a.store));
+  const ranges = readers.map(r => a.store.retainDreamingRange(r.target, [c.commit]));
+  const original = a.store.retainDreamingRange(a.target, [c.commit]);
+  const derived = a.create("unfinished", "project", original.id);
+  const later = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "later", startedAt: "now" });
+  const sibling = a.store.retainDreamingRange({ ...a.target, branch: "sibling", headTurnId: later.id }, [c.commit]);
+  const input = vi.spyOn(a.store, "commitGraphInput"), graph = vi.spyOn(a.store, "commitGraph"), facts = vi.spyOn(a.store, "factOnPath");
+  a.store.completeDreaming(readers[0]!.success(), [c.commit], [c.commit]);
+  expect(facts.mock.calls.length).toBeLessThanOrEqual(graph.mock.calls.length);
+  expect(input).toHaveBeenCalledTimes(2); // certification plus one shared range-closing input
+  expect(graph.mock.calls.some(([p]) => p?.branch === "sibling" && p.headTurnId === later.id)).toBe(true);
+  expect(ranges.every(r => a.store.dreamingRange(r.id) === null)).toBe(true);
+  expect(a.store.dreamingRange(original.id)).not.toBeNull();
+  expect(a.store.dreamingRange(sibling.id)).toBeNull();
+  a.store.completeDreaming(a.success(), [], [derived.commit]);
+  expect(a.store.dreamingRange(original.id)).toBeNull();
+});
+
+test.each(["global", "project", "session", "applicable"] as const)("32b performance: reused %s projection charges framing, accepts the cap and rejects one more token", scope => {
+  const a = fixture(), c = a.create("body", scope === "applicable" ? "global" : scope);
+  const value = { knowledge: a.store.getKnowledge(c.knowledgeId)!, revision: a.store.knowledgeRevision(c.commit)! };
+  const owner = scope === "global" || scope === "applicable" ? "global" : `${scope}:${scope === "project" ? a.p.id : a.s.id}`;
+  const cap = { global: 4000, project: 10000, session: 1000, applicable: 15000 }[scope];
+  const projection = { owners: new Map([[c.commit, owner]]), paths: [{ path: a.target, values: [value] }],
+    // Isolate the independent applicable guard; real projections also include the scope pools.
+    pools: scope === "applicable" ? new Map() : new Map([[owner, new Map([[c.commit, value]])]]) };
+  for (const expected of [cap, cap + 1]) {
+    let low = 0, high = 20000;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      value.revision.text = "一".repeat(mid);
+      if (tokens(processedBlock([value])) < expected) low = mid + 1; else high = mid;
+    }
+    value.revision.text = "一".repeat(low);
+    expect(tokens(processedBlock([value]))).toBe(expected);
+    expect(tokens(value.revision.text)).toBeLessThan(expected);
+    const check = checkProcessedProjection(projection);
+    expect(check.problems).toHaveLength(expected === cap ? 0 : 1);
+    expect(check.totals.find(t => scope === "applicable" ? t.scope.startsWith("applicable:") : t.scope === owner)?.tokens).toBe(expected);
+  }
+});
+
+test("32b performance: after-projection audit failure rolls back assignment and every audit row", () => {
+  const a = fixture(), b = fixture(a.store, "B"), commits = [a.create(), a.create()];
+  a.store.completeDreaming(a.success(), commits.map(c => c.commit), commits.map(c => c.commit));
+  a.store.db.exec(`CREATE TRIGGER fail_second_audit BEFORE INSERT ON knowledge_placement_validations
+    WHEN (SELECT count(*) FROM knowledge_placement_validations) = 1 BEGIN SELECT RAISE(ABORT, 'audit failure'); END`);
+  expect(() => a.store.declareProject(a.s.id, b.p.name, "mark")).toThrow("audit failure");
+  expect(a.store.getSession(a.s.id)!.projectId).toBe(a.p.id);
+  expect(a.store.db.prepare("SELECT * FROM knowledge_placement_validations").all()).toEqual([]);
+  expect(commits.every(c => a.store.isKnowledgeProcessed(c.commit))).toBe(true);
+  expect(a.store.pendingKnowledgeEvents(a.target)).toEqual([]);
 });
 
 test("32b review: construction closes only its connection and preserves initialization error", () => {

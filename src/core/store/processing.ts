@@ -1,4 +1,4 @@
-import type { Store, KnowledgePath, KnowledgeWithRevision } from "./index.ts";
+import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
 import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 
@@ -98,41 +98,48 @@ function projectionPaths(store: Store): KnowledgePath[] {
   return [...new Map(paths.map(path => [JSON.stringify([path.sessionId, path.branch ?? null, path.headTurnId ?? null]), path])).values()];
 }
 
-export function placementOwner(store: Store, value: KnowledgeWithRevision): string {
+export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, "revision">, input?: ApplicabilityInput): string {
   const r = value.revision;
   if (r.scope === "global") return "global";
-  const origin = r.runId === null ? null : store.db.prepare(`SELECT s.id, s.project_id FROM runs u
-    JOIN sessions s ON s.id = u.session_id WHERE u.id = ?`).get(r.runId);
-  if (!origin) throw new Error(`K${r.knowledgeId}@${r.id}: missing run-session scope attribution`);
-  return r.scope === "session" ? `session:${origin.id}` : `project:${origin.project_id}`;
+  const sessionId = r.runId === null ? null : input ? input.runs.get(r.runId) : store.runSessionId(r.runId);
+  const projectId = sessionId == null ? undefined : input ? input.projects.get(sessionId) : store.getSession(sessionId)?.projectId;
+  if (sessionId == null || projectId === undefined) throw new Error(`K${r.knowledgeId}@${r.id}: missing run-session scope attribution`);
+  return r.scope === "session" ? `session:${sessionId}` : `project:${projectId}`;
 }
 
 export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>) {
   const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
   const pools = new Map<string, Map<number, KnowledgeWithRevision>>();
-  if (!processed.size) return { pools, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
-  if (affected?.size === 0) return { pools, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
+  const owners = new Map<number, string>();
+  if (!processed.size || affected?.size === 0) return { pools, owners, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
   const input = store.commitGraphInput();
+  // Historical certificates retain their owner even when an unprocessed successor hides them.
+  for (const revision of input.revisions) if (processed.has(revision.id))
+    owners.set(revision.id, placementOwner(store, { revision }, input.metadata));
   const knowledge = new Map<number, KnowledgeWithRevision["knowledge"]>();
   const paths = projectionPaths(store).filter(path => !affected || affected.has("global") ||
-    affected.has(`session:${path.sessionId}`) || affected.has(`project:${store.getSession(path.sessionId)!.projectId}`)).map(path => {
+    affected.has(`session:${path.sessionId}`) || affected.has(`project:${input.metadata.projects.get(path.sessionId)}`)).map(path => {
     const values = store.commitGraph(path, undefined, undefined, input).current
       .filter(r => r.op !== "archive" && processed.has(r.id)).map(revision => {
         if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, store.getKnowledge(revision.knowledgeId)!);
         return { knowledge: knowledge.get(revision.knowledgeId)!, revision };
       });
     for (const value of values) {
-      const owner = placementOwner(store, value);
+      const owner = owners.get(value.revision.id)!;
       if (!pools.has(owner)) pools.set(owner, new Map());
       pools.get(owner)!.set(value.revision.id, value);
     }
     return { path, values };
   });
-  return { pools, paths };
+  return { pools, paths, owners };
 }
 
 export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>) {
-  const { pools, paths } = processedProjection(store, accepted, affected);
+  return checkProcessedProjection(processedProjection(store, accepted, affected), affected);
+}
+
+/** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
+export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected?: Set<string>) {
   const rendered = new Map<number, string>();
   const render = (value: KnowledgeWithRevision) => {
     if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
@@ -144,7 +151,7 @@ export function checkProcessedScopes(store: Store, accepted: number[] = [], affe
     totals.push({ scope, tokens: tokens(processedBlock([...values.values()], render)), cap: scope === "global" ? 4000 : scope.startsWith("project:") ? 10000 : 1000 });
   }
   for (const { path, values } of paths) {
-    if (affected && !values.some(v => affected.has(placementOwner(store, v)))) continue;
+    if (affected && !values.some(v => affected.has(owners.get(v.revision.id)!))) continue;
     totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values, render)), cap: 15000 });
   }
   return { totals, problems: totals.filter(t => t.tokens > t.cap).map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };

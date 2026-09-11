@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
-import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, type DreamingRange } from "./processing.ts";
+import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import type {
   Actor,
@@ -408,6 +408,13 @@ export interface CommitGraph {
   applicable: Set<number>;
   current: KnowledgeRevision[];
   descendants: (commitId: number) => Set<number>;
+}
+
+/** Metadata for one synchronous projection. Rebuild after assignment changes; never cache across reads. */
+export interface ApplicabilityInput {
+  runs: Map<number, number>;
+  projects: Map<number, number>;
+  facts: Map<number, { fact: Fact; sessionId: number; entries: number[] }>;
 }
 
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
@@ -1115,11 +1122,12 @@ export class Store {
     return { sessionId, headTurnId: recorded || null, branch };
   }
 
-  private admits(revision: KnowledgeRevision, sessionId: number): boolean {
+  private admits(revision: KnowledgeRevision, sessionId: number, input?: ApplicabilityInput): boolean {
     if (revision.scope === "global") return true;
-    const origin = revision.runId === null ? null : this.runSessionId(revision.runId);
+    const origin = revision.runId === null ? null : input ? input.runs.get(revision.runId) : this.runSessionId(revision.runId);
     if (revision.scope === "session") return origin === sessionId;
-    return origin != null && this.getSession(origin)?.projectId === this.getSession(sessionId)?.projectId;
+    return origin != null && (input ? input.projects.get(origin) === input.projects.get(sessionId)
+      : this.getSession(origin)?.projectId === this.getSession(sessionId)?.projectId);
   }
 
   /** All citations from the reader's own session constrain applicability; since 21a that is one
@@ -1138,21 +1146,34 @@ export class Store {
    * (24a) are one operation and share one membership, exactly as `consolidationBatch` does. */
   commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
     const snapshot = path ? prepared ?? this.pathSnapshot(path) : null;
-    const { revisions, parents } = input;
+    const { revisions, parents, metadata } = input;
+    const facts = new Map<number, boolean>();
     const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
-      (r.scope === "project" && r.runId !== null && this.getSession(this.runSessionId(r.runId)!)?.projectId === projectId)) &&
-      (!path || this.commitApplies(r, path, snapshot!)));
+      (r.scope === "project" && r.runId !== null && metadata.projects.get(metadata.runs.get(r.runId)!) === projectId)) &&
+      (!path || this.commitApplies(r, path, snapshot!, metadata, facts)));
     return this.projectCommitGraph(revisions, parents, applicable);
   }
 
-  /** Immutable DAG inputs shared only within one synchronous operation, never across runs. */
+  /** DAG and applicability inputs for one synchronous projection, before any placement mutation. */
   commitGraphInput() {
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
     for (const link of this.db.prepare("SELECT from_commit, to_commit FROM knowledge_links WHERE kind = 'merged_into'").all() as { from_commit: number; to_commit: number }[]) {
       parents.get(link.to_commit)!.push(link.from_commit);
     }
-    return { revisions, parents };
+    const runIds = JSON.stringify([...new Set(revisions.flatMap(r => r.runId === null ? [] : [r.runId]))]);
+    const factIds = JSON.stringify([...new Set(revisions.flatMap(r => r.supports))]);
+    const metadata: ApplicabilityInput = {
+      runs: new Map(this.db.prepare("SELECT id, session_id FROM runs WHERE id IN (SELECT value FROM json_each(?))")
+        .all(runIds).map(r => [Number(r.id), Number(r.session_id)])),
+      projects: new Map(this.db.prepare("SELECT id, project_id FROM sessions").all().map(r => [Number(r.id), Number(r.project_id)])),
+      facts: new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
+        WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds)
+        .map(r => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), entries: [] }])),
+    };
+    for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(factIds))
+      metadata.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
+    return { revisions, parents, metadata };
   }
 
   private projectCommitGraph(revisions: KnowledgeRevision[], parents: Map<number, number[]>, applicable: KnowledgeRevision[]): CommitGraph {
@@ -1230,19 +1251,21 @@ export class Store {
    * selected native ancestry, the source entries it was bound to when written are all in it (review
    * 2026-09-08: T1#assistant is shared by every assistant entry of T1, so identity decides, not the address).
    * A fact written without bindings falls back to the address check. Foreign-session facts are judged by scope. */
-  factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
-    if (this.getTurn(fact.turnId)!.sessionId !== path.sessionId) return true;
+  factOnPath(fact: Fact, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput): boolean {
+    if ((input ? input.facts.get(fact.id)!.sessionId : this.getTurn(fact.turnId)!.sessionId) !== path.sessionId) return true;
     const { turns, entries } = snapshot;
     if (!turns.has(fact.turnId) || !fact.source.every(source => turns.has(Number(/^T([1-9]\d*)#/.exec(source)?.[1])))) return false;
     if (entries === null) return true;
-    const bound = this.factEntries(fact.id);
+    const bound = input ? input.facts.get(fact.id)!.entries : this.factEntries(fact.id);
     return bound.length ? bound.every(id => entries.ids.has(id))
       : fact.source.every(source => entries.addresses(Number(/^T([1-9]\d*)#/.exec(source)![1])).has(source));
   }
 
-  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path)): boolean {
-    return this.admits(commit, path.sessionId) && commit.supports
-      .every(id => this.factOnPath(this.getFact(id)!, path, snapshot));
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput, facts = new Map<number, boolean>()): boolean {
+    return this.admits(commit, path.sessionId, input) && commit.supports.every(id => {
+      if (!facts.has(id)) facts.set(id, this.factOnPath(input ? input.facts.get(id)!.fact : this.getFact(id)!, path, snapshot, input));
+      return facts.get(id)!;
+    });
   }
 
   commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {
@@ -1504,7 +1527,7 @@ export class Store {
         throw new Error(`Unknown knowledge commit ${id}`);
       const affected = new Set(results.map(id => {
         const revision = this.knowledgeRevision(id)!;
-        return placementOwner(this, { knowledge: this.getKnowledge(revision.knowledgeId)!, revision });
+        return placementOwner(this, { revision });
       }));
       const check = checkProcessedScopes(this, results, affected);
       if (check.problems.length) throw new Error(check.problems.join("; "));
@@ -1525,16 +1548,11 @@ export class Store {
     });
   }
 
-  private processedPlacements(): { owners: Map<number, string>; active: Set<number> } {
-    const placements = new Map<number, string>();
-    // Include certified historical versions too: their content certificate survives placement.
-    for (const row of this.db.prepare(`SELECT r.* FROM knowledge_revisions r JOIN processed_knowledge_versions p ON p.commit_id = r.id`).all()) {
-      const revision = toKnowledgeRevision(row);
-      placements.set(revision.id, placementOwner(this, { knowledge: this.getKnowledge(revision.knowledgeId)!, revision }));
-    }
+  private processedPlacements() {
+    const projection = processedProjection(this);
     const active = new Set<number>();
-    if (placements.size) for (const pool of processedProjection(this).pools.values()) for (const id of pool.keys()) active.add(id);
-    return { owners: placements, active };
+    for (const pool of projection.pools.values()) for (const id of pool.keys()) active.add(id);
+    return { owners: projection.owners, active, projection };
   }
 
   private revalidatePlacement(before: ReturnType<Store["processedPlacements"]>): void {
@@ -1545,7 +1563,7 @@ export class Store {
       before.owners.get(id) !== after.owners.get(id) || before.active.has(id) !== after.active.has(id));
     if (!moved.length) return;
     const affected = new Set(moved.flatMap(id => [before.owners.get(id)!, after.owners.get(id)!]));
-    const check = checkProcessedScopes(this, [], affected);
+    const check = checkProcessedProjection(after.projection, affected);
     if (check.problems.length) throw new Error(`Project placement rejected: ${check.problems.join("; ")}`);
     for (const id of moved) this.db.prepare(`INSERT INTO knowledge_placement_validations
       (commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)`).run(id, before.owners.get(id)!, after.owners.get(id)!, KNOWLEDGE_VIEW_VERSION, new Date().toISOString());
