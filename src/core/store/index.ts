@@ -1591,33 +1591,147 @@ export class Store {
     return !!this.db.prepare("SELECT 1 FROM processed_knowledge_versions WHERE commit_id = ?").get(commitId);
   }
 
-  /** Event weight is cumulative; changed input supplies each current exact body only once.
-   * A bounded caller selects eventIds first and settles only those actually supplied. */
-  dreamingInput(path: KnowledgePath, eventIds?: number[], ownCommits?: number[]) {
+  /** Build one admission-local graph, applicability snapshot and rendered-result cache. Selection
+   * may price many candidate batches, but it must not turn each candidate into another database or
+   * graph scan. The snapshot is deliberately returned as a value and is never retained by Store. */
+  dreamingInputSnapshot(path: KnowledgePath, ownCommits?: number[]) {
     const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
     // Retry reads live revisions on the retained path, not the caller's advancing head. An exact
     // event selection may name a range event another target just settled: it remains a graph root
     // for this frozen read even though it no longer appears in the unsettled-event heading.
     const inputPath = range ? { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId } : path;
-    const selected = eventIds && new Set(eventIds);
-    const events = this.pendingKnowledgeEvents(inputPath).filter(e => !selected || selected.has(e.id));
-    const graph = this.commitGraph(inputPath);
-    const roots = eventIds ?? events.map(e => e.id);
-    const versions = this.dreamingResults(graph, roots, range, ownCommits).map(revision => ({
-      knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
-    }));
-    const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
-      const revision = this.knowledgeRevision(id);
-      if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
-      return { knowledge: this.getKnowledge(revision.knowledgeId)!, revision };
-    });
-    const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
-    const text = [`Change events: ${events.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
-      ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${renderKnowledge(v)}`),
-      ...versions.map(v => v.revision.op === "archive"
-        ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
-        : `${renderKnowledge(v)}\n  processed: ${v.processed}`)].join("\n");
-    return { events, oldestId: range?.anchor ?? events[0]?.id ?? null, versions, predecessors, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
+    const graphInput = this.commitGraphInput();
+    const pathSnapshot = this.pathSnapshot(inputPath);
+    const events = pendingEvents(this, inputPath, true, pathSnapshot, graphInput.metadata);
+    const graph = this.commitGraph(inputPath, undefined, pathSnapshot, graphInput);
+    const outputRoots = range ? ownCommits ?? this.dreamingOwnCommits(range.id) : [];
+    const processed = new Set(this.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(row => Number(row.commit_id)));
+    const revisions = new Map(graph.revisions.map(revision => [revision.id, revision]));
+    const knowledgeIds = [...new Set(graph.current.flatMap(revision => [revision.knowledgeId,
+      ...(revision.op === "archive" && revision.parentId !== null ? [revisions.get(revision.parentId)?.knowledgeId] : [])]).filter((id): id is number => id !== undefined))];
+    const knowledge = new Map((knowledgeIds.length ? this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(knowledgeIds)) : [])
+      .map(row => { const value = toKnowledge(row); return [value.id, value] as const; }));
+    const value = (revision: KnowledgeRevision) => {
+      const item = knowledge.get(revision.knowledgeId);
+      if (!item) throw new Error(`Knowledge K${revision.knowledgeId} is unavailable`);
+      return { knowledge: item, revision };
+    };
+    const current = new Set(graph.current.map(revision => revision.id));
+    const eventResults = new Map<number, Set<number>>();
+    for (const event of events)
+      eventResults.set(event.id, new Set([...graph.descendants(event.id)].filter(id => current.has(id))));
+    const resultsOfRoots = (roots: readonly number[]) => {
+      const descendants = new Set<number>();
+      for (const id of roots) for (const child of graph.descendants(id)) descendants.add(child);
+      return new Set(graph.current.filter(revision => descendants.has(revision.id) && !processed.has(revision.id)).map(revision => revision.id));
+    };
+    const ownResults = resultsOfRoots(outputRoots);
+    const rendered = new Map<number, string>();
+    const render = (revision: KnowledgeRevision) => {
+      if (!rendered.has(revision.id)) rendered.set(revision.id, renderKnowledge(value(revision)));
+      return rendered.get(revision.id)!;
+    };
+    const selectResults = (eventIds: readonly number[], resultIds: ReadonlySet<number>) => {
+      const selected = new Set(eventIds), selectedEvents = events.filter(event => selected.has(event.id));
+      const versions = graph.current.filter(revision => resultIds.has(revision.id)).map(revision => ({
+        ...value(revision), processed: processed.has(revision.id),
+      }));
+      const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
+        const revision = revisions.get(id);
+        if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
+        return value(revision);
+      });
+      const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
+      const text = [`Change events: ${selectedEvents.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
+        ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${render(v.revision)}`),
+        ...versions.map(v => v.revision.op === "archive"
+          ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
+          : `${render(v.revision)}\n  processed: ${v.processed}`)].join("\n");
+      return { events: selectedEvents, oldestId: range?.anchor ?? selectedEvents[0]?.id ?? null, versions, predecessors, text,
+        tokens: tokens(text), pendingTokens: selectedEvents.reduce((n, event) => n + event.tokens, 0) };
+    };
+    const resultsFor = (eventIds: readonly number[], roots: readonly number[] = outputRoots) => {
+      const resultIds = roots === outputRoots ? new Set(ownResults) : resultsOfRoots(roots);
+      for (const id of eventIds) {
+        let results = eventResults.get(id);
+        // An exact caller may name a range event another target just settled. It is absent from the
+        // pending heading but remains a graph root for this frozen read.
+        if (!results) {
+          results = new Set([...graph.descendants(id)].filter(commit => current.has(commit)));
+        }
+        for (const result of results) resultIds.add(result);
+      }
+      return resultIds;
+    };
+    const input = (eventIds: readonly number[], roots: readonly number[] = outputRoots) =>
+      selectResults(eventIds, resultsFor(eventIds, roots));
+    // Events sharing one current merge result are one selectable unit: supplying only one side
+    // would pretend the merged result were independent. Standalone legal outputs remain individual
+    // obligations, so an oversized one cannot pin unrelated retained events.
+    const components = (candidateEventIds: readonly number[]) => {
+      const allowed = new Set(candidateEventIds), resultEvents = new Map<number, number[]>();
+      for (const id of candidateEventIds) for (const result of eventResults.get(id) ?? [])
+        resultEvents.set(result, [...(resultEvents.get(result) ?? []), id]);
+      const visited = new Set<number>(), groups: { eventIds: number[]; resultIds: number[]; ownOutput: boolean }[] = [];
+      for (const first of candidateEventIds) {
+        if (visited.has(first)) continue;
+        const pending = [first], members: number[] = [], results = new Set<number>();
+        while (pending.length) {
+          const id = pending.pop()!;
+          if (visited.has(id) || !allowed.has(id)) continue;
+          visited.add(id); members.push(id);
+          for (const result of eventResults.get(id) ?? []) {
+            results.add(result);
+            for (const peer of resultEvents.get(result) ?? []) if (!visited.has(peer)) pending.push(peer);
+          }
+        }
+        groups.push({ eventIds: members.sort((a, b) => a - b), resultIds: [...results], ownOutput: [...results].some(id => ownResults.has(id)) });
+      }
+      const associated = new Set(groups.flatMap(group => group.resultIds));
+      return [...[...ownResults].filter(id => !associated.has(id)).map(id => ({ eventIds: [], resultIds: [id], ownOutput: true })), ...groups];
+    };
+    const select = (retainedEventIds: readonly number[] | undefined, fits: (candidate: ReturnType<typeof selectResults>) => boolean) => {
+      if (retainedEventIds === undefined) {
+        let low = 0, high = events.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2), eventIds = events.slice(0, middle).map(event => event.id);
+          if (fits(selectResults(eventIds, resultsFor(eventIds, [])))) low = middle;
+          else high = middle - 1;
+        }
+        const eventIds = events.slice(0, low).map(event => event.id);
+        return { eventIds, input: selectResults(eventIds, resultsFor(eventIds, [])), blocked: [] as string[], ownBlocked: false };
+      }
+      const pending = new Set(events.map(event => event.id));
+      const candidates = retainedEventIds.filter(eventId => pending.has(eventId));
+      const blocked: string[] = [], fitting: ReturnType<typeof components> = [];
+      for (const component of components(candidates)) {
+        if (fits(selectResults(component.eventIds, new Set(component.resultIds)))) fitting.push(component);
+        else blocked.push(`${component.ownOutput ? "retained task output " : ""}${component.eventIds.length
+          ? component.eventIds.map(id => `K@${id}`).join("+") : component.resultIds.map(id => `output K@${id}`).join("+")}`);
+      }
+      // Oversized components have already been removed, so they cannot pin later work. Among the
+      // remaining ordered units, choose one maximal prefix with logarithmic exact-render probes.
+      let low = 0, high = fitting.length;
+      const selection = (count: number) => ({ eventIds: fitting.slice(0, count).flatMap(component => component.eventIds),
+        resultIds: new Set(fitting.slice(0, count).flatMap(component => component.resultIds)) });
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2), candidate = selection(middle);
+        if (fits(selectResults(candidate.eventIds, candidate.resultIds))) low = middle;
+        else high = middle - 1;
+      }
+      const selected = selection(low);
+      return { eventIds: selected.eventIds, input: selectResults(selected.eventIds, selected.resultIds), blocked,
+        ownBlocked: blocked.some(label => label.startsWith("retained task output ")) };
+    };
+    return { events, input, select };
+  }
+
+  /** Event weight is cumulative; changed input supplies each current exact body only once.
+   * A bounded caller selects eventIds first and settles only those actually supplied. */
+  dreamingInput(path: KnowledgePath, eventIds?: number[], ownCommits?: number[]) {
+    const snapshot = this.dreamingInputSnapshot(path, ownCommits);
+    const ids = eventIds ?? snapshot.events.map(event => event.id);
+    return snapshot.input(ids);
   }
 
   /** Exact outputs of this retained task, across batches and failed executions. Neither family
@@ -1627,10 +1741,7 @@ export class Store {
       WHERE d.range_id = ? ORDER BY r.id`).all(rangeId).map(r => Number(r.id));
   }
 
-  /** Resolve the current results of this admission's exact event batch plus unprocessed outputs
-   * retained from its earlier attempts. Merely reading processed knowledge put its identity in the
-   * writable family, but neither that read nor a later external successor makes it changed input or
-   * a certification candidate. Merge descendants remain results without widening write authority. */
+  /** Resolve current results outside admission selection, where a shared snapshot is unavailable. */
   private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null, ownCommits?: number[]) {
     const eventDescendants = new Set<number>();
     for (const id of events) for (const child of graph.descendants(id)) eventDescendants.add(child);
