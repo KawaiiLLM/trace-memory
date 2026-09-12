@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Store } from "../../../src/core/store/index.ts";
 
+const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as Record<string, unknown> }] });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
   const h = host({ "noting.triggerTokens": 1000000, "consolidation.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
@@ -126,6 +127,18 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     expect(repairMessages).toHaveLength(1);
     expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
     expect(initialSystem).toContain("Use only trace, search, memory and check.");
+    let priorStage = -1;
+    for (const heading of workflowHeadings) {
+      const position = initialSystem!.indexOf(heading);
+      expect(position, `effective prompt missing ordered stage: ${heading}`).toBeGreaterThan(priorStage);
+      priorStage = position;
+    }
+    expect(initialSystem).toContain("user-versus-agent attribution");
+    expect(initialSystem).toContain("attempted, reported, completed and verified distinctions");
+    expect(initialSystem).toContain("historical retrievability is not equivalent to future automatic coverage");
+    expect(initialSystem).toContain("invalid budget stripping");
+    expect(initialSystem).toContain("still-valid lower-priority information only when the hard limit requires deliberate loss");
+    expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems.length).toBeGreaterThan(1);
     expect(repairSystems.every(system => system === initialSystem),
       JSON.stringify(repairSystems.map(system => ({ bytes: system === undefined ? undefined : Buffer.byteLength(system), dreamer: system?.startsWith("# Dreamer") })))).toBe(true);
