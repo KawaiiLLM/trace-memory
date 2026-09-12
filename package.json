@@ -1,6 +1,6 @@
 {
   "name": "trace-memory",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Traceable two-layer memory for coding agents: facts recorded from conversation, consolidated into knowledge, every claim traceable back to the source turn.",
   "type": "module",
   "license": "MIT",
