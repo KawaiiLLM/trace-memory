@@ -11,6 +11,9 @@ export const dreamerRecoveryExtension = (dbPath: string) => (pi: ExtensionAPI) =
     seeded = true;
     const memory = TraceMemory(dbPath, async () => { throw Error("fixture observer cannot run a model"); });
     try {
+      memory.setKnowledgeBudget("global", 0);
+      memory.setKnowledgeBudget("project", 0);
+      memory.setKnowledgeBudget("session", 0);
       const store = memory.store;
       const turnId = store.listTurns(1).find(t => t.kind !== "compaction")!.id;
       const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId, source: [`T${turnId}#user`], actor: "user", category: "decision", text: "A rule to maintain", createdAt: "seed" }] });

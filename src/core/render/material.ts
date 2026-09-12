@@ -198,7 +198,7 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
     notes.push(note); noteCost = next;
   }
   const noteReceipts = (input.knowledgeNotes ?? []).length > notes.length
-    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "render.knowledgeBlockTokens"} is full`] : [];
+    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
   const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine, input.knowledgeBudget)
     : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";

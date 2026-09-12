@@ -68,6 +68,68 @@ test("35d a lower or zero policy changes both consumers without changing Fact an
   }
 });
 
+test("35d an all-zero policy admits a new Dreamer with the derived 5000-token processed window", async () => {
+  const f = fixture();
+  f.memory.setKnowledgeBudget("global", 0);
+  f.memory.setKnowledgeBudget("project", 0);
+  f.memory.setKnowledgeBudget("session", 0);
+  f.create("changed");
+  await f.memory.dream(f.target);
+  expect(f.captured()?.admittedProcessedInputCap).toBe(5_000);
+});
+
+test("35d a larger database window never bypasses actual provider input capacity", async () => {
+  const f = fixture();
+  f.memory.setKnowledgeBudget("project", 15_000);
+  f.create("changed ".repeat(1_000));
+  await expect(f.memory.dream({ ...f.target, capacity: { inputTokens: 100, prefixTokens: 0 } })).rejects
+    .toThrow(/frozen material and tools exceed model input allowance/);
+  expect(f.captured()).toBeUndefined();
+  expect(f.memory.store.pendingKnowledgeEvents(f.target)).not.toEqual([]);
+});
+
+test("35d a running Dreamer keeps its admitted ceiling while checks read current policy and a retry uses the new ceiling", async () => {
+  let memory!: ReturnType<typeof TraceMemory>, calls = 0, prompt = "";
+  memory = TraceMemory(":memory:", async raw => {
+    const task = raw as DreamingAgentInput;
+    calls++;
+    if (calls === 1) {
+      prompt = task.prompt;
+      expect(task.admittedProcessedInputCap).toBe(20_000);
+      const check = task.tools.find(tool => tool.name === "check")!;
+      expect(check.execute({})).toContain("Current database capacities: applicable 15000; injection 20000");
+      memory.setKnowledgeBudget("project", 15_000);
+      const current = check.execute({});
+      expect(current).toContain("Current database capacities: applicable 20000; injection 25000");
+      expect(current).toContain("frozen admitted processed-input ceiling: 20000");
+      expect(task.prompt).toBe(prompt);
+    } else {
+      expect(task.admittedProcessedInputCap).toBe(25_000);
+      expect(task.prompt).toBe(prompt);
+    }
+    return { outcome: "failure", output: "scripted stop", request: { calls } };
+  }, { dreaming: { triggerTokens: 1 } });
+  memories.push(memory);
+  const project = memory.store.createProject({ name: "frozen", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "evidence", startedAt: "now" });
+  const fact = memory.store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{
+    turnId: turn.id, category: "decision", actor: "user", text: "fact", source: [`T${turn.id}#user`], createdAt: "now",
+  }] });
+  if (!fact.ok) throw new Error(fact.problems.join("; "));
+  const created = memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{
+    op: "create", handle: "$1", author: "test", text: "changed", category: "constraint", scope: "project",
+    supports: [fact.facts[0]!.id], topics: [], reason: "trigger", createdAt: "now",
+  }] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  const target = { sessionId: session.id, branch: "main", headTurnId: turn.id };
+  expect((await memory.dream(target)).outcome).toBe("failure");
+  expect((await memory.dream(target)).outcome).toBe("failure");
+  expect(calls).toBe(2);
+  expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
+  expect(memory.store.isKnowledgeProcessed(created.committed[0]!.commit)).toBe(false);
+});
+
 test("35d newly admitted Dreamer request fits above the retired 20k processed-input window", async () => {
   const f = fixture();
   f.memory.setKnowledgeBudget("project", 15_000);

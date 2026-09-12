@@ -11,6 +11,7 @@ import type { Fact } from "../../../src/core/model/index.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, renderFact, renderKnowledge, renderKnowledgeBlock } from "../../../src/core/render/index.ts";
 import { budgetMaterial, knowledgeBlock as knowledgeBlockOf, BLOCK, FACTS_TITLE, KNOWLEDGE_STATUS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 let directory: string, memory: ReturnType<typeof sourceSeededMemory>, calls: (NotingAgentInput | ConsolidationAgentInput)[];
 const time = "2026-09-08T00:00:00Z";
@@ -295,20 +296,24 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   read("K1@1");
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
-      text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+      text: "The project uses pnpm " + "word ".repeat(6_000), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
   const value = memory.store.listVisibleKnowledge(s.id, memory.store.getSession(s.id)!.projectId)[0]!;
   const bare = { ...value, revision: { ...value.revision, topics: [] } };
   // The smallest cap that still keeps this one item whole; below the receipt's own cost the budget
   // reports a capacity error instead, which is not "kept" either.
   const fits = (item: typeof value, cap: number) => { try { return budgetKnowledge([item], cap).groups.some(g => g.text); } catch { return false; } };
-  const minimum = (item: typeof value) => { let cap = 1; while (!fits(item, cap)) cap++; return cap; };
+  const minimum = (item: typeof value) => {
+    let low = 0, high = 20_000;
+    while (low + 1 < high) { const middle = Math.floor((low + high) / 2); if (fits(item, middle)) high = middle; else low = middle; }
+    return high;
+  };
   // 20b charges every rendered line: the labelled revision needs a strictly larger cap than the same
   // revision without them, so labels cannot ride along outside the budget.
   expect(minimum(value)).toBeGreaterThan(minimum(bare));
   const exactForeground = tokens(memory.inject(s.id));
-  memory.config.render.knowledgeBlockTokens = exactForeground - 1;
+  setKnowledgeInjection(memory, exactForeground - 1);
   expect(memory.inject(s.id)).toBe(""); // 34c emits no omission-only foreground block
-  memory.config.render.knowledgeBlockTokens = exactForeground;
+  setKnowledgeInjection(memory, exactForeground);
   expect(memory.inject(s.id)).toContain("[K1@2]");
   // Identical selected revisions and topics render the same leading bytes when only the range and the
   // pending facts change. Pinned on the Consolidator since 25a removed the Noter's knowledge block.

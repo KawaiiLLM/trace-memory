@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
-import { KNOWLEDGE_VIEW_VERSION, checkProcessedProjection, processedBlock } from "../../../src/core/store/processing.ts";
+import { DEFAULT_KNOWLEDGE_BUDGETS, KNOWLEDGE_VIEW_VERSION, checkProcessedProjection, deriveKnowledgeBudgets, processedBlock } from "../../../src/core/store/processing.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { migrateDreaming } from "../../../src/core/store/migration.ts";
 import * as rendering from "../../../src/core/render/index.ts";
@@ -109,7 +109,7 @@ test.each(["global", "project", "session", "applicable"] as const)("32b performa
     value.revision.text = "一".repeat(low);
     expect(tokens(processedBlock([value]))).toBe(expected);
     expect(tokens(value.revision.text)).toBeLessThan(expected);
-    const check = checkProcessedProjection(projection);
+    const check = checkProcessedProjection(projection, undefined, deriveKnowledgeBudgets(DEFAULT_KNOWLEDGE_BUDGETS));
     expect(check.problems).toHaveLength(expected === cap ? 0 : 1);
     expect(check.totals.find(t => scope === "applicable" ? t.scope.startsWith("applicable:") : t.scope === owner)?.tokens).toBe(expected);
   }

@@ -6,6 +6,7 @@ import { sourceSeededMemory, tokens, renderEntry, type ConsolidationAgentInput, 
 import type { Fact } from "../../../src/core/model/index.ts";
 import { renderFact } from "../../../src/core/render/index.ts";
 import { budgetMaterial, notingText, FACTS_TITLE, RAW_TITLE } from "../../../src/core/render/material.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 function seeded(config: Record<string, unknown> = {}) {
   const calls: (ConsolidationAgentInput | NotingAgentInput)[] = [];
@@ -52,10 +53,11 @@ test("review 2026-09-08: a Noting batch that cannot fit the episodic budget stay
 });
 
 test("34c: a knowledge cap that cannot hold a complete foreground item emits nothing", () => {
-  const f = seeded({ render: { knowledgeBlockTokens: 1 } });
+  const f = seeded();
   try {
+    setKnowledgeInjection(f.m, 5_000);
     f.note("Evidence");
-    expect(f.knowledge("A complete rule")).toContain("committed");
+    expect(f.knowledge("A complete rule " + "word ".repeat(6_000))).toContain("committed");
     expect(f.m.inject(f.s.id)).toBe("");
   } finally { f.m.close(); }
 });
@@ -115,10 +117,11 @@ test("review 2026-09-08, as 30 left it: a view that cannot hold its labels deleg
 });
 
 test("review 2026-09-08: the Receipts heading is charged to the budgets it is emitted under", () => {
-  const f = seeded({ render: { knowledgeBlockTokens: 12 } });
+  const f = seeded();
   try {
+    setKnowledgeInjection(f.m, 5_000);
     f.note("Evidence");
-    expect(f.knowledge("word ".repeat(100))).toContain("committed");
+    expect(f.knowledge("word ".repeat(6_000))).toContain("committed");
     // 34c foreground publication emits no omission-only block when no complete item fits.
     expect(f.m.inject(f.s.id)).toBe("");
   } finally { f.m.close(); }

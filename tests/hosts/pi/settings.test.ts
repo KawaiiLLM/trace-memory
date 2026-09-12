@@ -8,7 +8,7 @@ import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
-import { parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices } from "../../../src/hosts/pi/settings.ts";
+import { configuration, parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices } from "../../../src/hosts/pi/settings.ts";
 import { validateConfig } from "../../../src/core/api/index.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
@@ -42,6 +42,10 @@ test("35d retires the file injection cap and parses exact database-budget input"
     expect(() => parseLayer({ "render.knowledgeBlockTokens": value })).toThrow(/Removed setting render.knowledgeBlockTokens.*remove it.*Settings.*bound database/);
     expect(() => validateConfig({ render: { knowledgeBlockTokens: value } } as never)).toThrow(/Removed setting render.knowledgeBlockTokens/);
   }
+  const h = setup();
+  expect(() => configuration(h.dir, JSON.stringify({ "render.knowledgeBlockTokens": 20_000 }), join(h.dir, "agent")))
+    .toThrow(/Removed setting render.knowledgeBlockTokens/);
+  expect(globalFile(h)["trace-memory"]).toBeUndefined();
   expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
     "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]);
 });
@@ -78,6 +82,27 @@ test("35d Settings edits the bound database row, shows derived diagnostics, and 
   expect(h.memory.knowledgeBudgets().global).toBe(4000);
   expect(h.notices.at(-1)).toContain("exact nonnegative safe integer");
   expect(readFileSync(globalPath(h), "utf8")).toBe(before);
+});
+
+test("35d cancelled, invalid, stale and failed database-budget edits preserve policy and files", async () => {
+  const h = setup();
+  await h.emit("session_start");
+  const settings = readFileSync(globalPath(h), "utf8");
+  await edit(h, "Global Knowledge budget: 4000 tokens (database)", undefined);
+  expect(h.memory.knowledgeBudgets().global).toBe(4000);
+  await edit(h, "Global Knowledge budget: 4000 tokens (database)", "01");
+  expect(h.notices.at(-1)).toContain("exact nonnegative safe integer");
+  h.memory.setKnowledgeBudget("project", 15_000); // another connection wins after the row was displayed
+  await edit(h, "Session Knowledge budget: 1000 tokens per session owner pool (database)", "2000");
+  expect(h.memory.knowledgeBudgets()).toMatchObject({ project: 15_000, session: 2_000 });
+
+  h.memory.store.db.exec("CREATE TRIGGER reject_budget BEFORE UPDATE ON knowledge_budget_policy BEGIN SELECT RAISE(ABORT, 'policy write failed'); END");
+  await edit(h, "Global Knowledge budget: 4000 tokens (database)", "5000");
+  expect(h.notices.at(-1)).toContain("Global Knowledge budget unchanged");
+  expect(h.notices.at(-1)).toContain("policy write failed");
+  expect(h.memory.knowledgeBudgets().global).toBe(4_000);
+  expect(readFileSync(globalPath(h), "utf8")).toBe(settings);
+  expect(h.requests).toEqual([]);
 });
 
 test("32d: Dreamer preferences reuse Settings with no mode or advanced page", async () => {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { wholeTrace } from "../../trace-pages.ts";
 import { readFileSync } from "node:fs";
 import { sourceSeededMemory, compacted, renderEntry, tokens, ENTRY_VIEW_VERSION } from "../../source-fixture.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/facts.json", import.meta.url), "utf8"));
 const rawFixture = JSON.parse(readFileSync(new URL("../../fixtures/noting/turns.json", import.meta.url), "utf8"));
@@ -48,13 +49,13 @@ const charged = (result: ReturnType<typeof memory.compact>) => {
 };
 /** Tests set independent bases; a zero allowance isolates each base boundary. */
 const setWindows = (knowledge: number, facts: number, raw: number) => {
-  memory.config.render.knowledgeBlockTokens = Math.max(1, knowledge);
+  setKnowledgeInjection(memory, Math.max(5_000, Math.max(1, knowledge)));
   Object.assign(memory.config.compaction, { factsTokens: facts, rawTokens: raw, overflowTokens: 0 });
 };
 const setRequiredWindows = (value: ReturnType<typeof charged>, factSpare = 0) =>
   setWindows(value.knowledge, value.required.facts + factSpare, value.required.raw);
 const defaultWindows = () => {
-  memory.config.render.knowledgeBlockTokens = 20_000;
+  setKnowledgeInjection(memory, Math.max(5_000, 20_000));
   memory.config.compaction.factsTokens = 10_000;
   memory.config.compaction.rawTokens = 10_000;
   memory.config.compaction.overflowTokens = 10_000;
@@ -92,7 +93,7 @@ test("visibility includes global, own project and own session only, excluding in
 test("category order, chronological ties, whole trailing category omissions; lines are never escaped", () => {
   const { s, f } = populated();
   const ids = ["reference", "term", "mechanism", "goal", "dispute", "open"].map((c) => knowledge(s.id, f.id, c as "goal"));
-  const earlier = knowledge(s.id, f.id, "constraint", "project", "<&>", "2020");
+  const earlier = knowledge(s.id, f.id, "constraint", "project", "<&> " + "word ".repeat(6_000), "2020");
   const all = memory.inject(s.id);
   expect(all.indexOf(`[K${earlier}@`)).toBeLessThan(all.indexOf("[K1@"));
   // Injected lines are trace lines byte for byte (ruling 15:14); tags only delimit blocks.
@@ -102,10 +103,10 @@ test("category order, chronological ties, whole trailing category omissions; lin
   expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
   // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
   // omission-only block. Receipt accounting for compaction and worker material remains separate.
-  memory.config.render.knowledgeBlockTokens = 0;
+  setKnowledgeInjection(memory, 5_000);
   expect(memory.inject(s.id)).toBe("");
   // A budget that holds part of the list keeps a whole prefix of the priority order without acknowledging omissions.
-  memory.config.render.knowledgeBlockTokens = 200;
+  setKnowledgeInjection(memory, 7_000);
   const partial = memory.inject(s.id);
   const kept = tags.filter(tag => partial.includes(`<${tag}>`));
   expect(kept.length).toBeGreaterThan(0);
@@ -266,7 +267,7 @@ test("23 conversation-dense acceptance, rescaled by 25c, 30 and 32a: a dozen lon
   };
   const view = (entry: Parameters<typeof renderEntry>[0]) => renderEntry(entry, memory.config.render, memory.resultText).content;
   const total = (views: string[]) => tokens(views.join("\n\n"));
-  const capacity = memory.config.render.knowledgeBlockTokens + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens;
+  const capacity = memory.knowledgeBudgets().injection + memory.config.compaction.factsTokens + memory.config.compaction.rawTokens;
   // Long replies with few tool calls: the shape the retired compact-only view handled.
   const dozen = dense(12, 1_000);
   memory.store.appendToolCall({ turnId: dozen.parent, name: "bash", input: JSON.stringify({ command: "npm test" }), result: "ok", status: "success" });
@@ -748,7 +749,7 @@ test("32e: required legacy knowledge and pending windows share overflow without 
   expect(windows.raw).toBeGreaterThan(10_000);
   // Legacy knowledge is unprocessed: all complete bodies remain required above the base.
   expect(windows.knowledge).toBeGreaterThan(25_000);
-  expect(windows.knowledge).toBeGreaterThanOrEqual(memory.config.render.knowledgeBlockTokens - 2_000);
+  expect(windows.knowledge).toBeGreaterThanOrEqual(memory.knowledgeBudgets().injection - 2_000);
   expect(text).not.toContain("knowledge; expand: K"); // legacy knowledge is required in full
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Required material that still does not fit after all of that lending delegates, naming the window

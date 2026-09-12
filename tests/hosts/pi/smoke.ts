@@ -100,8 +100,11 @@ try {
 
 // 32f: the distributable must reach native Dreamer through actual bounded compaction recovery.
 const dreamer = host({ "noting.triggerTokens": 1_000_000, "consolidation.triggerTokens": 1_000_000,
-  "dreaming.triggerTokens": 5000, "render.knowledgeBlockTokens": 100, "compaction.overflowTokens": 50 }, { extension });
+  "dreaming.triggerTokens": 5000, "compaction.overflowTokens": 50 }, { extension });
 try {
+  dreamer.memory.setKnowledgeBudget("global", 0);
+  dreamer.memory.setKnowledgeBudget("project", 0);
+  dreamer.memory.setKnowledgeBudget("session", 0);
   await dreamer.emit("session_start"); await dreamer.turn();
   const store = dreamer.memory.store;
   const facts = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "smoke" }, facts: [{ turnId: 1, category: "decision", actor: "user", text: "Remember the choice", source: ["T1#user"], createdAt: "smoke" }] });

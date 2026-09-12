@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { TraceMemory, knowledgeStateKey, noVisibility, type VisibleView } from "../../../src/core/api/index.ts";
 import { budgetKnowledge, renderEntry, renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { injectionText } from "../../../src/core/render/material.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 const time = "2026-09-12T00:00:00Z";
 const memories: ReturnType<typeof TraceMemory>[] = [];
@@ -122,8 +123,8 @@ test("34c empty supports are never evidence-suppressed and only current-change s
 
 test("34c remaining rendered allowance counts retained historical bodies and exact whole-item fit", () => {
   const f = fixture();
-  const old = f.create("old body ".repeat(20), [f.facts[0]!.id]);
-  const newer = f.create("new body ".repeat(20), [f.facts[1]!.id]);
+  const old = f.create("old body ".repeat(3_000), [f.facts[0]!.id]);
+  const newer = f.create("new body ".repeat(3_000), [f.facts[1]!.id]);
   const visible = view({ knowledgeCommitIds: new Set([old.commit]) });
   const full = f.memory.injection(f.target, visible);
   expect(full.knowledgeCommitIds).toEqual([newer.commit]);
@@ -135,19 +136,19 @@ test("34c remaining rendered allowance counts retained historical bodies and exa
   };
   const oldCost = tokens(rendered(old.commit));
   const exact = oldCost + tokens(full.text);
-  f.memory.config.render.knowledgeBlockTokens = exact;
+  setKnowledgeInjection(f.memory, Math.max(5_000, exact));
   expect(f.memory.injection(f.target, visible).knowledgeCommitIds).toEqual([newer.commit]);
-  f.memory.config.render.knowledgeBlockTokens = exact - 1;
+  setKnowledgeInjection(f.memory, Math.max(5_000, exact - 1));
   expect(f.memory.injection(f.target, visible).text).toBe(""); // no omission-only message
-  f.memory.config.render.knowledgeBlockTokens = oldCost;
+  setKnowledgeInjection(f.memory, Math.max(5_000, oldCost));
   expect(f.memory.injection(f.target, visible).text).toBe(""); // zero remainder
 });
 
 test("34c an unfit first body does not skip ahead or emit an omission receipt", () => {
   const f = fixture();
-  f.create("large first ".repeat(500), [f.facts[0]!.id]);
+  f.create("large first ".repeat(6_000), [f.facts[0]!.id]);
   f.create("small later", [f.facts[1]!.id]);
-  f.memory.config.render.knowledgeBlockTokens = 100;
+  setKnowledgeInjection(f.memory, 5_000);
   const result = f.memory.injection(f.target);
   expect(result).toMatchObject({ text: "", knowledgeCommitIds: [] });
 });
@@ -169,7 +170,7 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   expect(body).not.toBe("");
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body, old.commit);
   f.create("pending body", [f.facts[1]!.id]);
-  f.memory.config.render.knowledgeBlockTokens = 20_000;
+  setKnowledgeInjection(f.memory, Math.max(5_000, 20_000));
   expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
   f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(body + " x", old.commit);
   expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
@@ -208,16 +209,16 @@ test("34c a retained state-only receipt consumes allowance without granting body
     operations: [{ op: "archive", knowledgeId: parent.knowledgeId, baseCommit: parent.commit,
       supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
   if (!archive.ok) throw new Error(archive.problems.join());
-  f.create("remaining candidate", [f.facts[1]!.id]);
+  f.create("remaining candidate ".repeat(6_000), [f.facts[1]!.id]);
   const candidate = f.memory.injection(f.target);
-  f.memory.config.render.knowledgeBlockTokens = tokens(candidate.text);
+  setKnowledgeInjection(f.memory, Math.max(5_000, tokens(candidate.text)));
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };
   expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).text).toBe("");
 });
 
 test("34c state transitions are whole deterministic prefix items and only selected receipts persist", () => {
   const f = fixture();
-  const parents = [f.create("retire first", [f.facts[0]!.id]), f.create("retire second", [f.facts[1]!.id]), f.create("retire third", [f.facts[0]!.id])];
+  const parents = [f.create("retire first ".repeat(4_000), [f.facts[0]!.id]), f.create("retire second ".repeat(4_000), [f.facts[1]!.id]), f.create("retire third ".repeat(4_000), [f.facts[0]!.id])];
   const archives = parents.map((parent, index) => {
     const result = f.memory.store.commitConsolidationRun({ path: f.target,
       run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive",
@@ -233,7 +234,7 @@ test("34c state transitions are whole deterministic prefix items and only select
     return { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision };
   });
   const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge(visibleValues, Infinity, renderKnowledge).groups, receipts: [] }));
-  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(firstOnly.text);
+  setKnowledgeInjection(f.memory, Math.max(5_000, visibleCost + tokens(firstOnly.text)));
 
   const first = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
   expect(first.knowledgeCommitIds).toEqual([]);
@@ -243,7 +244,7 @@ test("34c state transitions are whole deterministic prefix items and only select
   expect(first.text).not.toContain("omitted");
 
   const firstReceipt = knowledgeStateKey(first.knowledgeStates![0]!);
-  f.memory.config.render.knowledgeBlockTokens = 20_000;
+  setKnowledgeInjection(f.memory, 100_000);
   const second = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents, knowledgeStates: new Set([firstReceipt]) }));
   expect(second.knowledgeStates).toEqual([
     { fromCommit: parents[1]!.commit, toCommits: [archives[1]!.commit] },
@@ -253,7 +254,7 @@ test("34c state transitions are whole deterministic prefix items and only select
   expect(second.text).toContain(`K${parents[1]!.knowledgeId}@${parents[1]!.commit} is archived`);
   expect(second.text).toContain(`K${parents[2]!.knowledgeId}@${parents[2]!.commit} is archived`);
 
-  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(firstOnly.text) - 1;
+  setKnowledgeInjection(f.memory, Math.max(5_000, visibleCost + tokens(firstOnly.text) - 1));
   const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
   expect(unfit).toMatchObject({ text: "", knowledgeCommitIds: [] });
   expect(unfit.knowledgeStates).toBeUndefined();
@@ -261,7 +262,7 @@ test("34c state transitions are whole deterministic prefix items and only select
 
 test("34c state-prefix budgeting shares exact framing with bodies without acknowledging an omitted body", () => {
   const f = fixture();
-  const parent = f.create("retire visible parent", [f.facts[0]!.id]);
+  const parent = f.create("retire visible parent ".repeat(6_000), [f.facts[0]!.id]);
   const archive = f.memory.store.commitConsolidationRun({ path: f.target,
     run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive",
       knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
@@ -274,9 +275,9 @@ test("34c state-prefix budgeting shares exact framing with bodies without acknow
   const parentRevision = f.memory.store.knowledgeRevision(parent.commit)!;
   const parentValue = { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision: parentRevision };
   const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge([parentValue], Infinity, renderKnowledge).groups, receipts: [] }));
-  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(full.text);
+  setKnowledgeInjection(f.memory, Math.max(5_000, visibleCost + tokens(full.text)));
   expect(f.memory.injection(f.target, visible)).toMatchObject({ knowledgeCommitIds: [body.commit], knowledgeStates: full.knowledgeStates });
-  f.memory.config.render.knowledgeBlockTokens--;
+  setKnowledgeInjection(f.memory, f.memory.knowledgeBudgets().injection - 1);
   const partial = f.memory.injection(f.target, visible);
   expect(partial.knowledgeCommitIds).toEqual([]);
   expect(partial.knowledgeStates).toEqual(full.knowledgeStates);
@@ -304,7 +305,7 @@ test("34c merge notices are scoped to visible parents and do not grant the survi
 
 test("34c split notice names both children while partial budgeting grants body visibility only to the child kept", () => {
   const f = fixture();
-  const parent = f.create("compound parent", [f.facts[0]!.id]);
+  const parent = f.create("compound parent ".repeat(6_000), [f.facts[0]!.id]);
   const range = f.memory.store.retainDreamingRange(f.target, [parent.commit]);
   const claim = f.memory.store.acquireClaim(f.target, "dreaming", "delivery-test")!;
   const executionId = f.memory.store.beginExecution({ sessionId: f.session.id, phase: "dreaming", head: range.anchor, origin: range.origin });
@@ -312,12 +313,12 @@ test("34c split notice names both children while partial budgeting grants body v
     dreamingRangeId: range.id, claim, executionId, createdAt: time }, range.origin));
   const split = f.memory.store.commitConsolidationRun({ path: f.target, run, operations: [{ op: "split", knowledgeId: parent.knowledgeId,
     baseCommit: parent.commit, supports: [], reason: "separate", createdAt: time, children: [
-      { text: "first child", category: "constraint", topics: [] }, { text: "second child", category: "goal", topics: [] }] }] });
+      { text: "first child ".repeat(3_000), category: "constraint", topics: [] }, { text: "second child ".repeat(3_000), category: "goal", topics: [] }] }] });
   if (!split.ok) throw new Error(split.problems.join());
   const visible = view({ knowledgeCommitIds: new Set([parent.commit]) });
   let partial: ReturnType<typeof f.memory.injection> | undefined;
-  for (let cap = 1; cap < 500; cap++) {
-    f.memory.config.render.knowledgeBlockTokens = cap;
+  for (let cap = 5_000; cap < 20_000; cap += 100) {
+    setKnowledgeInjection(f.memory, cap);
     const offered = f.memory.injection(f.target, visible);
     if (offered.knowledgeCommitIds.length === 1 && offered.knowledgeStates?.length === 1) { partial = offered; break; }
   }

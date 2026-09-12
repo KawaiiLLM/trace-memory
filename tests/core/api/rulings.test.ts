@@ -13,6 +13,7 @@ import { tokens } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -37,11 +38,11 @@ afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: tr
  * capacity floor of its own (20b). */
 const compactionWindows = (knowledge: number, facts: number, raw: number) => {
   memory.config.compaction.overflowTokens = 0;
-  memory.config.render.knowledgeBlockTokens = knowledge;
+  setKnowledgeInjection(memory, Math.max(5_000, knowledge));
   memory.config.compaction.factsTokens = facts;
   memory.config.compaction.rawTokens = raw;
 };
-const defaultWindows = () => compactionWindows(DEFAULT_CONFIG.render.knowledgeBlockTokens,
+const defaultWindows = () => compactionWindows(memory.knowledgeBudgets().injection,
   DEFAULT_CONFIG.compaction.factsTokens, DEFAULT_CONFIG.compaction.rawTokens);
 /** The per-window accounting of one custom replacement (28a item 6). */
 const charged = (result: ReturnType<typeof memory.compact>) => {
@@ -1032,14 +1033,14 @@ test("20b 2026-09-08, second half superseded by 25c: the Noting batch ceiling is
 
 // 25c, 2026-09-09: "compaction's two budgets are the knowledge cap and one shared 20,000-token
 // episodic envelope, and nothing else". Superseded by ticket 28a: compaction has three material
-// windows with 20k/10k/10k baselines (32a) — knowledge (`render.knowledgeBlockTokens`), pending facts
+// windows with 20k/10k/10k default baselines (32a/35d) — database-derived knowledge, pending facts
 // (`compaction.factsTokens`) and pending Raw (`compaction.rawTokens`) — over one envelope that is
 // their sum. `render.episodicBlockTokens` is not retired; it stayed the Noter's history envelope, and
 // compaction no longer reads it. Required material is placed first and is never trimmed; what is left
 // refills with recent consolidated facts and then recent already-extracted Raw.
 test("28: three windows, one envelope — required material first, refills into the spare, never a trimmed pending window", () => {
   expect(DEFAULT_CONFIG.compaction).toEqual({ factsTokens: 10_000, rawTokens: 10_000, overflowTokens: 10_000 });
-  expect(DEFAULT_CONFIG.render.knowledgeBlockTokens).toBe(20_000);
+  expect(memory.knowledgeBudgets().injection).toBe(20_000);
   expect(DEFAULT_CONFIG.render.episodicBlockTokens).toBe(20_000); // untouched, and the Noter's
   expect(REMOVED_SETTINGS["render.episodicBlockTokens"]).toBeUndefined(); // nothing was retired here
   const { s, t } = session();
@@ -1088,21 +1089,22 @@ test("28: three windows, one envelope — required material first, refills into 
   defaultWindows();
 });
 
-test("32a: the Consolidator's knowledge reference is its own key — raising the main knowledge budget changes no worker input", () => {
+test("35d: the Consolidator's knowledge reference stays independent of the database injection capacity", () => {
   const { s, t } = session();
   const tools = memory.tools({ kind: "manual", sessionId: s.id, currentTurnId: t.id, branch: "main" });
   expect(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "Evidence", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
   for (let i = 0; i < 12; i++) expect(tools[3]!.execute({ operations: [{ op: "create", topics: [],
     reason: "Durable rule", text: `Rule ${i}: ` + "word ".repeat(1_500), category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] })).toContain("committed");
-  const legacy = api.validateConfig({ render: { knowledgeBlockTokens: 10_000 } });
-  expect(memory.config.render.knowledgeBlockTokens).toBe(20_000);
+  expect(() => api.validateConfig({ render: { knowledgeBlockTokens: 10_000 } } as never)).toThrow(/Removed setting render.knowledgeBlockTokens/);
+  const legacy = api.validateConfig({});
+  expect(memory.knowledgeBudgets().injection).toBe(20_000);
   expect(memory.config.consolidation.knowledgeTokens).toBe(10_000);
   const main = memory.injection(s.id);
-  memory.config.render.knowledgeBlockTokens = 10_000;
+  setKnowledgeInjection(memory, Math.max(5_000, 10_000));
   const explicit = memory.injection(s.id);
   expect(explicit.knowledgeCommitIds.length).toBeLessThan(main.knowledgeCommitIds.length);
   expect(tokens(explicit.text)).toBeLessThanOrEqual(10_000);
-  memory.config.render.knowledgeBlockTokens = 20_000;
+  setKnowledgeInjection(memory, Math.max(5_000, 20_000));
   const compact = memory.compact(s.id, "main", t.id);
   for (const mode of ["subagent", "fork"] as const) {
     const input = { sessionId: s.id, branch: "main", headTurnId: t.id, mode };
@@ -1331,10 +1333,10 @@ test("20b 2026-09-08: the knowledge-category soft-cap exemption is superseded; c
   expect(tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: [`T${t.id}#user`] }] })).toContain("ok: F1");
   const write = (category: string, text: string) => expect(tools.find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text, category, scope: "project", supports: ["F1"] }], skipped: [] })).toContain('"committed"');
-  for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(60));
+  for (let i = 0; i < 6; i++) write("constraint", `constraint ${i} ` + "word ".repeat(1_000));
   write("reference", "reference tail");
-  const cap = 200;
-  memory.config.render.knowledgeBlockTokens = cap;
+  const cap = 5_000;
+  setKnowledgeInjection(memory, cap);
   const injected = memory.inject(s.id);
   expect(injected).toContain("<constraint>"); // first priority, kept
   expect(injected).not.toContain("reference tail"); // lower priority, omitted

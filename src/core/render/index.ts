@@ -693,7 +693,7 @@ export const expandList = (addresses: string[]): string => addresses.length <= E
  * compaction may omit their receipts too rather than spend required overflow on optional framing.
  * No item is rewritten to fit, and omitted items remain stored and traceable. */
 export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number, line: (knowledge: KnowledgeWithRevision) => string = renderKnowledge,
-  budget = "render.knowledgeBlockTokens", required?: ReadonlySet<number>,
+  budget = "Knowledge capacity", required?: ReadonlySet<number>,
   priority?: (a: KnowledgeWithRevision, b: KnowledgeWithRevision) => number) {
   // Relevance selects optional whole items before the stable category/time/id tie-break.
   // Required exact versions are retained independently; category grouping is presentation only.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { sourceSeededMemory, compacted } from "../../source-fixture.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 const time = "2026-09-06T00:00:00Z";
 const open = () => sourceSeededMemory(":memory:", async () => { throw new Error("allocator calls no worker"); });
@@ -23,10 +24,10 @@ function fixture(extra = { knowledge: 0, facts: 0, raw: 0 }, consolidated = true
 function charged(result: ReturnType<typeof memory.compact>) { if ("native" in result) throw new Error(result.reason); return result.charged!; }
 
 test("28: unprocessed knowledge is required material — consolidation of its facts does not make it optional", () => {
-  const { s, t } = fixture();
+  const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 });
   const before = memory.compact(s.id, "main", t.id), u = charged(before).required;
-  memory.config.render.knowledgeBlockTokens = 1;
-  memory.config.compaction.overflowTokens = u.knowledge - 1;
+  setKnowledgeInjection(memory, 5_000);
+  memory.config.compaction.overflowTokens = u.knowledge - 5_000;
   expect(compacted(memory.compact(s.id, "main", t.id))).toContain("unprocessed complete knowledge");
   memory.config.compaction.overflowTokens--;
   const failure = memory.compact(s.id, "main", t.id);
@@ -35,9 +36,9 @@ test("28: unprocessed knowledge is required material — consolidation of its fa
 });
 
 test("32e shared allowance equality and independent optional base remainders include framing", () => {
-  const { s, t } = fixture();
+  const { s, t } = fixture({ knowledge: 6_000, facts: 0, raw: 0 });
   const u = charged(memory.compact(s.id, "main", t.id)).required;
-  memory.config.render.knowledgeBlockTokens = u.knowledge - 5;
+  setKnowledgeInjection(memory, u.knowledge - 5);
   memory.config.compaction.factsTokens = u.facts - 2;
   memory.config.compaction.rawTokens = u.raw - 3;
   memory.config.compaction.overflowTokens = 10;
@@ -46,7 +47,7 @@ test("32e shared allowance equality and independent optional base remainders inc
   expect(memory.compact(s.id, "main", t.id)).toEqual(fitted);
   memory.config.compaction.overflowTokens = 9;
   expect(memory.compact(s.id, "main", t.id)).toMatchObject({ native: true, over: { knowledge: true, facts: true, raw: true } });
-  memory.config.render.knowledgeBlockTokens = 20_000; // idle K base cannot rescue other excesses
+  setKnowledgeInjection(memory, Math.max(5_000, 20_000)); // idle K base cannot rescue other excesses
   memory.config.compaction.overflowTokens = 4;
   expect(memory.compact(s.id, "main", t.id)).toMatchObject({ native: true, over: { knowledge: false, facts: true, raw: true } });
 });
@@ -119,8 +120,8 @@ test("32e exact processed version becomes optional; a committed unfinished succe
   const original = memory.store.listCurrentKnowledge(path)[0]!;
   const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: time });
   memory.store.completeDreaming(success.id, [original.revision.id], [original.revision.id]);
-  memory.config.render.knowledgeBlockTokens = 1;
-  expect(charged(memory.compact(s.id, "main", t.id)).knowledge).toBe(0); // optional cannot use overflow
+  expect(() => memory.setKnowledgeBudget("project", 0)).toThrow(/project:1: used/);
+  expect(charged(memory.compact(s.id, "main", t.id)).knowledge).toBeGreaterThan(0);
   const changed = memory.store.commitConsolidationRun({ path, run: { kind: "dreaming", sessionId: s.id, branch: "main", createdAt: time },
     operations: [{ op: "update", knowledgeId: original.knowledge.id, baseCommit: original.revision.id,
       text: "unfinished changed body", category: "constraint", scope: "project", topics: [], supports: [f.id], reason: "changed", createdAt: time }] });
@@ -142,8 +143,9 @@ test("32e unfinished archive status is required until exact completion, without 
   expect(compacted(result)).toContain("archived; maintenance not completed");
   expect(compacted(result)).toContain("retired deliberately");
   expect("native" in result ? [1] : result.supplied.knowledgeCommitIds).toEqual([]);
-  memory.config.render.knowledgeBlockTokens = 1; memory.config.compaction.overflowTokens = 1;
-  expect(memory.compact(s.id, "main", t.id)).toMatchObject({ native: true, over: { knowledge: true } });
+  memory.setKnowledgeBudget("project", 0);
+  expect(memory.knowledgeBudgets().project).toBe(0);
+  expect(compacted(memory.compact(s.id, "main", t.id))).toContain("maintenance not completed");
   const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: time });
   memory.store.completeDreaming(success.id, [k.revision.id], [archive.committed[0]!.commit]);
   expect(compacted(memory.compact(s.id, "main", t.id))).not.toContain("maintenance not completed");

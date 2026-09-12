@@ -25,7 +25,7 @@ const worker = (body: unknown) => JSON.stringify(body).includes("# Dreamer");
 const traceMemory = (dir: string) => ({
   dbPath: join(dir, "trace.db"),
   "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000,
-  "render.knowledgeBlockTokens": 100, "compaction.factsTokens": 10_000, "compaction.rawTokens": 10_000, "compaction.overflowTokens": 50,
+  "compaction.factsTokens": 10_000, "compaction.rawTokens": 10_000, "compaction.overflowTokens": 50,
 });
 const session = async (options: { tools?: Parameters<typeof piSession>[0]["tools"]; contextWindow?: number; keepRecentTokens?: number; automatic?: boolean } = {}) => {
   const store = mkdtempSync(join(tmpdir(), "trace-memory-triggers-"));

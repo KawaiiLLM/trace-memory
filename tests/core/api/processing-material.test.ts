@@ -3,7 +3,7 @@ import { sourceSeededMemory, visibleView, type ConsolidationAgentInput } from ".
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 
 function fixture(agent: (input: ConsolidationAgentInput) => void = () => {}) {
-  const memory = sourceSeededMemory(":memory:", async raw => { agent(raw as ConsolidationAgentInput); return { outcome: "success", output: "done" }; }, { render: { knowledgeBlockTokens: 80 }, consolidation: { knowledgeTokens: 80 } });
+  const memory = sourceSeededMemory(":memory:", async raw => { agent(raw as ConsolidationAgentInput); return { outcome: "success", output: "done" }; }, { consolidation: { knowledgeTokens: 80 } });
   const p = memory.store.createProject({ name: "A", declaredBy: "mark" });
   const s = memory.store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const turn = memory.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "Use this rule", startedAt: "now" });
@@ -43,7 +43,6 @@ test("32: complete reminder and validated inherited carrier share the builder's 
     expect(reminder.prepared?.material.reminders.join()).toContain(f.content.text);
     expect(reminder.prepared?.readKnowledgeCommits).toEqual([{ knowledgeId: 1, commit: 1 }]);
     // The carrier takes its identities from the actual untruncated injection, not a candidate scan.
-    f.memory.config.render.knowledgeBlockTokens = 10000;
     const injection = f.memory.injection(f.target);
     expect(injection.text).toContain(f.content.text);
     const binding = { db: "fixture-db", session: 1, pi: "fixture-pi" };

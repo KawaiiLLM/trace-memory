@@ -6,8 +6,11 @@ const compact = (h: ReturnType<typeof host>, signal?: AbortSignal) =>
 const call = (id: string, name: string, args: Record<string, unknown>): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args }] });
 async function seeded(trigger = 5000, overflow = 50) {
   const h = host({ "noting.triggerTokens": 10000, "consolidation.triggerTokens": 5000,
-    "dreaming.triggerTokens": trigger, "render.knowledgeBlockTokens": 100,
+    "dreaming.triggerTokens": trigger,
     "compaction.factsTokens": 10000, "compaction.rawTokens": 10000, "compaction.overflowTokens": overflow });
+  h.memory.setKnowledgeBudget("global", 0);
+  h.memory.setKnowledgeBudget("project", 0);
+  h.memory.setKnowledgeBudget("session", 0);
   await h.turn();
   const s = h.memory.store;
   const f = s.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" }] });
@@ -121,7 +124,7 @@ test.each(["knowledge", "project", "cancel"] as const)("32f: final coherent rech
       if (change === "cancel") controller.abort();
       else if (change === "project") s.declareProject(1, "changed-project", "mark");
       else {
-        const updated = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(12000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external change after fit", createdAt: "external" }] });
+        const updated = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(20_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external change after fit", createdAt: "external" }] });
         expect(updated.ok).toBe(true);
       }
     });
@@ -144,13 +147,14 @@ test("32f: 50 tool rounds and one repair consume only one Dreamer recovery allow
       if (++requests === 1) {
         const outside = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$2", author: "test", text: "outside ".repeat(4500), category: "constraint", scope: "project", supports: [1], topics: [], reason: "outside the frozen family", createdAt: "seed" }] });
         if (!outside.ok) throw Error(outside.problems.join());
+        h.memory.setKnowledgeBudget("project", 5_000);
         const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "seed" });
         s.completeDreaming(run.id, [outside.committed[0]!.commit], [outside.committed[0]!.commit]);
         return reply("First pass complete"); // host must check, and send exactly one repair
       }
       return call(`read-${requests}`, "trace", { address: `K${item.knowledgeId}` });
     }, { autoStop: false });
-    expect(await compact(h)).toBeUndefined();
+    expect((await compact(h)).compaction.summary).toContain("rule");
     expect(requests).toBe(51);
     expect(workers(h)).toHaveLength(1);
     const run = workers(h)[0]!, audit = JSON.parse(run.response!);

@@ -205,8 +205,7 @@ export function checkProcessedScopes(store: Store, accepted: number[] = [], affe
 }
 
 /** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
-export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected?: Set<string>, policy?: KnowledgeBudgets) {
-  const limits: KnowledgeBudgets = policy ?? deriveKnowledgeBudgets(DEFAULT_KNOWLEDGE_BUDGETS);
+export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected: Set<string> | undefined, limits: KnowledgeBudgets) {
   const rendered = new Map<number, string>();
   const render = (value: KnowledgeWithRevision) => {
     if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));

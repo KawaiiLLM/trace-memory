@@ -8,6 +8,9 @@ import { join } from "node:path";
 const host = (config: Record<string, unknown>) => {
   const { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, ...rest } = config;
   const h = createHost(rest);
+  h.memory.setKnowledgeBudget("global", 0);
+  h.memory.setKnowledgeBudget("project", 0);
+  h.memory.setKnowledgeBudget("session", 0);
   const file = join(h.dir, "agent", "settings.json");
   const settings = JSON.parse(readFileSync(file, "utf8"));
   settings["trace-memory"] = { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation };
@@ -31,8 +34,8 @@ const host = (config: Record<string, unknown>) => {
 const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
 /** Independent bases plus a small shared allowance: pending demand still overflows, while empty
  * window titles can fit after successful recovery even in legacy one-token-base fixtures. */
-const windows = (knowledge: number, facts: number, raw: number) =>
-  ({ "render.knowledgeBlockTokens": knowledge, "compaction.factsTokens": facts, "compaction.rawTokens": raw,
+const windows = (_knowledge: number, facts: number, raw: number) =>
+  ({ "compaction.factsTokens": facts, "compaction.rawTokens": raw,
     // Preserve these recovery probes' deliberately tiny admission allowance; 32e tests the default.
     "compaction.overflowTokens": 50 });
 const long = (head: string) => `${head} ` + "word ".repeat(3_000);

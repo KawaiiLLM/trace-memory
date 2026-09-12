@@ -66,7 +66,6 @@ For example, either settings file can contain:
     "dreaming.thinking": "inherit",
     "consolidation.batchTokens": 10000,
     "consolidation.knowledgeTokens": 10000,
-    "render.knowledgeBlockTokens": 20000,
     "compaction.factsTokens": 10000,
     "compaction.rawTokens": 10000,
     "compaction.overflowTokens": 10000
@@ -74,14 +73,24 @@ For example, either settings file can contain:
 }
 ```
 
-`compaction.factsTokens` and `compaction.rawTokens` are 28a's two compaction material windows;
-the third is `render.knowledgeBlockTokens`. Their fixed bases total 40,000 tokens at defaults;
-`compaction.overflowTokens` adds a shared 10,000-token allowance for required unprocessed excess
-only, for a derived maximum of 50,000. No base lends its spare to another window (see "Compaction
-and the post-compaction boundary"). `render.knowledgeBlockTokens` also caps initial knowledge injection and
-the one-shot supplement. Consolidator references, including inherited status lines, instead use
-`consolidation.knowledgeTokens` (default 10,000). Both keys accept positive safe integers through the
-existing configuration layers; explicit values are retained. Neither appears in interactive Settings.
+`compaction.factsTokens` and `compaction.rawTokens` are 28a's two file-configured compaction
+windows. The Knowledge window is database-owned: Settings edits Global, Project and Session budgets
+for the bound database (defaults 4,000, 10,000 and 1,000). Their sum is the 15,000 applicable
+processed-Knowledge ceiling. A fixed 5,000-token unprocessed-work allowance derives both the 20,000
+ordinary-injection/compaction Knowledge window and the 20,000 Dreamer processed-input window. The
+three compaction bases therefore still total 40,000 by default; `compaction.overflowTokens` adds the
+shared 10,000 required-only allowance. No base lends spare capacity to another window.
+
+`render.knowledgeBlockTokens` is retired. Remove it from every settings file and
+`TRACE_MEMORY_CONFIG`; finding it is a named load error. Stop older executors before opening a
+database with this authority/schema upgrade; mixed old/new runtimes are unsupported. Database budget edits are exact decimal
+nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
+connections to that database. A reduction that would make any already processed owner pool or
+applicable path exceed the proposed cap is rejected with used/cap/overage diagnostics. Running
+Dreamer requests keep their frozen admitted processed-input ceiling; their check receipt also shows
+current derived capacities, and later admissions use the current policy. Actual provider context
+capacity remains an independent hard gate. Consolidator references keep their separate
+`consolidation.knowledgeTokens` setting (default 10,000).
 
 Environment override example:
 
@@ -188,7 +197,7 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, processed/unprocessed marker,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume `render.knowledgeBlockTokens` (default 20,000) first. Missing state transitions fit as a
+  consume the database-derived Knowledge injection capacity (20,000 at the default policy) first. Missing state transitions fit as a
   deterministic whole-item prefix before complete new bodies; only selected transition receipts persist.
   An unfit next transition is not skipped, exact fit is accepted, and zero/negative remainder or one
   unfit item returns no message.
@@ -651,8 +660,8 @@ rather than a string:
 | `{text, supplied, charged}` | all required unprocessed knowledge, complete pending facts and pending entry views fit the fixed bases plus shared allowance | the text, as `compaction.summary` |
 | `{native: true, reason, over?}` | required excesses exceed the shared allowance, or an entry's minima exceed the configured profile | the recovery below, then either the replacement or nothing at all, with a reason naming the window and its numbers |
 
-32e allocates three fixed bases: knowledge 20,000 (`render.knowledgeBlockTokens`), facts 10,000
-(`compaction.factsTokens`) and Raw 10,000 (`compaction.rawTokens`). Required unprocessed material
+32e allocates three fixed bases: the database-derived Knowledge injection capacity (20,000 at
+defaults), facts 10,000 (`compaction.factsTokens`) and Raw 10,000 (`compaction.rawTokens`). Required unprocessed material
 alone may use the shared 10,000-token `compaction.overflowTokens` allowance: required material
 fits exactly when `sum(max(required_i - base_i, 0)) <= overflowTokens`, including framing.
 The bases total 40,000 and the derived maximum is 50,000 at defaults. No window lends its unused
@@ -1880,7 +1889,7 @@ The measure is Pi's, taken where Pi takes it:
   valid reply after it — and refuses nothing: unknown is not zero, and it is not an overflow either.
 
 Generation limits, `noting.batchTokens`, `consolidation.batchTokens`, `render.episodicBlockTokens`,
-`render.knowledgeBlockTokens` and foreground compaction are unchanged by this rule.
+the database-derived Knowledge capacity and foreground compaction are unchanged by this rule.
 
 Noting freezes entry identities on the selected path, not whole Turns. A
 successful zero-fact run — an explicit `note({facts: []})`, the only way to complete an

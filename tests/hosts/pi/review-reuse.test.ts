@@ -7,9 +7,12 @@ const failure = (): Reply => ({ ...reply(""), stopReason: "error", errorMessage:
 
 async function seeded() {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-    "dreaming.triggerTokens": 5000, "render.knowledgeBlockTokens": 100,
+    "dreaming.triggerTokens": 5000,
     "compaction.factsTokens": 10000, "compaction.rawTokens": 10000, "compaction.overflowTokens": 50 });
   try {
+    h.memory.setKnowledgeBudget("global", 0);
+    h.memory.setKnowledgeBudget("project", 0);
+    h.memory.setKnowledgeBudget("session", 0);
     await h.turn();
     const s = h.memory.store;
     const f = s.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" }] });
@@ -83,10 +86,11 @@ test.each(["branch", "project", "lost claim", "replaced claim", "range completed
       s.declareProject(1, "different-project", "mark");
       await h.emit("session_tree", {});
     } else if (change === "range completed" || change === "range replaced") {
+      h.memory.setKnowledgeBudget("project", 6_100);
       const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "external" });
       s.completeDreaming(run.id, [item.commit], [item.commit]);
       expect(s.retryDreamingRange({ sessionId: 1, branch: "main", headTurnId: 2 })).toBeNull();
-      const next = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$2", author: "test", text: "new ".repeat(6000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "new independent work", createdAt: "seed" }] });
+      const next = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$2", author: "test", text: "new ".repeat(12_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "new independent work", createdAt: "seed" }] });
       expect(next.ok).toBe(true);
       if (change === "range replaced" && next.ok)
         s.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: 2 }, [next.committed[0]!.commit]);
@@ -114,6 +118,7 @@ test("32f review: borrowed D of another session is capacity, never this compact'
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
+    h.memory.setKnowledgeBudget("project", 6_100);
     const completed = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "seed" });
     s.completeDreaming(completed.id, [item.commit], [item.commit]);
     const peer = s.createSession({ host: "closed-peer", projectId: s.getSession(1)!.projectId, enrollmentChoice: true, startedAt: "seed", firstReplyAt: "seed" });
@@ -130,7 +135,7 @@ test("32f review: borrowed D of another session is capacity, never this compact'
     await vi.waitFor(() => expect(h.requests).toHaveLength(1));
     const claim = s.getClaim(peer.id, "dreaming");
     expect(claim?.borrowed).toBe(true);
-    const own = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$own", author: "test", text: "own ".repeat(6000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "own work", createdAt: "seed" }] });
+    const own = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$own", author: "test", text: "own ".repeat(12_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "own work", createdAt: "seed" }] });
     expect(own.ok).toBe(true);
     const controller = new AbortController();
     const attempt = compact(h, controller.signal);

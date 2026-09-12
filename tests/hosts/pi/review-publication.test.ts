@@ -3,8 +3,11 @@ import { host } from "./test-host.ts";
 
 async function seeded(overflow = 50) {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-    "dreaming.triggerTokens": 10000, "render.knowledgeBlockTokens": 100,
+    "dreaming.triggerTokens": 10000,
     "compaction.factsTokens": 10000, "compaction.rawTokens": 10000, "compaction.overflowTokens": overflow });
+  h.memory.setKnowledgeBudget("global", 0);
+  h.memory.setKnowledgeBudget("project", 0);
+  h.memory.setKnowledgeBudget("session", 0);
   await h.turn();
   const s = h.memory.store;
   const f = s.commitNotingRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, facts: [{ turnId: 1, source: ["T1#user"], actor: "user", category: "decision", text: "Keep this rule", createdAt: "seed" }] });
@@ -33,10 +36,11 @@ test.each(["native→custom", "custom→native"] as const)("32f review: %s repor
       if (changed || !/compaction (used|preparing)/.test(message)) return;
       changed = true;
       if (direction === "native→custom") {
+        h.memory.setKnowledgeBudget("project", 7_000);
         const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "external" });
         s.completeDreaming(run.id, [item.commit], [item.commit]);
       } else {
-        const update = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(12000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external", createdAt: "external" }] });
+        const update = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(20_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external", createdAt: "external" }] });
         expect(update.ok).toBe(true);
       }
     });

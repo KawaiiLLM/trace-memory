@@ -554,7 +554,7 @@ charged once, to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | `render.knowledgeBlockTokens` | 20,000 |
+| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | database-derived Knowledge injection capacity | 20,000 |
 | Consolidator knowledge references, category tags, inherited status lines and omission receipts | `consolidation.knowledgeTokens` | 10,000 |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
@@ -569,6 +569,24 @@ ceiling, not a guaranteed allocation, and Consolidation has no automatic Raw blo
 block at all — its selected pending facts and their required framing share the current-material
 allowance. Outer framing is never charged against the Noter's inner Raw ceiling, so an otherwise valid
 10,000-token entry stays batchable.
+
+Ticket 35d stores one Knowledge policy row in each database: Global 4,000, Project 10,000 and
+Session 1,000 tokens by default. Exact safe-integer addition derives the applicable processed ceiling
+`G + P + S` (15,000), the ordinary-injection/compaction Knowledge capacity `G + P + S + 5,000`
+(20,000), and the Dreamer processed-input capacity by the same formula. The 5,000-token constant is
+an unprocessed-work allowance, not another stored or configurable cap. Owner pools remain
+independent: each project has the full Project budget and each session has the full Session budget;
+they are never multiplied into one global total.
+
+Policy initialization and single-field edits are database transactions. A reduction validates all
+affected processed owner pools and applicable session paths in that same transaction; any overage or
+write/commit failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
+or Pi settings. Every new selection, placement, completion, certification, compact allocation and
+ordinary injection reads current database policy. Dreamer alone freezes its derived processed-input
+ceiling at admission so a running provider request cannot change shape; its checks show that frozen
+ceiling beside current capacities, and a later retry uses current policy. Safe-integer overflow is an
+explicit error. The retired `render.knowledgeBlockTokens` file/environment key is always a named
+configuration error.
 
 Ticket 25 amendment 3 (25c) removed compaction's inner Raw cap: a foreground backlog is not a Noter
 batch, so `noting.batchTokens` does not bound it. Ticket 28a replaced 25c's "knowledge plus one shared
@@ -824,7 +842,7 @@ are checked on the selected session path; project-only targets use project/globa
 infer path evidence.
 
 Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
-`render.knowledgeBlockTokens` (default 20,000). Missing state transitions then fit as complete items in
+the current database-derived Knowledge injection capacity (20,000 under the default policy). Missing state transitions then fit as complete items in
 their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
 unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
 fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
@@ -851,9 +869,9 @@ three windows since 28a):
 | `{text, supplied, charged}` | the complete required set fits the fixed bases plus shared overflow | knowledge/status, `<episodic>` facts in chronological Turn groups, then bounded Raw in source order |
 | `{native: true, reason, over?}` | required excess exceeds the shared allowance, or an entry's minima exceed its profile | explicit native delegation; `over` identifies all contributing required windows, including knowledge |
 
-**Fixed bases and required-only overflow (32e).** Bases are knowledge 20,000
-(`render.knowledgeBlockTokens`), facts 10,000 (`compaction.factsTokens`) and Raw 10,000
-(`compaction.rawTokens`). `compaction.overflowTokens` defaults to 10,000 and is shared only by
+**Fixed bases and required-only overflow (32e/35d).** Bases are the current database-derived
+Knowledge injection capacity (20,000 at defaults), facts 10,000 (`compaction.factsTokens`) and Raw
+10,000 (`compaction.rawTokens`). `compaction.overflowTokens` defaults to 10,000 and is shared only by
 required excess. The maximum is their derived sum, 50,000, not a separate total-budget key.
 For charged required sizes U and bases B, admission requires `sum(max(U_i - B_i, 0)) <= overflowTokens`.
 Equality fits; no window lends its unused base. Required 20k/14k/16k fits, but 5k/20k/15k fails
