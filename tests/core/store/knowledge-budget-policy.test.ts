@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { Store } from "../../../src/core/store/index.ts";
 import { deriveKnowledgeBudgets } from "../../../src/core/store/processing.ts";
 import { tokens, renderKnowledge } from "../../../src/core/render/index.ts";
@@ -14,6 +15,94 @@ afterEach(() => {
 });
 const open = (path = ":memory:") => { const store = new Store(path); stores.push(store); return store; };
 const file = () => { const dir = mkdtempSync(join(tmpdir(), "tm-budget-policy-")); dirs.push(dir); return join(dir, "trace.db"); };
+
+interface WorkerMessage { type: string; ok?: boolean; error?: string; value?: unknown }
+
+function operationWorker(path: string, release = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))) {
+  const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
+  const child = new Worker(`
+    const { workerData, parentPort } = require('node:worker_threads');
+    import(workerData.module).then(({ Store }) => {
+      const store = new Store(workerData.path);
+      const execute = action => {
+        if (action.kind === 'budget') return store.setKnowledgeBudget(action.field, action.value);
+        if (action.kind === 'complete') return store.completeDreaming(action.runId, action.eventIds, action.resultIds);
+        if (action.kind === 'placement') return store.declareProject(action.sessionId, action.project, 'mark');
+        throw new Error('unknown worker action');
+      };
+      parentPort.postMessage({ type: 'ready' });
+      parentPort.on('message', message => {
+        if (message.type === 'close') { store.close(); parentPort.postMessage({ type: 'closed' }); return; }
+        if (message.type === 'hold') {
+          try {
+            let value;
+            store.transaction(() => {
+              value = execute(message.action);
+              parentPort.postMessage({ type: 'held', ok: true });
+              Atomics.wait(new Int32Array(workerData.release), 0, 0);
+            });
+            parentPort.postMessage({ type: 'result', ok: true, value });
+          } catch (error) { parentPort.postMessage({ type: 'held', ok: false, error: String(error) }); }
+          return;
+        }
+        parentPort.postMessage({ type: 'started' });
+        const originalExec = store.db.exec.bind(store.db);
+        let checkedContention = false;
+        store.db.exec = sql => {
+          if (!checkedContention && String(sql).trim() === 'BEGIN IMMEDIATE') {
+            checkedContention = true;
+            originalExec('PRAGMA busy_timeout = 0');
+            try { return originalExec(sql); }
+            catch (error) {
+              if (!String(error).includes('locked')) throw error;
+              parentPort.postMessage({ type: 'blocked' });
+              Atomics.wait(new Int32Array(workerData.release), 0, 0);
+              originalExec('PRAGMA busy_timeout = 5000');
+              return originalExec(sql);
+            }
+          }
+          return originalExec(sql);
+        };
+        try { parentPort.postMessage({ type: 'result', ok: true, value: execute(message.action) }); }
+        catch (error) { parentPort.postMessage({ type: 'result', ok: false, error: String(error) }); }
+      });
+    }).catch(error => { throw error; });
+  `, { eval: true, workerData: { module, path, release: release.buffer } });
+  const queued: WorkerMessage[] = [];
+  const waiting: { type: string; resolve: (value: WorkerMessage) => void; reject: (error: Error) => void }[] = [];
+  child.on("message", (message: WorkerMessage) => {
+    const index = waiting.findIndex(waiter => waiter.type === message.type);
+    if (index >= 0) waiting.splice(index, 1)[0]!.resolve(message);
+    else queued.push(message);
+  });
+  child.on("error", error => { for (const waiter of waiting.splice(0)) waiter.reject(error); });
+  const wait = (type: string) => {
+    const index = queued.findIndex(message => message.type === type);
+    if (index >= 0) return Promise.resolve(queued.splice(index, 1)[0]!);
+    return new Promise<WorkerMessage>((resolve, reject) => waiting.push({ type, resolve, reject }));
+  };
+  return {
+    child, release, wait,
+    send: (message: unknown) => child.postMessage(message),
+    async close() { child.postMessage({ type: "close" }); await wait("closed"); await child.terminate(); },
+  };
+}
+
+async function overlap(path: string, winnerAction: unknown, loserAction: unknown) {
+  const release = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const winner = operationWorker(path, release), loser = operationWorker(path, release);
+  await Promise.all([winner.wait("ready"), loser.wait("ready")]);
+  winner.send({ type: "hold", action: winnerAction });
+  const held = await winner.wait("held");
+  expect(held).toMatchObject({ ok: true });
+  loser.send({ type: "run", action: loserAction });
+  await loser.wait("started");
+  await loser.wait("blocked"); // the real operation's BEGIN observed the winner's uncommitted lock
+  Atomics.store(release, 0, 1); Atomics.notify(release, 0, 2);
+  const [won, lost] = await Promise.all([winner.wait("result"), loser.wait("result")]);
+  await Promise.all([winner.close(), loser.close()]);
+  return { won, lost };
+}
 
 test("35d defaults and derived capacities are one exact safe-integer policy", () => {
   const store = open();
@@ -63,6 +152,42 @@ test("35d supported pre-policy data upgrades without changing memory rows", () =
   expect(upgraded.knowledgeBudgets()).toMatchObject({ global: 4_000, project: 10_000, session: 1_000 });
   expect(upgraded.db.prepare("SELECT * FROM turns").all()).toEqual(before);
   expect(upgraded.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
+});
+
+test("35d a later upgrade failure rolls back the newly introduced policy and reopens stably", () => {
+  const path = file(), legacy = open(path);
+  const project = legacy.createProject({ name: "migration", declaredBy: "mark" });
+  const session = legacy.createSession({ host: "test", projectId: project.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+  const turn = legacy.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "legacy", startedAt: "now" });
+  const entry = legacy.appendSourceEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "legacy", nativeId: "entry",
+    role: "user", text: "legacy", raw: "legacy", calls: [] });
+  legacy.db.prepare("UPDATE source_entries SET blocks = NULL WHERE id = ?").run(entry.id);
+  legacy.db.exec("DROP TABLE knowledge_budget_policy");
+  legacy.close(); stores.splice(stores.indexOf(legacy), 1);
+
+  expect(() => new Store(path, () => { throw new Error("injected later migration failure"); })).toThrow("injected later migration failure");
+  const failed = new DatabaseSync(path);
+  expect(failed.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_budget_policy'").get()).toBeUndefined();
+  expect(failed.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBeNull();
+  failed.close();
+
+  const reopened = new Store(path, () => [{ kind: "text", text: "legacy" }]); stores.push(reopened);
+  expect(reopened.knowledgeBudgets()).toMatchObject({ global: 4_000, project: 10_000, session: 1_000 });
+  expect(reopened.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
+  reopened.close(); stores.splice(stores.indexOf(reopened), 1);
+  const stable = open(path);
+  expect(stable.knowledgeBudgets()).toMatchObject({ global: 4_000, project: 10_000, session: 1_000 });
+});
+
+test("35d policy creation rolls back when final upgrade integrity validation fails", () => {
+  const path = file(), legacy = open(path);
+  legacy.db.exec("DROP TABLE knowledge_budget_policy; PRAGMA foreign_keys = OFF; CREATE TABLE upgrade_probe(session_id INTEGER REFERENCES sessions(id)); INSERT INTO upgrade_probe VALUES (999999); PRAGMA foreign_keys = ON");
+  legacy.close(); stores.splice(stores.indexOf(legacy), 1);
+  expect(() => new Store(path)).toThrow("Store migration: foreign key violations");
+  const failed = new DatabaseSync(path);
+  expect(failed.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_budget_policy'").get()).toBeUndefined();
+  failed.exec("DELETE FROM upgrade_probe"); failed.close();
+  expect(open(path).knowledgeBudgets()).toMatchObject({ global: 4_000, project: 10_000, session: 1_000 });
 });
 
 test("35d initialization is idempotent and invalid stored arithmetic fails instead of falling back", () => {
@@ -142,7 +267,7 @@ test("35d reductions diagnose current processed owners and pending revisions do 
   expect(store.isKnowledgeProcessed(pending.commit)).toBe(false);
 });
 
-test("35d two connections serialize policy reduction against certification", () => {
+test("35d sequential two-connection orders enforce policy reduction against certification", () => {
   const path = file(), writer = open(path), settings = open(path);
   writer.setKnowledgeBudget("project", 20_000);
   const first = processedProjectKnowledge(writer, "growth ".repeat(2_500));
@@ -173,9 +298,90 @@ test("35d a reduction that wins is enforced by later project placement", () => {
   expect(writer.knowledgeBudgets().project).toBe(cap);
 });
 
-test("35d concurrent constructors publish exactly one default row", async () => {
-  const path = file();
-  const [a, b] = await Promise.all([Promise.resolve().then(() => open(path)), Promise.resolve().then(() => open(path))]);
-  expect(a.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
-  expect(a.knowledgeBudgets()).toEqual(b.knowledgeBudgets());
+test.each(["project", "session"] as const)("35d real overlapping %s reduction and certification serialize safely in both winning orders", async scope => {
+  for (const order of ["growth", "reduction"] as const) {
+    const path = file(), setup = open(path);
+    setup.setKnowledgeBudget(scope, 20_000);
+    const item = processedProjectKnowledge(setup, `${scope} overlap `.repeat(1_000), `${scope}-${order}`, scope);
+    const owner = scope === "project" ? `project:${item.project.id}` : `session:${item.session.id}`;
+    const acceptedUsed = setup.checkProcessedScopes([item.commit]).totals.find(total => total.scope === owner)!.tokens;
+    const run = setup.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    setup.close(); stores.splice(stores.indexOf(setup), 1);
+    const budget = { kind: "budget", field: scope, value: acceptedUsed - 1 };
+    const complete = { kind: "complete", runId: run.id, eventIds: [item.commit], resultIds: [item.commit] };
+    const result = order === "growth" ? await overlap(path, complete, budget) : await overlap(path, budget, complete);
+    expect(result.won.ok).toBe(true);
+    expect(result.lost.ok).toBe(false);
+    expect(result.lost.error).toMatch(order === "growth" ? /overage 1/ : /processed knowledge.*exceeds/);
+    const checked = open(path);
+    expect(checked.isKnowledgeProcessed(item.commit)).toBe(order === "growth");
+    expect(checked.knowledgeBudgets()[scope]).toBe(order === "growth" ? 20_000 : acceptedUsed - 1);
+    checked.close(); stores.splice(stores.indexOf(checked), 1);
+  }
+});
+
+test.each(["placement", "reduction"] as const)("35d real overlapping project placement and reduction are atomic when %s wins", async winnerName => {
+  const path = file(), setup = open(path);
+  setup.setKnowledgeBudget("project", 20_000);
+  const first = processedProjectKnowledge(setup, "first placement ".repeat(1_000), `place-a-${winnerName}`);
+  const second = processedProjectKnowledge(setup, "second placement ".repeat(1_000), `place-b-${winnerName}`);
+  for (const item of [first, second]) {
+    const run = setup.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    setup.completeDreaming(run.id, [item.commit], [item.commit]);
+  }
+  const cap = Math.max(...setup.checkProcessedScopes().totals.filter(total => total.scope.startsWith("project:")).map(total => total.tokens));
+  const destination = first.project.name;
+  setup.close(); stores.splice(stores.indexOf(setup), 1);
+  const placement = { kind: "placement", sessionId: second.session.id, project: destination };
+  const reduction = { kind: "budget", field: "project", value: cap };
+  const result = winnerName === "placement" ? await overlap(path, placement, reduction) : await overlap(path, reduction, placement);
+  expect(result.won.ok).toBe(true);
+  expect(result.lost.ok).toBe(false);
+  expect(result.lost.error).toMatch(winnerName === "placement" ? /overage/ : /Project placement rejected.*exceeds/);
+  const checked = open(path);
+  expect(checked.getSession(second.session.id)!.projectId === first.project.id).toBe(winnerName === "placement");
+  expect(checked.knowledgeBudgets().project).toBe(winnerName === "placement" ? 20_000 : cap);
+});
+
+test("35d concurrent constructors overlap behind an explicit barrier and publish exactly one default row", async () => {
+  const path = file(), legacy = open(path);
+  legacy.db.exec("DROP TABLE knowledge_budget_policy");
+  legacy.close(); stores.splice(stores.indexOf(legacy), 1);
+  const lock = new DatabaseSync(path); lock.exec("BEGIN IMMEDIATE");
+  const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
+  const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3));
+  const workers = Array.from({ length: 2 }, () => new Worker(`
+    const { workerData, parentPort } = require('node:worker_threads');
+    const state = new Int32Array(workerData.state);
+    Atomics.add(state, 0, 1); Atomics.notify(state, 0);
+    Atomics.wait(state, 1, 0);
+    Atomics.add(state, 2, 1); Atomics.notify(state, 2);
+    import(workerData.module).then(({ Store }) => {
+      const store = new Store(workerData.path);
+      parentPort.postMessage(store.knowledgeBudgets());
+      store.close();
+    }).catch(error => { throw error; });
+  `, { eval: true, workerData: { module, path, state: state.buffer } }));
+  while (Atomics.load(state, 0) < 2) {
+    const current = Atomics.load(state, 0);
+    const waitAsync = (Atomics as unknown as { waitAsync(value: Int32Array, index: number, expected: number): { value: PromiseLike<string> | string } }).waitAsync;
+    await Promise.resolve(waitAsync(state, 0, current).value);
+  }
+  Atomics.store(state, 1, 1); Atomics.notify(state, 1, 2);
+  while (Atomics.load(state, 2) < 2) {
+    const current = Atomics.load(state, 2);
+    const waitAsync = (Atomics as unknown as { waitAsync(value: Int32Array, index: number, expected: number): { value: PromiseLike<string> | string } }).waitAsync;
+    await Promise.resolve(waitAsync(state, 2, current).value);
+  }
+  const results = workers.map(worker => new Promise<Record<string, number>>((resolve, reject) => {
+    worker.once("message", resolve); worker.once("error", reject);
+  }));
+  lock.exec("COMMIT"); lock.close();
+  expect(await Promise.all(results)).toEqual([
+    expect.objectContaining({ global: 4_000, project: 10_000, session: 1_000 }),
+    expect.objectContaining({ global: 4_000, project: 10_000, session: 1_000 }),
+  ]);
+  await Promise.all(workers.map(worker => worker.terminate()));
+  const checked = open(path);
+  expect(checked.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
 });

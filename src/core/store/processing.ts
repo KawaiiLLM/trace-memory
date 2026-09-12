@@ -177,8 +177,17 @@ export function processedProjection(store: Store, accepted: number[] = [], affec
   const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
   const pools = new Map<string, Map<number, KnowledgeWithRevision>>();
   const owners = new Map<number, string>();
-  if (!processed.size || affected?.size === 0) return { pools, owners, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
+  if (affected?.size === 0) return { pools, owners, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
   const input = store.commitGraphInput();
+  // A full audit names empty owner pools too. In particular, archiving an owner's last active item
+  // must not make the canonical check claim that no owner was checked. Affected-scope enforcement
+  // still filters these identities below without changing the accounting algorithm.
+  if (!affected || affected.has("global")) pools.set("global", new Map());
+  for (const row of store.db.prepare("SELECT id, project_id FROM sessions").all()) {
+    const project = `project:${Number(row.project_id)}`, session = `session:${Number(row.id)}`;
+    if (!affected || affected.has(project)) pools.set(project, pools.get(project) ?? new Map());
+    if (!affected || affected.has(session)) pools.set(session, new Map());
+  }
   // Historical certificates retain their owner even when an unprocessed successor hides them.
   for (const revision of input.revisions) if (processed.has(revision.id))
     owners.set(revision.id, placementOwner(store, { revision }, input.metadata));
@@ -200,8 +209,10 @@ export function processedProjection(store: Store, accepted: number[] = [], affec
   return { pools, paths, owners };
 }
 
-export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>) {
-  return checkProcessedProjection(processedProjection(store, accepted, affected), affected, store.knowledgeBudgets());
+/** `fullAudit` expands totals to every owner/path while `affected` continues to define which
+ * overages can reject this operation. Both modes use the same prepared projection/check rules. */
+export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>, limits = store.knowledgeBudgets(), fullAudit = false) {
+  return checkProcessedProjection(processedProjection(store, accepted, fullAudit ? undefined : affected), affected, limits);
 }
 
 /** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
@@ -211,14 +222,22 @@ export function checkProcessedProjection({ pools, paths, owners }: ReturnType<ty
     if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
     return rendered.get(value.revision.id)!;
   };
+  const measured = new Map<string, number>();
+  const blockTokens = (values: KnowledgeWithRevision[]) => {
+    const key = JSON.stringify(values.map(value => value.revision.id));
+    if (!measured.has(key)) measured.set(key, tokens(processedBlock(values, render)));
+    return measured.get(key)!;
+  };
   const totals: { scope: string; tokens: number; cap: number }[] = [];
-  for (const [scope, values] of pools) {
-    if (affected && !affected.has(scope)) continue;
-    totals.push({ scope, tokens: tokens(processedBlock([...values.values()], render)), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
-  }
+  for (const [scope, values] of pools)
+    totals.push({ scope, tokens: blockTokens([...values.values()]), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
+  const relevantApplicable = new Set<string>();
   for (const { path, values } of paths) {
-    if (affected && !values.some(v => affected.has(owners.get(v.revision.id)!))) continue;
-    totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values, render)), cap: limits.applicable });
+    const scope = `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`;
+    totals.push({ scope, tokens: blockTokens(values), cap: limits.applicable });
+    if (!affected || values.some(value => affected.has(owners.get(value.revision.id)!))) relevantApplicable.add(scope);
   }
-  return { totals, problems: totals.filter(t => t.tokens > t.cap).map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
+  const relevant = (total: { scope: string }) => !affected || relevantApplicable.has(total.scope) || affected.has(total.scope);
+  return { totals, problems: totals.filter(t => relevant(t) && t.tokens > t.cap)
+    .map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
 }

@@ -673,25 +673,18 @@ export class Store {
   constructor(path: string, normalizeSource?: SourceNormalizer) {
     this.normalizeSource = normalizeSource;
     this.db = new DatabaseSync(path);
+    let began = false;
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
-      // Another process may hold a short write lock; wait instead of failing. Immediate
-      // transactions avoid a deferred read-to-write upgrade bypassing the busy handler.
+      // Another process may hold a short write lock; wait instead of failing. One immediate
+      // transaction owns the supported schema upgrade, source/lineage migrations and policy
+      // publication. Foreign keys must be disabled before it because legacy CHECK rebuilds rename
+      // referenced tables; the complete graph is checked before commit and enforcement restored.
       this.db.exec("PRAGMA busy_timeout = 5000;");
+      this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
+      began = true;
       this.db.exec(SCHEMA_SQL);
-      // The policy table and its one default row are one authority upgrade. `BEGIN IMMEDIATE`
-      // serializes concurrent openers; `INSERT OR IGNORE` makes every later open idempotent.
-      this.transaction(() => {
-        this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_budget_policy (
-          id INTEGER PRIMARY KEY CHECK(id = 1),
-          global_tokens INTEGER NOT NULL CHECK(global_tokens BETWEEN 0 AND 9007199254740991),
-          project_tokens INTEGER NOT NULL CHECK(project_tokens BETWEEN 0 AND 9007199254740991),
-          session_tokens INTEGER NOT NULL CHECK(session_tokens BETWEEN 0 AND 9007199254740991)
-        )`);
-        this.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1, ?, ?, ?)")
-          .run(DEFAULT_KNOWLEDGE_BUDGETS.global, DEFAULT_KNOWLEDGE_BUDGETS.project, DEFAULT_KNOWLEDGE_BUDGETS.session);
-      });
-      migrateDreaming(this.db);
+      migrateDreaming(this.db, true);
       this.transaction(() => {
         // Allocate once in original insertion order, across every branch of each Turn. Raw and
         // historic citation strings remain untouched. Recheck under the immediate write lock.
@@ -728,9 +721,27 @@ export class Store {
       });
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
-      migrateKnowledgeLineage(this.db);
-      this.knowledgeBudgets(); // Invalid stored arithmetic is a hard open failure, never a fallback.
+      migrateKnowledgeLineage(this.db, true);
+      // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
+      // INSERT OR IGNORE preserves an edited existing row and initializes an absent row once.
+      this.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_budget_policy (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          global_tokens INTEGER NOT NULL CHECK(global_tokens BETWEEN 0 AND 9007199254740991),
+          project_tokens INTEGER NOT NULL CHECK(project_tokens BETWEEN 0 AND 9007199254740991),
+          session_tokens INTEGER NOT NULL CHECK(session_tokens BETWEEN 0 AND 9007199254740991)
+        )`);
+        this.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1, ?, ?, ?)")
+          .run(DEFAULT_KNOWLEDGE_BUDGETS.global, DEFAULT_KNOWLEDGE_BUDGETS.project, DEFAULT_KNOWLEDGE_BUDGETS.session);
+        this.knowledgeBudgets(); // Invalid stored arithmetic is a hard open failure, never a fallback.
+      });
+      if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Store migration: foreign key violations");
+      this.db.exec("COMMIT");
+      began = false;
+      this.db.exec("PRAGMA foreign_keys = ON");
     } catch (error) {
+      if (began && this.db.isTransaction) { try { this.db.exec("ROLLBACK"); } catch { /* Preserve the initialization error. */ } }
+      try { this.db.exec("PRAGMA foreign_keys = ON"); } catch { /* Preserve the initialization error. */ }
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
       throw error;
     }

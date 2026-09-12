@@ -11,7 +11,9 @@ function check(overrides: Partial<DreamingCheckResult> = {}): DreamingCheckResul
     candidateIds: [21, 22, 23],
     resultIds: [22, 23],
     consumedInputIds: [21],
-    pendingEventIds: [11, 12, 13, 14],
+    pendingEventIds: [11, 12, 13],
+    pendingVersionIds: [14],
+    relevantOwnerScopes: ["global", "project:7", "session:9"],
     versions: [
       { knowledgeId: 4, commit: 21, processed: false, successorCommits: [22] },
       { knowledgeId: 4, commit: 22, processed: false, successorCommits: [] },
@@ -53,7 +55,7 @@ test("35b: receipt reports actionable owner budgets, a stable equal maximum, can
   expect(receipt).toContain("- frozen family: 2");
   expect(receipt).toContain("- supplied formal events: 2");
   expect(receipt).toContain("- accounted formal events: 1");
-  expect(receipt).toContain("- pending work: 4");
+  expect(receipt).toContain("- pending obligations: 4 (change events 3; exact versions 1)");
   expect(receipt).toContain("- host-derived candidates: 3");
   expect(receipt).toContain("- successor-free results: 2");
   expect(receipt).toContain("- consumed inputs: 1");
@@ -70,7 +72,7 @@ test("35b: receipt reports actionable owner budgets, a stable equal maximum, can
 test("35b: a passing receipt explicitly has no blockers and handles an empty applicable projection", () => {
   const receipt = renderDreamingCheckReceipt(check({
     suppliedEventIds: [], eventIds: [], retainedEventIds: [], candidateIds: [], resultIds: [], consumedInputIds: [],
-    pendingEventIds: [], versions: [], totals: [{ scope: "global", tokens: 0, cap: 4_000 }], operationFailures: [], failures: [],
+    pendingEventIds: [], pendingVersionIds: [], versions: [], totals: [{ scope: "global", tokens: 0, cap: 4_000 }], operationFailures: [], failures: [],
     problems: [], remainingRounds: 0, repairAvailable: false,
   }));
 

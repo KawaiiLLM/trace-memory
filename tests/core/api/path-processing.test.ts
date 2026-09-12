@@ -311,7 +311,7 @@ test("34b: shared-result peer propagation blocks the whole oversized group while
   expect(remaining).not.toContain(independent.commit);
 });
 
-test("34b: settling a replacement event does not hide a restored uncertified predecessor", () => {
+test("34b/35b: a restored exact version is reported honestly as pending work by the bound check", async () => {
   const f = pathFixture();
   const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, facts: [{
     turnId: f.turn.id, entryIds: [f.left.id], category: "decision", actor: "user", text: "left-only evidence", source: [`T${f.turn.id}#E2`], createdAt: at,
@@ -328,4 +328,10 @@ test("34b: settling a replacement event does not hide a restored uncertified pre
   expect(f.store.currentCommit(f.base.knowledgeId, rootPath).map(revision => revision.id)).toEqual([f.base.commit]);
   expect(f.store.pendingKnowledgeEvents(rootPath).map(event => event.id)).toEqual([f.base.commit]);
   expect(f.memory.taskEligibility("dreaming", rootPath)).toEqual({ due: true });
+  f.setAgent(async task => {
+    const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
+    expect(receipt).toContain("- pending obligations: 1 (change events 0; exact versions 1)");
+    return success;
+  });
+  expect((await f.memory.dream(rootPath)).outcome).toBe("success");
 });

@@ -149,17 +149,24 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         externalSuccessors.push({ knowledgeId: revision.knowledgeId, commit: revision.id });
     }
 
-    const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
-    const scopes = checkProcessedScopes(store, resultIds, affected);
+    // One policy read owns every cap and derived capacity in this canonical snapshot. The full
+    // projection is retained for audit; the receipt separately selects this target's owner rows.
     const currentBudgets = store.knowledgeBudgets();
+    const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
+    const scopes = checkProcessedScopes(store, resultIds, affected, currentBudgets, true);
     failures.push(...scopes.problems);
-    const state = store.dreamingInput(path, eventIds, candidates);
+    const pending = store.pendingKnowledgeEvents(path);
+    const target = store.getSession(path.sessionId);
+    if (!target) failures.push(`Dreamer target session ${path.sessionId} is unavailable`);
+    const relevantOwnerScopes = ["global", ...(target ? [`project:${target.projectId}`, `session:${target.id}`] : [])];
     const problems = [...failures, ...externalSuccessors.map(value =>
       `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
     return { family, suppliedEventIds: eventIds, eventIds: accountedEventIds, retainedEventIds: range.eventIds,
       candidateIds: candidates, resultIds,
       consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
-      pendingEventIds: state.events.map(event => event.id),
+      pendingEventIds: pending.filter(value => value.kind === "event").map(value => value.id),
+      pendingVersionIds: pending.filter(value => value.kind === "version").map(value => value.id),
+      relevantOwnerScopes,
       versions: candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
         knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
         successorCommits: consumers.get(commit),
@@ -196,24 +203,34 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     readKnowledgeCommits, commitBoundary: frozen.commitBoundary,
     committed: binding.memory.allCommitted, check: checked, rounds, repaired, problems });
   const runId = store.dreamingRunId(run)!;
+  let finalCheck: DreamingCheckResult | undefined;
+  let finalization: { stage: "canonical-check" | "settlement"; error: string } | undefined;
   if (result.outcome === "success" && !requestMissing(result) && !checked.failures.length) {
     try {
       return store.transaction(() => {
         // Both successful completion and the sole non-penalizing business exception are decided
         // against a coherent final graph. Persist audit + settlement together, before returning.
-        const final = check();
-        if (final.failures.length) throw new Error(final.problems.join("; "));
-        const outcome = final.externalSuccessors.length ? "conflict" as const : "success" as const;
-        run.response = JSON.stringify({ ...JSON.parse(run.response!), check: final, problems: final.problems });
+        // Keep the returned value outside SQLite rollback so a rejection can retain the exact state
+        // that rejected it rather than the earlier optimistic check.
+        finalCheck = check();
+        if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
+        const outcome = finalCheck.externalSuccessors.length ? "conflict" as const : "success" as const;
+        run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
         store.updateRun(runId, { ...run, outcome });
-        if (outcome === "conflict") store.settleDreamingConflict(run, final.problems.join("; "));
-        else store.completeDreaming(runId, [...final.eventIds], [...final.resultIds]);
-        return { outcome, runId, problems: [...final.problems] };
+        if (outcome === "conflict") store.settleDreamingConflict(run, finalCheck.problems.join("; "));
+        else store.completeDreaming(runId, [...finalCheck.eventIds], [...finalCheck.resultIds]);
+        return { outcome, runId, problems: [...finalCheck.problems] };
       });
-    } catch (error) { problems.push(String(error)); }
+    } catch (error) {
+      const message = String(error);
+      finalization = { stage: !finalCheck || finalCheck.failures.length ? "canonical-check" : "settlement", error: message };
+      if (finalCheck) for (const problem of finalCheck.problems) if (!problems.includes(problem)) problems.push(problem);
+      if (!problems.includes(message)) problems.push(message);
+    }
   }
   const outcome = result.outcome === "cancelled" ? "cancelled" : "failure";
-  run.response = JSON.stringify({ ...JSON.parse(run.response!), problems });
+  run.response = JSON.stringify({ ...JSON.parse(run.response!), ...(finalCheck ? { check: finalCheck } : {}),
+    ...(finalization ? { finalization } : {}), problems });
   store.updateRun(runId, { ...run, outcome });
   return { outcome, runId, problems };
 }

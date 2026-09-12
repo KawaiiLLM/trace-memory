@@ -17,6 +17,9 @@ export interface DreamingCheckResult {
   resultIds: readonly number[];
   consumedInputIds: readonly number[];
   pendingEventIds: readonly number[];
+  pendingVersionIds: readonly number[];
+  /** Owner pools applicable to this frozen target; full `totals` remains unfiltered audit. */
+  relevantOwnerScopes: readonly string[];
   versions: readonly unknown[];
   verifiedConsumedBases: readonly unknown[];
   totals: readonly DreamingScopeTotal[];
@@ -50,9 +53,8 @@ function blockerRows(problems: readonly string[]): string[] {
  * validation or completion decision and does not mutate or replace the full check used by audit.
  */
 export function renderDreamingCheckReceipt(check: DreamingCheckResult): string {
-  const owners = check.totals
-    .filter(total => total.scope === "global" || total.scope.startsWith("project:") || total.scope.startsWith("session:"))
-    .slice().sort(compareScope);
+  const relevant = new Set(check.relevantOwnerScopes);
+  const owners = check.totals.filter(total => relevant.has(total.scope)).slice().sort(compareScope);
   const applicable = check.totals.filter(total => total.scope.startsWith("applicable:"));
   const maximum = applicable.slice().sort((left, right) => right.tokens - left.tokens || compareScope(left, right))[0];
   const blockers = blockerRows(check.problems);
@@ -70,7 +72,7 @@ export function renderDreamingCheckReceipt(check: DreamingCheckResult): string {
     `- frozen family: ${check.family.length}`,
     `- supplied formal events: ${check.suppliedEventIds.length}`,
     `- accounted formal events: ${check.eventIds.length}`,
-    `- pending work: ${check.pendingEventIds.length}`,
+    `- pending obligations: ${check.pendingEventIds.length + check.pendingVersionIds.length} (change events ${check.pendingEventIds.length}; exact versions ${check.pendingVersionIds.length})`,
     `- host-derived candidates: ${check.candidateIds.length}`,
     `- successor-free results: ${check.resultIds.length}`,
     `- consumed inputs: ${check.consumedInputIds.length}`,

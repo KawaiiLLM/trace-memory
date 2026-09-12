@@ -91,15 +91,19 @@ including tool continuations and retries; it does not create a new worker. `repo
 `dreaming.maxToolRounds` defaults to 50 and accepts 1–50, shared across both passes. The child's
 automatic compaction remains disabled through the existing in-memory Settings override.
 
-The check tool and final host check use the existing full `checkProcessedScopes` routine:
-global 4k, each project 10k, each session 1k, applicable 15k, framing included. No truncated view
+The check tool and final host check use the existing full `checkProcessedScopes` routine with the
+current database policy; defaults are global 4k, each project 10k, each session 1k and applicable 15k,
+with framing included. No truncated view
 proves fit. The model-facing check receipt is only a deterministic projection of that completed check.
-It reports every relevant owner total, the maximum applicable path and number of paths checked,
-canonical completion counts, rounds/repair state and every blocker. It omits normal non-maximum paths,
-per-version rows and exact-set arrays. The full owner/path totals, graph-derived versions, supplied and
-accounted events, candidates, successor-free results, consumed inputs, conflicts and failures remain in
-`runs.response.check`; finalization reads those exact sets rather than the receipt. Receipt identities
-are diagnostics only: they grant neither a complete-body handle nor write or certification authority.
+It reports the target's relevant Global, Project and Session owner totals, including zero-valued pools,
+the maximum applicable path and number of paths checked, separate pending change-event and exact-version
+obligation counts, other canonical completion counts, rounds/repair state and every blocker. It omits
+normal non-maximum paths, per-version rows and exact-set arrays. The full untruncated totals for every
+owner and path—including owners outside the target—plus graph-derived versions, supplied and accounted
+events, candidates, successor-free results, consumed inputs, conflicts and failures remain in
+`runs.response.check`. Finalization reads those exact sets rather than the receipt, while affected-owner
+filtering preserves the existing success rules. Receipt identities are diagnostics only: they grant
+neither a complete-body handle nor write or certification authority.
 Core constructs processing candidates from the formally supplied changed versions and
 all legitimate descendants committed by this run; model output never enumerates candidates. Complete
 reads, writable-family membership and outside successors add none. Before completion, core rechecks
@@ -112,9 +116,11 @@ selected base. Successful completion may therefore settle an all-consumed batch 
 certificate. It settles only accounted supplied events and certifies only successor-free candidates;
 the rival result and its own event remain pending. Claim, graph, candidates, exact settlements,
 certificates, processed caps, completion and execution outcome are rechecked and written in one
-transaction. Replay is idempotent. Failed/cancelled runs keep prior commits but add no settlement or
-certificate. A settled event does not hide a currently applicable uncertified predecessor restored by
-path navigation: that exact version becomes a deduplicated version obligation, while a restored
+transaction. Replay is idempotent. A transactional check rejection persists that exact rejecting check
+in the run audit; a later settlement failure persists the successful check with a distinct finalization
+stage. Both outcomes roll back settlement and certification. Failed/cancelled runs keep prior commits
+but add no settlement or certificate. A settled event does not hide a currently applicable uncertified
+predecessor restored by path navigation: that exact version becomes a deduplicated version obligation, while a restored
 certified predecessor does not.
 
 The explicit `check` call and the host-generated repair message use the same receipt renderer. The
@@ -122,9 +128,9 @@ repair keeps its host-generated, not-evidence heading; the full check remains an
 than being repeated into model context. Exact duplicate blocker strings may share one displayed row
 with an occurrence count, but distinct blocker text is never truncated or coalesced.
 
-On the checked-in deterministic fixtures, the existing text estimator measures the receipt at 180
-tokens for the small fixture, 180 for a fixture with 300 normal applicable paths and 400 version rows,
-and 1,386 for 120 distinct failures. These are diagnostic-text fixture measurements, not provider
+On the checked-in deterministic fixtures, the existing text estimator measures the receipt at 228
+tokens for the small fixture, 228 for a fixture with 300 normal applicable paths and 400 version rows,
+and 1,434 for 120 distinct failures. These are diagnostic-text fixture measurements, not provider
 billing tokens, prompt savings, or Knowledge-pool tokens. The many-error receipt intentionally grows
 to retain every distinct blocker.
 
@@ -578,9 +584,12 @@ an unprocessed-work allowance, not another stored or configurable cap. Owner poo
 independent: each project has the full Project budget and each session has the full Session budget;
 they are never multiplied into one global total.
 
-Policy initialization and single-field edits are database transactions. A reduction validates all
-affected processed owner pools and applicable session paths in that same transaction; any overage or
-write/commit failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
+Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
+validation commit as one database transaction. A failed later migration or integrity check therefore
+publishes neither a partial schema upgrade nor a new default-policy row; reopening retries idempotently.
+Single-field edits are separate ordinary database transactions. A reduction validates all affected
+processed owner pools and applicable session paths in that same transaction; any overage or write/commit
+failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
 or Pi settings. Every new selection, placement, completion, certification, compact allocation and
 ordinary injection reads current database policy. Dreamer alone freezes its derived processed-input
 ceiling at admission so a running provider request cannot change shape; its checks show that frozen

@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { tokens } from "../../../src/core/render/index.ts";
 import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { processedBlock } from "../../../src/core/store/processing.ts";
@@ -208,6 +209,76 @@ test("32d: changing the selected source path cannot make missing results a succe
   expect(f.store.db.prepare("SELECT * FROM settled_knowledge_events").all()).toEqual([]);
 });
 
+test("35 final check uses one policy snapshot for canonical totals and derived capacities", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "dreamer-policy-snapshot-")); directories.push(dir);
+  const db = join(dir, "memory.sqlite");
+  const f = fixture(async task => {
+    const original = f.store.knowledgeBudgets.bind(f.store);
+    let reads = 0;
+    const peer = new DatabaseSync(db);
+    const spy = vi.spyOn(f.store, "knowledgeBudgets").mockImplementation(() => {
+      reads++;
+      if (reads === 2) peer.prepare("UPDATE knowledge_budget_policy SET project_tokens = 20000 WHERE id = 1").run();
+      return original();
+    });
+    try {
+      const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
+      expect(receipt).toContain("Current database capacities: applicable 15000");
+      expect(receipt).toContain("project:");
+      expect(reads).toBe(1);
+    } finally {
+      spy.mockRestore();
+      peer.close();
+    }
+    return success;
+  }, "policy snapshot", db);
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+});
+
+test.each(["policy", "graph"] as const)("35 rejecting final %s race persists the exact transactional check", async race => {
+  const f = fixture(async () => {
+    if (race === "policy") f.store.setKnowledgeBudget("project", 20_000);
+    const transaction = f.store.transaction.bind(f.store);
+    vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
+      if (race === "policy") f.store.setKnowledgeBudget("project", 0);
+      else f.store.selectSourcePath(f.target.sessionId, f.target.branch, []);
+      return transaction(fn);
+    });
+    return success;
+  }, "final race state");
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("failure");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const response = JSON.parse(f.store.getRun(result.runId)!.response!);
+  expect(response.finalization.stage).toBe("canonical-check");
+  if (race === "policy") {
+    expect(response.check.capacities.applicable).toBe(5_000);
+    expect(response.check.totals).toContainEqual(expect.objectContaining({ scope: `project:${f.store.getSession(f.target.sessionId)!.projectId}`, cap: 0 }));
+    expect(response.check.resultIds).toEqual([f.item.commit]);
+    expect(response.check.failures.join(" ")).toContain("exceeds 0");
+  } else {
+    expect(response.check.failures.join(" ")).toContain("frozen path");
+    expect(response.check.versions).toEqual([{ knowledgeId: f.item.knowledgeId, commit: f.item.commit, processed: false, successorCommits: [] }]);
+  }
+  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
+  expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
+});
+
+test("35 a downstream settlement failure keeps the successful final check distinct and rolls back certification", async () => {
+  const f = fixture(async () => {
+    vi.spyOn(f.store, "completeDreaming").mockImplementationOnce(() => { throw new Error("injected settlement failure"); });
+    return success;
+  });
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("failure");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const response = JSON.parse(f.store.getRun(result.runId)!.response!);
+  expect(response.check.failures).toEqual([]);
+  expect(response.finalization).toMatchObject({ stage: "settlement", error: expect.stringContaining("injected settlement failure") });
+  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
+  expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
+});
+
 test("34b: a successor arriving before the final transaction consumes the input without being certified", async () => {
   const f = fixture(async () => {
     const transaction = f.store.transaction.bind(f.store);
@@ -223,6 +294,62 @@ test("34b: a successor arriving before the final transaction consumes the input 
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.item.commit]);
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([2]);
+});
+
+test("35 canonical audit keeps all owner/path totals while the bound receipt projects only target-relevant owners, including zero pools", async () => {
+  let receipt = "";
+  const f = fixture(async task => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    expect(memory.execute({ operations: [{ op: "archive", id: `K${f.item.knowledgeId}@${f.item.commit}`, supports: [], reason: "Deliberate budget retirement" }], skipped: [] })).toContain('"committed"');
+    receipt = task.tools.find(tool => tool.name === "check")!.execute({});
+    return success;
+  }, "only target item");
+  const otherProject = f.store.createProject({ name: "other", declaredBy: "mark" });
+  const otherSession = f.store.createSession({ host: "test", enrollmentChoice: true, projectId: otherProject.id, startedAt: "now", firstReplyAt: "now" });
+  const otherTurn = f.store.appendTurn({ sessionId: otherSession.id, kind: "turn", userPrompt: "other evidence", startedAt: "now" });
+  const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: otherSession.id, createdAt: "now" }, facts: [{
+    turnId: otherTurn.id, category: "decision", actor: "user", text: "other evidence", source: [`T${otherTurn.id}#user`], createdAt: "now",
+  }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const written = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: otherSession.id, createdAt: "now" }, operations: [{
+    op: "create", handle: "$other", author: "test", text: "other project state", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "other", createdAt: "now",
+  }] });
+  if (!written.ok) throw new Error(written.problems.join("; "));
+  const otherCommit = written.committed[0]!.commit;
+  const processed = f.store.recordRun({ kind: "dreaming", sessionId: otherSession.id, outcome: "success", createdAt: "now" });
+  f.store.completeDreaming(processed.id, [otherCommit], [otherCommit]);
+  // Synthetic legacy overage outside this target: retain it in full audit without changing the
+  // existing affected-owner success rule for the target's independent archive.
+  f.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run("other oversized ".repeat(12_000), otherCommit);
+  for (let index = 0; index < 99; index++) {
+    const session = f.store.createSession({ host: "test", enrollmentChoice: true, projectId: otherProject.id, startedAt: "now", firstReplyAt: "now" });
+    f.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: `path ${index}`, startedAt: "now" });
+  }
+
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const audit = JSON.parse(f.store.getRun(result.runId)!.response!).check;
+  const targetProject = f.store.getSession(f.target.sessionId)!.projectId;
+  expect(audit.relevantOwnerScopes).toEqual(["global", `project:${targetProject}`, `session:${f.target.sessionId}`]);
+  expect(audit.totals).toContainEqual({ scope: "global", tokens: 0, cap: 4_000 });
+  expect(audit.totals).toContainEqual({ scope: `project:${targetProject}`, tokens: 0, cap: 10_000 });
+  expect(audit.totals).toContainEqual({ scope: `session:${f.target.sessionId}`, tokens: 0, cap: 1_000 });
+  expect(audit.totals).toContainEqual(expect.objectContaining({ scope: `project:${otherProject.id}`, tokens: expect.any(Number) }));
+  expect(audit.totals.find((total: { scope: string }) => total.scope === `project:${otherProject.id}`).tokens).toBeGreaterThan(10_000);
+  expect(audit.problems.join(" ")).not.toContain(`project:${otherProject.id}`);
+  const applicable = audit.totals.filter((total: { scope: string }) => total.scope.startsWith("applicable:"));
+  expect(applicable).toHaveLength(101);
+  const maximum = Math.max(...applicable.map((total: { tokens: number }) => total.tokens));
+  const equalMaximumScopes = applicable.filter((total: { tokens: number }) => total.tokens === maximum)
+    .map((total: { scope: string }) => total.scope).sort();
+  expect(equalMaximumScopes.length).toBeGreaterThan(1);
+  expect(receipt).toContain(`- project:${targetProject}: used 0 / limit 10000 / headroom +10000`);
+  expect(receipt).toContain(`- session:${f.target.sessionId}: used 0 / limit 1000 / headroom +1000`);
+  expect(receipt).not.toContain(`- project:${otherProject.id}:`);
+  expect(receipt).toContain("Maximum applicable projection (101 checked):");
+  expect(receipt).toContain("Blockers: none");
+  expect(receipt).toContain(equalMaximumScopes[0]);
 });
 
 test("32d: direct facts are deduplicated whole bodies within 10k, with honest omitted-fact receipts", async () => {
