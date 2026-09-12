@@ -260,6 +260,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * a nonempty current support list; empty and partial evidence never do. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
     const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
+    const knowledgeCap = store.knowledgeBudgets().injection;
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
     if (id !== undefined && !store.enabled(id)) return empty();
     const projectId = id === undefined ? (target as { projectId: number }).projectId : session(id).projectId;
@@ -306,7 +307,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         ? [knowledgeStateText(from, successors)] : [];
     });
     const visibleText = injectionText({ knowledge: visibleKnowledge.groups, receipts: [] }, acknowledgedStateTexts);
-    const remaining = config.render.knowledgeBlockTokens - tokens(visibleText);
+    const remaining = knowledgeCap - tokens(visibleText);
     if (remaining <= 0) return empty();
 
     // Foreground publication has no omission receipts. State transitions retain their established
@@ -532,8 +533,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // excluded on that account (30 case 10): the exclusions are these two and no other.
       const pendingIds = new Set(pending.map(e => e.id));
       const extracted = sourced.filter(e => !pendingIds.has(e.id) && !retained.has(e.nativeId));
-      const caps = { knowledge: config.render.knowledgeBlockTokens, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
+      const caps = { knowledge: store.knowledgeBudgets().injection, facts: config.compaction.factsTokens, raw: config.compaction.rawTokens };
       const envelope = caps.knowledge + caps.facts + caps.raw + config.compaction.overflowTokens;
+      if (!Number.isSafeInteger(envelope)) throw new Error("derived compact envelope must be a safe integer");
       // Every emitted component is charged inside the window that owns it: the `<episodic>` tag and
       // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
       // with their own block. The `Receipts:` heading `finish` emits is charged to each window that
@@ -558,12 +560,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const totalExcess = excess.knowledge + excess.facts + excess.raw;
       if (totalExcess > config.compaction.overflowTokens) return { native: true,
         over: { knowledge: excess.knowledge > 0, facts: excess.facts > 0, raw: excess.raw > 0 },
-        reason: `required material exceeds shared overflow: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, render.knowledgeBlockTokens ${caps.knowledge}); `
+        reason: `required material exceeds shared overflow: knowledge ${requiredKnowledge} tokens (excess ${excess.knowledge}, database Knowledge injection capacity ${caps.knowledge}); `
           + `${pendingFacts.length} pending facts need ${requiredFacts} tokens (excess ${excess.facts}, compaction.factsTokens ${caps.facts}); `
           + `bounded views of ${pending.length} pending entries need ${requiredRaw} tokens (excess ${excess.raw}, compaction.rawTokens ${caps.raw}); `
           + `shared allowance ${config.compaction.overflowTokens}, charged excess ${totalExcess}, shortfall ${totalExcess - config.compaction.overflowTokens}` };
       const active = budgetKnowledge(knowledge, Math.max(caps.knowledge, requiredKnowledge) - noteCost,
-        knowledgeLine, "render.knowledgeBlockTokens", requiredCommits);
+        knowledgeLine, "database Knowledge injection capacity", requiredCommits);
       // Raw first, independently of facts' spare. The discarded summary is not retained coverage.
       let rawSpare = Math.max(0, caps.raw - requiredRaw);
       const refilledRaw: { entry: SourceEntry; content: string }[] = [];

@@ -26,6 +26,8 @@ export interface DreamingCheckResult {
   problems: readonly string[];
   remainingRounds: number;
   repairAvailable: boolean;
+  capacities: { applicable: number; injection: number; dreamingProcessedInput: number };
+  admittedProcessedInputCap: number;
 }
 
 function compareScope(left: { scope: string }, right: { scope: string }): number {
@@ -57,6 +59,8 @@ export function renderDreamingCheckReceipt(check: DreamingCheckResult): string {
 
   return [
     "Dreamer completion check receipt",
+    `Current database capacities: applicable ${check.capacities.applicable}; injection ${check.capacities.injection}; Dreamer processed input for new admissions ${check.capacities.dreamingProcessedInput}.`,
+    `This run's frozen admitted processed-input ceiling: ${check.admittedProcessedInputCap}.`,
     "Owner budgets:",
     ...(owners.length ? owners.map(budgetRow) : ["- none"]),
     maximum

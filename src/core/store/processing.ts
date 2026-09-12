@@ -4,6 +4,29 @@ import { KNOWLEDGE_CATEGORIES, type KnowledgeRevision, type TriggerOrigin } from
 
 /** Change this whenever the immutable knowledge material rendering changes. Marks are not events. */
 export const KNOWLEDGE_VIEW_VERSION = "34a-v1";
+export const KNOWLEDGE_BUDGET_ALLOWANCE = 5_000;
+export type KnowledgeBudgetField = "global" | "project" | "session";
+export interface KnowledgeBudgetValues { global: number; project: number; session: number }
+export interface KnowledgeBudgets extends KnowledgeBudgetValues {
+  applicable: number;
+  injection: number;
+  dreamingProcessedInput: number;
+}
+export const DEFAULT_KNOWLEDGE_BUDGETS: KnowledgeBudgetValues = { global: 4_000, project: 10_000, session: 1_000 };
+
+/** Validate the database policy before deriving any capacity. JavaScript addition is accepted only
+ * when both the owner sum and its shared allowance remain exact safe integers. */
+export function deriveKnowledgeBudgets(values: KnowledgeBudgetValues, stored = false): KnowledgeBudgets {
+  const label = (field: KnowledgeBudgetField) => `${field[0]!.toUpperCase()}${field.slice(1)} Knowledge budget`;
+  for (const field of ["global", "project", "session"] as const) if (!Number.isSafeInteger(values[field]) || values[field] < 0)
+    throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}${label(field)} must be an exact nonnegative safe integer`);
+  const applicable = values.global + values.project + values.session;
+  if (!Number.isSafeInteger(applicable)) throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}derived applicable Knowledge capacity must be a safe integer`);
+  const injection = applicable + KNOWLEDGE_BUDGET_ALLOWANCE;
+  if (!Number.isSafeInteger(injection)) throw new Error(`${stored ? "stored Knowledge budget policy: " : ""}derived injection and Dreamer processed-input capacity must be a safe integer`);
+  return { ...values, applicable, injection, dreamingProcessedInput: injection };
+}
+
 export const PROCESSING_SQL = `
 CREATE TABLE IF NOT EXISTS knowledge_weights (
   commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
@@ -178,11 +201,12 @@ export function processedProjection(store: Store, accepted: number[] = [], affec
 }
 
 export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>) {
-  return checkProcessedProjection(processedProjection(store, accepted, affected), affected);
+  return checkProcessedProjection(processedProjection(store, accepted, affected), affected, store.knowledgeBudgets());
 }
 
 /** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
-export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected?: Set<string>) {
+export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected?: Set<string>, policy?: KnowledgeBudgets) {
+  const limits: KnowledgeBudgets = policy ?? deriveKnowledgeBudgets(DEFAULT_KNOWLEDGE_BUDGETS);
   const rendered = new Map<number, string>();
   const render = (value: KnowledgeWithRevision) => {
     if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
@@ -191,11 +215,11 @@ export function checkProcessedProjection({ pools, paths, owners }: ReturnType<ty
   const totals: { scope: string; tokens: number; cap: number }[] = [];
   for (const [scope, values] of pools) {
     if (affected && !affected.has(scope)) continue;
-    totals.push({ scope, tokens: tokens(processedBlock([...values.values()], render)), cap: scope === "global" ? 4000 : scope.startsWith("project:") ? 10000 : 1000 });
+    totals.push({ scope, tokens: tokens(processedBlock([...values.values()], render)), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
   }
   for (const { path, values } of paths) {
     if (affected && !values.some(v => affected.has(owners.get(v.revision.id)!))) continue;
-    totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values, render)), cap: 15000 });
+    totals.push({ scope: `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`, tokens: tokens(processedBlock(values, render)), cap: limits.applicable });
   }
   return { totals, problems: totals.filter(t => t.tokens > t.cap).map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
 }

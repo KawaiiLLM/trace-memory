@@ -29,6 +29,8 @@ export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; sessionId: number; branch: string; model: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
   material: { processed: string; changed: string; facts: string };
+  /** Admission-time snapshot only; later check receipts use the current database policy. */
+  admittedProcessedInputCap: number;
   tools: import("../api/tools.ts").ToolDefinition[];
   reportRequest(request: unknown): void;
   /** Called by the native host only at a completed pass, never an intermediate tool turn. */
@@ -56,17 +58,18 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   }
   if (tokens(changedText(changed)) > 10000) throw new Error("Dreaming capacity: selected retained changed material exceeds 10000; left pending");
   const processed = store.listCurrentKnowledge(path).filter(v => store.isKnowledgeProcessed(v.revision.id));
+  const processedInputCap = store.knowledgeBudgets().dreamingProcessedInput;
   let old = processedBlock(processed), oldIds = processed.map(v => v.revision.id);
-  if (tokens(`Processed knowledge:\n${old}`) > 20000) {
+  if (tokens(`Processed knowledge:\n${old}`) > processedInputCap) {
     const query = [...changed.versions, ...changed.predecessors].map(v => v.revision.text).join("\n");
     const scores = new Map(processed.map(v => [v.revision.id, similarity(query, v.revision.text)]));
-    const selected = budgetKnowledge(processed, 20000 - tokens("Processed knowledge:\n"), undefined, "Dreamer processed input", undefined,
+    const selected = budgetKnowledge(processed, Math.max(0, processedInputCap - tokens("Processed knowledge:\n")), undefined, "Dreamer processed input", undefined,
       (a, b) => scores.get(b.revision.id)! - scores.get(a.revision.id)!);
     old = [renderKnowledgeBlock(selected.groups.filter(g => g.text)), ...selected.receipts].join("\n");
     oldIds = selected.commits;
   }
   old = `Processed knowledge:\n${old}`;
-  if (tokens(old) > 20000) throw new Error("Dreaming processed input exceeds 20000 including framing");
+  if (tokens(old) > processedInputCap) throw new Error(`Dreaming processed input exceeds current ${processedInputCap}-token database-derived ceiling including framing`);
   const facts = [...new Set(changed.versions.flatMap(v => v.revision.supports))].sort((a, b) => a - b).map(id => {
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
@@ -89,7 +92,7 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
     readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),
     outputRoots: changed.versions.map(v => v.revision.id), ownCommitsAtFreeze: ownCommits ?? [],
     commitBoundary: Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id),
-    maxToolRounds: config.dreaming.maxToolRounds };
+    maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
 }
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
@@ -148,6 +151,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
 
     const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
     const scopes = checkProcessedScopes(store, resultIds, affected);
+    const currentBudgets = store.knowledgeBudgets();
     failures.push(...scopes.problems);
     const state = store.dreamingInput(path, eventIds, candidates);
     const problems = [...failures, ...externalSuccessors.map(value =>
@@ -161,7 +165,10 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         successorCommits: consumers.get(commit),
       }; }),
       verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures, problems,
-      remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired };
+      remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired,
+      capacities: { applicable: currentBudgets.applicable, injection: currentBudgets.injection,
+        dreamingProcessedInput: currentBudgets.dreamingProcessedInput },
+      admittedProcessedInputCap: frozen.admittedProcessedInputCap };
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
@@ -175,7 +182,8 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   };
   let result: RunAgentResult;
   try { result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
-    text: frozen.text, material: frozen.material, tools: binding.tools, reportRequest: binding.reportRequest,
+    text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
+    tools: binding.tools, reportRequest: binding.reportRequest,
     passEnd, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput); }
   catch (error) { result = agentException(error); }
   binding.close();
@@ -184,7 +192,8 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const problems = [...checked.problems, ...(result.outcome !== "success" ? [String(result.output ?? result.outcome)] : []),
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
-    profile: frozen.profile, readKnowledgeCommits, commitBoundary: frozen.commitBoundary,
+    profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
+    readKnowledgeCommits, commitBoundary: frozen.commitBoundary,
     committed: binding.memory.allCommitted, check: checked, rounds, repaired, problems });
   const runId = store.dreamingRunId(run)!;
   if (result.outcome === "success" && !requestMissing(result) && !checked.failures.length) {

@@ -9,7 +9,7 @@ import { migrateDreaming, migrateKnowledgeLineage } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
-import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, currentResultsByRoot, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
+import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, DEFAULT_KNOWLEDGE_BUDGETS, deriveKnowledgeBudgets, changeWeight, currentResultsByRoot, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES, compareTriggerOrigins } from "../model/index.ts";
 import type {
@@ -679,6 +679,18 @@ export class Store {
       // transactions avoid a deferred read-to-write upgrade bypassing the busy handler.
       this.db.exec("PRAGMA busy_timeout = 5000;");
       this.db.exec(SCHEMA_SQL);
+      // The policy table and its one default row are one authority upgrade. `BEGIN IMMEDIATE`
+      // serializes concurrent openers; `INSERT OR IGNORE` makes every later open idempotent.
+      this.transaction(() => {
+        this.db.exec(`CREATE TABLE IF NOT EXISTS knowledge_budget_policy (
+          id INTEGER PRIMARY KEY CHECK(id = 1),
+          global_tokens INTEGER NOT NULL CHECK(global_tokens BETWEEN 0 AND 9007199254740991),
+          project_tokens INTEGER NOT NULL CHECK(project_tokens BETWEEN 0 AND 9007199254740991),
+          session_tokens INTEGER NOT NULL CHECK(session_tokens BETWEEN 0 AND 9007199254740991)
+        )`);
+        this.db.prepare("INSERT OR IGNORE INTO knowledge_budget_policy VALUES (1, ?, ?, ?)")
+          .run(DEFAULT_KNOWLEDGE_BUDGETS.global, DEFAULT_KNOWLEDGE_BUDGETS.project, DEFAULT_KNOWLEDGE_BUDGETS.session);
+      });
       migrateDreaming(this.db);
       this.transaction(() => {
         // Allocate once in original insertion order, across every branch of each Turn. Raw and
@@ -717,6 +729,7 @@ export class Store {
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
       migrateKnowledgeLineage(this.db);
+      this.knowledgeBudgets(); // Invalid stored arithmetic is a hard open failure, never a fallback.
     } catch (error) {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
       throw error;
@@ -750,6 +763,38 @@ export class Store {
       } catch { /* Preserve the original error if rollback fails. */ }
       throw error;
     }
+  }
+
+  /** Read the sole database-owned policy. Consumers call this in their own transaction when they
+   * need a coherent cap; no process-local copy can override it. */
+  knowledgeBudgets(): KnowledgeBudgets {
+    const row = this.db.prepare("SELECT global_tokens, project_tokens, session_tokens FROM knowledge_budget_policy WHERE id = 1").get() as
+      { global_tokens: number; project_tokens: number; session_tokens: number } | undefined;
+    if (!row) throw new Error("stored Knowledge budget policy: exactly one row with id 1 is required");
+    return deriveKnowledgeBudgets({ global: Number(row.global_tokens), project: Number(row.project_tokens), session: Number(row.session_tokens) }, true);
+  }
+
+  /** Apply one edited row against the latest other two values under the same write lock. Current
+   * processed owner pools and every applicable path affected by the derived sum must fit before the
+   * update commits. */
+  setKnowledgeBudget(field: KnowledgeBudgetField, value: number): { changed: boolean; policy: KnowledgeBudgets } {
+    if (!["global", "project", "session"].includes(field)) throw new Error(`Unknown Knowledge budget field ${field}`);
+    return this.transaction(() => {
+      const current = this.knowledgeBudgets();
+      const policy = deriveKnowledgeBudgets({ global: current.global, project: current.project, session: current.session, [field]: value });
+      if (policy[field] === current[field]) return { changed: false, policy: current };
+      const projection = processedProjection(this);
+      const check = checkProcessedProjection(projection, undefined, policy);
+      const relevant = check.totals.filter(total => total.scope.startsWith("applicable:") ||
+        field === "global" && total.scope === "global" || field === "project" && total.scope.startsWith("project:") ||
+        field === "session" && total.scope.startsWith("session:"));
+      const over = relevant.filter(total => total.tokens > total.cap);
+      if (over.length) throw new Error(over.map(total => `${total.scope}: used ${total.tokens} tokens, proposed cap ${total.cap}, overage ${total.tokens - total.cap}`).join("; "));
+      const column = `${field}_tokens`;
+      const result = this.db.prepare(`UPDATE knowledge_budget_policy SET ${column} = ? WHERE id = 1`).run(policy[field]);
+      if (result.changes !== 1) throw new Error("Knowledge budget policy update did not affect its authoritative row");
+      return { changed: true, policy };
+    });
   }
 
   // -- projects --
@@ -2167,7 +2212,7 @@ export class Store {
       before.owners.get(id) !== after.owners.get(id) || before.active.has(id) !== after.active.has(id));
     if (!moved.length) return;
     const affected = new Set(moved.flatMap(id => [before.owners.get(id)!, after.owners.get(id)!]));
-    const check = checkProcessedProjection(after.projection, affected);
+    const check = checkProcessedProjection(after.projection, affected, this.knowledgeBudgets());
     if (check.problems.length) throw new Error(`Project placement rejected: ${check.problems.join("; ")}`);
     for (const id of moved) this.db.prepare(`INSERT INTO knowledge_placement_validations
       (commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)`).run(id, before.owners.get(id)!, after.owners.get(id)!, KNOWLEDGE_VIEW_VERSION, new Date().toISOString());

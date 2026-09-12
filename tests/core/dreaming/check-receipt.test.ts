@@ -31,6 +31,8 @@ function check(overrides: Partial<DreamingCheckResult> = {}): DreamingCheckResul
     problems: ["memory batch 2 rejected", "global is over", "project:7 is over", "project:7 is over", "session:9 is over"],
     remainingRounds: 48,
     repairAvailable: true,
+    capacities: { applicable: 15_000, injection: 20_000, dreamingProcessedInput: 20_000 },
+    admittedProcessedInputCap: 20_000,
     ...overrides,
   };
 }
@@ -41,6 +43,8 @@ test("35b: receipt reports actionable owner budgets, a stable equal maximum, can
   const receipt = renderDreamingCheckReceipt(full);
 
   expect(full).toEqual(before);
+  expect(receipt).toContain("Current database capacities: applicable 15000; injection 20000; Dreamer processed input for new admissions 20000.");
+  expect(receipt).toContain("This run's frozen admitted processed-input ceiling: 20000.");
   expect(receipt).toContain("- global: used 4001 / limit 4000 / headroom -1");
   expect(receipt).toContain("- project:7: used 10001 / limit 10000 / headroom -1");
   expect(receipt).toContain("- session:9: used 1002 / limit 1000 / headroom -2");

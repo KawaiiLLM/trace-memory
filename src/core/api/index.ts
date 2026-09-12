@@ -49,7 +49,6 @@ export interface TraceMemoryConfig {
     /** Ticket 30: `R`, the most one tool-result part is worth (the same ceiling). Independent of `C`:
      * neither allowance is ever lent to the other. */
     toolResultTokens: number;
-    knowledgeBlockTokens: number;
     episodicBlockTokens: number;
   };
   noting: {
@@ -76,8 +75,8 @@ export interface TraceMemoryConfig {
     nearThreshold: number;
     maxToolRounds: number;
   };
-  /** Ticket 28a "Windows": the two compaction material windows that are not knowledge. The third is
-   * `render.knowledgeBlockTokens`, and the maximum one custom compaction may charge is their sum plus required-only overflow. `render.episodicBlockTokens` is not read here — it stayed the Noter's history envelope. */
+  /** The two database-independent compaction windows. Knowledge uses the bound database policy's
+   * derived injection capacity; the maximum envelope adds all three bases and required-only overflow. */
   compaction: {
     /** The facts window: the pending facts on the path, then the consolidated refill (28a items 1, 4). */
     factsTokens: number;
@@ -98,7 +97,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     entryTokens: 2_000,
     toolInputTokens: 100,
     toolResultTokens: 100,
-    knowledgeBlockTokens: 20_000,
     episodicBlockTokens: 20_000,
   },
   noting: {
@@ -173,6 +171,7 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "render.toolCallTokens": PART_BUDGETS,
   "render.secondaryToolCallTokens": `removed with the tier-2 view: ${PART_BUDGETS} — one bounded view everywhere`,
   "render.secondaryEntryTokens": "removed with the tier-2 view: use render.entryTokens — one bounded view everywhere",
+  "render.knowledgeBlockTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
 };
 const removedSetting = (key: string) => new Error(`Removed setting ${key}: ${REMOVED_SETTINGS[key]}`);
 
@@ -395,6 +394,10 @@ export interface TraceMemory {
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
   forceTasks(): void;
   readonly config: TraceMemoryConfig;
+  /** Current database-owned Knowledge policy and its derived capacities. */
+  knowledgeBudgets(): import("../store/processing.ts").KnowledgeBudgets;
+  /** Transactionally edit one row against the latest other two values. */
+  setKnowledgeBudget(field: import("../store/processing.ts").KnowledgeBudgetField, value: number): ReturnType<Store["setKnowledgeBudget"]>;
   /** Ticket 24 amendment 2: the one runtime configuration surface. A saved global preference must
    * reach tasks admitted afterwards without a reload, and admission reads its execution mode from
    * this configuration. Only each phase's `forkModeDefault` and `closedSessionScope` may be replaced
@@ -841,6 +844,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const manualReads = new Map<string, Map<number, import("../store/index.ts").KnowledgeWithRevision>>();
   return {
     store, executorId, resultText, cancelTasks, taskEligibility, pendingTokens, settleExecution,
+    knowledgeBudgets: () => store.knowledgeBudgets(),
+    setKnowledgeBudget: (field, value) => store.setKnowledgeBudget(field, value),
     get cancellation() { return cancellation; },
     forceTasks: () => { for (const task of tasks) { task.close(); task.force(); } },
     config: cfg,

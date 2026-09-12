@@ -8,7 +8,7 @@ import { contextComposition } from "./context-composition.ts";
 import { compositionMap, pendingBar, statusBody } from "./session-status.ts";
 import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
-import { agentDirectory, configuration, configuredMode, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
+import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
 
@@ -1439,17 +1439,44 @@ export default function (pi: ExtensionAPI) {
     saveGlobal(p, choice === follow ? "session" : choice);
   };
   const settingsMenu = async () => {
-    // 24c's disclosure keeps its home here: where new worker logs go is a global fact about this
-    // installation, and the settings entry is where the superseded read-only view stated it.
+    // Database policy and installation preferences share the existing row editor, but never an
+    // authority: the first rows commit only to this bound database; the remaining rows retain their
+    // settings-file precedence. Derived capacities are display-only.
     const logs = `Worker logs: ${runsDirectory(state.piId)}${runsOutsideScan() ? " — outside Pi's scanned sessions tree, so file-based daily statistics do not see them" : ""}`;
-    const title = ["Settings — global defaults, saved under \"trace-memory\" in " + settingsFile,
-      "Project and environment layers still take precedence; advanced values stay in the settings files.", logs].join("\n");
-    const lines = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
+    const title = [`Settings — bound database: ${dbPath}`,
+      `Knowledge budgets are stored in this database. Global preferences below are saved under \"trace-memory\" in ${settingsFile}.`,
+      "Project and environment layers still take precedence for global preferences; advanced values stay in the settings files.", logs].join("\n");
+    const budgets = memory.knowledgeBudgets();
+    const budgetRows = [
+      { field: "global" as const, name: "Global Knowledge budget", line: `Global Knowledge budget: ${budgets.global} tokens (database)` },
+      { field: "project" as const, name: "Project Knowledge budget", line: `Project Knowledge budget: ${budgets.project} tokens per project owner pool (database)` },
+      { field: "session" as const, name: "Session Knowledge budget", line: `Session Knowledge budget: ${budgets.session} tokens per session owner pool (database)` },
+    ];
+    const diagnostics = [
+      `Applicable Knowledge capacity: ${budgets.applicable} tokens (derived, read-only)`,
+      `Knowledge injection capacity: ${budgets.injection} tokens (derived, read-only)`,
+      `Dreamer processed-input capacity: ${budgets.dreamingProcessedInput} tokens (derived, read-only)`,
+    ];
+    const preferenceRows = preferences.map(p => preferenceLine(p, { flat, sources, layers }, foregroundModel()));
+    const lines = [...budgetRows.map(row => row.line), ...diagnostics, ...preferenceRows];
     const choice = await ctx.ui.select(title, lines);
-    if (choice === undefined) return; // cancelling an entry or an input changes nothing
-    const index = lines.indexOf(choice);
-    if (index < 0) return;
-    await editPreference(preferences[index]!);
+    if (choice === undefined) return;
+    const budget = budgetRows.find(row => row.line === choice);
+    if (budget) {
+      const input = await ctx.ui.input(`${budget.name} — enter tokens; changing this database policy does not run maintenance`);
+      if (input === undefined) return;
+      try {
+        const value = parseKnowledgeBudgetInput(input, budget.name);
+        const saved = memory.setKnowledgeBudget(budget.field, value);
+        ctx.ui.notify(saved.changed
+          ? `Trace Memory: saved ${budget.name} = ${value} tokens in database ${dbPath}. Applicable ${saved.policy.applicable}; injection ${saved.policy.injection}; Dreamer processed input ${saved.policy.dreamingProcessedInput}. New admissions use these capacities; running inputs remain frozen.`
+          : `Trace Memory: ${budget.name} is already ${value} tokens in database ${dbPath}; nothing was written.`, "info");
+      } catch (error) { ctx.ui.notify(`Trace Memory: ${budget.name} unchanged — ${String(error)}`, "error"); }
+      return;
+    }
+    if (diagnostics.includes(choice)) return;
+    const index = preferenceRows.indexOf(choice);
+    if (index >= 0) await editPreference(preferences[index]!);
   };
   // Shared wording only: enrollment confirmations must not census context or render pending material.
   const sessionSummary = (compact = false) => {

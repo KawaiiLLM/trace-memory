@@ -14,6 +14,14 @@ export const tag = "trace-memory";
 export type FlatConfig = Record<string, string | number | boolean>;
 
 export const agentDirectory = () => process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+
+/** Settings accepts one unambiguous decimal integer, without normalization or coercion. */
+export function parseKnowledgeBudgetInput(input: string, name: string): number {
+  if (!/^(?:0|[1-9]\d*)$/.test(input)) throw new Error(`${name} must be an exact nonnegative safe integer in decimal notation`);
+  const value = Number(input);
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} must be an exact nonnegative safe integer in decimal notation`);
+  return value;
+}
 function settings(cwd: string, agentDir = agentDirectory()) {
   const read = (path: string): Record<string, any> => {
     try { return JSON.parse(readFileSync(path, "utf8")); }
@@ -37,6 +45,7 @@ const thinkingKeys = ["notingThinking", "consolidationThinking", "dreaming.think
  * merged Global layer through this same function before it writes, so a menu edit can never leave a
  * file the next load would refuse. `named` reports a value under the spelling the user wrote (18a). */
 export function parseLayer(flat: FlatConfig, named: (key: string) => string = key => key) {
+  flat = canonicalFlatConfig(flat);
   const core: ConfigOverride = { closedSessionScope: (flat.closedSessionScope === undefined ? DEFAULT_CONFIG.closedSessionScope : flat.closedSessionScope) as ClosedSessionScope };
   for (const section of CONFIG_SECTIONS) {
     const values: Record<string, number | boolean> = {};
@@ -70,6 +79,8 @@ export function configuration(cwd: string, environment = process.env.TRACE_MEMOR
   const layers = Object.fromEntries(Object.entries(supplied).map(([name, values]) => [name, canonicalFlatConfig(values as FlatConfig)])) as Record<keyof typeof supplied, FlatConfig>;
   const spelling: Record<string, string> = {};
   for (const values of Object.values(supplied)) for (const key of Object.keys(values)) spelling[CONFIG_ALIASES[key] ?? key] = key;
+  // A retired database-owned injection cap is refused above by `canonicalFlatConfig`, including an
+  // environment value. It is never ignored, inferred as three owner limits, or written back.
   // A value rejected under an accepted legacy spelling names the key the user actually wrote (18a).
   const named = (key: string) => spelling[key] && spelling[key] !== key ? `${key} (supplied as ${spelling[key]})` : key;
   const flat: FlatConfig = Object.assign({}, ...Object.values(layers));
