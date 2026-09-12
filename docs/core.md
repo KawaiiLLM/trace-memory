@@ -32,12 +32,12 @@ declaration still gets the "runAgent must return the exact provider request" pro
 record's response also carries `requestedMode` beside the run's actual `mode`, so a fallback is
 visible as requested-versus-actual.
 
-## Dreamer execution (32d)
+## Dreamer execution (34b)
 
 `dream({sessionId, branch, headTurnId, model?, thinkingLevel?, subagentThinkingLevel?})`
 uses the existing claim/admission/cancellation path, always in subagent mode. Eligibility is
-rechecked at admission. The retained range keeps its original anchor, path, event membership and
-writable family through retries; the current exact versions are resolved afresh. Its event membership
+rechecked at admission. The retained range keeps its original anchor, path, event/version obligations and
+writable family through retries; current exact results are resolved afresh. Its membership
 is audit and authority, not a permanently indivisible input batch: a later admission reselects whole
 current results for still-unsettled events within 10k. An enlarged event that cannot fit alone remains
 pending with a capacity diagnostic, without preventing independently fitting retained events from
@@ -68,14 +68,17 @@ Only a capability-bound Dreamer may use empty supports, for any legal maintenanc
 is a maintenance judgment that inherits all parent conditions, not vacuous universal applicability.
 `actor_role` records `consolidation`, `dreaming` or `manual` for new revisions; legacy null remains.
 
-At admission core also copies an immutable trigger origin: target memory-session id and the ordered
+At admission core copies an immutable trigger origin: target memory-session id and the ordered
 `source_entries.id` prefix from native root through the exact triggering entry. Runs reference it,
 executions retain it across fallback/retry, and Dreamer ranges retain it across partial maintenance
 and reopen. A later same-Turn entry or mutable `source_paths` row cannot extend the frozen sequence.
 Historical null remains unknown and malformed new capture fails. `compareTriggerOrigins` returns
 `same`, `ancestor`, `descendant` or `divergent` only within one session, `independent` across sessions,
-and `unknown` when either side is absent. Ticket 34b consumes this value for path-conflict decisions;
-this slice intentionally adds no new path guard or settlement behavior.
+and `unknown` when either side is absent. Every write transaction rechecks all exact bases and direct
+update/archive/split/merge consuming edges. Equal and prefix-related origins in one target session
+compete even when the existing successor is no longer applicable at the older path; divergent origins
+may derive independently. Independent target sessions retain the applicable-successor check. An
+ancestry-dependent write with an unknown historical origin fails explicitly rather than guessing.
 
 `DreamingAgentInput.passEnd(rounds)` is a host callback after the native prompt's complete tool
 loop and retries, never after an intermediate tool turn. One system-generated custom message may
@@ -85,24 +88,31 @@ automatic compaction remains disabled through the existing in-memory Settings ov
 
 The check tool and final host check use the existing full `checkProcessedScopes` routine:
 global 4k, each project 10k, each session 1k, applicable 15k, framing included. No truncated view
-proves fit. Current versions must be exact changed-result admission versions or this retained range's
-own outputs. Processed read material remains part of the real processed projection, but an unprocessed
-successor of that read is neither a processing candidate nor an extra changed body; it remains its own
-pending event. Reading alone never certifies an external successor, and outside-family identities
-remain read-only. Completion updates the run outcome, revalidates claims/versions/totals, settles only
-the exact event IDs in this supplied batch, certifies separate result IDs and settles the execution in
-one transaction. Replay has no second streak
-effect. Failed/cancelled tasks keep prior commits and pending ranges without certification.
+proves fit. Core constructs processing candidates from the formally supplied changed versions and
+all legitimate descendants committed by this run; model output never enumerates candidates. Complete
+reads, writable-family membership and outside successors add none. Before completion, core rechecks
+the global consuming graph and removes every candidate with an update, archive, split or merge
+consumer. Unchanged supplied leaves, both split children and archive-state leaves remain candidates;
+consumed originals and intermediates do not. Existing certificates are never revoked.
 
-The [external-successor ruling](dreamer-external-conflict.md) adds a real `conflict` terminal outcome
-only when a post-freeze external descendant is the sole acceptance blocker. Core records exact
-successor identities separately from other failures, rechecks transactionally, and settles through
-its live Dreamer capability. This preserves the streak, including its previous reason/run/time,
-without certification or cancellation labeling. Provider, request, illegal-operation and real
-processed-scope/capacity failures cannot be hidden by that classification. A later admission can
-certify freshly supplied merge survivors while retaining the original range history and writable
-family; it can also shrink an enlarged multi-event range without treating unrelated read successors
-as processed. No scheduler or retry loop is added.
+Each supplied event is accounted separately by an accepted candidate or verified consumption of its
+selected base. Successful completion may therefore settle an all-consumed batch with no new
+certificate. It settles only accounted supplied events and certifies only successor-free candidates;
+the rival result and its own event remain pending. Claim, graph, candidates, exact settlements,
+certificates, processed caps, completion and execution outcome are rechecked and written in one
+transaction. Replay is idempotent. Failed/cancelled runs keep prior commits but add no settlement or
+certificate. A settled event does not hide a currently applicable uncertified predecessor restored by
+path navigation: that exact version becomes a deduplicated version obligation, while a restored
+certified predecessor does not.
+
+The [external-successor ruling](dreamer-external-conflict.md) now keeps `conflict` only for an
+independently verified post-freeze successor of reference-only processed material that remains the
+sole acceptance blocker after consumed-input accounting and leaf filtering. It preserves the streak
+and advances nothing. Consumed formal input is ordinary successful disposition instead. Provider,
+request, illegal-operation and processed-scope/capacity failures are never hidden. Retained event and
+version obligations are selected as whole shared-result components; an oversized component cannot be
+partially supplied and does not pin an independent fitting retained component. No scheduler, worker
+completion trigger or retry loop is added.
 
 Prompt lineage: pi-om `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
 `src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
@@ -146,7 +156,7 @@ Its native provider retries and one repair remain inside the same execution; onl
 updates the streak.
 
 Final business failure includes incomplete Noting, unresolved submission refusal and failed
-Dreamer acceptance after partial writes, except the core-verified external-successor-only
+Dreamer acceptance after partial writes, except the core-verified reference-only successor
 `conflict` defined above. It neither increments nor resets the existing streak. The public
 `settleExecution` entry point cannot issue this exception from caller-supplied outcome/audit text;
 new conflict settlement requires the live core Dreamer capability and its associated run.
@@ -688,12 +698,15 @@ obligations remain conservatively while creates remain in the final batch, so
 reordering operations cannot silently discard a warning. No acknowledgement field
 or third review round exists.
 
-Targets must match the visible active revisions frozen at run start. Manual calls use current
-revisions and retain their existing fact-backed binary-merge surface, but gain neither split nor
-empty-support authority; Consolidator still cannot merge. Every item
-is checked before writing and every participant is rechecked in the immediate transaction. Any
-rejection writes no operations. The revision, run record and frozen Consolidation fact membership
-commit together.
+Targets begin from the exact visible revisions frozen at run start. If a comparable-origin worker
+consumes one before commit, the whole atomic submission is refused. Consolidator may completely read
+an applicable current successor, reconsider the same frozen facts and make a normal fact-backed
+submission against that exact version; it gains no extra facts, applicability bypass or neutral
+outcome, and an unresolved refusal follows ordinary failure accounting. Manual calls use complete
+reads and retain their existing fact-backed binary-merge surface, but gain neither split nor
+empty-support authority; Consolidator still cannot merge. Every item and every merge parent is
+rechecked in the immediate transaction. Any rejected batch writes no operations. The revision, run
+record and frozen Consolidation fact membership commit together.
 Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
 unconditional: worker completion itself delivers no receipt to any conversation, in either worker
 mode. A later ordinary prompt may independently publish an applicable current Knowledge revision when

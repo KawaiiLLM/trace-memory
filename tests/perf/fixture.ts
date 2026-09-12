@@ -318,18 +318,23 @@ export function searchCorpus(dbPath: string, options: { revisions: number; sessi
       const path = { sessionId, branch, headTurnId };
       const supports = store.listBranchFacts(sessionId, branch, headTurnId).slice(0, 2).map(f => f.id);
       if (supports.length < 2) throw new Error("the search corpus needs at least two facts on the path");
-      // Two sibling Turns of the head, each with a fact of its own: evidence that only that sibling's
-      // path carries, so a commit citing it applies there and nowhere else.
+      // Two sibling Turns of the head, each with a fact and immutable native trigger origin of its
+      // own: evidence and provenance both distinguish the branches used by the write workload.
+      const parentEntries = store.sourcePath(sessionId, branch, headTurnId).map(entry => entry.id);
       const fork = (name: string) => {
         const turn = store.appendTurn({ sessionId, parentTurnId: headTurnId, kind: "turn", userPrompt: `corpus ${name}`, startedAt: time });
-        const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: name, createdAt: time },
-          facts: [{ turnId: turn.id, category: "observation", actor: "user", text: `${name} evidence`, source: [`T${turn.id}#user`], createdAt: time }] });
+        const source = store.appendSourceEntry({ sessionId, turnId: turn.id, nativeLineage: "perf", nativeId: `search-${name}`,
+          role: "user", text: `corpus ${name}`, raw: JSON.stringify({ role: "user", content: `corpus ${name}` }), calls: [] });
+        store.selectSourcePath(sessionId, name, [...parentEntries, source.id]);
+        const noted = store.commitNotingRun({ run: { kind: "noting", sessionId, branch: name, createdAt: time }, entryIds: [source.id],
+          facts: [{ turnId: turn.id, entryIds: [source.id], category: "observation", actor: "user", text: `${name} evidence`, source: [`T${turn.id}#user`], createdAt: time }] });
         if (!noted.ok) throw new Error(noted.problems.join("; "));
         return { path: { sessionId, branch: name, headTurnId: turn.id }, factId: noted.facts[0]!.id };
       };
       const forks = [fork("corpusC"), fork("corpusD")];
       const commit = (on: typeof path, operation: Parameters<Store["commitConsolidationRun"]>[0]["operations"][number]) => {
-        const done = store.commitConsolidationRun({ path: on, run: { kind: "consolidation", sessionId, branch: on.branch, createdAt: time }, operations: [operation] });
+        const run = store.bindRunOrigin({ kind: "consolidation", sessionId, branch: on.branch, createdAt: time }, store.triggerOrigin(on));
+        const done = store.commitConsolidationRun({ path: on, run, operations: [operation] });
         if (!done.ok) throw new Error(done.problems.join("; "));
         return done.committed[0]!;
       };

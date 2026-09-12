@@ -74,7 +74,7 @@ test("32: NEAR full-body read is granted only after the existing requestSeen del
 });
 
 
-test("32: concurrent successor after NEAR rendering is never granted by requestSeen", async () => {
+test("34b: a concurrent successor is not granted by review feedback and must be read before correction", async () => {
   const f = fixture(input => {
     expect(input.readKnowledgeCommits).toEqual([]);
     const feedback = input.tools[3]!.execute({ operations: [{ op: "create", ...f.content }], skipped: [] });
@@ -85,8 +85,8 @@ test("32: concurrent successor after NEAR rendering is never granted by requestS
     const update = (id: string) => input.tools[3]!.execute({ operations: [{ op: "update", id, ...f.content }], skipped: [] });
     expect(update("K1@1")).toContain("feedback has not been read yet");
     input.reportRequest({ feedbackDelivered: true });
-    // A stale refusal proves the delivered OLD version was granted, not merely no version.
-    expect(update("K1@1")).toContain("current: K1@2");
+    // Legacy-shaped fixture origins are explicitly unknown; feedback still grants only the old body.
+    expect(update("K1@1")).toContain("trigger ancestry is unknown");
     expect(update("K1@2")).toContain("knowledge was not read");
     input.reportRequest({ anotherRequest: true });
     expect(update("K1@2")).toContain("knowledge was not read");

@@ -78,7 +78,7 @@ test("32d: scope overflow permits one concrete repair but an unreduced remainder
   expect((await f.memory.dream(f.target)).outcome).toBe("failure"); // excluded remainder cannot be silently trimmed
 });
 
-test("32d: external successors after each freeze stay unprocessed even after full trace; a later execution may freeze current", async () => {
+test("34b: successive consumed inputs settle independently; a later unchanged leaf is certified", async () => {
   let reread = false;
   const f = fixture(async task => {
     if (reread && f.store.listKnowledgeRevisions().length === 3) return success;
@@ -88,17 +88,14 @@ test("32d: external successors after each freeze stay unprocessed even after ful
     if (reread) task.tools.find(t => t.name === "trace")!.execute({ address: `K${f.item.knowledgeId}` });
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
-  const retained = f.store.retryDreamingRange(f.target)!;
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
   reread = true;
-  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
-  expect(f.store.retryDreamingRange(f.target)).toEqual(retained);
-  expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
-  expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2, 3]);
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+  expect(f.store.listKnowledgeRevisions().every(revision => !f.store.isKnowledgeProcessed(revision.id))).toBe(true);
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
   expect(f.store.isKnowledgeProcessed(3)).toBe(true);
   expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
-  expect(f.store.pendingKnowledgeEvents(f.target).length).toBeGreaterThan(0); // unselected successor events remain pending
+  expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([])
 });
 
 test("32d: cancellation fences late calls, preserves prior batches and retains the anchor", async () => {
@@ -192,7 +189,7 @@ test("32d: changing the selected source path cannot make missing results a succe
   expect(f.store.db.prepare("SELECT * FROM settled_knowledge_events").all()).toEqual([]);
 });
 
-test("32d: a successor arriving between host check and final transaction is never certified", async () => {
+test("34b: a successor arriving before the final transaction consumes the input without being certified", async () => {
   const f = fixture(async () => {
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
@@ -203,10 +200,10 @@ test("32d: a successor arriving between host check and final transaction is neve
     return success;
   });
   const result = await f.memory.dream(f.target);
-  expect(result.outcome).toBe("conflict");
-  expect("problems" in result && result.problems.join()).toContain("external successor after freeze");
+  expect(result.outcome).toBe("success");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
-  expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([1, 2]);
+  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.item.commit]);
+  expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([2]);
 });
 
 test("32d: direct facts are deduplicated whole bodies within 10k, with honest omitted-fact receipts", async () => {
@@ -341,13 +338,15 @@ test("32d: a fully read external merge outside family cannot hide the selected r
     task.tools.find(t => t.name === "trace")!.execute({ address: `K${item.knowledgeId}` });
     const checked = JSON.parse(task.tools.find(t => t.name === "check")!.execute({}));
     expect(checked.resultIds).toEqual([]);
-    expect(checked.problems.join()).toContain("outside frozen family");
+    expect(checked.problems).toEqual([]);
     expect(checked.family).not.toContain(item.knowledgeId);
     return success;
   });
-  expect((await f.memory.dream(f.target)).outcome).toBe("conflict");
+  const completed = await f.memory.dream(f.target);
+  expect(completed.outcome).toBe("success");
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
-  expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(3);
+  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.item.commit]);
+  expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(2);
 });
 
 test("32d: rereading a later external version permits a deliberate own update, not certifying the external base", async () => {

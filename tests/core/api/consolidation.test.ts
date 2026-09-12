@@ -358,16 +358,47 @@ test("a target that moved on bounces the whole batch, audits the rejection and p
   const output = { ...empty, operations: [...createOutput(kept).operations, ...updateOutput(e, lost).operations.map(op => ({ ...op, supports: [`F${lost}`, `F${kept}`] }))] };
   queue(output); const resolve = deferred(), pending = consolidation();
   await new Promise((r) => setTimeout(r, 0));
-  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e,
+  const path = memory.store.knowledgePath(sessionId, "main");
+  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e,
     baseCommit: 1, text: memories.base, category: "mechanism", scope: "project", supports: [old], createdAt: time }] });
   resolve(output); const result = await pending;
-  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
-  expect(result.problems.join(" ")).toContain("current: K1@2");
+  if (result.outcome !== "failure") throw new Error("expected ordinary failure");
+  expect(result.problems.join(" ")).toContain("trigger ancestry is unknown");
   expect(memory.store.getKnowledge(e + 1)).toBeNull();
-  expect(audit(result.runId, 1, "bounced").toolCalls.at(-1).result).toContain("rejected:");
+  expect(audit(result.runId, 1, "failure").toolCalls.at(-1).result).toContain("rejected:");
   expect(consolidated(old)).toBe(true);
   expect(memory.trace(`F${lost}`)).toContain(memories.base);
   expect(JSON.parse(memory.store.getRun(result.runId)!.response!).toolCalls).toHaveLength(2);
+});
+
+test("34b: Consolidator can completely read the legal successor and resubmit against it", async () => {
+  const old = fact(), knowledgeId = knowledge([old]); watermark(old);
+  const correction = fact(memories.observation);
+  memory.selectEntries(sessionId, "main", memory.store.listSourceEntries(sessionId).map(entry => entry.id));
+  const proposed = updateOutput(knowledgeId, correction);
+  script.push(async input => success(proposed, input));
+  script.push(async input => {
+    const path = memory.store.knowledgePath(sessionId, "main");
+    expect(memory.store.triggerOrigin(path)).not.toBeNull();
+    const external = memory.store.commitConsolidationRun({ path,
+      run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)),
+      operations: [{ op: "update", knowledgeId, baseCommit: 1, text: "legal intervening result", category: "mechanism",
+        scope: "project", supports: [old], topics: [], reason: "intervening", createdAt: time }] });
+    if (!external.ok) throw new Error(external.problems.join("; "));
+    const memoryTool = input.tools.find(tool => tool.name === "memory")!;
+    const stale = memoryTool.execute({ ...proposed, operations: proposed.operations.map(operation => ({ ...operation, id: `K${knowledgeId}@1` })) });
+    expect(stale).toContain("competing consuming successor");
+    expect(input.tools.find(tool => tool.name === "trace")!.execute({ address: `K${knowledgeId}@${external.committed[0]!.commit}`, full: true }))
+      .toContain("legal intervening result");
+    const corrected = memoryTool.execute({ ...proposed, operations: proposed.operations.map(operation => ({ ...operation,
+      id: `K${knowledgeId}@${external.committed[0]!.commit}` })) });
+    expect(corrected).toContain('"committed"');
+    return { outcome: "failure", output: "host stops after committed correction", request: input.request };
+  });
+  const result = await consolidation();
+  expect(result.outcome).toBe("success");
+  expect(memory.store.currentCommit(knowledgeId)[0]).toMatchObject({ text: memories.editedKnowledge, parentId: 2 });
+  expect(consolidated(correction)).toBe(true);
 });
 
 test("32d: Consolidator merge cannot create a survivor revision or absorbed links", async () => {
@@ -469,11 +500,12 @@ test("an archived target bounces the whole batch and preserves the watermark and
   const output = { ...empty, operations: [...createOutput(f).operations, ...updateOutput(e, f).operations] };
   queue(output); const resolve = deferred(), pending = consolidation();
   await new Promise((r) => setTimeout(r, 0));
-  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: e,
+  const path = memory.store.knowledgePath(sessionId, "main");
+  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: e,
     baseCommit: 1, supports: [old], createdAt: time }] });
   resolve(output); const result = await pending;
-  if (result.outcome !== "bounced") throw new Error("expected atomic bounce");
-  expect(result.problems.join(" ")).toContain("target moved on or is inactive");
+  if (result.outcome !== "failure") throw new Error("expected ordinary failure");
+  expect(result.problems.join(" ")).toContain("trigger ancestry is unknown");
   expect(memory.store.getKnowledge(e + 1)).toBeNull();
   expect(consolidated(old)).toBe(true);
   // No operation commits; the entire batch remains available for a fresh run.

@@ -224,21 +224,11 @@ test.each([false, true])("32b frozen path: head advance ignores later-only suppo
   expect(a.store.retainDreamingRange(advanced, [later.commit])).toEqual(range);
   // A path without an open range still resolves the caller's current head.
   expect(a.store.dreamingInput({ ...advanced, branch: "fresh" }).versions.map(v => v.revision.id)).toEqual([later.commit]);
-  // Freeze path identity, not commit time: legitimate own edits and new derived K remain visible.
-  const own = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content, text: "own transformed body" }, range.id);
-  const derived = a.create("own derived body", "project", range.id);
-  expect(input().versions.map(v => v.revision.id)).toEqual([own.commit, derived.commit]);
-  a.store.completeDreaming(b.success(), [c.commit], [own.commit]);
-  expect(input().events).toEqual([]);
-  expect(input().oldestId).toBe(c.commit);
-  expect(input().versions.map(v => [v.revision.id, v.processed])).toEqual(selected
-    ? [[own.commit, true], [derived.commit, false]] : [[derived.commit, false]]);
-  expect(a.store.retryDreamingRange(advanced)).toMatchObject({ id: range.id, headTurnId: a.t.id, anchor: c.commit });
-  a.store.completeDreaming(a.success(), [], [derived.commit]);
-  expect(a.store.dreamingRange(range.id)).toBeNull();
-  expect(a.store.retryDreamingRange(advanced)).toBeNull();
+  // These legacy-shaped direct runs have no authoritative origins. Once a successor exists in the
+  // same target session, the ancestry-dependent write is refused instead of guessed.
+  expect(() => a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content,
+    text: "unknown-origin competitor" }, range.id)).toThrow("trigger ancestry is unknown");
   expect(a.store.isKnowledgeProcessed(later.commit)).toBe(false);
-  expect(a.store.dreamingInput(advanced).events.map(e => e.id)).toEqual([later.commit]);
 });
 
 test("32b review: sibling-only merge cannot replace input on the original path", () => {
@@ -259,7 +249,7 @@ test("32b review: shared settlement does not strand an unfinished derived range"
   const otherRange = a.store.retainDreamingRange(b.target, [c.commit]);
   const derived = a.create("unfinished derived", "project", range.id);
   a.store.completeDreaming(b.success(), [c.commit], [c.commit]);
-  expect(a.store.pendingKnowledgeEvents(a.target)).toEqual([]);
+  expect(a.store.pendingKnowledgeEvents(a.target)).toMatchObject([{ id: derived.commit, kind: "version" }]);
   expect(a.store.dreamingRange(otherRange.id)).toBeNull();
   expect(memory.taskEligibility("dreaming", a.target)).toEqual({ due: true });
   const claim = a.store.acquireClaim(a.target, "dreaming", "retry");
@@ -377,14 +367,14 @@ test("32: 4999 does not trigger, 5000 does, and eligibility launches no provider
   } finally { memory.close(); }
 });
 
-test("32: a failed Dreamer retains original events, head and derived family without self-triggering", () => {
+test("34b: a failed Dreamer retains original events and exposes an uncertified own result", () => {
   const a = fixture();
   const c = a.create();
   const range = a.store.retainDreamingRange(a.target, [c.commit]);
   const updated = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content, text: "transformed" }, range.id);
   const derived = a.create("split family", "project", range.id);
   a.write({ op: "archive", knowledgeId: c.knowledgeId, baseCommit: updated.commit, supports: a.content.supports, reason: "transformed", createdAt: "now" }, range.id);
-  expect(a.store.pendingKnowledgeEvents(a.target).map(e => e.id)).toEqual([c.commit]);
+  expect(a.store.pendingKnowledgeEvents(a.target).map(e => e.id)).toEqual([c.commit, derived.commit]);
   expect(a.store.retainDreamingRange({ ...a.target, headTurnId: a.t.id }, [derived.commit])).toMatchObject({ id: range.id, anchor: c.commit, headTurnId: a.t.id });
   expect(a.store.dreamingInput(a.target).versions.map(v => v.knowledge.id)).toEqual([derived.knowledgeId, c.knowledgeId]);
   expect(a.store.isKnowledgeProcessed(derived.commit)).toBe(false);

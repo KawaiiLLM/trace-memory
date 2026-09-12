@@ -55,6 +55,7 @@ test("old runs/execution CHECKs migrate together, preserving audits, streaks, re
   expect(s.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual([{ run_id: f.runId, session_id: f.sessionId, branch: "main", delivered_at: null }]);
   expect(s.db.prepare("SELECT run_id FROM execution_runs WHERE execution_id = ?").get(f.executionId)?.run_id).toBe(f.runId);
   expect(s.db.prepare("SELECT name FROM sqlite_master WHERE name = 'idx_execution_task'").get()).toBeTruthy();
+  expect(s.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'dreaming_range_versions'").get()?.sql).toContain("commit_id");
   s.db.prepare("UPDATE task_executions SET reason = 'updated' WHERE id = ?").run(f.executionId);
   expect(s.db.prepare("SELECT * FROM migration_audit").all()).toHaveLength(1);
   const next = s.recordRun({ kind: "dreaming", sessionId: f.sessionId, outcome: "conflict", createdAt: "new" });

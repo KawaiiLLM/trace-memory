@@ -28,14 +28,14 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
   let requests = 0, candidateRequest = -1, pendingFeedback: KnowledgeRead[] | undefined;
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[]; diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch; unansweredNear: NearPair[] } | undefined;
-  let failure: { runId: number; problems: string[] } | undefined;
+  let failure: { runId: number; problems: string[]; conflicts?: import("../store/index.ts").ConsumedBaseConflict[] } | undefined;
   const sequence: { name: string; input: unknown; result: string }[] = [];
   const execute = (input: unknown) => {
     if (committed && review) return "rejected: already committed";
     if (review && candidate && requests === candidateRequest) return "rejected: the review feedback has not been read yet; resubmit after the feedback message";
     const prepared = prepareMemory(store, sessionId, input, run, review?.frozen, path, [...reads.values()]);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
-    if (problems.length) return JSON.stringify({ results: prepared.results });
+    if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
     if (review && !candidate) {
       candidate = structuredClone(prepared.batch); candidateRequest = requests;
       const feedback = review.feedback(candidate); near = feedback.near;
@@ -61,5 +61,5 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, allCommitted, get readCommits() { return [...reads.keys()]; }, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
+  return { execute, reread, sequence, allCommitted, get readCommits() { return [...reads.keys()]; }, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; }, get competitiveConflicts() { return failure?.conflicts ?? []; } };
 }
