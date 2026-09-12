@@ -590,18 +590,17 @@ test("2026-09-07 B: two tips surface as alternatives to a third session and merg
   expect(memory.trace("K1@4")).not.toContain("verified");
 });
 
-// Ticket 24a "Footer counts": the footer's `memory` right-hand number is the applicable current
-// knowledge in `listCurrentKnowledge`'s own counting unit, so the two divergent tips of one identity
-// that this path sees are the two items they are — one identity is not counted once, and neither tip
-// is chosen over the other. The left-hand number is exact Consolidation membership over the same
-// path, never "every applicable fact minus the cited ones".
-test("24a 2026-09-09: the footer counts use current-tip semantics, and pending facts are exact membership rather than total minus cited", () => {
+// Footer progress retains `knowledge` as the applicable-current total in `listCurrentKnowledge`'s
+// counting unit. The display partitions those exact versions into unprocessed and processed; two
+// divergent tips remain two items. Consolidation membership is exact over the same path.
+test("footer progress retains total current-tip semantics while exposing its exact-version split", () => {
   const { c, d, peer, edit, tips } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
   const third = peer();
   expect(tips(third)).toEqual([2, 3]); // two divergent tips of K1 on this path
   const counted = memory.progress(third.sessionId, third.branch, third.headTurnId);
-  expect(counted.knowledge).toBe(2);
+  expect(counted).toMatchObject({ knowledge: 2, unprocessedKnowledge: 2, processedKnowledge: 0 });
+  expect(counted.unprocessedKnowledge + counted.processedKnowledge).toBe(counted.knowledge);
   expect(counted.knowledge).toBe(memory.store.listCurrentKnowledge({ sessionId: third.sessionId, headTurnId: third.headTurnId, branch: third.branch }).length);
   // This peer wrote one fact and consolidated nothing, so every applicable fact is still pending.
   expect(counted).toMatchObject({ facts: 1, unconsolidated: 1 });
@@ -610,7 +609,7 @@ test("24a 2026-09-09: the footer counts use current-tip semantics, and pending f
     operations: [], consolidated: [Number(third.fact.slice(1))] });
   expect(consolidated.ok).toBe(true);
   const after = memory.progress(third.sessionId, third.branch, third.headTurnId);
-  expect(after).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 2 }); // the fact stays applicable, the queue empties
+  expect(after).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 2, unprocessedKnowledge: 2, processedKnowledge: 0 }); // fact queue empties; Knowledge is unchanged
   expect(after.unconsolidated).toBe(memory.store.consolidationBatch(third.sessionId, third.branch, third.headTurnId).length);
   // The root path sees one tip of the same identity: the count follows the path, not the knowledge row.
   expect(memory.progress(1, "main", 1).knowledge).toBe(1);

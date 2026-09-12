@@ -367,8 +367,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     }
     return totals;
   };
-  /** 24a "Footer counts": the four progress/applicability numbers of one session's selected branch
-   * and head, answered from one path snapshot (22a) and the pending-entry identities (22b).
+  /** Footer progress/applicability numbers for one session's selected branch and head, answered from
+   * one path snapshot (22a), the pending-entry identities (22b), and one exact-version processed lookup.
    *
    * - `entries`: imported source entries of this path that no Noting run has committed yet. The
    *   `noted_entries` rows a run writes inside its business transaction are what removes an entry
@@ -378,24 +378,30 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * - `unconsolidated`: those of them Consolidation still owes work for — the same exact membership
    *   `consolidationBatch` selects, never `facts` minus the cited ones.
    * - `knowledge`: the applicable current knowledge, in `listCurrentKnowledge`'s own counting unit,
-   *   so two divergent tips of one identity count as the two items they are.
+   *   so two divergent tips of one identity count as the two versions they are. `unprocessedKnowledge`
+   *   and `processedKnowledge` partition those exact current versions; archives and superseded
+   *   versions are absent because `listCurrentKnowledge` already excluded them.
    *
-   * Nothing here loads a Raw payload, tokenizes, freezes a task or reads a run's audit body; the
-   * snapshot is built for this one read and dropped with it, so another connection's commits are
-   * seen by the next call. The branch defaults to `main`, so a caller without a host path still asks
-   * about a named branch rather than about Turn-only membership. */
+   * Nothing here loads a Raw payload, renders or tokenizes, freezes a task, reads a run's audit body,
+   * or scans the processed history. The snapshot is built for this one read and dropped with it, so
+   * another connection's commits are seen by the next call. The branch defaults to `main`, so a
+   * caller without a host path still asks about a named branch rather than about Turn-only membership. */
   const progress = (sessionId: number, branch = "main", headTurnId?: number | null) => {
     session(sessionId);
     const path = store.knowledgePath(sessionId, branch, headTurnId);
     const snapshot = store.pathSnapshot(path);
     const facts = store.listBranchFacts(sessionId, branch, path.headTurnId, snapshot);
+    const knowledge = store.listCurrentKnowledge(path, {}, snapshot);
+    const processedKnowledge = store.processedKnowledgeVersions(knowledge.map(value => value.revision.id)).size;
     return {
       // No head means no Turn on this path, so nothing of it has been imported: the enumeration's
       // own answer, not a placeholder for one it could not compute.
       entries: path.headTurnId == null ? 0 : store.pendingEntryIds(sessionId, branch, path.headTurnId, snapshot).length,
       facts: facts.length,
       unconsolidated: store.unconsolidated(facts, path, snapshot).length,
-      knowledge: store.listCurrentKnowledge(path, {}, snapshot).length,
+      knowledge: knowledge.length,
+      unprocessedKnowledge: knowledge.length - processedKnowledge,
+      processedKnowledge,
     };
   };
   return {

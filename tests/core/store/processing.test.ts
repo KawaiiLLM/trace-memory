@@ -144,6 +144,42 @@ test("32b review: public spend and status include Dreaming without changing evid
   memory.close();
 });
 
+test("footer progress partitions applicable current exact versions across processing, sharing and alternate paths", () => {
+  const memory = TraceMemory(":memory:", vi.fn()), a = fixture(memory.store), peer = fixture(a.store);
+  const first = a.create("original");
+  const progress = (target: typeof a.target) => memory.progress(target.sessionId, target.branch, target.headTurnId);
+  const split = (target: typeof a.target, expected: { knowledge: number; unprocessedKnowledge: number; processedKnowledge: number }) => {
+    const value = progress(target);
+    expect(value).toMatchObject(expected);
+    expect(value.unprocessedKnowledge + value.processedKnowledge).toBe(value.knowledge);
+  };
+
+  split(a.target, { knowledge: 1, unprocessedKnowledge: 1, processedKnowledge: 0 });
+  a.store.completeDreaming(a.success(), [first.commit], [first.commit]);
+  split(a.target, { knowledge: 1, unprocessedKnowledge: 0, processedKnowledge: 1 });
+  split(peer.target, { knowledge: 1, unprocessedKnowledge: 0, processedKnowledge: 1 }); // shared certification
+
+  const later = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "branch evidence", startedAt: "now" });
+  const noted = a.store.commitNotingRun({ run: { kind: "manual", sessionId: a.s.id, branch: "alternate", createdAt: "now" }, facts: [{
+    turnId: later.id, category: "decision", actor: "user", text: "revised", source: [`T${later.id}#user`], createdAt: "now" }] });
+  if (!noted.ok) throw Error(noted.problems.join());
+  const alternate = { sessionId: a.s.id, branch: "alternate", headTurnId: later.id };
+  const updated = a.store.commitConsolidationRun({ path: alternate, run: { kind: "manual", sessionId: a.s.id, branch: "alternate", createdAt: "now" }, operations: [{
+    op: "update", knowledgeId: first.knowledgeId, baseCommit: first.commit, ...a.content, text: "successor", supports: [noted.facts[0]!.id] }] });
+  if (!updated.ok) throw Error(updated.problems.join());
+  split(a.target, { knowledge: 1, unprocessedKnowledge: 0, processedKnowledge: 1 }); // predecessor remains current here
+  split(alternate, { knowledge: 1, unprocessedKnowledge: 1, processedKnowledge: 0 }); // exact successor is new work
+  expect(a.store.listCurrentKnowledge(alternate).map(value => value.revision.id)).toEqual([updated.committed[0]!.commit]);
+
+  const archived = a.store.commitConsolidationRun({ path: alternate, run: { kind: "manual", sessionId: a.s.id, branch: "alternate", createdAt: "now" }, operations: [{
+    op: "archive", knowledgeId: first.knowledgeId, baseCommit: updated.committed[0]!.commit,
+    supports: [noted.facts[0]!.id], reason: "retired", createdAt: "now" }] });
+  if (!archived.ok) throw Error(archived.problems.join());
+  split(alternate, { knowledge: 0, unprocessedKnowledge: 0, processedKnowledge: 0 }); // archive and superseded versions are excluded
+  split(a.target, { knowledge: 1, unprocessedKnowledge: 0, processedKnowledge: 1 });
+  memory.close();
+});
+
 test("32b review: archive supplies its exact predecessor, not latest", () => {
   const a = fixture(), c = a.create("unique complete predecessor");
   const archived = a.write({ op: "archive", knowledgeId: c.knowledgeId, baseCommit: c.commit, supports: a.content.supports, reason: "retired", createdAt: "now" });

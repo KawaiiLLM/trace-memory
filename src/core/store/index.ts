@@ -1243,8 +1243,8 @@ export class Store {
    * graph per hit. Like the path snapshot it is a value that never outlives its read, so the next
    * read sees another executor's commits; a page asked for later still reports its own query's.
    *
-   * An operation that has already built the path snapshot (22a) passes it: the footer's four counts
-   * (24a) are one operation and share one membership, exactly as `consolidationBatch` does. */
+   * An operation that has already built the path snapshot (22a) passes it: the footer's progress
+   * values are one operation and share one membership, exactly as `consolidationBatch` does. */
   commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
     const snapshot = path ? prepared ?? this.pathSnapshot(path) : null;
     const { revisions, parents, metadata } = input;
@@ -1589,6 +1589,13 @@ export class Store {
 
   isKnowledgeProcessed(commitId: number): boolean {
     return !!this.db.prepare("SELECT 1 FROM processed_knowledge_versions WHERE commit_id = ?").get(commitId);
+  }
+
+  /** Exact processed versions among one caller-selected commit set, in one bounded lookup. */
+  processedKnowledgeVersions(commitIds: readonly number[]): Set<number> {
+    if (!commitIds.length) return new Set();
+    return new Set((this.db.prepare("SELECT commit_id FROM processed_knowledge_versions WHERE commit_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...new Set(commitIds)])) as { commit_id: number }[]).map(row => row.commit_id));
   }
 
   /** Build one admission-local graph, applicability snapshot and rendered-result cache. Selection

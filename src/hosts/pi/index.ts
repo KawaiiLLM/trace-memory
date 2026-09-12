@@ -380,14 +380,15 @@ export default function (pi: ExtensionAPI) {
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a). One status item, one line:
    *
-   *     🧠 ● notes: 24->102 memory: 15->54 cost: $0.12
+   *     🧠 ● notes: 24->102 memory: 9->252=>54 cost: $0.12
    *
-   * The arrows are stage inputs and existing outputs, not percentages: `notes` is the entries still
-   * to note over every applicable committed fact, `memory` the facts still to consolidate over the
-   * applicable current knowledge, `cost` this memory session's cumulative run spend (work another
-   * executor performed *for* it included, work it performed for another session excluded, because
-   * each run is charged to the session it was run for). Off is the compact `🧠 ○ off`; the stored
-   * counts stay available in Current session.
+   * The arrows are stage inputs and outputs, not percentages: `notes` is the entries still to note
+   * over every applicable committed fact; `memory` is the facts still to consolidate over the
+   * unprocessed then processed applicable current Knowledge versions. These two exact-version counts
+   * partition the existing current-knowledge total. `cost` is this memory session's cumulative run
+   * spend (work another executor performed *for* it included, work it performed for another session
+   * excluded, because each run is charged to the session it was run for). Off is the compact
+   * `🧠 ○ off`; the stored counts stay available in Current session.
    *
    * Every count comes from one core progress/applicability query over the current selected branch
    * and head (`memory.progress`), so nothing here renders Raw, tokenizes, freezes a task or loads a
@@ -413,7 +414,8 @@ export default function (pi: ExtensionAPI) {
     }
     const value = (count?: number) => count === undefined ? "?" : String(count);
     const text = `notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
-      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.knowledge)} cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`;
+      ` memory: ${value(counts?.unconsolidated)}->${value(counts?.unprocessedKnowledge)}=>${value(counts?.processedKnowledge)}` +
+      ` cost: ${cost === undefined ? "$?" : `$${cost.toFixed(2)}`}`;
     // Routine counts stay quiet; only the indicator uses an activity or warning colour.
     context.ui.setStatus(tag, `🧠 ${indicator} ${paint("dim", text)}`);
   };

@@ -432,11 +432,12 @@ export interface TraceMemory {
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
   status(sessionId: number, branch?: string, headTurnId?: number | null): string;
-  /** Ticket 24a: the four footer counts of one session's selected branch and head — entries still to
-   * note, applicable committed facts, those not yet consolidated, and applicable current knowledge.
-   * Progress/applicability queries over one path snapshot: no Raw, no tokenizing, no freeze, no run
-   * body, and pending work stays pending until its business commit. */
-  progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number; knowledge: number };
+  /** Footer progress for one session's selected branch and head: entries still to note, applicable
+   * facts, facts not yet consolidated, and applicable current knowledge split by exact-version
+   * Dreamer processing. One path snapshot plus one bounded processed lookup; no Raw, rendering,
+   * tokenizing, freeze or run body. `knowledge` retains the total-current-version contract. */
+  progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number;
+    knowledge: number; unprocessedKnowledge: number; processedKnowledge: number };
   /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
   spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
 }

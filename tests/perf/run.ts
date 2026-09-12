@@ -473,15 +473,15 @@ async function runSize(size: string) {
     measure("pendingEntries (whole selected path)", () => store.pendingEntries(fixture.sessionId, fixture.branch, head)),
     measure("taskEligibility noting (the trigger alone)", () => memory.taskEligibility("noting", { ...path, headTurnId: head }),
       `${fixture.pendingEntryCount} pending entries`),
-    // 24a: the enabled footer's whole refresh — the four counts as one core progress query over one
-    // path snapshot, plus this session's cumulative spend. The 22a scenario measured the three reads
+    // The enabled footer's whole refresh — progress over one path snapshot and one bounded exact-
+    // version processing lookup, plus this session's cumulative spend. The 22a scenario measured the three reads
     // the old two-number footer made; this is its successor at the same place in the table.
     measure("footer counts (enabled)", () => {
       memory.progress(fixture.sessionId, fixture.branch, head);
       memory.spend(fixture.sessionId);
-    }, "the two reads showSpend makes: progress (4 counts) + spend"),
+    }, "the two reads showSpend makes: progress (including exact-version split) + spend"),
     measure("footer progress alone (enabled)", () => memory.progress(fixture.sessionId, fixture.branch, head),
-      `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory ${store.consolidationBatch(fixture.sessionId, fixture.branch, head).length}->${store.listCurrentKnowledge({ sessionId: fixture.sessionId, headTurnId: head, branch: fixture.branch }).length}`),
+      `notes ${fixture.pendingEntryCount}->${fixture.pathFactCount}, memory facts->unprocessed=>processed current Knowledge`),
     // 22c: one full tool occurrence inside the Turn with 40 tool calls.
     measure("trace full (heavy Turn, one occurrence)", () => memory.trace(`T${fixture.heavyTurnId}`, { tool: 1, full: true }),
       `T${fixture.heavyTurnId}, ${store.listToolCalls(fixture.heavyTurnId).length} tool calls`),

@@ -630,8 +630,12 @@ removed keys fail by name. Counts and token limits require positive safe integer
 `maxToolRounds` retains its documented zero-unlimited sentinel, and `nearThreshold`
 is a similarity in [0,1]. Mode settings require booleans. Impossible view capacity
 still fails with a capacity message and retains pending sources. Changing `dbPath`
-requires reloading the extension. A disabled session's footer is the compact
-`🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow indicator and its counts.
+requires reloading the extension. The enabled footer's `memory: 9->252=>54` means 9 applicable
+facts still need consolidation, followed by 252 unprocessed and 54 processed applicable current
+Knowledge versions. Processing is exact-version state: the two Knowledge counts sum to the existing
+current total, a new revision is unprocessed, and archives and superseded versions are excluded. A
+disabled session's footer is the compact `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow
+indicator and its counts.
 
 ## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a, bounded recovery since 28b)
 
@@ -1628,18 +1632,25 @@ The host therefore publishes one footer status item through
 which a statusline extension renders as a segment:
 
 ```text
-🧠 <indicator> notes: 24->102 memory: 15->54 cost: $0.12
+🧠 <indicator> notes: 24->102 memory: 9->252=>54 cost: $0.12
 ```
 
 Every number describes the current memory session's **selected branch and head**
-(24a). The two arrows are stage inputs and existing outputs, not percentages and
-not expected model-request counts:
+(24a). The chains show stage inputs and outputs, not percentages or expected
+model-request counts:
 
-| Field | Left of the arrow | Right of the arrow |
-|---|---|---|
-| `notes` | imported source entries no Noting run has committed yet | every committed fact applicable on this branch, already consolidated ones included |
-| `memory` | those applicable facts Consolidation has not taken on this path | applicable current knowledge, counted in current-tip units, so two divergent tips of one identity are two items |
-| `cost` | — | this session's cumulative memory-run spend at the model's configured API rates (Pi's own cost formula) |
+| Field | Meaning |
+|---|---|
+| `notes: 24->102` | 24 imported source entries no Noting run has committed yet, over 102 committed facts applicable on this branch (already consolidated facts included) |
+| `memory: 9->252=>54` | 9 applicable facts Consolidation has not taken on this path, over 252 unprocessed then 54 processed applicable current Knowledge versions |
+| `cost` | this session's cumulative memory-run spend at the model's configured API rates (Pi's own cost formula) |
+
+The two Knowledge counts use `listCurrentKnowledge`'s counting unit: divergent
+applicable tips are separate versions. They partition its existing total. Processing
+is shared certification of the exact commit, so another session's certification
+counts, but a newly applicable successor is unprocessed even when its predecessor
+was processed. Archives and superseded revisions are not current and do not count;
+these are not full Dreamer event-queue counts.
 
 While this session's automatic Noting is paused by the incomplete-Noting guard (26a) the line
 ends with ` noting: paused`; nothing else about it is inferable from the counts, which do not move.
@@ -1647,8 +1658,8 @@ A disabled session shows the compact line `🧠 ○ off`, with no counting at al
 stored pending material and diagnostics stay available under Current session,
 whose `Pending: / trigger` bars measure estimated tokens rather than these counts. A value that cannot be read is `?` — an
 unknown is never a fabricated zero — and a Pi session that has not yet allocated
-a memory identity shows `notes: ?->? memory: ?->? cost: $?` and says so in its
-status details rather than claiming four zeros.
+a memory identity shows `notes: ?->? memory: ?->?=>? cost: $?` and says so in its
+status details rather than fabricating zeros.
 
 The counts describe **imported evidence**. A disabled interval may hold native
 history that was never imported, so a zero is not proof that every available
@@ -1684,10 +1695,11 @@ absent the same line is printed unpainted. Merely staying below a trigger never
 turns it yellow, and colour is not the only way to find a condition: status
 details explain warnings, the actual fallback mode and the target of active work.
 
-A refresh costs a status refresh. The four counts are one core progress query
-over one path snapshot (22a) and the pending-entry identities (22b); it renders
-no Raw, tokenizes nothing, freezes no task and loads no run audit body, and
-spend projects usage in SQL. There is no timer and no polling scheduler: the
+A refresh costs a status refresh. The progress values are one core query over one
+path snapshot (22a), the pending-entry identities (22b), and one bounded lookup of
+the selected current commit IDs in `processed_knowledge_versions`; it scans no
+global history, renders no Raw or Knowledge, tokenizes nothing, freezes no task
+and loads no run audit body. Spend projects usage in SQL. There is no timer and no polling scheduler: the
 existing lifecycle, commit, control and status points refresh it — session
 start and restore, tree switch, `tool_result`, `agent_end`, `agent_settled`,
 every phase admission and settle, a scheduled retry, a run's outcome, and the
