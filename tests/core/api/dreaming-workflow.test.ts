@@ -97,14 +97,14 @@ test("35c scripted faithful merge keeps authority, conditions, exception, and re
     const check = task.tools.find(tool => tool.name === "check")!;
     const memory = task.tools.find(tool => tool.name === "memory")!;
     actions.push("check");
-    expect(JSON.parse(check.execute({})).problems).toEqual([]);
+    expect(check.execute({})).toContain("Blockers: none");
     actions.push("memory");
     expect(JSON.parse(memory.execute({ operations: [{ op: "merge",
       id: `K${state.items[0]!.knowledgeId}@${state.items[0]!.commit}`,
       absorb: [`K${state.items[1]!.knowledgeId}@${state.items[1]!.commit}`],
       ...result, supports: [], reason: "Reviewed complete claims retain authority, condition, exception, and subjects" }], skipped: [] })).committed).toHaveLength(1);
     actions.push("check");
-    expect(JSON.parse(check.execute({})).problems).toEqual([]);
+    expect(check.execute({})).toContain("Blockers: none");
     return success;
   });
 
@@ -128,12 +128,12 @@ test("35c scripted equivalent retirement checks around the archive and preserves
   state = seeded(reviewed.parents, async task => {
     const check = task.tools.find(tool => tool.name === "check")!;
     const memory = task.tools.find(tool => tool.name === "memory")!;
-    actions.push("check"); check.execute({});
+    actions.push("check"); expect(check.execute({})).toContain("Blockers: none");
     const archived = state.items[disposition.archiveParent]!;
     actions.push("memory");
     expect(JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${archived.knowledgeId}@${archived.commit}`,
       supports: [], reason: disposition.reason }], skipped: [] })).committed).toHaveLength(1);
-    actions.push("check"); expect(JSON.parse(check.execute({})).problems).toEqual([]);
+    actions.push("check"); expect(check.execute({})).toContain("Blockers: none");
     return success;
   });
 
@@ -154,9 +154,9 @@ test("35c scripted no-op uses an empty batch and checks actual state before and 
   const state = seeded(reviewed.parents, async task => {
     const check = task.tools.find(tool => tool.name === "check")!;
     const memory = task.tools.find(tool => tool.name === "memory")!;
-    actions.push("check"); expect(JSON.parse(check.execute({})).problems).toEqual([]);
+    actions.push("check"); expect(check.execute({})).toContain("Blockers: none");
     actions.push("empty-memory"); expect(JSON.parse(memory.execute({ operations: [], skipped: [] }))).toMatchObject({ committed: [] });
-    actions.push("check"); expect(JSON.parse(check.execute({})).problems).toEqual([]);
+    actions.push("check"); expect(check.execute({})).toContain("Blockers: none");
     return success;
   });
 
