@@ -165,48 +165,31 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   any assistant reply; a Trace Memory session cannot. The first prompt is buffered
   until that reply permits its turn row to be appended. Later prompts append
   immediately. Stored project declarations persist across resume and tree navigation.
-- `before_agent_start` injects the knowledge block, and nothing else. Ticket 29d retired the
-  automatic per-prompt delivery that used to ride beside it — a Noting's facts as `<noted>`, a
-  Consolidation's knowledge changes as `<consolidated>` — together with its settle-time confirmation
-  and the fork wait keyed on it. **The foreground does not receive a background result because a
-  worker finished; it learns that result through a later compaction, an explicit read, or — ticket 31,
-  the one exception — the single supplement a `/trace on` or `/trace project` command asks for. A child
-  receiving material does not establish that the parent received it.** Worker `note`/`memory` tool
-  receipts, manual foreground tool results, explicit reads and compaction content are unchanged.
+- `before_agent_start` evaluates foreground Knowledge publication on **every enabled ordinary
+  prompt**. Worker completion is not itself a delivery trigger, and there are no initial-only or
+  `/trace on`/`/trace project` generation triggers. Those commands only change enrollment or project
+  attribution; the next ordinary prompt runs the same predicate. Worker `note`/`memory` tool receipts,
+  manual foreground tool results, explicit reads and compaction content are unchanged.
 
-  There is **one selection with two triggers** (31). The selection is the applicable knowledge at the
-  current node — the existing scope and commit-graph rules — minus the commit ids the selected
-  context's visible view (29a) already holds, with 29b's status lines for the visible commits that are
-  no longer current, rendered as the knowledge block and its receipts within
-  `render.knowledgeBlockTokens` (default 20,000). A commit visible at the same version is never repeated, so the delta
-  is empty exactly when every candidate is visible; a commit an earlier budget omitted, a newer
-  revision and a commit a compaction did not keep are candidates again.
+  The host obtains Pi's selected compaction-aware entries, builds their trusted visible view, and asks
+  core for applicable current exact revisions. A visible exact Knowledge body suppresses itself. A
+  change is also suppressed when every direct support is visibly present as a Fact, or when every
+  support is proven from complete Noting source bindings to retained original or marked bounded Raw.
+  The bounded view counts as evidence even if its truncation omitted the relevant text. Empty supports,
+  partial/missing bindings and legacy-unknown mappings suppress nothing. Evidence and applicability are
+  path-scoped; no abandoned sibling or guessed working-directory project can contribute.
 
-  Trigger (a), the initial one, is unchanged and independent: the block is offered on a prompt when
-  the visible view holds neither a marked injection of ours nor a custom compaction carrying knowledge
-  commit ids. Empty or unknown coverage — a native compaction, a foreign carrier, a turn Pi never
-  persisted — fabricates no earlier supply, so the block is offered again: duplicates over silent
-  loss. It is a baseline test, not a delta, so a newer commit does not reopen it prompt by prompt;
-  a rewind to before the first injection satisfies it on its own. There is no `injected` flag in the
-  host's persisted state any more (an old state file still loads, and its field is not read).
+  Carriers persist the exact Knowledge commit ids whose bodies were actually returned plus stable
+  identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
+  a replacement body. The publication contains no Fact, Raw, processed/unprocessed marker,
+  command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
+  consume `render.knowledgeBlockTokens` (default 20,000) first; new bodies then fit as whole rendered
+  items. Exact fit is accepted and zero/negative remainder returns no message.
 
-  Trigger (b) is a generation counter in the host's persisted state, advanced by every successful
-  `on` command and every successful `project` command — each time they run, with no "did the state
-  actually change" test. Command intent is session-wide: restore reads the latest session state and
-  persisted completion carriers across the session, while material visibility still comes only from
-  the selected context. Rewinding or reopening cannot erase an unserved command or reopen a completed
-  one; the independent initial condition can still apply. A tree switch, an ordinary prompt and a background commit advance nothing;
-  `off` advances nothing and closes nothing, so with memory off a prompt injects nothing and the
-  generation stays open. Several commands before one prompt collapse: the final state is what that
-  prompt is served from. Completion is the **persistence of that generation's own message**: the
-  generation is consumed only once the `custom_message` entry whose carrier states it is confirmed
-  saved in the session — never the value the handler returned, never the settle. So a generation
-  advanced while a message is in flight is a new one the old message cannot consume, a turn that
-  aborted before the entry was written supplies again at the next prompt, and a persisted message
-  whose turn never settles is complete (the remainder its budget omitted is not re-supplied for it).
-  An empty delta sends no message and completes its generation at once. It performs no search, carries
-  no facts and no Raw, and applies no source-visibility filter. The facade controls category order,
-  chronological ordering and constraints first.
+  Immediately before returning a publication, the host revalidates enrollment, Pi/native binding,
+  selected leaf, path head/branch and project attribution. Any retarget or disable discards the stale
+  offer; a later prompt recomputes. Persistence, not an offered hook return, establishes visibility.
+  Reopen, rewind and sibling navigation therefore derive solely from the selected native ancestry.
 
   A fork Noting appends control material only (25a): the range, the head turn's
   final reply and the source-address index. It adds no knowledge block, no

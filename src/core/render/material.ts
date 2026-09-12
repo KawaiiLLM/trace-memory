@@ -245,10 +245,9 @@ const leading = (material: SharedMaterial): string[] => {
 const statusBlock = (notes: readonly string[]): string[] =>
   notes.length ? [`${KNOWLEDGE_STATUS_TITLE}\n${notes.join("\n")}`] : [];
 
-/** Main-agent knowledge block: knowledge, the status of the visible commits that are no longer
- * current (31), then receipts. Knowledge-only by construction — the shared type carries facts and Raw
- * for other consumers, and this renders neither. Ticket 31 "One selection, two triggers": with an
- * empty visible view there is no status line and this is byte for byte the initial block 29d had. */
+/** Main-agent foreground publication: exact Knowledge bodies, state notices, then receipts.
+ * Knowledge-only by construction — the shared type carries facts and Raw for other consumers, and
+ * this renders neither. Ticket 34c uses it for the common ordinary-prompt predicate. */
 export const injectionText = (material: SharedMaterial, knowledgeNotes: readonly string[] = []): string =>
   finish({ content: block([...leading(material), ...statusBlock(knowledgeNotes)]), receipts: material.receipts });
 

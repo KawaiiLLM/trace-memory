@@ -40,7 +40,7 @@ function consolidated() {
     .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text, source: [`T${t.id}#user`] }] });
   return { s, t, first: memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" }).then(() => note("Keep pnpm")) };
 }
-const knowledgeBlock = "<knowledge>\n<constraint>\n[K1@1] [constraint/project] The project uses pnpm\n  supports: F1\n</constraint>\n</knowledge>";
+const knowledgeBlock = "<knowledge>\n<constraint>\n[K1@1] [constraint/project] The project uses pnpm\n  change supports: F1\n</constraint>\n</knowledge>";
 const views = (sessionId: number, head: number) =>
   memory.pendingEntries(sessionId, "main", head).map(e => renderEntry(e, memory.config.render).content).join("\n\n");
 
@@ -275,7 +275,7 @@ test("21b 2026-09-08, narrowed by 25a: the three knowledge consumers render topi
   memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "memory")!
     .execute({ operations: [{ op: "update", id: "K1@1", topics: ["packaging", "storage"], reason: "Classification cleanup: two subjects.",
       text: "The project uses pnpm", category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
-  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  supports: F1 · topics: [\"packaging\",\"storage\"]\n</constraint>\n</knowledge>";
+  const labelled = "<knowledge>\n<constraint>\n[K1@2] [constraint/project] The project uses pnpm\n  change supports: F1 · topics: [\"packaging\",\"storage\"]\n</constraint>\n</knowledge>";
   expect(memory.inject(s.id)).toBe(labelled);
   expect(compacted(memory.compact(s.id, "main", t.id)).startsWith(labelled)).toBe(true);
   // The Noter is the fourth consumer no longer: 25a gives it no knowledge block in either mode.
@@ -305,9 +305,11 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   // 20b charges every rendered line: the labelled revision needs a strictly larger cap than the same
   // revision without them, so labels cannot ride along outside the budget.
   expect(minimum(value)).toBeGreaterThan(minimum(bare));
-  memory.config.render.knowledgeBlockTokens = minimum(value) - 1;
-  expect(memory.inject(s.id)).toContain("omitted 1 constraint knowledge; expand: K1");
-  memory.config.render.knowledgeBlockTokens = minimum(value);
+  const exactForeground = tokens(memory.inject(s.id));
+  memory.config.render.knowledgeBlockTokens = exactForeground - 1;
+  expect(memory.inject(s.id)).toBe(""); // 34c emits no omission-only foreground block
+  memory.config.render.knowledgeBlockTokens = exactForeground;
+  expect(memory.inject(s.id)).toContain("[K1@2]");
   // Identical selected revisions and topics render the same leading bytes when only the range and the
   // pending facts change. Pinned on the Consolidator since 25a removed the Noter's knowledge block.
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })

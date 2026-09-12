@@ -106,7 +106,7 @@ test("first prompt injects only global knowledge; project knowledge requires an 
   const supplement = (await h.prompt())?.message;
   expect(supplement.content).toContain("项目规则");
   expect(supplement.content).not.toContain("全局规则");
-  expect(supplement.details.traceMemory.generation).toBe(1);
+  expect(supplement.details.traceMemory.generation).toBeUndefined();
   expect(supplement.details.traceMemory.supplied.knowledgeCommitIds).toEqual([1]);
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("after"))?.message).toBeUndefined(); // one shot, never a running delivery
@@ -415,7 +415,9 @@ test("declaring an own project moves facts and project knowledge, preserves sess
   ] });
   if (!recorded.ok) throw new Error(recorded.problems.join("; "));
   seed(peer.id, recorded.facts[0]!.id, ["project"]);
-  expect((await h.prompt("before"))?.message?.content).toContain("<knowledge>"); // the own project's knowledge is already injected
+  // The retained original Raw completely covers the own project's change fact, so 34c suppresses
+  // redundant Knowledge instead of requiring an initial-injection lifecycle.
+  expect((await h.prompt("before"))?.message).toBeUndefined();
   await h.answer();
   await h.commands.get("trace").handler("project named", h.ctx);
   expect(store.getProject(own)!.mergedInto).toBe(target.id);
@@ -756,13 +758,13 @@ test("16b: Pi marks and post-tree injection use the restored head, while explici
   await h.commands.get("trace").handler("mark K1@3 clear", h.ctx);
   expect(h.notices.at(-1)).toBe("K1@3: clear");
   await expect(h.commands.get("trace").handler("mark K1@57 verified", h.ctx)).rejects.toThrow("does not exist");
-  // The restored branch and head are what select the knowledge, which is the ruling here. 29d moved
-  // where that shows: this restored context already carries an injection baseline, so the prompt
-  // offers nothing, and the selection is read through the same call the handler would make.
+  // The restored branch and head select the current exact revision. Its manual fact has no proven
+  // complete source binding, so the ordinary-prompt predicate delivers it without a command.
   const restored = h.entries.filter(e => e.type === "custom").at(-1).data;
   const injected = h.memory.injection({ sessionId: 1, headTurnId: restored.head, branch: restored.branch }).text;
   expect(injected).toContain("[K1@2]"); expect(injected).not.toContain("[K1@3]");
-  expect((await h.prompt("Continue C"))?.message).toBeUndefined();
+  const delivered = (await h.prompt("Continue C"))?.message;
+  expect(delivered.content).toContain("[K1@2]"); expect(delivered.content).not.toContain("[K1@3]");
   const carry = await h.emit("session_before_tree");
   expect(carry.summary.summary).toBe(h.memory.branchSummary(1, h.entries.filter(e => e.type === "custom").at(-1).data.branch, 4));
   expect(carry.summary.summary).toMatch(/^<branch_carry>\nthis is knowledge from another branch;/);
@@ -987,13 +989,12 @@ test("2026-09-07 backfill by consumer — superseded 2026-09-08 and by 25b: the 
   // waited for a receipt; a fresh context reads the pending facts from storage, so it does not.
   expect(h.memory.store.listRuns(1).filter(r => r.kind === "consolidation").map(r => r.mode)).toEqual(["subagent"]);
   expect(h.memory.store.listVisibleKnowledge(1, 1)).toHaveLength(1); // the Consolidation did commit
-  // 29d: no receipt of either change reaches the conversation. The initial knowledge block is the one
-  // automatic material left, and this conversation had no baseline yet, so it is offered once here --
-  // and not again on the prompt after it.
+  // 34c adds no Fact/Raw receipt. The retained original Raw completely covers F1, so its Knowledge
+  // change is redundant and this ordinary prompt carries no plugin message.
   const carried = String((await h.prompt("second"))?.message?.content ?? "");
   expect(carried).not.toContain("<noted>");
   expect(carried).not.toContain("<consolidated>");
-  expect(carried).toContain("<knowledge>");
+  expect(carried).not.toContain("<knowledge>");
   await h.answer(); await h.emit("agent_settled"); await h.drain();
   expect((await h.prompt("third"))?.message).toBeUndefined();
   expect(h.memory.trace("F1")).toContain("[F1]"); // the facts stay reachable by explicit read

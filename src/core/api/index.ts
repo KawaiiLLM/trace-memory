@@ -7,8 +7,8 @@ import { readFacade, readProfile, type ListingOptions, type SearchScope, type Co
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
 // 29a "One derived view": the pure visibility projection over a host's own retained context entries.
 import type { VisibleView } from "./visible.ts";
-export { noVisibility, visibleView } from "./visible.ts";
-export type { Carrier, ContextEntry, InitialContext, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
+export { knowledgeStateKey, noVisibility, visibleView } from "./visible.ts";
+export type { Carrier, ContextEntry, InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { pendingEvents } from "../store/processing.ts";

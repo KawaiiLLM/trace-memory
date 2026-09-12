@@ -25,12 +25,16 @@ export interface SuppliedEntry { id: number; nativeId: string; view?: "bounded";
 
 /** What a renderer actually kept after budgeting — never what it considered. Identities dropped by a
  * budget are absent, so a carrier can only ever understate coverage (duplicates, never silent loss). */
+export interface KnowledgeStateReceipt { fromCommit: number; toCommits: number[] }
+
 export interface SuppliedMaterial {
   entries: SuppliedEntry[];
   /** Complete fact bodies supplied, by fact id. */
   factIds: number[];
-  /** Exact knowledge commits supplied, by commit id; a bare knowledge id is not a version. */
+  /** Exact knowledge bodies supplied, by commit id; a state notice never enters this list. */
   knowledgeCommitIds: number[];
+  /** Fully rendered state notices. They establish neither body coverage nor a complete-read handle. */
+  knowledgeStates?: KnowledgeStateReceipt[];
 }
 
 /** The identity a carrier is bound to, so another database's equal integers can never satisfy coverage
@@ -42,11 +46,8 @@ export interface VisibleBinding { db: string; session: number | null; pi: string
 /** A carrier's payload, as it is persisted under `details.traceMemory`. */
 export interface Carrier extends VisibleBinding {
   supplied: SuppliedMaterial;
-  /** Ticket 31 "One-shot knowledge supplement": the host supplement generation this message serves.
-   * Absent on every carrier that serves none — a compaction, and an injection the initial condition
-   * (29d) alone asked for. Persisting it here is what makes completion the persistence of *this*
-   * generation's message: a generation the host advanced after the message was handed over is a
-   * higher number than any carrier states, so the old message can never consume it. */
+  /** Legacy Ticket 31 carrier field. 34c emits no generation and never consults this value for
+   * foreground eligibility; it remains parseable so old persisted carriers retain their material. */
   generation?: number;
 }
 
@@ -60,19 +61,16 @@ export interface ContextEntry { id: string; type: string; customType?: string; d
  * the conversation itself no longer holds (30: a legacy tier-1 or tier-2 view is one of these). */
 export interface VisibleView {
   raw: Map<string, "source" | "view">;
+  /** Database source-entry identities stated by bounded carriers, paired with native identity. */
+  rawEntryIds?: Map<number, string>;
   factIds: Set<number>;
   knowledgeCommitIds: Set<number>;
-  /** 29d: whether this context holds a carrier of ours on an injected message — the `custom_message`
-   * the host's `before_agent_start` handler had persisted — whatever that message supplied. The
-   * initial-knowledge lifecycle asks this rather than counting commits, so a knowledge block that
-   * fitted only its omission receipt still counts as supplied instead of being re-offered on every
-   * prompt. A compaction carrier is deliberately not an injection: what it covers is stated by
-   * `knowledgeCommitIds` alone, so a compaction that carried no knowledge fabricates no earlier supply. */
+  /** Canonical identities of complete state notices, kept separate from exact body visibility. */
+  knowledgeStates?: Set<string>;
+  /** Legacy visibility metadata retained for worker/fixture compatibility. Foreground 34c eligibility
+   * depends on exact bodies, state notices and evidence, never this initial-injection marker. */
   injection: boolean;
-  /** 31: the highest supplement generation a persisted carrier of ours in this context states, or 0
-   * when none does. The host compares its own counter against this, so a generation stays open until
-   * the message serving it is confirmed saved: a turn that aborted before the entry was written
-   * supplies again at the next prompt (duplicates over silent loss). */
+  /** Highest legacy Ticket 31 generation found. 34c foreground publication ignores it. */
   suppliedGeneration: number;
 }
 
@@ -86,6 +84,10 @@ export interface InitialContext { visible: VisibleView; inheritedTokens: number 
 /** The view a fresh child starts from: it can see nothing. Its `inheritedTokens` is zero, but that
  * number is the freeze's own (the host's measure, frozen with the task), so it is paired there. */
 export const noVisibility = (): VisibleView => ({ raw: new Map(), factIds: new Set(), knowledgeCommitIds: new Set(), injection: false, suppliedGeneration: 0 });
+
+/** Stable persisted identity of one whole state notice. */
+export const knowledgeStateKey = (state: KnowledgeStateReceipt): string =>
+  `${state.fromCommit}>${state.toCommits.join(",")}`;
 
 /** The carrier this entry holds for this binding, or nothing. Fails closed on every mismatch: a
  * foreign database, another memory session, a pre-allocation carrier from a different Pi session, and
@@ -102,11 +104,14 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | unde
   if (carrier.generation !== undefined && (!Number.isSafeInteger(carrier.generation) || Number(carrier.generation) < 0
       || entry.type !== "custom_message")) return;
   const supplied = carrier.supplied;
-  if (!Array.isArray(supplied.entries) || !Array.isArray(supplied.factIds) || !Array.isArray(supplied.knowledgeCommitIds)) return;
+  if (!Array.isArray(supplied.entries) || !Array.isArray(supplied.factIds) || !Array.isArray(supplied.knowledgeCommitIds)
+      || (supplied.knowledgeStates !== undefined && !Array.isArray(supplied.knowledgeStates))) return;
   if (!Array.from(supplied.factIds).every(positiveId) || !Array.from(supplied.knowledgeCommitIds).every(positiveId)) return;
   if (!Array.from(supplied.entries).every(item => object(item) && positiveId(item.id) && text(item.nativeId)
       && ((item.view === "bounded" && item.tier === undefined)
-        || (item.view === undefined && (item.tier === 1 || item.tier === 2))))) return;
+        || (item.view === undefined && (item.tier === 1 || item.tier === 2))))
+      || !Array.from(supplied.knowledgeStates ?? []).every(state => object(state) && positiveId(state.fromCommit)
+        && Array.isArray(state.toCommits) && state.toCommits.length > 0 && state.toCommits.every(positiveId))) return;
   if (carrier.db !== binding.db) return;
   const bound = binding.session !== null && carrier.session === binding.session;
   const beforeAllocation = carrier.session === null && carrier.pi === binding.pi;
@@ -119,8 +124,8 @@ const carrierOf = (entry: ContextEntry, binding: VisibleBinding): Carrier | unde
  * came after — so a retained original entry overrides the bounded view a carrier supplied for it, and
  * an entry the context no longer holds keeps only what a carrier states. */
 export function visibleView(entries: readonly ContextEntry[], binding: VisibleBinding): VisibleView {
-  const raw = new Map<string, "source" | "view">();
-  const factIds = new Set<number>(), knowledgeCommitIds = new Set<number>();
+  const raw = new Map<string, "source" | "view">(), rawEntryIds = new Map<number, string>();
+  const factIds = new Set<number>(), knowledgeCommitIds = new Set<number>(), knowledgeStates = new Set<string>();
   let injection = false, suppliedGeneration = 0;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || !entry.id.trim()) continue;
@@ -130,10 +135,8 @@ export function visibleView(entries: readonly ContextEntry[], binding: VisibleBi
     const carrier = carrierOf(entry, binding);
     if (!carrier) continue; // a free summary, a native compaction, a foreign carrier: nothing at all
     const supplied = carrier.supplied;
-    if (entry.type === "custom_message") injection = true; // 29d: a marked injection of ours, whatever it supplied
-    // 31: the generation a persisted message of ours served. Only a supplement states one, and only
-    // this — the saved entry, never the value the handler returned — completes it. A cloned Pi
-    // session may inherit the material, but not another Pi session's command generations.
+    if (entry.type === "custom_message") injection = true; // legacy marker; 34c uses supplied identities
+    // Preserve legacy carrier metadata for readers outside foreground publication.
     if (carrier.pi === binding.pi && typeof carrier.generation === "number" && carrier.generation > suppliedGeneration)
       suppliedGeneration = carrier.generation;
     // 30 "No richness gate": every marked compressed view counts, whatever budget produced it — the
@@ -142,9 +145,12 @@ export function visibleView(entries: readonly ContextEntry[], binding: VisibleBi
     for (const item of supplied.entries ?? []) {
       const marked = item.view === "bounded" || item.tier === 1 || item.tier === 2;
       if (marked && !raw.has(item.nativeId)) raw.set(item.nativeId, "view");
+      if (marked) rawEntryIds.set(item.id, item.nativeId);
     }
     for (const id of supplied.factIds ?? []) factIds.add(id);
     for (const id of supplied.knowledgeCommitIds ?? []) knowledgeCommitIds.add(id);
+    for (const state of supplied.knowledgeStates ?? []) knowledgeStates.add(knowledgeStateKey(state));
   }
-  return { raw, factIds, knowledgeCommitIds, injection, suppliedGeneration };
+  return { raw, ...(rawEntryIds.size ? { rawEntryIds } : {}), factIds, knowledgeCommitIds,
+    ...(knowledgeStates.size ? { knowledgeStates } : {}), injection, suppliedGeneration };
 }

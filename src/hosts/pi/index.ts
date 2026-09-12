@@ -202,11 +202,9 @@ export default function (pi: ExtensionAPI) {
     ctx.ui.notify(`Trace Memory: ${kind} fell back to subagent mode. ${reason}`, "warning");
     session.notified = true;
   };
-  /** Ticket 31 "One-shot knowledge supplement": `supplementGeneration` is the counter every successful
-   * `on` and `project` command advances, `supplementServed` the generation confirmed complete by an
-   * empty delta or a persisted message. These are session intent, restored from the latest session
-   * state and persisted carriers, not from the selected ancestry's source/head snapshot. Material
-   * visibility remains path-local. Both are optional for state written before this ticket. */
+  /** Host state written before Ticket 34c may still contain supplement counters. They are preserved
+   * when an old entry is copied but never read as delivery eligibility; each ordinary prompt now
+   * recomputes the exact visible/applicable difference. */
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; project?: string; supplementGeneration?: number; supplementServed?: number };
   let state: State;
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
@@ -290,22 +288,7 @@ export default function (pi: ExtensionAPI) {
    * can never satisfy coverage. `session` is null until the first reply allocates the memory session
    * id; an injection written before that is recognised afterwards through the Pi session id here. */
   const binding = (): VisibleBinding => ({ db: dbPath, session: state.sessionId ?? null, pi: state.piId });
-  const carrier = (supplied: SuppliedMaterial, generation?: number) =>
-    ({ traceMemory: { ...binding(), supplied, ...(generation === undefined ? {} : { generation }) } });
-  /** 31 "Triggers": the counter every successful `on` and every successful `project` command advances,
-   * with no "did the state actually change" test — an unchanged state may still want the commit an
-   * earlier budget omitted or a revision committed since. A tree switch, an ordinary prompt and a
-   * background commit advance nothing. Several commands before one prompt collapse into one open
-   * generation, so the final state is what that prompt is served from. */
-  const requestSupplement = () => { state.supplementGeneration = (state.supplementGeneration ?? 0) + 1; };
-  /** 31 "Completion": open until the message serving *this* generation is confirmed saved. The proof
-   * is the persisted `custom_message` entry's carrier, read back through 29a's view of the selected
-   * context — never the value `before_agent_start` returned, and never the settle. So a generation
-   * advanced while a message is in flight stays open (its number is higher than that carrier's), a
-   * turn that aborted before the entry was written supplies again, and a persisted message whose turn
-   * never settles is complete: the budget-omitted remainder is not re-supplied for it. */
-  const supplementOpen = (view: VisibleView) =>
-    (state.supplementGeneration ?? 0) > Math.max(state.supplementServed ?? 0, view.suppliedGeneration);
+  const carrier = (supplied: SuppliedMaterial) => ({ traceMemory: { ...binding(), supplied } });
   /** The task a fork refusal is decided for: its phase, its evidence path and — 27d/18b — the
    * boundary that fixes which pending entries it may take, so 29c checks the batch this task would
    * really select and not a larger set it will never freeze. */
@@ -627,13 +610,8 @@ export default function (pi: ExtensionAPI) {
     // Branch history restores position only; the database and latest provisional choice own intent.
     const latest = ctx.sessionManager.getEntries().filter(e => e.type === "custom" && e.customType === tag)
       .map(e => (e as { data: State & { dbPath: string } }).data).filter(d => d.dbPath === dbPath && d.piId === piId).at(-1);
-    // Command intent is session-wide, unlike the selected path's source/head snapshot. Reuse the
-    // latest durable state; never roll a pending command back when selecting an earlier ancestor.
-    state.supplementGeneration = latest?.supplementGeneration;
-    state.supplementServed = latest?.supplementServed;
-    const completed = visibleView(ctx.sessionManager.getEntries().filter(e => e.type === "custom_message"),
-      { db: dbPath, session: state.sessionId ?? latest?.sessionId ?? null, pi: piId }).suppliedGeneration;
-    state.supplementServed = Math.max(state.supplementServed ?? 0, completed);
+    // Legacy supplement counters are deliberately not restored as intent. Visibility comes only
+    // from identity-bound carriers on the selected context path.
     if (!state.sessionId && latest?.sessionId) {
       state.sessionId = latest.sessionId;
       state.originPiId = latest.originPiId;
@@ -803,51 +781,29 @@ export default function (pi: ExtensionAPI) {
     current = { started: now() };
     if (!enabled()) { showSpend(context); return; }
     reconcile();
-    // 29d "Retire automatic foreground receipt delivery": the knowledge block is the only automatic
-    // material a prompt still carries. The per-prompt `<noted>`/`<consolidated>` delivery, its
-    // settle-time confirmation and the `injected` flag that competed with the native context are gone;
-    // the foreground learns a worker's results through a later compaction, an explicit read, or (31,
-    // the one exception) the single supplement an `on` or `project` command asks for.
-    //
-    // Whether the block is offered is decided by 29a's baseline of the *selected* context alone: it is
-    // offered iff that context holds neither a marked injection of ours nor a custom compaction that
-    // carried knowledge commits. Unknown coverage — a native compaction, a foreign carrier, a turn Pi
-    // never persisted — fabricates no earlier supply and injects again: duplicates over silent loss.
-    // It is a baseline test, never a delta: once a baseline is present, newer commits are not offered
-    // prompt by prompt, which is what keeps initial setup from becoming continuous delivery.
-    //
-    // Ticket 31 "One selection, two triggers": that initial condition is one of two triggers now, and
-    // it is unchanged and independent — a rewind to before the first injection satisfies it on its own,
-    // with no generation involved. The second is the one-shot supplement a successful `on` or `project`
-    // command opened. Both are served by the same core selection below; the trigger only decides
-    // whether it is consulted at all, never what it selects.
-    const view = visible(binding());
-    const initial = !view.injection && !view.knowledgeCommitIds.size;
-    const supplement = supplementOpen(view);
-    if (!initial && !supplement) return;
-    // A knowledge cap that cannot hold even its omission receipt is reported, never injected over (review 2026-09-08).
+    // Ticket 34c: this is the single delivery predicate. Every enabled ordinary prompt compares one
+    // selected-context view with one current applicable graph; commands and worker completions add no
+    // separate trigger. Facts and Raw can suppress a revision but are never added to this payload.
+    const authority = { binding: binding(), leaf: context.sessionManager.getLeafId(), branch: state.branch,
+      head: state.head ?? null, projectId: state.projectId, sessionId: state.sessionId ?? null };
+    const view = visible(authority.binding);
     let block: ReturnType<TraceMemory["injection"]>;
     try {
-      // 31: the selected context's own view is what the applicable set is subtracted against. On the
-      // initial trigger that view holds no knowledge commit at all, so nothing is subtracted and the
-      // bytes are the block 29d produced.
       block = memory.injection(state.sessionId ? { sessionId: state.sessionId, headTurnId: state.head ?? null, branch: state.branch } : { projectId: state.projectId }, view);
     } catch (error) { context.ui.notify(String(error), "error"); return; }
-    if (!block.text) {
-      // 31 "Completion": an empty delta completes its generation at once, with no message — every
-      // candidate is already visible, and there is nothing to persist a carrier on. The initial
-      // trigger has no generation to complete and simply tries again next prompt.
-      if (supplement) { state.supplementServed = state.supplementGeneration; save(); }
-      return;
-    }
-    // 29a "Carriers": what this message actually supplies, written on it as `details` when Pi persists
-    // it. An id that appears only in the rendered text is not coverage. A planned injection is not a
-    // persisted one: this handler only offers the message, and the carrier rides the same value, so a
-    // turn Pi never persists leaves no coverage behind either — and, since 31, leaves the generation
-    // it would have served open.
-    const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds };
+    if (!block.text) return;
+    // Publication, not an offer, is authoritative. Recheck every mutable binding immediately before
+    // returning the message Pi may persist; a retarget or enrollment/project change consumes nothing.
+    const sameBinding = JSON.stringify(binding()) === JSON.stringify(authority.binding);
+    const sameTarget = context.sessionManager.getLeafId() === authority.leaf && state.branch === authority.branch
+      && (state.head ?? null) === authority.head && state.projectId === authority.projectId
+      && (state.sessionId ?? null) === authority.sessionId;
+    const sameProject = !state.sessionId || memory.store.getSession(state.sessionId)?.projectId === authority.projectId;
+    if (!enabled() || !sameBinding || !sameTarget || !sameProject) return;
+    const supplied: SuppliedMaterial = { entries: [], factIds: [], knowledgeCommitIds: block.knowledgeCommitIds,
+      ...(block.knowledgeStates?.length ? { knowledgeStates: block.knowledgeStates } : {}) };
     return { message: { customType: tag, content: block.text, display: false,
-      details: { traceMemory: { ...carrier(supplied, supplement ? state.supplementGeneration : undefined).traceMemory, composition: block.composition } } } };
+      details: { traceMemory: { ...carrier(supplied).traceMemory, composition: block.composition } } } };
   });
   pi.on("message_start", (event, context) => {
     ensure(context); reconcile();
@@ -1344,10 +1300,8 @@ export default function (pi: ExtensionAPI) {
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
     // Disable ends a manual catchup the same way it cancels any other owned in-flight work (18b lifecycle).
     if (!value) { memory.cancelTasks(); if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.runningPhase) catchup.outcome = "stopped"; } }
-    // 31: re-enabling opens one supplement generation, whatever the previous state was. `off` opens
-    // none and closes none — with memory off the next prompt injects nothing and the generation an
-    // earlier command opened simply stays open until a prompt runs with memory on.
-    if (value) requestSupplement();
+    // Enrollment changes immediately. The next ordinary prompt recomputes delivery from its retained
+    // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
@@ -1382,10 +1336,8 @@ export default function (pi: ExtensionAPI) {
     const marked = memory.declareProject(state.sessionId, name);
     state.projectId = memory.store.getSession(state.sessionId)!.projectId;
     state.project = memory.store.getProject(state.projectId)!.name;
-    // 31: the new project's applicable knowledge reaches this conversation at the next prompt, as one
-    // supplement of what it does not already hold — the single exception to 29d's rule that the
-    // foreground learns background results only through a later compaction or an explicit read.
-    requestSupplement();
+    // Project attribution changes immediately; the next ordinary prompt evaluates the same delivery
+    // predicate against the newly applicable graph. No command-generation state is consumed.
     save();
     ctx.ui.notify(marked, "info");
   };

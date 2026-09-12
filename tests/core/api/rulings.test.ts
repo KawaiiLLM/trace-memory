@@ -1322,11 +1322,9 @@ test("20b 2026-09-08: the knowledge-category soft-cap exemption is superseded; c
   const injected = memory.inject(s.id);
   expect(injected).toContain("<constraint>"); // first priority, kept
   expect(injected).not.toContain("reference tail"); // lower priority, omitted
-  const block = injected.split("\n\nReceipts:")[0]!, receipts = injected.split("\n\nReceipts:")[1]!;
-  expect(tokens(block) + tokens(receipts)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
-  expect(receipts).toContain("constraint knowledge; expand: K"); // some constraints were omitted, and are named
-  const omitted = /expand: (K\d+)/.exec(receipts)![1]!;
-  expect(memory.trace(omitted)).toContain(`[${omitted}@`); // omitted is not deleted
+  expect(tokens(injected)).toBeLessThanOrEqual(cap); // the exemption is gone: no category bypasses it
+  expect(injected).not.toContain("Receipts:"); // 34c foreground publication never emits omission-only accounting
+  expect(memory.trace("K6")).toContain("[K6@"); // omitted is not deleted
   expect(t.id).toBeGreaterThan(0);
 });
 

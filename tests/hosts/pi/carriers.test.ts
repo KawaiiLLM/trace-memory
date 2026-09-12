@@ -131,6 +131,9 @@ test("26c0 native fixture: the message the hook returned is persisted through th
     store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, createdAt: "now" }, operations: [{
       op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "fixture",
       text: "Carried knowledge", category: "constraint", scope: "global", supports: [fact.id], createdAt: "now" }] });
+    // This carrier test is about Pi persistence, not evidence suppression. Remove the binding so the
+    // current-change evidence is explicitly unknown and therefore remains deliverable under 34c.
+    store.db.prepare("DELETE FROM fact_sources WHERE fact_id = ?").run(fact.id);
     await f.turn("第二个问题");
     const manager = f.manager();
     const receipt = manager.getEntries().find(e => e.type === "custom_message") as CustomMessageEntry | undefined;

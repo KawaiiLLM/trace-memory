@@ -12,7 +12,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
-import { TraceMemory, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
+import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
 import { freezeDreaming } from "../../src/core/dreaming/index.ts";
@@ -422,6 +422,34 @@ function dreamingScenarios(size: string): Sample[] {
   } finally { memory.close(); rmSync(file, { force: true }); }
 }
 
+/** Ticket 34c: foreground publication scales with candidate changes, not per-candidate SQL. The copy
+ * uses the generated path and one real applicable Fact; the two measurements exercise full body
+ * selection and evidence suppression over the same exact-version graph without provider traffic. */
+function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
+  const copy = join(cache, `${size}-delivery.db`);
+  rmSync(copy, { force: true });
+  copyFileSync(fixture.dbPath, copy);
+  const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
+  try {
+    const store = memory.store, count = size === "large" ? 1_000 : 250;
+    const path = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId };
+    const support = store.listBranchFacts(fixture.sessionId, fixture.branch, fixture.headTurnId)[0]!;
+    const committed = store.commitConsolidationRun({ path, run: { kind: "manual", sessionId: fixture.sessionId, branch: fixture.branch, createdAt: "2026-09-12T00:00:00Z" },
+      operations: Array.from({ length: count }, (_, index) => ({ op: "create" as const, handle: `$e${index + 1}`,
+        author: "perf", text: `Foreground candidate ${index + 1}`, category: "constraint" as const, scope: "project" as const,
+        supports: [support.id], topics: [], reason: "synthetic foreground publication fixture", createdAt: "2026-09-12T00:00:00Z" })) });
+    if (!committed.ok) throw new Error(committed.problems.join("; "));
+    const hidden = noVisibility(); hidden.factIds.add(support.id);
+    const unchanged = noVisibility();
+    for (const value of store.listCurrentKnowledge(path)) unchanged.knowledgeCommitIds.add(value.revision.id);
+    return [
+      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; 20k rendered cap`),
+      measure("foreground Knowledge delivery (exact no-delta)", () => memory.injection(path, unchanged), `${unchanged.knowledgeCommitIds.size} current exact bodies visible`),
+      measure("foreground Knowledge delivery (Fact-suppressed)", () => memory.injection(path, hidden), `${count} new exact revisions sharing one visible support`),
+    ];
+  } finally { memory.close(); rmSync(copy, { force: true }); }
+}
+
 async function runSize(size: string) {
   const options = SIZES[size];
   if (!options) throw new Error(`unknown size ${size}; use ${Object.keys(SIZES).join(" | ")}`);
@@ -488,6 +516,7 @@ async function runSize(size: string) {
     // 23b: the same Turn assembled from its entries under the tier-1 profile — the same Turn-scoped read.
     measure("trace assembled (heavy Turn, no full)", () => memory.trace(`T${fixture.heavyTurnId}`),
       `T${fixture.heavyTurnId}, ${store.listSourceEntries(fixture.sessionId, fixture.heavyTurnId).length} entries`),
+    ...deliveryScenarios(fixture, size),
     ...dreamingScenarios(size),
     ...await searchScenarios(fixture, size),
     ...await capacityScenarios(fixture, size, memory),

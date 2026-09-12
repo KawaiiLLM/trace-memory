@@ -4,8 +4,8 @@ import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import type { Fact, FactRelation, KnowledgeMark, KnowledgeRevision } from "../model/index.ts";
 import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
-import { budgetMaterial, injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
-import { noVisibility, type SuppliedMaterial, type VisibleView } from "./visible.ts";
+import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
+import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
 /** `sessionId`, `headTurnId` and `branch` are the reader's own path, supplied by the host or by a
  * run's tool binding, never by the model: they decide which knowledge a label is judged against and,
@@ -75,8 +75,8 @@ export interface ChargedWindows { knowledge: number; facts: number; raw: number;
   /** What the required material alone charges — the unprocessed knowledge, pending facts and pending Raw with their
    * framing, before either refill. `facts`/`raw` above minus these is what the refills took. */
   required: { knowledge: number; facts: number; raw: number } }
-/** 29a: the initial knowledge block and the exact commits it carries. */
-export interface Injection { text: string; knowledgeCommitIds: number[]; composition?: MemoryComposition }
+/** Foreground Knowledge delivery and the exact body/state identities its carrier may persist. */
+export interface Injection { text: string; knowledgeCommitIds: number[]; knowledgeStates?: KnowledgeStateReceipt[]; composition?: MemoryComposition }
 
 /** 22c "complete snapshot": one search hit whose formatting the query deferred to a later page, with
  * the mutable state its line would otherwise read from the database then. Everything else a hit
@@ -95,24 +95,45 @@ type TraceUnit = { fact: number; relations: FactRelation[]; header?: string } | 
  * read as current knowledge. Ticket 31 made this shared: the Consolidator's material and the main
  * agent's knowledge block are one selection, and neither may explain a stale commit differently.
  * The full revision read happens only when there is a stale commit to explain. */
-export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
-  path: KnowledgePath | null, projectId?: number): string[] {
-  const currentCommits = new Set(current.map(k => k.revision.id));
-  const stale = [...visible].filter(id => !currentCommits.has(id));
-  if (!stale.length) return [];
-  const graph = store.commitGraph(path, projectId);
+export interface KnowledgeStateNote { receipt: KnowledgeStateReceipt; text: string; revisions: KnowledgeRevision[] }
+
+const knowledgeStateText = (from: KnowledgeRevision, successors: readonly KnowledgeRevision[]): string => {
+  const label = `K${from.knowledgeId}@${from.id} is `;
+  if (successors.length > 1) return label + `split into ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(" and ")}`;
+  const successor = successors[0]!;
+  return label + (successor.op === "archive" ? "archived"
+    : successor.op === "merge" || successor.knowledgeId !== from.knowledgeId ? `merged into K${successor.knowledgeId}@${successor.id}`
+    : `superseded by K${successor.knowledgeId}@${successor.id}`);
+};
+
+/** Necessary state changes for exact bodies already visible on this path. The receipt is deliberately
+ * separate from body visibility: naming a survivor or split child grants no read handle or body. */
+export function knowledgeStateNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
+  path: KnowledgePath | null, projectId?: number, prepared?: ReturnType<Store["commitGraph"]>): KnowledgeStateNote[] {
+  const retained = [...visible];
+  if (!retained.length) return [];
+  const graph = prepared ?? store.commitGraph(path, projectId);
+  const active = new Set(current.map(k => k.revision.id));
   const byCommit = new Map(graph.revisions.map(r => [r.id, r]));
-  return stale.flatMap(id => {
+  return retained.filter(id => graph.applicable.has(id) && !active.has(id)).flatMap(id => {
     const revision = byCommit.get(id);
-    if (!revision) return []; // another database's id cannot reach here (the carrier binding), and an unknown one explains nothing
+    if (!revision) return [];
     const descendants = graph.descendants(id);
     const successors = graph.current.filter(r => r.id !== id && descendants.has(r.id));
-    const label = `K${revision.knowledgeId}@${id} is `;
-    if (!successors.length) return [label + "no longer current on this path"];
-    return successors.map(successor => label + (successor.op === "archive" ? "archived"
-      : successor.op === "merge" || successor.knowledgeId !== revision.knowledgeId ? `merged into K${successor.knowledgeId}@${successor.id}`
-      : `superseded by K${successor.knowledgeId}@${successor.id} above`));
+    if (!successors.length) return [];
+    const split = graph.revisions.some(r => r.op === "split" && r.parentId === id && graph.applicable.has(r.id));
+    if (split) return [{ receipt: { fromCommit: id, toCommits: successors.map(r => r.id) }, revisions: successors,
+      text: knowledgeStateText(revision, successors) }];
+    return successors.map(successor => ({ receipt: { fromCommit: id, toCommits: [successor.id] }, revisions: [successor],
+      text: knowledgeStateText(revision, [successor]) }));
   });
+}
+
+/** Compatibility projection used by Consolidation and explicit renderer tests. */
+export function knowledgeStatusNotes(store: Store, current: readonly KnowledgeWithRevision[], visible: Iterable<number>,
+  path: KnowledgePath | null, projectId?: number): string[] {
+  return knowledgeStateNotes(store, current, visible, path, projectId).map(note =>
+    note.text.replace(/(superseded by K\d+@\d+)$/, "$1 above"));
 }
 
 export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (address: string, options?: ListingOptions, reads?: KnowledgeRead[]) => (() => string),
@@ -233,45 +254,86 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
     store.listVisibleKnowledge(sessionId, projectId, headTurnId, branch);
-  /** Ticket 31 "One selection, two triggers": the ONE knowledge selection of the main agent — the
-   * applicable commits at this node minus the ones the reader's context already holds, plus 29b's
-   * status lines for the visible commits that are no longer current, budgeted and rendered as the
-   * knowledge block has always been. 29d's initial injection and 31's supplement are this same call:
-   * the initial trigger only ever fires on a context with no knowledge commits at all, so `visible`
-   * is empty there, nothing is subtracted, no status line exists and the bytes are unchanged.
-   *
-   * 29a "Renderers return what they kept": the exact commit ids the block carries come back beside it,
-   * so the host persists those identities on the message it injects instead of parsing them back out
-   * of the rendered prose. `inject` is this same call read for its text alone. */
+  /** Ticket 34c: one evidence-aware Knowledge-only predicate at every ordinary foreground prompt.
+   * One path snapshot and one graph resolve applicability, visible historical bodies, current exact
+   * results and state changes. Exact Fact bodies or proven complete source-entry bindings may suppress
+   * a nonempty current support list; empty and partial evidence never do. */
   const injection = (target: number | { projectId: number } | KnowledgePath, visible: VisibleView = noVisibility()): Injection => {
+    const empty = (): Injection => ({ text: "", knowledgeCommitIds: [] });
     const id = typeof target === "number" ? target : "sessionId" in target ? target.sessionId : undefined;
-    if (id !== undefined && !store.enabled(id)) return { text: "", knowledgeCommitIds: [] };
-    let current: KnowledgeWithRevision[];
-    if (typeof target === "object" && "sessionId" in target) current = applicable(session(target.sessionId).projectId, target.sessionId, target.headTurnId, target.branch);
-    else if (typeof target === "object") {
-      // First prompt: no session id yet (allocated at the first reply), so no session knowledge.
-      if (!store.getProject(target.projectId)) throw new Error(`project ${target.projectId} does not exist`);
-      current = applicable(target.projectId);
-    } else current = applicable(session(target).projectId, target);
-    // 31 "What repeats and what does not": a commit visible at this exact version is never repeated
-    // (a visible predecessor covers nothing), so the delta is empty exactly when every candidate is
-    // visible; a commit a budget omitted, a newer revision and a commit a compaction did not keep are
-    // all candidates again. The status lines are reserved out of the same allowance by `budgetMaterial`.
-    const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id));
-    // An empty delta is no block at all, exactly as an empty applicable set always was. The status
-    // lines annotate a block; they never become one on their own, or a re-enable with nothing new
-    // would keep restating what a superseded commit became (31 "What repeats and what does not").
-    if (!delta.length) return { text: "", knowledgeCommitIds: [] };
+    if (id !== undefined && !store.enabled(id)) return empty();
+    const projectId = id === undefined ? (target as { projectId: number }).projectId : session(id).projectId;
+    if (!store.getProject(projectId)) throw new Error(`project ${projectId} does not exist`);
     const path = id === undefined ? null : typeof target === "object" && "sessionId" in target
       ? target : store.knowledgePath(id);
-    const notes = knowledgeStatusNotes(store, current, visible.knowledgeCommitIds, path,
-      id === undefined && typeof target === "object" && "projectId" in target ? target.projectId : undefined);
-    // This consumer emits no current material and no episodic block at all (20a: knowledge, then
-    // receipts), so its only ceiling is the knowledge cap and the episodic envelope is unbounded.
-    const budgeted = budgetMaterial({ knowledge: delta, knowledgeLine, knowledgeNotes: notes,
-      current: "", framing: [], caps: { knowledge: config.render.knowledgeBlockTokens, episodic: Infinity } });
-    return { ...measuredMemory(injectionText(budgeted, budgeted.knowledgeNotes), budgeted),
-      knowledgeCommitIds: budgeted.knowledgeCommitIds };
+    const snapshot = path ? store.pathSnapshot(path) : null;
+    const input = store.commitGraphInput();
+    const graph = store.commitGraph(path, path ? undefined : projectId, snapshot ?? undefined, input);
+    const records = store.knowledgeRecords(graph.revisions.map(revision => revision.knowledgeId));
+    const values = (revisions: readonly KnowledgeRevision[]): KnowledgeWithRevision[] => revisions.map(revision => ({
+      knowledge: records.get(revision.knowledgeId)!, revision,
+    }));
+    const current = values(graph.current.filter(revision => revision.op !== "archive"));
+    const visibleBodies = values(graph.revisions.filter(revision => revision.op !== "archive"
+      && graph.applicable.has(revision.id) && visible.knowledgeCommitIds.has(revision.id)));
+    const allStates = knowledgeStateNotes(store, current, visible.knowledgeCommitIds, path, path ? undefined : projectId, graph);
+
+    const rawIds = store.visibleSourceEntryIds(path, snapshot, visible.raw, visible.rawEntryIds ?? new Map());
+    const supported = new Set([...current.filter(item => !visible.knowledgeCommitIds.has(item.revision.id)).map(item => item.revision),
+      ...allStates.flatMap(state => state.revisions)].flatMap(revision => revision.supports));
+    const facts = [...supported].flatMap(factId => input.metadata.facts.get(factId)?.fact ?? []);
+    const rawCovered = store.factsCoveredByRaw(facts.filter(fact => !visible.factIds.has(fact.id)), rawIds, input.metadata.facts);
+    const covered = (revision: KnowledgeRevision) => revision.supports.length > 0
+      && revision.supports.every(factId => visible.factIds.has(factId) || rawCovered.has(factId));
+
+    const delta = current.filter(({ revision }) => !visible.knowledgeCommitIds.has(revision.id) && !covered(revision));
+    const states = allStates.filter(state => !(visible.knowledgeStates ?? new Set()).has(knowledgeStateKey(state.receipt))
+      && !state.revisions.every(covered));
+    if (!delta.length && !states.length) return empty();
+
+    // Historical applicable bodies still retained in context spend the same configured allowance.
+    // Re-render one coherent visible view with the same category/status framing; do not sum stored
+    // body bytes, averages or candidate counts. Existing acknowledged notices are charged too.
+    const marks = store.listKnowledgeMarksOf([...visibleBodies, ...delta].map(item => item.revision.id));
+    const line = (value: KnowledgeWithRevision) => renderKnowledge(value, marks.get(value.revision.id) ?? []);
+    const visibleKnowledge = budgetKnowledge(visibleBodies, Infinity, line);
+    const byRevision = new Map(graph.revisions.map(revision => [revision.id, revision]));
+    const acknowledgedStateTexts = [...(visible.knowledgeStates ?? new Set())].flatMap(key => {
+      const [fromText, toText = ""] = key.split(">");
+      const from = byRevision.get(Number(fromText));
+      const successors = toText.split(",").filter(Boolean).map(id => byRevision.get(Number(id))).filter((value): value is KnowledgeRevision => !!value);
+      return from && successors.length && graph.applicable.has(from.id) && successors.every(value => graph.applicable.has(value.id))
+        ? [knowledgeStateText(from, successors)] : [];
+    });
+    const visibleText = injectionText({ knowledge: visibleKnowledge.groups, receipts: [] }, acknowledgedStateTexts);
+    const remaining = config.render.knowledgeBlockTokens - tokens(visibleText);
+    if (remaining <= 0) return empty();
+
+    // Foreground publication has no omission receipts: render all state notices atomically, then keep
+    // the longest whole-body prefix whose actual final text fits the remaining rendered allowance.
+    // This accepts equality instead of relying on a separately estimated framing cost.
+    const ordered = budgetKnowledge(delta, Infinity, line).commits;
+    const byCommit = new Map(delta.map(value => [value.revision.id, value]));
+    const notes = states.map(state => state.text);
+    const build = (count: number) => {
+      const knowledge = budgetKnowledge(ordered.slice(0, count).map(id => byCommit.get(id)!), Infinity, line).groups;
+      const material = { knowledge, receipts: [] as string[] };
+      return { material, text: injectionText(material, notes) };
+    };
+    let low = 0, high = ordered.length;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (tokens(build(middle).text) <= remaining) low = middle;
+      else high = middle - 1;
+    }
+    const kept = low, { material, text } = build(kept);
+    const commits = ordered.slice(0, kept);
+    // A genuine archive/merge/split notice is useful by itself, but never truncate a transition's
+    // directly affected revision list to manufacture a fit.
+    if (tokens(text) > remaining || (!commits.length && !states.length)) return empty();
+    const rendered = measuredMemory(text, material);
+    return { ...rendered, knowledgeCommitIds: commits,
+      ...(states.length ? { knowledgeStates: states.map(state => state.receipt) } : {}) };
   };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
    * The hyphen is the whole interval grammar, so `..` keeps its single meaning (`F81..` walks later
@@ -421,8 +483,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return { topics: [...groups.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).map(topic => ({ topic, commits: groups.get(topic)! })), unclassified };
     },
-    // The host uses this knowledge selection for the initial baseline and explicit one-shot
-    // supplements. Worker completion alone never delivers material into the foreground.
+    // Every enabled ordinary prompt uses this evidence-aware Knowledge-only publication predicate.
+    // Worker completion alone never delivers material into the foreground.
     injection,
     inject: (target: number | { projectId: number } | KnowledgePath): string => injection(target).text,
     // One allocator: required exact versions/facts/Raw first, fixed bases plus shared required-only

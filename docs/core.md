@@ -384,7 +384,7 @@ compressed Raw entry views with their source identity, and the budget receipts. 
 parts: Noting the head reply and the source index, Consolidation the pending facts (as addresses and
 as lines) and the negated-evidence review cues. The frozen range travels beside the material as the
 run's own label. A consumer whose order has no knowledge, no facts or no Raw block simply omits those
-parts: sharing the type never adds a block to an order, and initial injection stays knowledge-only.
+parts: sharing the type never adds a block to an order, and foreground delivery stays Knowledge-only.
 
 One function per consumer renders that contract, in the ruled order (ticket 20, as ticket 25a
 corrected it):
@@ -483,7 +483,7 @@ charged once, to the block that emits it:
 
 | Component | Budget | Default |
 | --- | --- | ---: |
-| main knowledge block, category tags, status lines and omission receipts (initial injection, one-shot supplement, compact window) | `render.knowledgeBlockTokens` | 20,000 |
+| main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | `render.knowledgeBlockTokens` | 20,000 |
 | Consolidator knowledge references, category tags, inherited status lines and omission receipts | `consolidation.knowledgeTokens` | 10,000 |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
@@ -695,10 +695,11 @@ is checked before writing and every participant is rechecked in the immediate tr
 rejection writes no operations. The revision, run record and frozen Consolidation fact membership
 commit together.
 Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
-unconditional: a commit is delivered to no conversation, in either worker mode. The foreground learns
-a background result through a later compaction, an explicit read, or — ticket 31, the one exception —
-the single knowledge supplement its host asks for after a project change or a re-enable; a child
-receiving material does not mean the parent received it. Supports cite project facts available at start.
+unconditional: worker completion itself delivers no receipt to any conversation, in either worker
+mode. A later ordinary prompt may independently publish an applicable current Knowledge revision when
+that prompt's selected persisted context does not already hold the exact body or all of its proven
+change evidence. A child receiving material does not mean the parent received it. Supports cite
+project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
 transaction, including concurrent changes to untouched knowledge. It follows effective grounding
@@ -735,16 +736,26 @@ shared lines, including framing and receipts. Every category obeys the hard cap;
 whole items form a retained prefix in category order.
 Pass `null` explicitly for legacy null branches.
 
-31: this is **one selection**, and its two triggers are the host's. `injection(target, visible?)`
-selects the applicable knowledge at the node minus the commit ids `visible` (29a's view of the
-reader's own context) already holds, and annotates the visible commits that are no longer current with
-29b's status lines, inside `render.knowledgeBlockTokens` (default 20,000 since 32a). Explicit values
-are honored unchanged; Consolidator references use their separate `consolidation.knowledgeTokens`
-allowance (default 10,000). Both keys use the existing positive-safe-integer validation; neither adds
-an interactive Settings item. An empty visible view selects from the whole applicable set under
-that budget. At the same configured budget and visible set, initial injection and the supplement
-produce identical text; the raised default may include more knowledge. An empty delta renders no block at all — the status lines annotate a block and never become one on their own,
-so a re-enable with nothing new to say says nothing.
+34c: `injection(target, visible?)` is the common predicate for every enabled ordinary prompt. From one
+snapshot and commit graph it starts with applicable current exact revisions, removes exact Knowledge
+bodies already visible, and then suppresses a candidate only when its nonempty direct change supports
+are all visible Facts or all have proven complete Noting bindings to retained original/bounded Raw
+entries. Empty supports and missing, partial or legacy-unknown bindings fail closed and remain
+candidates. A recognized bounded Raw identity deliberately counts even when truncation removed the
+actual evidentiary span: this can miss a useful Knowledge delivery, while opaque summaries and unknown
+bindings deliberately risk redundant delivery instead of claiming coverage. Applicability and evidence
+are checked on the selected session path; project-only targets use project/global scope and do not
+infer path evidence.
+
+Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
+`render.knowledgeBlockTokens` (default 20,000). Candidate bodies then fit only as complete rendered
+items in normal category/time/id order. Exact fit is accepted; zero or negative remainder emits no
+body, and omission receipts alone never create a message. Archive/supersede/merge/split notices have
+stable carrier identities separate from exact body visibility, so persisting a notice never grants a
+replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
+foreground publication. Consolidator references keep their separate
+`consolidation.knowledgeTokens` allowance (default 10,000). The reproducible synthetic method and
+250/1,000-candidate measurements are recorded in [perf-34c.md](perf-34c.md).
 
 Successful noting commits record `factIds` in the
 existing response envelope; this identifies a run's own facts even when runs overlap in their source

@@ -431,7 +431,7 @@ export interface ApplicabilityInput {
   parents?: Map<number, number[]>;
   runs: Map<number, number>;
   projects: Map<number, number>;
-  facts: Map<number, { fact: Fact; sessionId: number; entries: number[] }>;
+  facts: Map<number, { fact: Fact; sessionId: number; runId: number; entries: number[] }>;
 }
 
 /** One path's membership, built once per operation (22a) and passed through every applicability check.
@@ -1247,6 +1247,14 @@ export class Store {
     return row ? toKnowledge(row) : null;
   }
 
+  /** Batch immutable identity lookup for one projection; callers never scan knowledge per revision. */
+  knowledgeRecords(ids: readonly number[]): Map<number, Knowledge> {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return new Map();
+    return new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id")
+      .all(JSON.stringify(unique)).map(row => { const value = toKnowledge(row); return [value.id, value]; }));
+  }
+
   getKnowledgeRevision(knowledgeId: number, commitId: number): KnowledgeRevision | null {
     const row = this.db.prepare("SELECT * FROM knowledge_revisions WHERE knowledge_id = ? AND id = ?").get(knowledgeId, commitId);
     return row ? toKnowledgeRevision(row) : null;
@@ -1334,7 +1342,7 @@ export class Store {
     return this.projectCommitGraph(revisions, parents, applicable);
   }
 
-  /** DAG and applicability inputs for one synchronous projection, before any placement mutation. */
+  /** DAG, applicability and source-binding inputs for one synchronous projection, before mutation. */
   commitGraphInput() {
     const revisions = this.db.prepare("SELECT * FROM knowledge_revisions ORDER BY id").all().map(toKnowledgeRevision);
     const parents = new Map(revisions.map(r => [r.id, r.parentId === null ? [] : [r.parentId]]));
@@ -1351,7 +1359,7 @@ export class Store {
       projects: new Map(this.db.prepare("SELECT id, project_id FROM sessions").all().map(r => [Number(r.id), Number(r.project_id)])),
       facts: new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
         WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds)
-        .map(r => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), entries: [] }])),
+        .map(r => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }])),
     };
     for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(factIds))
       metadata.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
@@ -1428,14 +1436,37 @@ export class Store {
     return this.factsCoveredByRaw([fact], covered).has(fact.id);
   }
 
+  /** Resolve visible original native entries against the selected path and validate every bounded
+   * carrier's database/native pair in one metadata lookup. Raw bodies are never loaded. */
+  visibleSourceEntryIds(path: KnowledgePath | null, snapshot: PathSnapshot | null,
+    raw: ReadonlyMap<string, "source" | "view">, carried: ReadonlyMap<number, string>): Set<number> {
+    const selected = snapshot?.entries?.ids ?? new Set<number>();
+    const candidates = new Set([...carried.keys(), ...selected]);
+    if (!candidates.size || (!carried.size && ![...raw.values()].includes("source"))) return new Set();
+    const result = new Set<number>();
+    for (const row of this.db.prepare("SELECT id, native_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...candidates])) as { id: number; native_id: string }[]) {
+      if (carried.get(row.id) === row.native_id || (path && selected.has(row.id) && raw.get(row.native_id) === "source")) result.add(row.id);
+    }
+    return result;
+  }
+
   /** Re-resolve citations in the original Noting run's frozen entry set, never today's path.
-   * Manual/legacy writes without that set cannot prove completeness and stay eligible.
-   * Two metadata-only queries per allocation; no Raw bodies or persistent cache. */
-  factsCoveredByRaw(facts: readonly Fact[], covered: ReadonlySet<number>): Set<number> {
+   * Manual/legacy writes without that set cannot prove completeness and stay eligible. The optional
+   * applicability projection reuses the graph's fact/source snapshot, leaving one proof lookup. */
+  factsCoveredByRaw(facts: readonly Fact[], covered: ReadonlySet<number>,
+    projected?: ReadonlyMap<number, { fact: Fact; sessionId: number; runId: number; entries: number[] }>): Set<number> {
     const result = new Set<number>();
     if (!facts.length || !covered.size) return result;
     const bindings = new Map<number, Set<number>>(), runs = new Map<number, number>();
-    for (const row of this.db.prepare("SELECT f.run_id, b.fact_id, b.entry_id FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))")
+    if (projected) {
+      for (const fact of facts) {
+        const value = projected.get(fact.id);
+        if (!value) continue;
+        runs.set(fact.id, value.runId);
+        if (value.entries.length) bindings.set(fact.id, new Set(value.entries));
+      }
+    } else for (const row of this.db.prepare("SELECT f.run_id, b.fact_id, b.entry_id FROM fact_sources b JOIN facts f ON f.id = b.fact_id WHERE f.id IN (SELECT value FROM json_each(?))")
       .all(JSON.stringify(facts.map(f => f.id)))) {
       const id = Number(row.fact_id);
       runs.set(id, Number(row.run_id));
