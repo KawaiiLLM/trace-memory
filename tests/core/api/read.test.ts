@@ -100,18 +100,17 @@ test("category order, chronological ties, whole trailing category omissions; lin
   expect(all).not.toContain("&lt;");
   const tags = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"];
   expect(tags.map((tag) => all.indexOf(`<${tag}>`))).toEqual(tags.map((tag) => all.indexOf(`<${tag}>`)).sort((a, b) => a - b));
-  // 20b: the knowledge cap is hard — including the three categories 17b's exemption protected — and
-  // hard for its receipt too (review 2026-09-08): a budget that cannot hold even the bounded receipt
-  // of the omitted items is a capacity error, never an oversized block.
+  // 34c: the foreground cap is hard, and a zero remainder emits neither a clipped item nor an
+  // omission-only block. Receipt accounting for compaction and worker material remains separate.
   memory.config.render.knowledgeBlockTokens = 0;
-  expect(() => memory.inject(s.id)).toThrow(/Knowledge capacity/);
-  // A budget that holds part of the list keeps a whole prefix of the priority order, receipts included.
+  expect(memory.inject(s.id)).toBe("");
+  // A budget that holds part of the list keeps a whole prefix of the priority order without acknowledging omissions.
   memory.config.render.knowledgeBlockTokens = 200;
   const partial = memory.inject(s.id);
   const kept = tags.filter(tag => partial.includes(`<${tag}>`));
   expect(kept.length).toBeGreaterThan(0);
   expect(kept).toEqual(tags.slice(0, kept.length));
-  expect(partial.indexOf("Receipts:")).toBeGreaterThan(partial.indexOf("</knowledge>"));
+  expect(partial).not.toContain("Receipts:"); // foreground omissions remain eligible and unacknowledged
   for (const id of ids.slice(0, 4)) expect(memory.trace(`K${id}`)).toContain(`[K${id}@${id}]`);
 });
 

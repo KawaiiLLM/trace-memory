@@ -113,17 +113,24 @@ test("34b: comparable origin rejects a successor whose later evidence is inappli
   if (!noted.ok) throw new Error(noted.problems.join("; "));
   const left = f.memory.tools(f.path("left", f.left.id));
   left.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
-  expect(left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
-    text: "left only", category: "constraint", scope: "project", supports: [`F${noted.facts[0]!.id}`], topics: [], reason: "left" }], skipped: [] }))
-    .not.toContain("rejected:");
+  const committed = left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+    text: "left only", category: "constraint", scope: "project", supports: [`F${noted.facts[0]!.id}`], topics: [], reason: "left" }], skipped: [] });
+  expect(committed).not.toContain("rejected:");
+  const leftCommit = JSON.parse(committed).committed[0].commit as number;
   expect(f.store.currentCommit(f.base.knowledgeId, { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id }).map(revision => revision.id))
     .toEqual([f.base.commit]);
-  expect(update(f, "root", f.root.id, "ancestor competitor")).toContain("competing consuming successor");
+  const refused = update(f, "root", f.root.id, "ancestor competitor");
+  expect(refused).toContain("competing consuming successor");
+  expect(refused).toContain(`K${f.base.knowledgeId}@${leftCommit}`);
+  expect(refused).toContain("no applicable successor exists at the frozen writer path");
+  expect(refused).not.toContain("re-read");
 });
 
 test("34b: an applicable independent-session successor retains the stale-base refusal", () => {
   const f = pathFixture();
-  expect(update(f, "left", f.left.id, "left result")).not.toContain("rejected:");
+  const committed = update(f, "left", f.left.id, "left result");
+  expect(committed).not.toContain("rejected:");
+  const successor = JSON.parse(committed).committed[0].commit as number;
   const other = TraceMemory(f.db, async () => success); memories.push(other);
   const session = other.store.createSession({ host: "other", projectId: f.project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
   const turn = other.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "other", startedAt: at });
@@ -134,6 +141,8 @@ test("34b: an applicable independent-session successor retains the stale-base re
   const result = tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
     text: "independent competitor", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "compete" }], skipped: [] });
   expect(result).toContain("applicable consuming successor from independent target session");
+  expect(result).toContain(`current: K${f.base.knowledgeId}@${successor}`);
+  expect(result).toContain("re-read the exact current K@commit and resubmit");
 });
 
 test("34b: a consumed supplied event succeeds with exact settlement and no adopted certificate", async () => {

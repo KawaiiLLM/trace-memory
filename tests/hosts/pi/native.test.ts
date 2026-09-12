@@ -632,6 +632,8 @@ test("21a 2026-09-08: the memory schema the child re-registers requires reason, 
     expect(memory.parameters.properties.skipped.items.properties.because).toEqual({ type: "string", minLength: 1 });
     expect(memory.description).toContain("reason (the commit message, never evidence)");
     expect(memory.description).toContain("topics (subject labels; the complete replacement set, empty when unclassified)");
+    expect(memory.description).toContain("archive records archival state");
+    expect(memory.description).not.toContain("archive inherits its parent body");
   } finally { await f.dispose(); }
 });
 

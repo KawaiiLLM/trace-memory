@@ -449,22 +449,28 @@ test("2026-09-07: trace rejects a missing source part with the reason", () => {
 // Knowledge commits (rulings A/B, 2026-09-07): all writes go through the host façade.
 function commitPaths() {
   const { s, t } = session();
+  const selectNativeAncestry = (sessionId: number, headTurnId: number, branch: string) => {
+    const turns = memory.store.pathTurns({ sessionId, headTurnId });
+    const entries = memory.store.listSourceEntries(sessionId).filter(entry => turns.has(entry.turnId));
+    memory.selectEntries(sessionId, branch, entries.map(entry => entry.id));
+    return entries.at(-1)!.id;
+  };
   const node = (sessionId: number, parentTurnId: number | null, branch: string) => {
     const turn = memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: branch, startedAt: time });
-    return writer(sessionId, turn.id, branch);
+    return writer(sessionId, turn.id, branch, selectNativeAncestry(sessionId, turn.id, branch));
   };
-  const writer = (sessionId: number, headTurnId: number, branch: string) => {
-    const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: headTurnId, branch });
+  const writer = (sessionId: number, headTurnId: number, branch: string, triggerEntryId: number) => {
+    const tools = memory.tools({ kind: "manual", sessionId, currentTurnId: headTurnId, branch, triggerEntryId });
     const receipt = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: branch, source: [`T${headTurnId}#user`] }] }));
     expect(receipt.results[0]).toMatch(/^ok:/);
     const fact = `F${receipt.factIds[0]}`;
     // This branch fixture begins by reading its one shared rule, not every candidate in the database.
     if (memory.store.getKnowledge(1)) tools[0]!.execute({ address: "K1", cap: Number.MAX_SAFE_INTEGER });
-    return { sessionId, headTurnId, branch, fact, tools,
+    return { sessionId, headTurnId, branch, triggerEntryId, fact, tools,
       read: (address = "K1") => readHandle(tools, address),
       write: (operations: unknown[]) => JSON.parse(tools[3]!.execute({ operations, skipped: [] })) };
   };
-  const root = writer(s.id, t.id, "main");
+  const root = writer(s.id, t.id, "main", selectNativeAncestry(s.id, t.id, "main"));
   const content = (fact: string, text = "Use blue tiles") => ({ text, category: "constraint", scope: "project", supports: [fact] });
   expect(root.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(root.fact) }]).committed[0].commit).toBe(1);
   root.read("K1@1");
@@ -509,15 +515,16 @@ test("34a: a child cannot escape an inapplicable historical parent by citing sha
   expect(memory.trace("K1..")).toContain("K1@3 update");
 });
 
-test("2026-09-07 B: pre-fork evidence applies to both branches and rejects the sibling's stale base atomically", () => {
+test("2026-09-07 B/34b: pre-fork evidence applies to both branches without blocking an authorized sibling write", () => {
   const { root, c, d, content, edit, tips } = commitPaths();
   expect(edit(c, "Shared pre-fork correction", root.fact).committed[0].commit).toBe(2);
   expect(tips(c)).toEqual([2]); expect(tips(d)).toEqual([2]);
-  const rejected = d.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(d.fact) }, { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(d.fact) }]);
-  expect(rejected.results).toHaveLength(2); expect(rejected.results[1]).toContain("current: K1@2");
-  expect(memory.store.getKnowledge(2)).toBeNull();
-  expect(d.tools[0]!.execute({ address: "K1" })).toContain("K1@2");
-  expect(edit(d, "After rereading").committed[0].commit).toBe(3);
+  const allowed = d.write([{ op: "create", topics: [], reason: "Initial admission of this conclusion.", ...content(d.fact) },
+    { op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1@1", ...content(d.fact) }]);
+  expect(allowed.results).toEqual(["ok", "ok"]);
+  expect(allowed.committed.map((item: { commit: number }) => item.commit)).toEqual([3, 4]);
+  expect(memory.store.getKnowledge(2)).not.toBeNull();
+  expect(tips(d)).toEqual([2, 4]); // shared applicability does not collapse genuine sibling successors
 });
 
 test("2026-09-07 B: cross-session concurrent edits reject linearly, then re-read and resubmit", () => {
@@ -618,7 +625,9 @@ test("footer progress retains total current-tip semantics while exposing its exa
 test("2026-09-07 B: store rechecks every base inside the transaction and rolls back an earlier create", () => {
   const { root, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact) }]);
-  const result = memory.store.commitConsolidationRun({ path: root, run: { kind: "manual", sessionId: root.sessionId, createdAt: time }, operations: [
+  const origin = memory.store.triggerOrigin(root, root.triggerEntryId);
+  const run = memory.store.bindRunOrigin({ kind: "manual", sessionId: root.sessionId, createdAt: time }, origin);
+  const result = memory.store.commitConsolidationRun({ path: root, run, operations: [
     { op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "test", text: "Must roll back", category: "goal", scope: "project", supports: [1], createdAt: time },
     { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: 1, baseCommit: 1, supports: [1], createdAt: time },
   ] });
@@ -941,8 +950,15 @@ test("16b: a fact whose only source is an injected compaction message lacks a ra
 test("16b: every raw source of a multi-source fact constrains carry, current and citations", () => {
   const { root, c, d, content } = commitPaths();
   memory.store.updateTurn(c.headTurnId, { assistantText: "Use violet tiles" });
-  const fact = JSON.parse(c.tools[2]!.execute({ facts: [{ category: "decision", actor: "agent", text: "Use violet tiles", source: [`T${root.headTurnId}#user`, `T${c.headTurnId}#assistant`] }] })).factIds[0];
-  expect(c.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: c.read(), ...content(`F${fact}`, "Use violet tiles") }]).committed[0].commit).toBe(2);
+  const turns = memory.store.pathTurns(c);
+  const entries = memory.store.listSourceEntries(c.sessionId).filter(entry => turns.has(entry.turnId));
+  memory.selectEntries(c.sessionId, c.branch, entries.map(entry => entry.id));
+  const tools = memory.tools({ kind: "manual", sessionId: c.sessionId, branch: c.branch,
+    currentTurnId: c.headTurnId, triggerEntryId: entries.at(-1)!.id });
+  const fact = JSON.parse(tools[2]!.execute({ facts: [{ category: "decision", actor: "agent", text: "Use violet tiles", source: [`T${root.headTurnId}#user`, `T${c.headTurnId}#assistant`] }] })).factIds[0];
+  const id = readHandle(tools, "K1");
+  const updated = JSON.parse(tools[3]!.execute({ operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id, ...content(`F${fact}`, "Use violet tiles") }], skipped: [] }));
+  expect(updated.committed[0].commit).toBe(2);
   for (const path of [root, d]) {
     expect(memory.branchSummary(path.sessionId, path.branch, path.headTurnId)).not.toContain(`[F${fact}]`);
     expect(memory.inject(path)).toContain("[K1@1]"); expect(memory.inject(path)).not.toContain("[K1@2]");

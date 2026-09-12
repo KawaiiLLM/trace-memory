@@ -204,6 +204,12 @@ describe("commitConsolidationRun: revision conflicts", () => {
     const p = store.createProject({ name: "proj", declaredBy: "mark" });
     const s = makeSession(p.id);
     const t = store.appendTurn({ sessionId: s.id, kind: "turn", startedAt: "2026-01-01T00:00:00Z" });
+    const entry = store.appendSourceEntry({ sessionId: s.id, turnId: t.id, nativeLineage: "fixture", nativeId: "stale-base-root",
+      role: "user", text: "use pnpm", raw: "{}", calls: [] });
+    store.selectSourcePath(s.id, "main", [entry.id]);
+    const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
+    const origin = store.triggerOrigin(path, entry.id);
+    const run = (createdAt: string) => store.bindRunOrigin({ kind: "consolidation" as const, sessionId: s.id, branch: "main", createdAt }, origin);
     const notingResult = store.commitNotingRun({
       run: { kind: "noting", sessionId: s.id, createdAt: "2026-01-01T00:00:01Z" },
       facts: [{ turnId: t.id, category: "decision", actor: "user", text: "use pnpm", source: ["T1#user"], createdAt: "2026-01-01T00:00:01Z" }],
@@ -213,7 +219,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
     const factId = notingResult.facts[0]!.id;
 
     const created = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:01:00Z" },
+      path, run: run("2026-01-01T00:01:00Z"),
       operations: [
         {
           op: "create", topics: [], reason: "Initial admission of this conclusion.",
@@ -233,7 +239,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
 
     // a first edit against revision 1 succeeds and moves the knowledge to revision 2...
     const round2 = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:02:00Z" },
+      path, run: run("2026-01-01T00:02:00Z"),
       operations: [
         {
           op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.",
@@ -253,7 +259,7 @@ describe("commitConsolidationRun: revision conflicts", () => {
 
     // A stale update rejects the whole batch, including earlier writes.
     const round3 = store.commitConsolidationRun({
-      run: { kind: "consolidation", sessionId: s.id, createdAt: "2026-01-01T00:03:00Z" },
+      path, run: run("2026-01-01T00:03:00Z"),
       operations: [
         {
           op: "create", topics: [], reason: "Initial admission of this conclusion.",

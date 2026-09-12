@@ -134,8 +134,8 @@ test.each([true, false])("18a 2026-09-08: disable during Noting provider call re
 });
 
 // Across both Noter modes, disabling stops automatic material without losing committed work.
-// Re-enabling supplies the remaining knowledge through the one-shot supplement, not a delivery queue.
-test.each([true, false])("29d: automatic material ignores the Noter mode (%s); disable stops it and preserves committed work", async (noting) => {
+// Re-enabling uses the same evidence-aware predicate as every ordinary prompt.
+test.each([true, false])("34c: automatic material ignores the Noter mode (%s); disable preserves work and on rechecks evidence coverage", async (noting) => {
   const h = setup({ "noting.forkModeDefault": noting });
   await h.turn();
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory", name: "memory", arguments: {
@@ -152,10 +152,10 @@ test.each([true, false])("29d: automatic material ignores the Noter mode (%s); d
   expect(await h.prompt("unseen")).toBeUndefined(); await h.answer(); await h.emit("agent_settled");
   expect(h.memory.store.listVisibleKnowledge(0, 1).some(k => k.revision.text === "Retained shared knowledge")).toBe(true);
   await command(h, "on");
-  // The knowledge committed while this conversation was enabled is the automatic material that is
-  // left, and it is still injected once, on the first prompt after the switch.
-  expect((await h.prompt("resume")).message.content).toContain("Retained shared knowledge");
-  expect((await h.prompt("again"))?.message).toBeUndefined();
+  // The complete same-conversation source evidence is still visible after off/on, so 34c suppresses
+  // the redundant Knowledge body on both prompts rather than treating `on` as a delivery trigger.
+  expect(await h.prompt("resume")).toBeUndefined();
+  expect(await h.prompt("again")).toBeUndefined();
 });
 
 test("18a/24b, as 29e left it: Settings shows each phase's three preferences with their effective source and masked layers, and displaying them writes nothing", async () => {

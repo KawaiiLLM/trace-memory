@@ -1666,6 +1666,27 @@ export class Store {
     return conflicts.length ? { knowledgeId, baseCommit, successorCommits: conflicts } : null;
   }
 
+  /** Render a stale-base refusal with global exact handles. The consuming edge is the concurrency
+   * proof; the applicable successor-free descendants are what a Consolidator can usefully reread. */
+  private consumedBaseMessage(conflict: ConsumedBaseConflict, path: KnowledgePath | null, runId: number): string {
+    const incoming = this.getRun(runId)!;
+    const exact = (commitId: number) => {
+      const revision = this.knowledgeRevision(commitId)!;
+      return `K${revision.knowledgeId}@${revision.id}`;
+    };
+    const independent = conflict.successorCommits.some(id => this.getRun(this.knowledgeRevision(id)!.runId!)!.sessionId !== incoming.sessionId);
+    const graph = this.commitGraph(path);
+    const descendants = new Set(conflict.successorCommits.flatMap(id => [...graph.descendants(id)]));
+    const current = graph.current.filter(revision => descendants.has(revision.id));
+    const kind = independent ? "applicable consuming successor from independent target session" : "competing consuming successor from comparable trigger origin";
+    const consumed = conflict.successorCommits.map(exact).join(", ");
+    const latest = current.map(revision => exact(revision.id)).join(", ");
+    const guidance = !current.length ? "no applicable successor exists at the frozen writer path"
+      : current.every(revision => revision.op === "archive") ? `current: ${latest}`
+      : `current: ${latest}; re-read the exact current K@commit and resubmit`;
+    return `K${conflict.knowledgeId}@${conflict.baseCommit}: target moved on via ${kind}: ${consumed}; ${guidance}`;
+  }
+
   /** Commit one atomic knowledge batch. Every exact base and consuming edge is rechecked here. */
   commitConsolidationRun(input: CommitConsolidationRunInput): CommitConsolidationResult {
     try {
@@ -1726,11 +1747,7 @@ export class Store {
       const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path);
       if (bad) return { ok: false, reason: bad };
       const conflict = this.competingSuccessors(target.knowledgeId, target.baseCommit, path, runId);
-      if (conflict) {
-        const incoming = this.getRun(runId)!;
-        const independent = conflict.successorCommits.some(id => this.getRun(this.knowledgeRevision(id)!.runId!)!.sessionId !== incoming.sessionId);
-        throw new ConsumedBaseConflictError(conflict, `K${target.knowledgeId}@${target.baseCommit}: ${independent ? "applicable consuming successor from independent target session" : "competing consuming successor from comparable trigger origin"}: ${conflict.successorCommits.map(id => `@${id}`).join(", ")}`);
-      }
+      if (conflict) throw new ConsumedBaseConflictError(conflict, this.consumedBaseMessage(conflict, path, runId));
       if (seen.has(target.baseCommit)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
       seen.add(target.baseCommit);
     }

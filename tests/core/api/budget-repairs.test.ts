@@ -51,12 +51,12 @@ test("review 2026-09-08: a Noting batch that cannot fit the episodic budget stay
   } finally { f.m.close(); }
 });
 
-test("review 2026-09-08: a knowledge cap that cannot hold even its omission receipt is a capacity error, not an oversized block", () => {
+test("34c: a knowledge cap that cannot hold a complete foreground item emits nothing", () => {
   const f = seeded({ render: { knowledgeBlockTokens: 1 } });
   try {
     f.note("Evidence");
     expect(f.knowledge("A complete rule")).toContain("committed");
-    expect(() => f.m.inject(f.s.id)).toThrow(/Knowledge capacity/);
+    expect(f.m.inject(f.s.id)).toBe("");
   } finally { f.m.close(); }
 });
 
@@ -119,8 +119,8 @@ test("review 2026-09-08: the Receipts heading is charged to the budgets it is em
   try {
     f.note("Evidence");
     expect(f.knowledge("word ".repeat(100))).toContain("committed");
-    // A cap of 12 holds the omission receipt but not its heading: a capacity error, never 15 tokens.
-    expect(() => f.m.inject(f.s.id)).toThrow(/Knowledge capacity/);
+    // 34c foreground publication emits no omission-only block when no complete item fits.
+    expect(f.m.inject(f.s.id)).toBe("");
   } finally { f.m.close(); }
   // At the default caps, no padding of the current material leaves the rendered text over the
   // episodic budget with `over.episodic` still zero.

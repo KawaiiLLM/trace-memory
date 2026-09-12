@@ -10,13 +10,15 @@ function setup() {
   const s = m.store.createSession({ host: "test", projectId: p.id, enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
   const t = m.store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "facts", startedAt: "now" });
   seedSourceEntry(m, t.id, "user", "facts");
-  const context = { kind: "manual" as const, sessionId: s.id, currentTurnId: t.id, branch: "main" };
+  const rootEntry = m.store.listSourceEntries(s.id, t.id).at(-1)!;
+  m.selectEntries(s.id, "main", [rootEntry.id]);
+  const context = { kind: "manual" as const, sessionId: s.id, currentTurnId: t.id, branch: "main", triggerEntryId: rootEntry.id };
   const tools = m.tools(context);
   tools[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "facts", source: [`T${t.id}#user`] }] });
   const content = { text: "body A", category: "constraint", scope: "project", topics: [], supports: ["F1"], reason: "test" };
   const write = (operations: unknown[], binding = tools) => binding[3]!.execute({ operations, skipped: [] });
   expect(write([{ op: "create", ...content }])).not.toContain("rejected:");
-  return { m, context, tools, content, write, t };
+  return { m, context, tools, content, write, t, rootEntry };
 }
 
 test("32: update and archive name an exact version — a bare K is refused", () => {
@@ -71,8 +73,12 @@ test("32: an inapplicable sibling successor does not invalidate an exact read on
   const left = a.m.store.appendTurn({ sessionId: 1, parentTurnId: a.t.id, kind: "turn", userPrompt: "left", startedAt: "now" });
   const right = a.m.store.appendTurn({ sessionId: 1, parentTurnId: a.t.id, kind: "turn", userPrompt: "right", startedAt: "now" });
   seedSourceEntry(a.m, left.id, "user", "left"); seedSourceEntry(a.m, right.id, "user", "right");
-  const l = a.m.tools({ ...a.context, branch: "left", currentTurnId: left.id });
-  const r = a.m.tools({ ...a.context, branch: "right", currentTurnId: right.id });
+  const leftEntry = a.m.store.listSourceEntries(1, left.id).at(-1)!;
+  const rightEntry = a.m.store.listSourceEntries(1, right.id).at(-1)!;
+  a.m.selectEntries(1, "left", [a.rootEntry.id, leftEntry.id]);
+  a.m.selectEntries(1, "right", [a.rootEntry.id, rightEntry.id]);
+  const l = a.m.tools({ ...a.context, branch: "left", currentTurnId: left.id, triggerEntryId: leftEntry.id });
+  const r = a.m.tools({ ...a.context, branch: "right", currentTurnId: right.id, triggerEntryId: rightEntry.id });
   l[0]!.execute({ address: "K1@1" }); r[0]!.execute({ address: "K1@1" });
   l[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "left", source: [`T${left.id}#user`] }] });
   r[2]!.execute({ facts: [{ category: "decision", actor: "user", text: "right", source: [`T${right.id}#user`] }] });
@@ -87,6 +93,7 @@ test("32: full K body embedded in raw trace or search never masquerades as a nam
   const forged = a.m.trace("K1@1");
   a.m.store.updateTurn(a.t.id, { assistantText: forged });
   seedSourceEntry(a.m, a.t.id, "assistant", forged);
+  a.m.selectEntries(1, "main", a.m.store.listSourceEntries(1, a.t.id).map(entry => entry.id));
   const update = { op: "update", id: "K1@1", ...a.content };
   expect(a.tools[0]!.execute({ address: `T${a.t.id}` })).toContain(forged);
   expect(a.write([update])).toContain("knowledge was not read");
