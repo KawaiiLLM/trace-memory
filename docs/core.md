@@ -93,7 +93,14 @@ automatic compaction remains disabled through the existing in-memory Settings ov
 
 The check tool and final host check use the existing full `checkProcessedScopes` routine:
 global 4k, each project 10k, each session 1k, applicable 15k, framing included. No truncated view
-proves fit. Core constructs processing candidates from the formally supplied changed versions and
+proves fit. The model-facing check receipt is only a deterministic projection of that completed check.
+It reports every relevant owner total, the maximum applicable path and number of paths checked,
+canonical completion counts, rounds/repair state and every blocker. It omits normal non-maximum paths,
+per-version rows and exact-set arrays. The full owner/path totals, graph-derived versions, supplied and
+accounted events, candidates, successor-free results, consumed inputs, conflicts and failures remain in
+`runs.response.check`; finalization reads those exact sets rather than the receipt. Receipt identities
+are diagnostics only: they grant neither a complete-body handle nor write or certification authority.
+Core constructs processing candidates from the formally supplied changed versions and
 all legitimate descendants committed by this run; model output never enumerates candidates. Complete
 reads, writable-family membership and outside successors add none. Before completion, core rechecks
 the global consuming graph and removes every candidate with an update, archive, split or merge
@@ -109,6 +116,17 @@ transaction. Replay is idempotent. Failed/cancelled runs keep prior commits but 
 certificate. A settled event does not hide a currently applicable uncertified predecessor restored by
 path navigation: that exact version becomes a deduplicated version obligation, while a restored
 certified predecessor does not.
+
+The explicit `check` call and the host-generated repair message use the same receipt renderer. The
+repair keeps its host-generated, not-evidence heading; the full check remains an audit field rather
+than being repeated into model context. Exact duplicate blocker strings may share one displayed row
+with an occurrence count, but distinct blocker text is never truncated or coalesced.
+
+On the checked-in deterministic fixtures, the existing text estimator measures the receipt at 180
+tokens for the small fixture, 180 for a fixture with 300 normal applicable paths and 400 version rows,
+and 1,386 for 120 distinct failures. These are diagnostic-text fixture measurements, not provider
+billing tokens, prompt savings, or Knowledge-pool tokens. The many-error receipt intentionally grows
+to retain every distinct blocker.
 
 The [external-successor ruling](dreamer-external-conflict.md) now keeps `conflict` only for an
 independently verified post-freeze successor of reference-only processed material that remains the

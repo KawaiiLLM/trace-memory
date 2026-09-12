@@ -296,7 +296,10 @@ test("34b: shared-result peer propagation blocks the whole oversized group while
     expect(task.material.changed).toContain(`K${independent.knowledgeId}@${independent.commit}`);
     expect(task.material.changed).not.toContain(`K${merged.knowledgeId}@${merged.commit}`);
     expect(task.material.changed).not.toContain(`K${peer.knowledgeId}@${peer.commit}`);
-    expect(JSON.parse(task.tools.find(tool => tool.name === "check")!.execute({})).eventIds).toEqual([independent.commit]);
+    const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
+    expect(receipt).toContain("- supplied formal events: 1");
+    expect(receipt).toContain("Blockers: none");
+    expect(receipt).not.toContain(`K@${independent.commit}`);
     return success;
   });
   const result = await f.memory.dream(target);

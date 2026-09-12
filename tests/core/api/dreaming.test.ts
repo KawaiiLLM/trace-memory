@@ -39,6 +39,11 @@ test("32d: no-change completion runs the host check without a check tool call", 
   expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(true);
   const run = f.store.listRuns(f.target.sessionId).find(r => r.kind === "dreaming")!;
   const checked = JSON.parse(run.response!).check;
+  expect(checked).toMatchObject({
+    suppliedEventIds: [f.item.commit], eventIds: [f.item.commit], candidateIds: [f.item.commit],
+    resultIds: [f.item.commit], consumedInputIds: [], operationFailures: [], problems: [],
+  });
+  expect(checked.versions).toEqual([{ knowledgeId: f.item.knowledgeId, commit: f.item.commit, processed: false, successorCommits: [] }]);
   const before = f.store.taskFailures(f.target.sessionId);
   f.store.completeDreaming(run.id, checked.eventIds, checked.resultIds, () => { throw Error("replay must not revalidate or resettle"); });
   expect(f.store.taskFailures(f.target.sessionId)).toEqual(before);
@@ -61,7 +66,14 @@ test.each(["success", "failure"] as const)("32d: immediate archive plus an unres
 
 test("32d: scope overflow permits one concrete repair but an unreduced remainder still fails", async () => {
   const f = fixture(async task => {
-    expect(task.passEnd(2)).toMatch(/One repair.*48 tool rounds/);
+    task.reportRounds(2);
+    const explicitReceipt = task.tools.find(t => t.name === "check")!.execute({});
+    const repairFeedback = task.passEnd(2)!;
+    expect(repairFeedback).toMatch(/One repair[\s\S]*remaining tool rounds: 48/);
+    expect(explicitReceipt).toContain("- repair available: yes");
+    expect(repairFeedback).toContain("Dreamer completion check receipt");
+    expect(repairFeedback).toContain("- repair available: no");
+    expect(repairFeedback).toContain("processed knowledge");
     expect(task.passEnd(2)).toBeUndefined();
     task.tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${f.item.knowledgeId}@${f.item.commit}`, supports: [], reason: "Budget tradeoff: retire lower priority rule" }], skipped: [] });
     return success;
@@ -323,12 +335,16 @@ test("32d: own split/update/merge/archive outputs survive failure and reopen und
     task.tools.find(t => t.name === "trace")!.execute({ address: `K${survivor.knowledgeId}` });
     const archived = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${survivor.knowledgeId}@${merged[0].commit}`, supports: [], reason: "Deliberate retirement with retained history" }], skipped: [] })).committed;
     expect(archived).toHaveLength(1); own.push(...archived);
-    const checked = JSON.parse(task.tools.find(t => t.name === "check")!.execute({}));
-    expect(checked.problems).toEqual([]);
-    expect(checked.resultIds).toEqual([archived[0].commit]);
+    const receipt = task.tools.find(t => t.name === "check")!.execute({});
+    expect(receipt).toContain("- successor-free results: 1");
+    expect(receipt).toContain("Blockers: none");
+    expect(receipt).not.toContain(`K${archived[0].knowledgeId}@${archived[0].commit}`);
     return success;
   }, { dreaming: { triggerTokens: 1 } }); memories.push(next);
-  expect((await next.dream(f.target)).outcome).toBe("success");
+  const completed = await next.dream(f.target);
+  expect(completed.outcome).toBe("success");
+  if (!("runId" in completed)) throw Error("missing run");
+  expect(JSON.parse(next.store.getRun(completed.runId)!.response!).check.resultIds).toEqual([own.at(-1)!.commit]);
   expect(next.store.isKnowledgeProcessed(own.at(-1)!.commit)).toBe(true);
   expect(own.slice(0, -1).every(v => !next.store.isKnowledgeProcessed(v.commit))).toBe(true);
   expect(next.store.pendingKnowledgeEvents(f.target)).toEqual([]);
@@ -343,14 +359,18 @@ test("32d: a fully read external merge outside family cannot hide the selected r
     const merged = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: item.commit, absorb: [{ knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit }], ...f.content }] });
     expect(merged.ok).toBe(true);
     task.tools.find(t => t.name === "trace")!.execute({ address: `K${item.knowledgeId}` });
-    const checked = JSON.parse(task.tools.find(t => t.name === "check")!.execute({}));
-    expect(checked.resultIds).toEqual([]);
-    expect(checked.problems).toEqual([]);
-    expect(checked.family).not.toContain(item.knowledgeId);
+    const receipt = task.tools.find(t => t.name === "check")!.execute({});
+    expect(receipt).toContain("- successor-free results: 0");
+    expect(receipt).toContain("Blockers: none");
+    expect(receipt).not.toContain(`K${item.knowledgeId}@${item.commit}`);
     return success;
   });
   const completed = await f.memory.dream(f.target);
   expect(completed.outcome).toBe("success");
+  if (!("runId" in completed)) throw Error("missing run");
+  const audited = JSON.parse(f.store.getRun(completed.runId)!.response!).check;
+  expect(audited.resultIds).toEqual([]);
+  expect(audited.family).not.toContain(f.store.listKnowledgeRevisions().at(-1)!.knowledgeId);
   expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
   expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.item.commit]);
   expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(2);

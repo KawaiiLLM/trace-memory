@@ -59,7 +59,7 @@ export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
     then: { not: { anyOf: ["text", "category", "scope", "topics"].map(key => ({ required: [key] })) } },
     else: { required: ["text", "category", "scope", "topics"] } };
   operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
-  tools.push({ name: "check", description: "Read-only completion check: exact events/results, family, current versions, claims and full shared scope totals, remaining rounds and repair availability. It never commits or certifies knowledge.", parameters: object({}) });
+  tools.push({ name: "check", description: "Read-only completion check. Returns relevant owner budgets, the maximum applicable projection, canonical completion counts, remaining rounds, repair availability and every blocker. Detailed exact sets and normal projection rows stay in the run audit. This receipt never grants a complete-body handle, commits or certifies knowledge.", parameters: object({}) });
   return tools;
 }
 

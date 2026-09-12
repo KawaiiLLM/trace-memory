@@ -120,9 +120,10 @@ test.each([false, true])("own intermediate consumed by external merge=%s keeps a
   const reopened = TraceMemory(f.db, async raw => {
     const task = raw as DreamingAgentInput;
     expect(task.material.changed).toContain(`K${external.knowledgeId}@${external.commit}`);
-    const checked = JSON.parse(tool(task, "check").execute({}));
-    expect(checked.resultIds).toEqual([external.commit]);
-    expect(checked.problems).toEqual([]);
+    const receipt = tool(task, "check").execute({});
+    expect(receipt).toContain("- successor-free results: 1");
+    expect(receipt).toContain("Blockers: none");
+    expect(receipt).not.toContain(`K${external.knowledgeId}@${external.commit}`);
     return success;
   }, { dreaming: { triggerTokens: 1000000 } }); memories.push(reopened);
   for (const outcome of ["failure", "cancelled", "conflict"] as const) expect(reopened.settleExecution(execution, outcome, result.runId)).toEqual({});

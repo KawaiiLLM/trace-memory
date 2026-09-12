@@ -8,6 +8,7 @@ import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "
 import { similarity, type ConsolidateInput } from "../consolidation/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
+import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
 
 const prompt = readFileSync(new URL("../prompts/dreaming.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -102,10 +103,8 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
   const formal = new Set(frozen.changed.versions.map(v => v.revision.id));
   const eventResults = new Map(frozen.changed.eventResults.map(value => [value.eventId, value.commits]));
-  const check = () => {
-    const failures: string[] = [...binding.toolProblems];
+  const check = (): DreamingCheckResult => {
     let family = range.knowledgeIds;
-    try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
     const allOwn = store.dreamingOwnCommits(range.id);
     const frozenOwn = new Set(ownCommitsAtFreeze);
     const freshOwn = allOwn.filter(id => !frozenOwn.has(id));
@@ -121,8 +120,11 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     // fresh graph still contains that consuming edge for a formal processing version.
     const verifiedConflicts = binding.memory.competitiveConflicts.filter(conflict => formal.has(conflict.baseCommit) &&
       conflict.successorCommits.some(id => consumers.get(conflict.baseCommit)?.includes(id)));
-    if (binding.memory.problems.length && (!binding.memory.competitiveConflicts.length ||
-        verifiedConflicts.length !== binding.memory.competitiveConflicts.length)) failures.push(...binding.memory.problems);
+    const memoryFailures = binding.memory.problems.length && (!binding.memory.competitiveConflicts.length ||
+      verifiedConflicts.length !== binding.memory.competitiveConflicts.length) ? binding.memory.problems : [];
+    const operationFailures = [...binding.toolProblems, ...memoryFailures];
+    const failures: string[] = [...operationFailures];
+    try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
 
     const accountedEventIds = eventIds.filter(eventId => {
       const roots = eventResults.get(eventId) ?? [];
@@ -150,23 +152,26 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const state = store.dreamingInput(path, eventIds, candidates);
     const problems = [...failures, ...externalSuccessors.map(value =>
       `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
-    return { family, eventIds: accountedEventIds, retainedEventIds: range.eventIds, resultIds,
+    return { family, suppliedEventIds: eventIds, eventIds: accountedEventIds, retainedEventIds: range.eventIds,
+      candidateIds: candidates, resultIds,
+      consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
       pendingEventIds: state.events.map(event => event.id),
       versions: candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
         knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
         successorCommits: consumers.get(commit),
       }; }),
-      verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, failures, problems,
+      verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures, problems,
       remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired };
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
-    range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined, { path, check: () => JSON.stringify(check()) });
+    range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
+    { path, check: () => renderDreamingCheckReceipt(check()) });
   const passEnd = (used: number): string | undefined => {
     rounds = used;
     const checked = check();
     if (!checked.problems.length || repaired || rounds >= frozen.maxToolRounds) return;
     repaired = true;
-    return `System-generated Dreamer completion check (not evidence). One repair, ${checked.remainingRounds} tool rounds remain:\n${checked.problems.join("\n")}`;
+    return `System-generated Dreamer completion check (not evidence). One repair, ${checked.remainingRounds} tool rounds remain:\n${renderDreamingCheckReceipt({ ...checked, repairAvailable: false })}`;
   };
   let result: RunAgentResult;
   try { result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
@@ -193,8 +198,8 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         run.response = JSON.stringify({ ...JSON.parse(run.response!), check: final, problems: final.problems });
         store.updateRun(runId, { ...run, outcome });
         if (outcome === "conflict") store.settleDreamingConflict(run, final.problems.join("; "));
-        else store.completeDreaming(runId, final.eventIds, final.resultIds);
-        return { outcome, runId, problems: final.problems };
+        else store.completeDreaming(runId, [...final.eventIds], [...final.resultIds]);
+        return { outcome, runId, problems: [...final.problems] };
       });
     } catch (error) { problems.push(String(error)); }
   }

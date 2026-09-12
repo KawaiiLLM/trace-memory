@@ -145,7 +145,7 @@ test("34a: trusted Dreamer split is atomic, reaches both child families and cert
     const update = JSON.parse(tool.execute({ operations: [{ op: "update", id: `K${first!.knowledgeId}@${first!.commit}`,
       text: "first rule, clarified", category: "constraint", scope: "project", topics: ["first"], supports: [], reason: "clarify structure" }], skipped: [] }));
     expect(update.committed).toHaveLength(1);
-    expect(input.tools.find(t => t.name === "check")!.execute({})).not.toContain('"failures":["');
+    expect(input.tools.find(t => t.name === "check")!.execute({})).toContain("Blockers: none");
     attempted = true;
     return { outcome: "success", output: "done", request: { offline: true } };
   }, { dreaming: { triggerTokens: 1 } });
