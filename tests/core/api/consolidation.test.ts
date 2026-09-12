@@ -21,6 +21,11 @@ function open(config: ConfigOverride = {}) {
     // A stub host: it receives structured material and never a core-composed message, and builds its
     // own provider record out of the material, the tool rounds and core's review feedback (19b).
     let input = { ...raw as CoreInput, round: "candidate" as const } as ConsolidationAgentInput;
+    const guidance = input.tools.find(t => t.name === "trace")!.description;
+    expect(guidance).toContain("trace({address:'K12@57',itemBudget:null})");
+    expect(guidance).toContain("pageBudget still applies");
+    expect(guidance).toContain("Follow every cursor");
+    expect(guidance).toContain("already supplied internally need no reread");
     const rounds: any[] = [{ material: structuredClone(input.material) }];
     for (;;) {
       input.request = { system: input.prompt, rounds: structuredClone(rounds), tools: input.tools.map(({execute, ...tool}) => tool), hostField: input.round };
@@ -123,7 +128,7 @@ test("freezes session branch range, read revisions, relations and guidance throu
   // this line pinned ("a Consolidation commit delivers its knowledge to the foreground whatever mode
   // it ran in"): a commit now delivers to no one, and the foreground learns of it through a later
   // compaction or an explicit read.
-  expect(memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 test("reminder lists every visible supporting knowledge for both strengths and ignores lexical distance and budgets", async () => {

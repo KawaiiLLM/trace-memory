@@ -65,13 +65,13 @@ export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE
   return weight;
 }
 
-export function pendingEvents(store: Store, path: KnowledgePath, cache = true): KnowledgeEvent[] {
+export function pendingEvents(store: Store, path: KnowledgePath, cache = true,
+  snapshot = store.pathSnapshot(path), input?: ApplicabilityInput): KnowledgeEvent[] {
   const candidates = store.pendingKnowledgeRevisions(path);
   if (!candidates.length) return [];
-  const snapshot = store.pathSnapshot(path);
   const retained = new Set(store.db.prepare(`SELECT e.event_id FROM dreaming_range_events e JOIN dreaming_ranges r ON r.id = e.range_id
     WHERE r.session_id = ? AND r.branch = ? AND r.completed_run IS NULL`).all(path.sessionId, path.branch ?? "").map(r => Number(r.event_id)));
-  return candidates.filter(r => retained.has(r.id) || store.commitApplies(r, path, snapshot))
+  return candidates.filter(r => retained.has(r.id) || store.commitApplies(r, path, snapshot, input))
     .map(r => ({ id: r.id, knowledgeId: r.knowledgeId, tokens: changeWeight(store, r.id, KNOWLEDGE_VIEW_VERSION, cache) }));
 }
 

@@ -5,16 +5,9 @@ import { expect, test } from "vitest";
 import { sourceSeededMemory } from "../../source-fixture.ts";
 import { host, notingFact } from "./test-host.ts";
 
-// Ticket 29d, acceptance case 23 ("Old pending rows"). 29d retired automatic foreground receipt
-// delivery on all four sides but kept the `pending_deliveries` table: a published Beta database must
-// open unchanged, and no version migrates or rewrites it. What this file pins is that its rows are
-// inert — the new version never pauses a worker on them, never drains them into a prompt, never turns
-// a timestamp into visibility, and never edits them — while the facts, runs, processing marks and
-// knowledge beside them are read exactly as before.
-//
-// The rows are written with raw SQL on purpose: the writers (`addPendingDelivery`,
-// `clearPendingDelivery`) are gone, and a case that could only produce this state through code that
-// no longer exists would prove nothing about a real Beta file.
+// A legacy delivery table must survive reopening without becoming a worker gate, prompt delivery
+// or visibility evidence. Build its historical schema explicitly: fresh stores no longer create it.
+// Facts, runs, processing marks and knowledge beside the inert rows must remain readable.
 
 /** A database shaped like a published Beta one: real facts, a real run, real processing marks and
  * knowledge, plus one delivered and one undelivered legacy row. */
@@ -32,11 +25,18 @@ function betaDatabase(directory: string) {
     operations: [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", handle: "$e1", author: "beta",
       text: "项目用 pnpm。", category: "constraint", scope: "project", supports: [noted.facts[0]!.id], createdAt: "now" }] });
   if (!consolidated.ok) throw new Error(consolidated.problems.join("; "));
+  memory.store.db.exec(`CREATE TABLE pending_deliveries (
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    session_id INTEGER NOT NULL REFERENCES sessions(id),
+    branch TEXT,
+    delivered_at TEXT
+  )`);
   // One consumed row and one that the old version would still have delivered.
   memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', '2026-09-01T00:00:00Z')").run(noted.runId, session.id);
   memory.store.db.prepare("INSERT INTO pending_deliveries (run_id, session_id, branch, delivered_at) VALUES (?, ?, 'main', NULL)").run(consolidated.runId, session.id);
   const rows = () => memory.store.db.prepare("SELECT run_id, session_id, branch, delivered_at FROM pending_deliveries ORDER BY run_id").all();
   const state = {
+    schema: memory.store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get(),
     rows: rows(),
     facts: memory.store.listSessionFacts(session.id).map(f => f.text),
     runs: memory.store.listRuns(session.id).map(r => [r.id, r.kind, r.outcome]),
@@ -65,6 +65,7 @@ test("29d case 23: a published Beta database's delivery rows pause nothing, deli
     expect(String((await h.prompt("third"))?.message?.content ?? "")).not.toContain("<consolidated>");
     // The old rows are exactly as they were found: no timestamp written, none consumed, none added.
     const store = h.memory.store;
+    expect(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toEqual(beta.state.schema);
     expect(store.db.prepare("SELECT run_id, session_id, branch, delivered_at FROM pending_deliveries ORDER BY run_id").all()).toEqual(beta.state.rows);
     // The undelivered row's commits did not become visibility either: its knowledge is offered as the
     // ordinary initial block for the new session, by applicability, not because a row said so.

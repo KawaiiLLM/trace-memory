@@ -1,4 +1,4 @@
-import { resolveSource, type SourceResolution } from "../model/source.ts";
+import { resolveFactSource, type SourceResolution } from "../model/source.ts";
 import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
@@ -38,9 +38,9 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 ] };
 
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
-  { name: "trace", description: "Read evidence by address. T792 is a Turn; T792#E2 is its stable native entry; T792#E2@text, @thinking or @toolCallId select stored blocks. T792@user/@assistant/@toolResult selects complete role messages; @text collects text (including result text), never arguments or thinking. T792@F* selects Turn-owned facts. T792#E2..E7 is inclusive (gaps allowed); T792#E2,E7 keeps written order and repeats, with a trailing @selector applying to the whole selection. A new complete T/F/K target starts another component. Tool IDs containing delimiters or reserved selector names use a JSON-quoted selector. No other globbing or chained @. Legacy #user/#assistant/#tN remain readable; new citations use exact E addresses. itemBudget caps EACH child of the selected container (Turn: entries; one entry: blocks), default 2000; toolCallBudget and toolResultBudget default 100 as additional ceilings. null disables each content ceiling independently; to remove all compression set ALL THREE to null. pageBudget independently defaults to 2000 for every trace read. Knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...budgets, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
+  { name: "trace", description: "Read evidence by address. For a complete knowledge version use trace({address:'K12@57',itemBudget:null}); pageBudget still applies. Follow every cursor before an exact write handle is granted. Complete K versions already supplied internally need no reread. T792 is a Turn; T792#E2 is its stable native entry; T792#E2@text, @thinking or @toolCallId select stored blocks. T792@user/@assistant/@toolResult selects complete role messages; @text collects text (including result text), never arguments or thinking. T792@F* selects Turn-owned facts. T792#E2..E7 is inclusive (gaps allowed); T792#E2,E7 keeps written order and repeats, with a trailing @selector applying to the whole selection. A new complete T/F/K target starts another component. Tool IDs containing delimiters or reserved selector names use a JSON-quoted selector. No other globbing or chained @. Legacy #user/#assistant/#tN remain readable; new citations use exact E addresses. itemBudget caps EACH child of the selected container (Turn: entries; one entry: blocks), default 2000; toolCallBudget and toolResultBudget default 100 as additional ceilings. null disables each content ceiling independently; to remove all compression set ALL THREE to null. pageBudget independently defaults to 2000 for every trace read. Knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...budgets, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: `Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.`, parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_READ_TOKENS }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
-  { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
+  { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. Thinking is readable, not evidence for new facts: @thinking and thinking-only entries are invalid sources; whole mixed entries cite only text/call/result blocks. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
   { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Update/archive and every merge participant require an explicit K1@57 handle whose complete body was supplied or read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
@@ -146,7 +146,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     const resolution = new Map<string, SourceResolution[]>();
     const resolve = (source: string) => {
       if (!resolution.has(source)) {
-        const matches = resolveSource(authority, source);
+        const matches = resolveFactSource(authority, source);
         resolution.set(source, context.kind !== "noting" ? matches : matches.some(hit => !frozenPath.has(hit.entry.id))
           ? [] : matches.filter(hit => frozenIds.has(hit.entry.id)));
       }
@@ -162,7 +162,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (Array.isArray(fact.source)) for (const source of fact.source) {
           const matches = resolve(source);
           const turn = matches.length ? store.getTurn(matches[0]!.entry.turnId) : null;
-          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages are not sources`);
+          if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages and thinking are not fact sources`);
           else {
             if (!first) first = turn.id;
             cited.push(...matches);
@@ -214,6 +214,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (context.kind === "noting") committed = committedRun;
     return result;
   };
+  // Exceptions outside memory's batch validator must also block Dreamer completion until
+  // that tool is used legally; tool text is diagnostic, never a conflict classification.
+  const toolProblems = new Map<string, string>();
   const definitions = dreaming ? dreamingToolDefinitions() : toolDefinitions;
   const definition = (name: ToolDefinition["name"], execute: (input: Record<string, unknown>) => string): ToolDefinition => ({ ...definitions.find(t => t.name === name)!,
     execute: (raw) => {
@@ -228,7 +231,10 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
           if (name === "trace" || name === "search") validateReadInput(name, raw);
           result = execute(raw as Record<string, unknown>);
         }
-      } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`; if (name === "note" && !committed) problems = [result]; }
+        toolProblems.delete(name);
+      } catch (error) { result = `rejected: ${error instanceof Error ? error.message : String(error)}`;
+        if (dreaming) toolProblems.set(name, result);
+        if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
       if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}) }) });
@@ -247,6 +253,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
-  return { tools, sequence, fetched, memory, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
+  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
     reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); memory.requestSeen(); run.request = JSON.stringify(request); } };
 }

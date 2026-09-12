@@ -45,6 +45,41 @@ test("33: legacy schema upgrade is deterministic and never rewrites raw or sourc
     expect(store.appendSourceEntry(f.input("c")).entryOrdinal).toBe(3);
   } finally { store.close(); }
 });
+test("entry/cleanup integration: ordinal and block upgrade preserves the retired delivery table and legacy citations", () => {
+  const f = fixture(); let store = f.store;
+  try {
+    const a = store.appendSourceEntry(f.input("a")), b = store.appendSourceEntry(f.input("b"));
+    store.selectSourcePath(f.session.id, "main", [b.id]);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, createdAt: "time" }, facts: [{ turnId: f.turn.id,
+      category: "observation", actor: "user", text: "legacy fact", source: [`T${f.turn.id}#user`], createdAt: "time" }] });
+    if (!noted.ok) throw Error(noted.problems.join());
+    store.db.exec(`CREATE TABLE pending_deliveries (run_id INTEGER NOT NULL REFERENCES runs(id), session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT, delivered_at TEXT)`);
+    store.db.prepare("INSERT INTO pending_deliveries VALUES (?, ?, 'main', NULL)").run(noted.runId, f.session.id);
+    const schema = store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get();
+    const rows = store.db.prepare("SELECT * FROM pending_deliveries").all();
+    const raw = store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all();
+    const fact = store.getFact(noted.facts[0]!.id);
+    store.db.exec(`DROP INDEX idx_source_turn_ordinal; ALTER TABLE source_entries DROP COLUMN entry_ordinal;
+      ALTER TABLE source_entries DROP COLUMN blocks; ALTER TABLE source_entries DROP COLUMN addresses`);
+    let normalized = 0;
+    const normalize = (input: SourceInput) => { normalized++; return [{ kind: "text" as const, text: input.text }]; };
+    for (let reopen = 0; reopen < 2; reopen++) {
+      store.close(); store = new Store(f.path, normalize);
+      expect(normalized).toBe(2);
+      expect(store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'pending_deliveries'").get()).toEqual(schema);
+      expect(store.db.prepare("SELECT * FROM pending_deliveries").all()).toEqual(rows);
+      expect(store.db.prepare("SELECT id, content FROM source_entries ORDER BY id").all()).toEqual(raw);
+      expect(store.getFact(noted.facts[0]!.id)).toEqual(fact);
+      expect(store.listSourceEntries(f.session.id, f.turn.id, "main").map(e => e.entryOrdinal)).toEqual([2]);
+      expect(store.getSourceEntry(a.id)!.blocks).toEqual([{ kind: "text", text: "a" }]);
+      expect(store.appendSourceEntry(f.input("b")).id).toBe(b.id);
+      expect(store.db.prepare("SELECT addresses FROM source_entries WHERE id = ?").get(b.id)!.addresses).toContain(`T${f.turn.id}#E2@text`);
+    }
+    expect(store.appendSourceEntry(f.input("c")).entryOrdinal).toBe(3);
+    expect(normalized).toBe(3);
+  } finally { store.close(); }
+});
+
 test("33: normalization runs once on upgrade or ingestion, not on reads or restart", () => {
   const f = fixture();
   const original = f.store.appendSourceEntry(f.input("legacy"));

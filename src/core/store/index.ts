@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { migrateDreaming } from "./migration.ts";
-import { sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
+import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS runs (
   mode TEXT,
   request TEXT,
   response TEXT,
-  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced','conflict')),
   created_at TEXT NOT NULL
 );
 
@@ -184,16 +184,7 @@ CREATE TABLE IF NOT EXISTS knowledge_marks (
   FOREIGN KEY (knowledge_id, commit_id) REFERENCES knowledge_revisions(knowledge_id, id)
 );
 
--- 29d: retired. Automatic foreground receipt delivery is gone; nothing writes or reads this table
--- any more. It is created and left as it is so a published Beta database opens unchanged, and its
--- timestamps are never interpreted as visibility (parent 29, "Retire automatic foreground receipt
--- delivery": historical tables may remain, the new version does not drain or interpret them).
-CREATE TABLE IF NOT EXISTS pending_deliveries (
-  run_id INTEGER NOT NULL REFERENCES runs(id),
-  session_id INTEGER NOT NULL REFERENCES sessions(id),
-  branch TEXT,
-  delivered_at TEXT
-);
+-- Legacy pending_deliveries tables are left untouched, not created or used as visibility evidence.
 
 CREATE TABLE IF NOT EXISTS source_entries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -579,11 +570,13 @@ export class Store {
     return this.isDreamingRun(run) ? this.dreamingAuthorities.get(run.dreamingAuthority!)!.runId : undefined;
   }
 
-  validateDreamingRun(run: RunInput, path: KnowledgePath): DreamingRange {
+  validateDreamingRun(run: RunInput, path: KnowledgePath, forCompletion = false): DreamingRange {
     if (!this.isDreamingRun(run)) throw new Error("trusted Dreamer run binding required");
     this.requireEnabled(run.sessionId!);
     this.requireClaim(run);
-    const range = this.dreamingRange(run.dreamingRangeId!);
+    // Another target may legitimately finish shared events while this execution is running.
+    // Its final check still needs the original identity; writes continue to require an open range.
+    const range = this.dreamingRange(run.dreamingRangeId!, forCompletion);
     if (!range || path.sessionId !== range.sessionId || path.branch !== range.branch || path.headTurnId !== range.headTurnId)
       throw new Error("Dreamer target differs from its retained path");
     const snapshot = this.pathSnapshot(path);
@@ -622,7 +615,16 @@ export class Store {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
             const input = JSON.parse(String(row.content));
-            const blocks = row.blocks == null ? normalizeSource?.(input) : JSON.parse(String(row.blocks));
+            let blocks: SourceBlock[] | undefined;
+            if (row.blocks == null) {
+              try { blocks = normalizeSource?.(input); }
+              catch (error) {
+                if (!(error instanceof SourceNormalizationError)) throw error;
+                // Persist JSON null below: retain legacy proof without retrying this row on reopen.
+                // Numeric storage identities locate the row without exposing Raw or native IDs.
+                console.warn(`Trace Memory: legacy source normalization skipped; entry=${Number(row.id)} turn=${Number(input.turnId)}; call mapping mismatch`);
+              }
+            } else blocks = JSON.parse(String(row.blocks));
             const entry = { ...input, id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
             update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : normalizeSource ? "null" : null, entry.id);
           }
@@ -738,6 +740,15 @@ export class Store {
   }
   settleExecution(id: string, outcome: ExecutionOutcome, runId: number, reason?: string) {
     return settleExecution(this, id, outcome, runId, reason);
+  }
+  /** Core-only terminal path; the capability never crosses the model/public settlement boundary. */
+  settleDreamingConflict(run: RunInput, reason: string): void {
+    const runId = this.dreamingRunId(run);
+    if (runId === undefined || !this.db.isTransaction) throw new Error("Trusted Dreamer termination transaction required");
+    // Core checked the graph/path in this transaction; do not validate every event again.
+    this.requireEnabled(run.sessionId!);
+    this.requireClaim(run);
+    settleExecution(this, run.executionId!, "conflict", runId, reason, run);
   }
   private completeExecution(runId: number): void {
     const row = this.db.prepare("SELECT execution_id FROM execution_runs WHERE run_id = ?").get(runId);
@@ -1320,8 +1331,8 @@ export class Store {
     } };
   }
 
-  /** The citable addresses of one Turn's selected entries, read from entry metadata: the role and
-   * whether there is text decide `#user`/`#assistant`, the call ordinals give `#t<n>`. */
+  /** Historical source membership for one Turn's selected entries, including persisted precise
+   * fragments and legacy role/tool aliases. New-note permission is checked separately. */
   private addressesOf(turnId: number, ids: number[]): Set<string> {
     const addresses = new Set<string>();
     for (const row of ids.length ? this.db.prepare("SELECT addresses FROM source_entries WHERE turn_id = ? AND id IN (SELECT value FROM json_each(?))").all(turnId, JSON.stringify(ids)) : [])
@@ -1580,30 +1591,147 @@ export class Store {
     return !!this.db.prepare("SELECT 1 FROM processed_knowledge_versions WHERE commit_id = ?").get(commitId);
   }
 
+  /** Build one admission-local graph, applicability snapshot and rendered-result cache. Selection
+   * may price many candidate batches, but it must not turn each candidate into another database or
+   * graph scan. The snapshot is deliberately returned as a value and is never retained by Store. */
+  dreamingInputSnapshot(path: KnowledgePath, ownCommits?: number[]) {
+    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
+    // Retry reads live revisions on the retained path, not the caller's advancing head. An exact
+    // event selection may name a range event another target just settled: it remains a graph root
+    // for this frozen read even though it no longer appears in the unsettled-event heading.
+    const inputPath = range ? { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId } : path;
+    const graphInput = this.commitGraphInput();
+    const pathSnapshot = this.pathSnapshot(inputPath);
+    const events = pendingEvents(this, inputPath, true, pathSnapshot, graphInput.metadata);
+    const graph = this.commitGraph(inputPath, undefined, pathSnapshot, graphInput);
+    const outputRoots = range ? ownCommits ?? this.dreamingOwnCommits(range.id) : [];
+    const processed = new Set(this.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(row => Number(row.commit_id)));
+    const revisions = new Map(graph.revisions.map(revision => [revision.id, revision]));
+    const knowledgeIds = [...new Set(graph.current.flatMap(revision => [revision.knowledgeId,
+      ...(revision.op === "archive" && revision.parentId !== null ? [revisions.get(revision.parentId)?.knowledgeId] : [])]).filter((id): id is number => id !== undefined))];
+    const knowledge = new Map((knowledgeIds.length ? this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(knowledgeIds)) : [])
+      .map(row => { const value = toKnowledge(row); return [value.id, value] as const; }));
+    const value = (revision: KnowledgeRevision) => {
+      const item = knowledge.get(revision.knowledgeId);
+      if (!item) throw new Error(`Knowledge K${revision.knowledgeId} is unavailable`);
+      return { knowledge: item, revision };
+    };
+    const current = new Set(graph.current.map(revision => revision.id));
+    const eventResults = new Map<number, Set<number>>();
+    for (const event of events)
+      eventResults.set(event.id, new Set([...graph.descendants(event.id)].filter(id => current.has(id))));
+    const resultsOfRoots = (roots: readonly number[]) => {
+      const descendants = new Set<number>();
+      for (const id of roots) for (const child of graph.descendants(id)) descendants.add(child);
+      return new Set(graph.current.filter(revision => descendants.has(revision.id) && !processed.has(revision.id)).map(revision => revision.id));
+    };
+    const ownResults = resultsOfRoots(outputRoots);
+    const rendered = new Map<number, string>();
+    const render = (revision: KnowledgeRevision) => {
+      if (!rendered.has(revision.id)) rendered.set(revision.id, renderKnowledge(value(revision)));
+      return rendered.get(revision.id)!;
+    };
+    const selectResults = (eventIds: readonly number[], resultIds: ReadonlySet<number>) => {
+      const selected = new Set(eventIds), selectedEvents = events.filter(event => selected.has(event.id));
+      const versions = graph.current.filter(revision => resultIds.has(revision.id)).map(revision => ({
+        ...value(revision), processed: processed.has(revision.id),
+      }));
+      const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
+        const revision = revisions.get(id);
+        if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
+        return value(revision);
+      });
+      const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
+      const text = [`Change events: ${selectedEvents.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
+        ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${render(v.revision)}`),
+        ...versions.map(v => v.revision.op === "archive"
+          ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
+          : `${render(v.revision)}\n  processed: ${v.processed}`)].join("\n");
+      return { events: selectedEvents, oldestId: range?.anchor ?? selectedEvents[0]?.id ?? null, versions, predecessors, text,
+        tokens: tokens(text), pendingTokens: selectedEvents.reduce((n, event) => n + event.tokens, 0) };
+    };
+    const resultsFor = (eventIds: readonly number[], roots: readonly number[] = outputRoots) => {
+      const resultIds = roots === outputRoots ? new Set(ownResults) : resultsOfRoots(roots);
+      for (const id of eventIds) {
+        let results = eventResults.get(id);
+        // An exact caller may name a range event another target just settled. It is absent from the
+        // pending heading but remains a graph root for this frozen read.
+        if (!results) {
+          results = new Set([...graph.descendants(id)].filter(commit => current.has(commit)));
+        }
+        for (const result of results) resultIds.add(result);
+      }
+      return resultIds;
+    };
+    const input = (eventIds: readonly number[], roots: readonly number[] = outputRoots) =>
+      selectResults(eventIds, resultsFor(eventIds, roots));
+    // Events sharing one current merge result are one selectable unit: supplying only one side
+    // would pretend the merged result were independent. Standalone legal outputs remain individual
+    // obligations, so an oversized one cannot pin unrelated retained events.
+    const components = (candidateEventIds: readonly number[]) => {
+      const allowed = new Set(candidateEventIds), resultEvents = new Map<number, number[]>();
+      for (const id of candidateEventIds) for (const result of eventResults.get(id) ?? [])
+        resultEvents.set(result, [...(resultEvents.get(result) ?? []), id]);
+      const visited = new Set<number>(), groups: { eventIds: number[]; resultIds: number[]; ownOutput: boolean }[] = [];
+      for (const first of candidateEventIds) {
+        if (visited.has(first)) continue;
+        const pending = [first], members: number[] = [], results = new Set<number>();
+        while (pending.length) {
+          const id = pending.pop()!;
+          if (visited.has(id) || !allowed.has(id)) continue;
+          visited.add(id); members.push(id);
+          for (const result of eventResults.get(id) ?? []) {
+            results.add(result);
+            for (const peer of resultEvents.get(result) ?? []) if (!visited.has(peer)) pending.push(peer);
+          }
+        }
+        groups.push({ eventIds: members.sort((a, b) => a - b), resultIds: [...results], ownOutput: [...results].some(id => ownResults.has(id)) });
+      }
+      const associated = new Set(groups.flatMap(group => group.resultIds));
+      return [...[...ownResults].filter(id => !associated.has(id)).map(id => ({ eventIds: [], resultIds: [id], ownOutput: true })), ...groups];
+    };
+    const select = (retainedEventIds: readonly number[] | undefined, fits: (candidate: ReturnType<typeof selectResults>) => boolean) => {
+      if (retainedEventIds === undefined) {
+        let low = 0, high = events.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2), eventIds = events.slice(0, middle).map(event => event.id);
+          if (fits(selectResults(eventIds, resultsFor(eventIds, [])))) low = middle;
+          else high = middle - 1;
+        }
+        const eventIds = events.slice(0, low).map(event => event.id);
+        return { eventIds, input: selectResults(eventIds, resultsFor(eventIds, [])), blocked: [] as string[], ownBlocked: false };
+      }
+      const pending = new Set(events.map(event => event.id));
+      const candidates = retainedEventIds.filter(eventId => pending.has(eventId));
+      const blocked: string[] = [], fitting: ReturnType<typeof components> = [];
+      for (const component of components(candidates)) {
+        if (fits(selectResults(component.eventIds, new Set(component.resultIds)))) fitting.push(component);
+        else blocked.push(`${component.ownOutput ? "retained task output " : ""}${component.eventIds.length
+          ? component.eventIds.map(id => `K@${id}`).join("+") : component.resultIds.map(id => `output K@${id}`).join("+")}`);
+      }
+      // Oversized components have already been removed, so they cannot pin later work. Among the
+      // remaining ordered units, choose one maximal prefix with logarithmic exact-render probes.
+      let low = 0, high = fitting.length;
+      const selection = (count: number) => ({ eventIds: fitting.slice(0, count).flatMap(component => component.eventIds),
+        resultIds: new Set(fitting.slice(0, count).flatMap(component => component.resultIds)) });
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2), candidate = selection(middle);
+        if (fits(selectResults(candidate.eventIds, candidate.resultIds))) low = middle;
+        else high = middle - 1;
+      }
+      const selected = selection(low);
+      return { eventIds: selected.eventIds, input: selectResults(selected.eventIds, selected.resultIds), blocked,
+        ownBlocked: blocked.some(label => label.startsWith("retained task output ")) };
+    };
+    return { events, input, select };
+  }
+
   /** Event weight is cumulative; changed input supplies each current exact body only once.
    * A bounded caller selects eventIds first and settles only those actually supplied. */
-  dreamingInput(path: KnowledgePath, eventIds?: number[]) {
-    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
-    // Retry reads live revisions on the retained path, not the caller's advancing head.
-    const inputPath = range ? { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId } : path;
-    const selected = eventIds && new Set(eventIds);
-    const events = this.pendingKnowledgeEvents(inputPath).filter(e => !selected || selected.has(e.id));
-    const graph = this.commitGraph(inputPath);
-    const versions = this.dreamingResults(graph, events.map(e => e.id), range).map(revision => ({
-      knowledge: this.getKnowledge(revision.knowledgeId)!, revision, processed: this.isKnowledgeProcessed(revision.id),
-    }));
-    const predecessors = [...new Set(versions.filter(v => v.revision.op === "archive").map(v => v.revision.parentId!))].map(id => {
-      const revision = this.knowledgeRevision(id);
-      if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
-      return { knowledge: this.getKnowledge(revision.knowledgeId)!, revision };
-    });
-    const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
-    const text = [`Change events: ${events.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
-      ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${renderKnowledge(v)}`),
-      ...versions.map(v => v.revision.op === "archive"
-        ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
-        : `${renderKnowledge(v)}\n  processed: ${v.processed}`)].join("\n");
-    return { events, oldestId: range?.anchor ?? events[0]?.id ?? null, versions, predecessors, text, tokens: tokens(text), pendingTokens: events.reduce((n, e) => n + e.tokens, 0) };
+  dreamingInput(path: KnowledgePath, eventIds?: number[], ownCommits?: number[]) {
+    const snapshot = this.dreamingInputSnapshot(path, ownCommits);
+    const ids = eventIds ?? snapshot.events.map(event => event.id);
+    return snapshot.input(ids);
   }
 
   /** Exact outputs of this retained task, across batches and failed executions. Neither family
@@ -1613,15 +1741,14 @@ export class Store {
       WHERE d.range_id = ? ORDER BY r.id`).all(rangeId).map(r => Number(r.id));
   }
 
-  /** Read successors across merge edges; this never adds their identities to the writable family
-   * or grants certification. The worker separately freezes exact admission versions and own outputs. */
-  private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null) {
-    const roots = new Set([...events, ...(range?.eventIds ?? [])]);
-    const family = new Set(range?.knowledgeIds ?? []);
-    for (const revision of graph.revisions) if (family.has(revision.knowledgeId)) roots.add(revision.id);
-    const descendants = new Set<number>();
-    for (const id of roots) if (!descendants.has(id)) for (const child of graph.descendants(id)) descendants.add(child);
-    return graph.current.filter(r => descendants.has(r.id));
+  /** Resolve current results outside admission selection, where a shared snapshot is unavailable. */
+  private dreamingResults(graph: CommitGraph, events: number[], range: DreamingRange | null, ownCommits?: number[]) {
+    const eventDescendants = new Set<number>();
+    for (const id of events) for (const child of graph.descendants(id)) eventDescendants.add(child);
+    const ownDescendants = new Set<number>();
+    if (range) for (const id of ownCommits ?? this.dreamingOwnCommits(range.id))
+      for (const child of graph.descendants(id)) ownDescendants.add(child);
+    return graph.current.filter(r => eventDescendants.has(r.id) || (ownDescendants.has(r.id) && !this.isKnowledgeProcessed(r.id)));
   }
 
   /** A frozen unfinished range retries independently of new-event weight and shared settlement. */
@@ -1631,11 +1758,11 @@ export class Store {
     if (this.db.prepare(`SELECT 1 FROM dreaming_range_events e WHERE range_id = ?
       AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id) LIMIT 1`).get(range.id)) return range;
     const graph = this.commitGraph({ sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId }, undefined, undefined, input);
-    return this.dreamingResults(graph, [], range).some(r => !this.isKnowledgeProcessed(r.id)) ? range : null;
+    return this.dreamingResults(graph, [], range).length ? range : null;
   }
 
-  dreamingRange(id: number): DreamingRange | null {
-    const row = this.db.prepare("SELECT * FROM dreaming_ranges WHERE id = ? AND completed_run IS NULL").get(id);
+  dreamingRange(id: number, includeCompleted = false): DreamingRange | null {
+    const row = this.db.prepare(`SELECT * FROM dreaming_ranges WHERE id = ?${includeCompleted ? "" : " AND completed_run IS NULL"}`).get(id);
     return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: Number(row.anchor),
       eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map(r => Number(r.event_id)),
       knowledgeIds: this.db.prepare("SELECT knowledge_id FROM dreaming_family WHERE range_id = ? ORDER BY knowledge_id").all(id).map(r => Number(r.knowledge_id)) } : null;

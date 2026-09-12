@@ -553,6 +553,9 @@ stays under **Runs**; automatic-off reasons and fork recovery remain in the pane
 Headless bare `/trace` uses the same read-only composition snapshot and classification as
 the UI, retaining its verbose enrollment, pending/trigger, shared-identity and recovery
 explanations and command forms. Both paths read once per opening, never per render.
+On/off notifications share only the lightweight identity, enrollment, project, cost and recovery
+wording. They do not rebuild context composition or measure pending tokens; enabling still imports
+available native history through the existing reconciliation path without starting a worker.
 
 #### Global preferences
 
@@ -1430,7 +1433,13 @@ memory. The key is the target session, phase and oldest selected backlog item: a
 for Noting, the first fact in Consolidation selection order, or the frozen change event for
 Dreamer. A new leaf, a growing tail, another executor or partial Dreamer edits do not reset it.
 Dreamer uses the same settlement primitives. Its immediate edits do not count as successful
-maintenance: a failed final check keeps the range pending and contributes one business failure.
+maintenance: a failed final check keeps the range pending and contributes one business failure,
+with one precise [user-ruled exception](dreamer-external-conflict.md): only an external successor
+created after freeze, with no other acceptance failure, ends as `conflict`. It leaves the existing
+streak unchanged (two stays two), certifies nothing and preserves the run/usage audit. It is not
+user cancellation and does not exempt Noter, Consolidator, provider errors or illegal writes.
+The next eligible entry completion can refreeze the retained range's actual current results;
+worker completion itself starts no retry. Independent phase seats and bounded recovery uses are unchanged.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete

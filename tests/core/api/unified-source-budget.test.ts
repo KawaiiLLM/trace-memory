@@ -70,7 +70,7 @@ test("33: Turn facts use ownership rather than citation overlap; collections sor
   } finally { m.close(); }
 });
 
-test("33: default semantic preview completion grants no handle; all-null full pages do", () => {
+test("33: default semantic preview completion grants no handle; itemBudget null completes K without unpaging", () => {
   const { m, sessionId, turn } = setup();
   try {
     const tools = m.tools({ kind: "manual", sessionId, currentTurnId: turn.id, branch: "main" });
@@ -95,7 +95,7 @@ test("33: default semantic preview completion grants no handle; all-null full pa
     };
     drain(read.execute({ address: "K1@1" }));
     expect(edit()).toContain("knowledge was not read");
-    drain(read.execute({ address: "K1@1", itemBudget: null, toolCallBudget: null, toolResultBudget: null }));
+    drain(read.execute({ address: "K1@1", itemBudget: null }));
     expect(edit()).not.toContain("rejected:");
     expect(wholeTrace(m, "K1@1..2", { full: true })).toBe(wholeTrace(m, "K1@1..K1@2", { full: true }));
     expect(m.trace("K1@1..2", { itemBudget: 200, pageBudget: null })).toContain("characters truncated");

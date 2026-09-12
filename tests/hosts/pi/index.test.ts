@@ -160,7 +160,7 @@ test("29d case 24: a worker's completion starts no drain loop, and a tree switch
   await h.emit("session_tree"); await h.drain();
   expect(h.requests).toHaveLength(after);
   expect(h.memory.store.listRuns(1)).toHaveLength(1);
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 test("29d case 22: a worker's commit reaches no later prompt, on the branch it ran on or a sibling", async () => {
@@ -173,7 +173,7 @@ test("29d case 22: a worker's commit reaches no later prompt, on the branch it r
   const mainTip = [...h.entries];
   release(notingFact(h.conversations[0]!)); await h.drain();
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // the fact is committed and readable
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   const injected = async () => (await h.prompt())?.message?.content ?? "";
   h.entries.splice(0, h.entries.length, ...original);
   await h.emit("session_tree");
@@ -219,7 +219,7 @@ test("29d: the knowledge block is offered until the selected context carries it,
   release(notingFact(h.conversations.at(-1)!)); await h.drain(); // A commits during turn two
   h.provider(async c => notingFact(c));
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   expect((await h.prompt("three"))?.message?.content ?? "").not.toContain("<noted>");
 });
 
@@ -467,7 +467,7 @@ test("before-tree waits for a frozen pending noting and summarizes its facts plu
   // 29d: the branch the Noter actually ran on receives no receipt either -- the summary above is the
   // one place this conversation's own facts are still assembled for it.
   expect((await h.prompt())?.message?.content ?? "").not.toContain("noted");
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
 });
 
 test.each(["success", "failure", "unavailable"])("before-tree attempts subagent noting below threshold: %s", async outcome => {
@@ -552,7 +552,7 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   await h.turn(); // Noting A in flight over T1.
   await h.prompt("second"); await h.answer();
   release(notingFact(h.conversations[0]!)); await h.drain();
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
   expect(h.requests).toHaveLength(4);
@@ -717,14 +717,14 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
   expect((await h.prompt("two"))?.message?.content ?? "").not.toContain("<noted>");
   await h.emit("message_start", { message: { role: "user", content: "steer: keep going", timestamp: Date.now() } }); // queued message replaces the turn
   await h.answer(); await h.emit("agent_settled"); await h.drain();
-  expect(h.memory.store.db.prepare("SELECT COUNT(*) AS n FROM pending_deliveries").get()).toEqual({ n: 0 });
+  expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(1); // the commit itself is untouched
 });
 
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
   const h = host({ "noting.triggerTokens": 30 });
   h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
-  await h.turn();
+  await h.turn(); await h.drain();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
   expect(h.notices.some(n => n.includes("committed with problems") && n.includes("after commit"))).toBe(true);

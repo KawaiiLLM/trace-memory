@@ -132,6 +132,13 @@ test("32b performance: batch and ordinary applicability agree for bindings, fall
   const archived = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
     op: "archive", knowledgeId, baseCommit: base.id, supports: [noted.facts[0]!.id], reason: "sibling only", createdAt: time }] });
   if (!archived.ok) throw Error(archived.problems.join());
+  // Both public status counts must describe the same selected path, including a rewind or no head.
+  for (const p of [path, siblingPath, { ...path, headTurnId: turnIds[0]! }, { ...path, headTurnId: null }]) {
+    const count = store.listCurrentKnowledge(p).length;
+    const status = memory.status(session.id, p.branch, p.headTurnId);
+    expect(status).toContain(`${count} current knowledge (imported evidence on this branch)`);
+    expect(status).toContain(`Knowledge: ${count} visible active`);
+  }
   const foreign = history(2);
   const shared = store.commitConsolidationRun({ path: siblingPath, run: { kind: "manual", sessionId: session.id, createdAt: time }, operations: [{
     op: "create", handle: "$shared", author: "test", scope: "global", category: "mechanism", text: "shared", topics: [],
