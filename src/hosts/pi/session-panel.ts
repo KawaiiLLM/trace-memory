@@ -54,7 +54,10 @@ export class SessionPanel implements Component {
   render(width: number): string[] {
     const height = Math.max(1, Math.floor(this.height()));
     const hint = (key: Parameters<KeybindingsManager["getKeys"]>[0]) => this.kb.getKeys(key).join("/") || "disabled";
-    if (height < 3) return wrapTextWithAnsi(`Resize (3+ rows); ${hint("tui.select.cancel")} cancel`, width).slice(0, height);
+    if (height < 3) {
+      const lines = wrapTextWithAnsi(`Resize (3+ rows); ${hint("tui.select.cancel")} cancel`, width).slice(0, height);
+      return [...lines, ...Array(height - lines.length).fill("")];
+    }
     const help = wrapTextWithAnsi(`${hint("tui.select.up")}/${hint("tui.select.down")} Select | ${hint("tui.select.confirm")} Open | ${hint("tui.select.cancel")} Back`, width);
     const lines = this.body(width, (color, text) => this.theme.fg(color, text)).split("\n");
     if (height >= 10 && lines.length > height - 1 - help.length - this.actions.length)
@@ -68,8 +71,11 @@ export class SessionPanel implements Component {
     this.offset = Math.min(this.offset, this.maxOffset);
     const first = Math.min(this.selected, this.actions.length - actionRows);
     const menu = this.list.render(width).slice(first, first + actionRows);
-    return [...chrome, ...lines.slice(this.offset, this.offset + this.pageSize), ...menu]
+    const rendered = [...chrome, ...lines.slice(this.offset, this.offset + this.pageSize), ...menu]
       .map(line => truncateToWidth(line, width, ""));
+    // The public compositor already pads each rendered row to the overlay width.
+    // Supply every viewport row so no base content remains vertically exposed.
+    return [...rendered, ...Array(height - rendered.length).fill("")];
   }
   invalidate() { this.list.invalidate(); }
 }

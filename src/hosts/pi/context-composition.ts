@@ -9,7 +9,7 @@ const record = (value: unknown): Record<string, unknown> => value && typeof valu
 /** One read-only snapshot of Pi's selected, rebuilt text, not provider wire or a tokenizer bill.
  * Coverage identities, project applicability and database contents have no role in this census. */
 export function contextComposition(ctx: ExtensionContext & Partial<Pick<ExtensionCommandContext, "getSystemPromptOptions">>, pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools">) {
-  const amounts = { System: 0, Tools: 0, Skills: 0, Memory: 0, Conversation: 0, Other: 0, Unknown: 0 };
+  const amounts = { System: 0, Tools: 0, Skills: 0, Memory: 0, Conversation: 0, Other: 0 };
   const memory = { Knowledge: 0, Facts: 0, Raw: 0, Unclassified: 0 };
   let complete = true;
   try {
@@ -75,12 +75,10 @@ export function contextComposition(ctx: ExtensionContext & Partial<Pick<Extensio
   try {
     const usage = ctx.getContextUsage();
     if (valid(usage?.contextWindow) && usage.contextWindow > 0) window = usage.contextWindow;
-    // Never scale measured categories to a reported total. A positive gap has no known owner.
-    if (valid(usage?.tokens)) {
-      sdkTokens = usage.tokens;
-      amounts.Unknown = Math.max(0, sdkTokens - measured);
-    }
+    if (valid(usage?.tokens)) sdkTokens = usage.tokens;
   } catch { /* Pi's usage is optional; the text census remains usable. */ }
-  return { amounts, memory, complete, sdkTokens, window: valid(window) && window > 0 ? window : undefined,
-    total: measured + amounts.Unknown };
+  // Keep the signed SDK/text difference out of the local category total.
+  return { amounts, memory, complete, sdkTokens,
+    sdkDifference: sdkTokens === undefined ? undefined : sdkTokens - measured,
+    window: valid(window) && window > 0 ? window : undefined, total: measured };
 }

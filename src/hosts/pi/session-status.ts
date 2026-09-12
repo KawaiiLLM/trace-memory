@@ -59,38 +59,56 @@ export function allocateCells(values: readonly number[], cells: number): number[
 const estimate = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
 const share = (value: number, total: number) => total ? (value < total / 100 && percent(value / total) === "1.0%" ? "<1%" : percent(value / total)) : "0.0%";
 const colors: Record<string, Parameters<Paint>[0]> = { System: "syntaxKeyword", Tools: "syntaxFunction", Skills: "syntaxString",
-  Memory: "accent", Conversation: "syntaxNumber", Other: "syntaxType", Unknown: "muted", Free: "dim",
+  Memory: "accent", Conversation: "syntaxNumber", Other: "syntaxType",
   Knowledge: "syntaxKeyword", Facts: "syntaxString", Raw: "syntaxNumber", Unclassified: "muted" };
 
 export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
-  const window = value.window, known = window !== undefined;
-  const measured = Object.entries(value.amounts).reduce((sum, [name, n]) => sum + (name === "Unknown" ? 0 : n), 0);
-  const reconciled = value.sdkTokens !== undefined && value.sdkTokens >= measured;
-  const capacityKnown = known && value.complete && reconciled;
-  const free = capacityKnown ? Math.max(0, window - value.total) : 0;
-  const sdk = value.sdkTokens === undefined ? "SDK unknown; free unknown"
-    : value.sdkTokens === measured ? `SDK matches text: ${compactNumber(value.sdkTokens)}`
-    : `SDK mismatch: ${compactNumber(value.sdkTokens)} ${value.sdkTokens < measured ? "<" : ">"} text ~${estimate(measured)}; ${reconciled ? "gap Unknown" : "free unknown"}`;
-  const items = [...Object.entries(value.amounts), ["Free", free] as const];
-  const counts = allocateCells(items.map(([, n]) => n), 100);
-  const glyph = visibleWidth("⛁") === 1 ? "⛁" : "#";
-  const empty = visibleWidth("⛶") === 1 ? "⛶" : ".";
-  const cells = items.flatMap(([name], i) => Array(counts[i]).fill(paint(colors[name]!, name === "Free" ? empty : glyph)));
-  const grid = Array.from({ length: 5 }, (_, row) => capacityKnown
-    ? cells.slice(row * 20, row * 20 + 20).join(width >= 80 ? " " : "") : paint("dim", Array(20).fill("?").join(width >= 80 ? " " : "")));
-  const legend = [model, sdk, `~${estimate(value.total)}${value.complete ? "" : " + Unknown"} / ${known ? estimate(window) : "Unknown"}${known ? ` (${share(value.total, window)})` : ""}`,
-    ...items.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, name === "Free" ? empty : glyph)} ${name === "Skills" ? "Skill catalog" : name} ~${estimate(n)}${known ? ` (${share(n, window)})` : ""}`)];
-  const gridWidth = visibleWidth(grid[0]!);
-  const right = legend.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width - gridWidth - 3)));
-  const lines = width >= 80 ? Array.from({ length: Math.max(5, right.length) }, (_, i) =>
-    `${grid[i] ?? " ".repeat(gridWidth)}${right[i] ? `   ${right[i]}` : ""}`) : [...grid, ...legend];
+  const window = value.window, sdkTokens = value.sdkTokens;
+  const capacityKnown = window !== undefined && sdkTokens !== undefined;
+  const preferred = ["⛁", "⛶", "⛀"] as const;
+  const [usedGlyph, freeGlyph, partialGlyph] = preferred.every(glyph => visibleWidth(glyph) === 1)
+    ? preferred : ["#", ".", "+"] as const;
+  let lines: string[];
+  if (capacityKnown) {
+    const ratio = sdkTokens / window;
+    const usedCells = Math.min(100, ratio * 100);
+    const fullCells = Math.floor(usedCells);
+    const cells = Array.from({ length: 100 }, (_, index) => index < fullCells
+      ? paint("accent", usedGlyph) : index < usedCells ? paint("accent", partialGlyph) : paint("dim", freeGlyph));
+    const grid = Array.from({ length: 5 }, (_, row) => cells.slice(row * 20, row * 20 + 20).join(width >= 80 ? " " : ""));
+    const remaining = Math.max(0, window - sdkTokens);
+    const legend = [model,
+      `SDK occupancy estimate ~${estimate(sdkTokens)} / ${estimate(window)} (${percent(ratio)})`,
+      `${paint("accent", usedGlyph)} Occupied estimate ~${estimate(sdkTokens)} (${percent(ratio)})`,
+      `${paint("dim", freeGlyph)} Estimated remaining ~${estimate(remaining)} (${percent(Math.max(0, 1 - ratio))})`];
+    const gridWidth = visibleWidth(grid[0]!);
+    const right = legend.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width - gridWidth - 3)));
+    lines = width >= 80 ? Array.from({ length: Math.max(5, right.length) }, (_, i) =>
+      `${grid[i] ?? " ".repeat(gridWidth)}${right[i] ? `   ${right[i]}` : ""}`) : [...grid, ...legend];
+  } else {
+    lines = [model, `Capacity estimate unavailable: ${sdkTokens === undefined ? "SDK usage" : "context window"} unavailable.`];
+    if (sdkTokens !== undefined) lines.push(`SDK occupancy estimate ~${estimate(sdkTokens)}; remaining unavailable.`);
+  }
+
+  const local = Object.entries(value.amounts);
+  lines.push("", `Local rebuilt text ~${estimate(value.total)}${window !== undefined ? ` / ${estimate(window)} (${share(value.total, window)})` : ""}`,
+    ...local.filter(([, amount]) => amount > 0).map(([name, amount]) =>
+      `${paint(colors[name]!, usedGlyph)} ${name === "Skills" ? "Skill catalog" : name} ~${estimate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`));
+  if (sdkTokens !== undefined) {
+    const difference = value.sdkDifference!;
+    if (difference === 0) lines.push("SDK and local rebuilt text estimates match numerically.");
+    else if (difference > 0) lines.push(`SDK estimate is ~${estimate(difference)} above local rebuilt text estimate; unclassified numerical gap.`);
+    else lines.push(`SDK estimate is ~${estimate(-difference)} below local rebuilt text estimate; local categories are not reduced.`);
+  }
+  if (!value.complete) lines.push("Local census incomplete: some text or non-text content is unmeasured; the SDK/text difference does not identify or measure it.");
+
   lines.push("", `Memory ~${estimate(value.amounts.Memory)}`);
   const parts = Object.entries(value.memory), bar = allocateCells(parts.map(([, n]) => n), Math.max(1, Math.min(60, width)));
   const solid = visibleWidth("█") === 1 ? "█" : "#";
   lines.push(value.amounts.Memory ? parts.map(([name], i) => paint(colors[name]!, solid.repeat(bar[i]!))).join("") : paint("dim", "No retained memory"));
-  if (value.amounts.Memory) lines.push(parts.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, glyph)} ${name} ${estimate(n)}${n < value.amounts.Memory / 100 ? ` (${share(n, value.amounts.Memory)})` : ""}`).join("  "));
+  if (value.amounts.Memory) lines.push(parts.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, usedGlyph)} ${name} ${estimate(n)}${n < value.amounts.Memory / 100 ? ` (${share(n, value.amounts.Memory)})` : ""}`).join("  "));
   lines.push("", "Pi rebuilt text estimate (not provider wire)",
-    ...(!value.complete ? ["Incomplete text/non-text census; free unknown."] : []), "");
+    "SDK occupancy and remaining are estimates; remaining is not guaranteed free space.", "");
   return lines;
 }
 
