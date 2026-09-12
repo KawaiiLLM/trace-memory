@@ -119,11 +119,49 @@ version obligations are selected as whole shared-result components; an oversized
 partially supplied and does not pin an independent fitting retained component. No scheduler, worker
 completion trigger or retry loop is added.
 
-Prompt lineage: pi-om `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
+### Ordered maintenance workflow (35c)
+
+The Dreamer prompt requires one sequence: actual `check` before write planning; a protection pass
+for unique meaning; complete-claim comparison; final dispositions chosen before broad mutation;
+useful restructuring and preservation-ordered retirement; tightening only final survivors; and an
+actual `check` after the last committed operation. The first receipt supplies the effective limits,
+headroom and blockers. Immutable prompt text does not turn current configured amounts, estimated
+body savings, or item and topic counts into budget authority. The final receipt, followed by core's
+transactional validation, establishes completion.
+
+Protection includes user-versus-agent attribution, proposal-versus-decision status,
+attempted/reported/completed/verified distinctions, uncertainty, conditions, exceptions, rationale,
+identifiers, exact diagnostics, useful completed work, unresolved decisions and valid topics. A
+shared topic or category only identifies candidates for a complete comparison. It does not establish
+equivalence or authorize merging independently changing claims. Topics remain part of the charged
+rendered revision: keeping budget-related text while dropping its valid budget label is invalid,
+while replacing a genuinely obsolete settings-file label with a database-policy label is a valid
+classification correction.
+
+The worker chooses unchanged, tightened, merged, split or archived dispositions before broad writes,
+so it does not polish a known archive target. Tool feedback and new evidence may correct that choice,
+but cannot adopt a competing successor into the frozen family. Useful loss-free restructuring comes
+before archive. Archive priority is equivalent information already preserved at equal fidelity;
+then evidence-verified obsolete/superseded material or historical progress without unique future use;
+then explicit loss of still-valid lower-priority information only for a hard limit. Age, completion,
+shortness and formatting alone prove none of those judgments. A shorter open reminder retains its
+unresolved condition and next action. Historical traceability is not future automatic coverage, so a
+hard-budget loss is named honestly rather than disguised as replacement or obsolescence.
+
+No phase machine, planning message, persisted plan or semantic store gate enforces this sequence.
+`tests/fixtures/dreaming-workflow.json` records parent/result examples for human semantic review of authority,
+qualifiers, open reminders, topics, archival priority and rewrite-then-archive timing. Scripted fake
+workers exercise deterministic rendering and legal tool sequences, but do not prove real-model
+compliance, semantic equivalence, better recall or lower cost. Those claims require separately
+authorized live-model evaluation.
+
+Prompt lineage: pi-observational-memory `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
 `src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
 `packages/plugin/src/features/magic-context/dreamer/task-prompts.ts` and
-`curate-memory-safety.ts`. The prompt borrows conservative comparison and unique-detail retention,
-not their scheduler, taxonomy, mandatory edits, citation-count scores or refusal heuristics.
+`curate-memory-safety.ts`. The prompt borrows their conservative preservation and explicit comparison;
+it does not claim to copy either workflow. Trace Memory deliberately chooses final dispositions before
+survivor tightening and does not import their scheduler, taxonomy, same-category survivor gate,
+mandatory edits, item targets, age/coverage rankings, citation-count scores or refusal heuristics.
 This project's explicit hard-budget retirement can deliberately lose active information with an
 honest reason and retained history; it does not require Magic Context's same-category survivor.
 

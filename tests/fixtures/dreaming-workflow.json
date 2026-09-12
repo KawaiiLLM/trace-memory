@@ -1,0 +1,230 @@
+{
+  "provenance": "Ticket 35c semantic regression material, informed by the pinned Magic Context 246a1c390e9a81944b867c1cd94ae5b7166e26e3 and pi-observational-memory ce9fc982b3a219a7839f07c9f4a3e054e81a2b21 references without copying their taxonomy, rankings, gates, targets, or schedulers.",
+  "semanticReview": {
+    "authority": "The judgments below are human semantic-review expectations for comparing complete claims. They are not runtime validation rules.",
+    "limitations": [
+      "A fake model executing a scripted sequence proves tool and host behavior, not that a real model will follow the workflow.",
+      "Passing deterministic tests does not prove improved recall, semantic equivalence, or model quality.",
+      "Live-model A/B tests, long-term recall experiments, and cost comparisons require separate authorization."
+    ]
+  },
+  "promptOrder": [
+    "1. Actual check first.",
+    "2. Protect meaning before selecting operations.",
+    "3. Compare complete candidates.",
+    "4. Choose final dispositions before writing.",
+    "5. Restructure and retire in preservation order.",
+    "6. Tighten only final survivors.",
+    "7. Check the actual final state."
+  ],
+  "examples": [
+    {
+      "id": "faithful-authority-merge",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The user decided that deployment must remain offline; required runtime assets must be bundled.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["deployment", "offline-runtime"]
+        },
+        {
+          "text": "The user's offline-deployment decision forbids runtime downloads. Exception: artifacts may be prepared before deployment.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["deployment", "artifact-preparation"]
+        }
+      ],
+      "result": {
+        "text": "The user decided that deployment must remain offline: required runtime assets must be bundled and runtime downloads are forbidden; artifacts may be prepared before deployment.",
+        "category": "constraint",
+        "scope": "project",
+        "topics": ["deployment", "offline-runtime", "artifact-preparation"]
+      },
+      "review": "The result retains user authority, decision status, the runtime condition, the preparation exception, and all still-valid subjects."
+    },
+    {
+      "id": "qualified-open-reminder",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["schema-migration", "rollback"]
+        }
+      ],
+      "result": {
+        "text": "Schema migration remains unapproved pending a passing rollback rehearsal; next present the result to the user for a decision.",
+        "category": "open",
+        "scope": "project",
+        "topics": ["schema-migration", "rollback"]
+      },
+      "review": "The shorter reminder keeps uncertainty, the controlling condition, unresolved authority, and next action."
+    },
+    {
+      "id": "budget-only-topic-stripping",
+      "judgment": "avoid",
+      "parents": [
+        {
+          "text": "The effective Knowledge budget must be read from the canonical check result.",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["dreamer", "knowledge-budget"]
+        }
+      ],
+      "result": {
+        "text": "The effective Knowledge budget must be read from the canonical check result.",
+        "category": "mechanism",
+        "scope": "project",
+        "topics": ["dreamer"]
+      },
+      "review": "The body is unchanged and remains about the Knowledge budget, so dropping knowledge-budget is classification damage, not tightening. Topics remain charged."
+    },
+    {
+      "id": "obsolete-topic-correction",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The Knowledge budget is now owned by the bound database policy rather than a settings file.",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["settings-file", "knowledge-budget"]
+        }
+      ],
+      "result": {
+        "text": "The Knowledge budget is now owned by the bound database policy rather than a settings file.",
+        "category": "mechanism",
+        "scope": "project",
+        "topics": ["database-policy", "knowledge-budget"]
+      },
+      "review": "Removing the obsolete owner label and adding the current owner label corrects classification; it is not budget stripping."
+    },
+    {
+      "id": "same-topic-independent-claims",
+      "judgment": "avoid",
+      "parents": [
+        {
+          "text": "The user requires offline deployment.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["deployment"]
+        },
+        {
+          "text": "The agent reported that the deployment smoke test passed, but macOS verification remains pending.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["deployment"]
+        }
+      ],
+      "result": {
+        "text": "Deployment must be offline and its smoke test passed, with macOS verification pending.",
+        "category": "constraint",
+        "scope": "project",
+        "topics": ["deployment"]
+      },
+      "review": "A shared subject label only identifies a comparison candidate. The independently changing constraint and reported test state should not be concatenated."
+    },
+    {
+      "id": "equivalent-information-retirement",
+      "judgment": "faithful",
+      "archivePriority": 1,
+      "parents": [
+        {
+          "text": "Use exact K@commit handles for every Dreamer write parent.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["dreamer", "write-authority"]
+        },
+        {
+          "text": "Every Dreamer write parent must use an exact K@commit handle.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["dreamer", "write-authority"]
+        }
+      ],
+      "result": {
+        "archiveParent": 1,
+        "survivorParent": 0,
+        "reason": "Archive an equivalent duplicate after comparing both complete claims; the survivor preserves the same rule, scope, and topics."
+      },
+      "review": "Equivalent information already preserved at equal fidelity is the first archival candidate."
+    },
+    {
+      "id": "verified-obsolete-progress-retirement",
+      "judgment": "faithful",
+      "archivePriority": 2,
+      "parents": [
+        {
+          "text": "The migration was attempted and stopped at SQLITE_BUSY; retry remains pending.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["migration", "sqlite"]
+        },
+        {
+          "text": "The migration retry completed and was verified against the row-count audit; SQLITE_BUSY is no longer unresolved.",
+          "category": "reference",
+          "scope": "project",
+          "topics": ["migration", "sqlite"]
+        }
+      ],
+      "result": {
+        "archiveParent": 0,
+        "reason": "Archive the former open state only after evidence verifies the retry and preserves the exact prior diagnostic in the completed record."
+      },
+      "review": "Evidence-verified obsolete state or historical progress without unique future use follows equivalent-information retirement."
+    },
+    {
+      "id": "deliberate-valid-information-loss",
+      "judgment": "honest-loss",
+      "archivePriority": 3,
+      "parents": [
+        {
+          "text": "The valid but low-priority staging color preference is slate blue.",
+          "category": "reference",
+          "scope": "project",
+          "topics": ["staging-ui"]
+        }
+      ],
+      "result": {
+        "archiveParent": 0,
+        "reason": "Hard-budget retirement: this still-valid staging preference has no equivalent active replacement and will leave future automatic coverage; retained history remains explicitly retrievable."
+      },
+      "review": "Still-valid lower-priority information is a last resort. The reason admits semantic loss and does not call the preference obsolete."
+    },
+    {
+      "id": "avoidable-rewrite-then-archive",
+      "judgment": "avoid",
+      "parents": [
+        {
+          "text": "The agent reported an old build passed; no independent verification was recorded.",
+          "category": "reference",
+          "scope": "project",
+          "topics": ["build", "provenance"]
+        }
+      ],
+      "result": {
+        "operations": ["tighten parent wording", "archive tightened successor"],
+        "reason": "The item was already intended for archive before either operation."
+      },
+      "review": "Polishing a known archive target creates avoidable churn and risks flattening reported versus verified status."
+    },
+    {
+      "id": "legitimate-disposition-correction",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "Package verification remains pending after an attempted smoke test failed with ENOENT.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["package", "verification"]
+        }
+      ],
+      "result": {
+        "operations": ["retain while the failure is unresolved", "archive only after new evidence verifies a superseding package result"],
+        "reason": "New evidence changed the final disposition; the archive was not known when survivor work began."
+      },
+      "review": "Tool feedback or new evidence may justify correction. It must not be used to adopt a competing successor into the frozen family."
+    }
+  ]
+}
