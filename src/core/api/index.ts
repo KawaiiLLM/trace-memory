@@ -30,7 +30,7 @@ export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, Entry
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
-import { freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
+import { DreamingAdmissionBlocked, freezeDreaming, runDreaming, type DreamingInput, type DreamingResult } from "../dreaming/index.ts";
 export type { DreamingInput, DreamingResult, DreamingAgentInput } from "../dreaming/index.ts";
 import { freezeConsolidation, runConsolidation, CONSOLIDATION_MEMBERSHIP, type ConsolidateInput, type ConsolidateResult } from "../consolidation/index.ts";
 export { CONSOLIDATION_CAPACITY, CONSOLIDATION_MEMBERSHIP } from "../consolidation/index.ts";
@@ -672,10 +672,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   // slots, enrollment, the host's readiness wait and claim checks are untouched.
   const taskEligibility = (phase: Phase, target: TaskTarget) => {
     if (stopping || store.closed || !store.enabled(target.sessionId)) return { due: false };
+    const retained = phase === "dreaming" ? store.openDreamingRange(target.sessionId, target.branch) : null;
     return { due: phase === "noting" ? notingDue(target)
       // Ticket 20: the same rendered representation, relations and separator the batch selects with;
-      // historical facts and knowledge contribute nothing to the trigger.
-      : phase === "dreaming" ? !!store.retryDreamingRange(target) || store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
+      // historical facts and knowledge contribute nothing to the trigger. An open range retains its
+      // exact membership; unrelated later events neither expand nor unblock it.
+      : phase === "dreaming" ? retained ? !!store.retryDreamingRange(target)
+        : store.pendingKnowledgeEvents(target).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens
       : consolidationTokens(target) >= cfg.consolidation.triggerTokens };
   };
   const execute = async (phase: Phase, input: NotingInput | ConsolidateInput): Promise<NotingResult | ConsolidateResult | DreamingResult> => {
@@ -699,6 +702,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let origin: import("../model/index.ts").TriggerOrigin | null = null;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | ReturnType<typeof freezeDreaming> | null;
     try { frozen = store.transaction(() => {
+      // Manual catchup/recovery and direct facade calls are explicit retries. They preserve the
+      // retained task identity but may reconsider an unchanged capacity disposition once.
+      if (phase === "dreaming" && input.automatic !== true) {
+        const retained = store.openDreamingRange(target.sessionId, target.branch);
+        if (retained) store.clearDreamingRangeBlock(retained.id);
+      }
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
       // with claim acquisition, before loading a closed target's evidence or constructing material.
       if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
@@ -735,6 +744,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
       return frozen;
     }); } catch (error) {
+      if (error instanceof DreamingAdmissionBlocked)
+        store.transaction(() => store.markDreamingRangeBlocked(error.rangeId, error.signature, error.message));
       // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
       // processed is not an admission failure and not work to retry — the claim that completed it
       // has already been honoured, so this task simply drops, carrying the diagnostic that says so.

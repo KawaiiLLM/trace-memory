@@ -9,7 +9,7 @@ import { migrateDreaming, migrateKnowledgeLineage } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
-import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
+import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, currentResultsByRoot, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES, compareTriggerOrigins } from "../model/index.ts";
 import type {
@@ -899,7 +899,9 @@ export class Store {
       const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId)
         : phase === "dreaming" ? this.pendingKnowledgeEvents(target)
         : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-      if ((!pending.length && !(phase === "dreaming" && this.retryDreamingRange(target))) || !eligible()) return null;
+      const openRange = phase === "dreaming" ? this.openDreamingRange(target.sessionId, target.branch) : null;
+      const retryRange = phase === "dreaming" ? this.retryDreamingRange(target) : null;
+      if ((openRange && !retryRange) || (!pending.length && !retryRange) || !eligible()) return null;
       const current = this.getClaim(target.sessionId, phase), now = Date.now();
       const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
       if (current && current.expiresAt > now && !takeover) return null;
@@ -969,8 +971,10 @@ export class Store {
         const pending = phase === "noting" ? this.pendingEntries(sessionId, String(branch), headTurnId)
           : phase === "dreaming" ? this.pendingKnowledgeEvents({ sessionId, branch: String(branch), headTurnId })
           : this.consolidationBatch(sessionId, String(branch), headTurnId);
+        const openRange = phase === "dreaming" ? this.openDreamingRange(sessionId, String(branch)) : null;
         const retry = phase === "dreaming" ? this.retryDreamingRange({ sessionId, branch: String(branch), headTurnId }) : null;
-        if (pending.length || retry) targets.push({ sessionId, branch: String(branch), headTurnId, oldest: retry?.anchor ?? Math.min(...pending.map(e => e.id)) });
+        if (retry || (!openRange && pending.length)) targets.push({ sessionId, branch: String(branch), headTurnId,
+          oldest: retry?.anchor ?? Math.min(...pending.map(e => e.id)) });
       }
     }
     // Global source/fact allocation order is durable pending arrival order; branches never coalesce.
@@ -1448,16 +1452,18 @@ export class Store {
   }
 
   /** Resolve visible original native entries against the selected path and validate every bounded
-   * carrier's database/native pair in one metadata lookup. Raw bodies are never loaded. */
+   * carrier's database/native pair in one metadata lookup. A carrier can identify a representation,
+   * not move an arbitrary source onto this path. Raw bodies are never loaded. */
   visibleSourceEntryIds(path: KnowledgePath | null, snapshot: PathSnapshot | null,
     raw: ReadonlyMap<string, "source" | "view">, carried: ReadonlyMap<number, string>): Set<number> {
     const selected = snapshot?.entries?.ids ?? new Set<number>();
     const candidates = new Set([...carried.keys(), ...selected]);
-    if (!candidates.size || (!carried.size && ![...raw.values()].includes("source"))) return new Set();
+    if (!path || !candidates.size || (!carried.size && ![...raw.values()].includes("source"))) return new Set();
     const result = new Set<number>();
-    for (const row of this.db.prepare("SELECT id, native_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
-      .all(JSON.stringify([...candidates])) as { id: number; native_id: string }[]) {
-      if (carried.get(row.id) === row.native_id || (path && selected.has(row.id) && raw.get(row.native_id) === "source")) result.add(row.id);
+    for (const row of this.db.prepare("SELECT id, session_id, native_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...candidates])) as { id: number; session_id: number; native_id: string }[]) {
+      if (row.session_id !== path.sessionId || !selected.has(row.id)) continue;
+      if (carried.get(row.id) === row.native_id || raw.get(row.native_id) === "source") result.add(row.id);
     }
     return result;
   }
@@ -1650,14 +1656,17 @@ export class Store {
   private competingSuccessors(knowledgeId: number, baseCommit: number, path: KnowledgePath | null, runId: number): ConsumedBaseConflict | null {
     const successors = this.consumingSuccessors([baseCommit]).get(baseCommit)!;
     if (!successors.length) return null;
-    const incoming = this.getRun(runId)!;
+    const incoming = this.getRun(runId);
+    if (!incoming || incoming.sessionId === null || !this.getSession(incoming.sessionId))
+      throw new Error(`K${knowledgeId}@${baseCommit}: cannot determine incoming target-session provenance`);
     const conflicts: number[] = [];
     for (const successorId of successors) {
-      const successor = this.knowledgeRevision(successorId)!;
-      const prior = successor.runId === null ? null : this.getRun(successor.runId);
-      const priorSession = prior?.sessionId ?? null;
-      if (priorSession === incoming.sessionId) {
-        const relation = compareTriggerOrigins(incoming.origin, prior!.origin);
+      const successor = this.knowledgeRevision(successorId);
+      const prior = successor?.runId == null ? null : this.getRun(successor.runId);
+      if (!successor || !prior || prior.sessionId === null || !this.getSession(prior.sessionId))
+        throw new Error(`K${knowledgeId}@${baseCommit}: cannot determine target-session provenance for consuming successor commit ${successorId}; repair authoritative provenance before retrying this write`);
+      if (prior.sessionId === incoming.sessionId) {
+        const relation = compareTriggerOrigins(incoming.origin, prior.origin);
         if (relation === "unknown") throw new Error(`K${knowledgeId}@${baseCommit}: trigger ancestry is unknown for an existing same-session successor; re-admit from authoritative native ancestry`);
         if (relation === "independent") throw new Error(`K${knowledgeId}@${baseCommit}: stored trigger origin does not match its target session`);
         if (relation !== "divergent") conflicts.push(successorId);
@@ -1674,7 +1683,11 @@ export class Store {
       const revision = this.knowledgeRevision(commitId)!;
       return `K${revision.knowledgeId}@${revision.id}`;
     };
-    const independent = conflict.successorCommits.some(id => this.getRun(this.knowledgeRevision(id)!.runId!)!.sessionId !== incoming.sessionId);
+    const independent = conflict.successorCommits.some(id => {
+      const revision = this.knowledgeRevision(id);
+      const prior = revision?.runId == null ? null : this.getRun(revision.runId);
+      return prior?.sessionId != null && prior.sessionId !== incoming.sessionId;
+    });
     const graph = this.commitGraph(path);
     const descendants = new Set(conflict.successorCommits.flatMap(id => [...graph.descendants(id)]));
     const current = graph.current.filter(revision => descendants.has(revision.id));
@@ -1861,17 +1874,7 @@ export class Store {
       return { knowledge: item, revision };
     };
     const current = new Set(graph.current.map(revision => revision.id));
-    const eventResults = new Map(events.map(event => [event.id, new Set<number>()]));
-    for (const result of graph.current) {
-      const pending = [result.id], visited = new Set<number>();
-      while (pending.length) {
-        const id = pending.pop()!;
-        if (visited.has(id)) continue;
-        visited.add(id);
-        eventResults.get(id)?.add(result.id);
-        pending.push(...(graphInput.parents.get(id) ?? []));
-      }
-    }
+    const eventResults = currentResultsByRoot(graph.current, graphInput.parents, new Set(events.map(event => event.id)));
     const resultsOfRoots = (roots: readonly number[]) => {
       const descendants = new Set<number>();
       for (const id of roots) for (const child of graph.descendants(id)) descendants.add(child);
@@ -1966,7 +1969,8 @@ export class Store {
       const pending = new Set(events.map(event => event.id));
       const candidates = retainedIds.filter(id => pending.has(id));
       const blocked: string[] = [], fitting: ReturnType<typeof components> = [];
-      for (const component of components(candidates)) {
+      const candidateComponents = components(candidates);
+      for (const component of candidateComponents) {
         if (fits(selectResults(component.obligationIds, new Set(component.resultIds)))) fitting.push(component);
         else blocked.push(`${component.ownOutput ? "retained task output " : ""}${component.obligationIds.length
           ? component.obligationIds.map(id => `K@${id}`).join("+") : component.resultIds.map(id => `output K@${id}`).join("+")}`);
@@ -1981,6 +1985,8 @@ export class Store {
       }
       const picked = selection(low), selected = selectResults(picked.obligationIds, picked.resultIds);
       return { eventIds: selected.events.map(event => event.id), versionIds: selected.versionObligations.map(value => value.id), input: selected, blocked,
+        blockedSignature: JSON.stringify(candidateComponents.map(component => ({ obligationIds: component.obligationIds,
+          resultIds: [...component.resultIds].sort((a, b) => a - b), ownOutput: component.ownOutput }))),
         ownBlocked: blocked.some(label => label.startsWith("retained task output ")) };
     };
     return { events, input, select };
@@ -2001,15 +2007,67 @@ export class Store {
       WHERE d.range_id = ? ORDER BY r.id`).all(rangeId).map(r => Number(r.id));
   }
 
-  /** A frozen unfinished range retries independently of new-event weight and shared settlement. */
-  retryDreamingRange(path: KnowledgePath, input?: ReturnType<Store["commitGraphInput"]>): DreamingRange | null {
-    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
-    if (!range) return null;
+  private dreamingExecutionAudit(rangeId: number): { id: string; reason: string | null } | null {
+    return this.db.prepare(`SELECT e.id, e.reason FROM task_executions e
+      JOIN execution_runs x ON x.execution_id = e.id JOIN dreaming_run_ranges d ON d.run_id = x.run_id
+      WHERE d.range_id = ? AND e.phase = 'dreaming' ORDER BY e.rowid DESC LIMIT 1`).get(rangeId) as { id: string; reason: string | null } | undefined ?? null;
+  }
+
+  private dreamingBlock(rangeId: number): { executionId: string; signature: string } | null {
+    const row = this.dreamingExecutionAudit(rangeId);
+    if (!row?.reason) return null;
+    const marker = "\n[dreaming-admission-block]";
+    const at = row.reason.lastIndexOf(marker);
+    if (at < 0) return null;
+    let value: unknown;
+    try { value = JSON.parse(row.reason.slice(at + marker.length)); }
+    catch { throw new Error(`Dreaming range ${rangeId} has malformed blocked-admission audit`); }
+    return value && typeof value === "object" && "rangeId" in value && value.rangeId === rangeId
+      && "signature" in value && typeof value.signature === "string" ? { executionId: row.id, signature: value.signature } : null;
+  }
+
+  /** Record a non-terminal admission disposition on the retained task's existing execution audit. */
+  markDreamingRangeBlocked(rangeId: number, signature: string, reason: string): void {
+    const row = this.dreamingExecutionAudit(rangeId);
+    if (!row) throw new Error(`Dreaming range ${rangeId} has no execution audit for its blocked admission`);
+    const marker = "\n[dreaming-admission-block]", prior = row.reason ?? "";
+    const base = prior.includes(marker) ? prior.slice(0, prior.lastIndexOf(marker)) : prior;
+    const disposition = JSON.stringify({ rangeId, signature, reason });
+    this.db.prepare("UPDATE task_executions SET reason = ?, updated_at = ? WHERE id = ?")
+      .run(`${base}${marker}${disposition}`, new Date().toISOString(), row.id);
+  }
+
+  clearDreamingRangeBlock(rangeId: number): void {
+    const block = this.dreamingBlock(rangeId);
+    if (!block) return;
+    const row = this.dreamingExecutionAudit(rangeId)!;
+    const marker = "\n[dreaming-admission-block]", reason = row.reason!.slice(0, row.reason!.lastIndexOf(marker));
+    this.db.prepare("UPDATE task_executions SET reason = ?, updated_at = ? WHERE id = ?")
+      .run(reason, new Date().toISOString(), block.executionId);
+  }
+
+  private dreamingRangePending(range: DreamingRange, input?: ReturnType<Store["commitGraphInput"]>): boolean {
     if (this.db.prepare(`SELECT 1 FROM dreaming_range_events e WHERE range_id = ?
-      AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id) LIMIT 1`).get(range.id)) return range;
+      AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id) LIMIT 1`).get(range.id)) return true;
     const obligations = new Set([...range.versionIds, ...this.dreamingOwnCommits(range.id)]);
     const graph = this.commitGraph({ sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId }, undefined, undefined, input);
-    return graph.current.some(revision => obligations.has(revision.id) && !this.isKnowledgeProcessed(revision.id)) ? range : null;
+    return graph.current.some(revision => obligations.has(revision.id) && !this.isKnowledgeProcessed(revision.id));
+  }
+
+  /** A frozen unfinished range retries independently of new-event weight and shared settlement,
+   * unless its exact graph disposition was already proven indivisibly over the admission cap. */
+  retryDreamingRange(path: KnowledgePath, input?: ReturnType<Store["commitGraphInput"]>): DreamingRange | null {
+    const range = this.openDreamingRange(path.sessionId, path.branch ?? "");
+    if (!range || !this.dreamingRangePending(range, input)) return null;
+    const block = this.dreamingBlock(range.id);
+    if (!block) return range;
+    const frozenPath = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
+    const admission = this.dreamingInputSnapshot(frozenPath, this.dreamingOwnCommits(range.id));
+    const selected = admission.select([...range.eventIds, ...range.versionIds], candidate =>
+      tokens(`Changed knowledge (unsettled events):\n${candidate.text}`) <= 10000);
+    if (selected.blockedSignature === block.signature) return null;
+    this.clearDreamingRangeBlock(range.id);
+    return range;
   }
 
   dreamingRange(id: number, includeCompleted = false): DreamingRange | null {
@@ -2087,7 +2145,8 @@ export class Store {
       const input = ranges.length ? this.commitGraphInput() : undefined;
       for (const row of ranges) {
         const path = { sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: null };
-        if (!this.retryDreamingRange(path, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
+        const range = this.openDreamingRange(path.sessionId, path.branch);
+        if (range && !this.dreamingRangePending(range, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
           WHERE session_id = ? AND branch = ? AND completed_run IS NULL`).run(runId, path.sessionId, path.branch);
       }
     });

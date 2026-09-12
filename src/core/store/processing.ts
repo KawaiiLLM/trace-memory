@@ -1,6 +1,6 @@
 import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput, CommitGraph } from "./index.ts";
 import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { KNOWLEDGE_CATEGORIES, type TriggerOrigin } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, type KnowledgeRevision, type TriggerOrigin } from "../model/index.ts";
 
 /** Change this whenever the immutable knowledge material rendering changes. Marks are not events. */
 export const KNOWLEDGE_VIEW_VERSION = "34a-v1";
@@ -57,6 +57,24 @@ CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
 export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number; kind: "event" | "version" }
 export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; versionIds: number[]; knowledgeIds: number[]; origin: TriggerOrigin | null }
 
+/** Project selected current results back to caller-chosen exact roots over the prepared parent DAG. */
+export function currentResultsByRoot(current: readonly KnowledgeRevision[], parents: ReadonlyMap<number, readonly number[]>,
+  roots: ReadonlySet<number>): Map<number, Set<number>> {
+  const result = new Map([...roots].map(id => [id, new Set<number>()]));
+  if (!roots.size) return result;
+  for (const revision of current) {
+    const pending = [revision.id], visited = new Set<number>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      result.get(id)?.add(revision.id);
+      pending.push(...(parents.get(id) ?? []));
+    }
+  }
+  return result;
+}
+
 export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION, cache = true): number {
   const cached = store.db.prepare("SELECT tokens FROM knowledge_weights WHERE commit_id = ? AND view_version = ?").get(commitId, version);
   if (cached) return Number(cached.tokens);
@@ -90,17 +108,7 @@ export function pendingEvents(store: Store, path: KnowledgePath, cache = true,
   const events = candidates.filter(applies);
   const graph = preparedGraph ?? store.commitGraph(path, undefined, snapshot, input);
   const eventIds = new Set(events.map(event => event.id));
-  const represented = new Set<number>();
-  for (const revision of graph.current) {
-    const pending = [revision.id], visited = new Set<number>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      if (eventIds.has(id)) { represented.add(revision.id); break; }
-      pending.push(...(input.parents.get(id) ?? []));
-    }
-  }
+  const represented = new Set([...currentResultsByRoot(graph.current, input.parents, eventIds).values()].flatMap(ids => [...ids]));
   const processed = store.processedKnowledgeVersions(graph.current.map(revision => revision.id));
   const restored = graph.current.filter(revision => !processed.has(revision.id) && !represented.has(revision.id));
   return [...events.map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,

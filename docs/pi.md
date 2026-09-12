@@ -176,16 +176,20 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   core for applicable current exact revisions. A visible exact Knowledge body suppresses itself. A
   change is also suppressed when every direct support is visibly present as a Fact, or when every
   support is proven from complete Noting source bindings to retained original or marked bounded Raw.
-  The bounded view counts as evidence even if its truncation omitted the relevant text. Empty supports,
-  partial/missing bindings and legacy-unknown mappings suppress nothing. Evidence and applicability are
-  path-scoped; no abandoned sibling or guessed working-directory project can contribute.
+  A bounded carrier's database/native pair must name an entry in the selected memory-session path; a
+  valid pair from another or sibling path proves nothing. The bounded view counts as evidence even if
+  its truncation omitted the relevant text. Empty supports, partial/missing bindings and legacy-unknown
+  mappings suppress nothing. Evidence and applicability are path-scoped; no abandoned sibling or
+  guessed working-directory project can contribute.
 
   Carriers persist the exact Knowledge commit ids whose bodies were actually returned plus stable
   identities for archive/supersede/merge/split notices. Notice visibility is separate and never grants
   a replacement body. The publication contains no Fact, Raw, processed/unprocessed marker,
   command-generation metadata or omission-only block. Retained applicable Knowledge bodies and notices
-  consume `render.knowledgeBlockTokens` (default 20,000) first; new bodies then fit as whole rendered
-  items. Exact fit is accepted and zero/negative remainder returns no message.
+  consume `render.knowledgeBlockTokens` (default 20,000) first. Missing state transitions fit as a
+  deterministic whole-item prefix before complete new bodies; only selected transition receipts persist.
+  An unfit next transition is not skipped, exact fit is accepted, and zero/negative remainder or one
+  unfit item returns no message.
 
   Immediately before returning a publication, the host revalidates enrollment, Pi/native binding,
   selected leaf, path head/branch and project attribution. Any retarget or disable discards the stale

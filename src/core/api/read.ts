@@ -309,31 +309,38 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const remaining = config.render.knowledgeBlockTokens - tokens(visibleText);
     if (remaining <= 0) return empty();
 
-    // Foreground publication has no omission receipts: render all state notices atomically, then keep
-    // the longest whole-body prefix whose actual final text fits the remaining rendered allowance.
-    // This accepts equality instead of relying on a separately estimated framing cost.
+    // Foreground publication has no omission receipts. State transitions retain their established
+    // order ahead of bodies, but each notice is one complete budget item: an unfit later notice does
+    // not erase an already fitting prefix or permit lower-priority bodies to skip past it.
     const ordered = budgetKnowledge(delta, Infinity, line).commits;
     const byCommit = new Map(delta.map(value => [value.revision.id, value]));
-    const notes = states.map(state => state.text);
-    const build = (count: number) => {
-      const knowledge = budgetKnowledge(ordered.slice(0, count).map(id => byCommit.get(id)!), Infinity, line).groups;
+    const build = (stateCount: number, bodyCount: number) => {
+      const knowledge = budgetKnowledge(ordered.slice(0, bodyCount).map(id => byCommit.get(id)!), Infinity, line).groups;
       const material = { knowledge, receipts: [] as string[] };
-      return { material, text: injectionText(material, notes) };
+      return { material, text: injectionText(material, states.slice(0, stateCount).map(state => state.text)) };
     };
-    let low = 0, high = ordered.length;
-    while (low < high) {
-      const middle = Math.ceil((low + high) / 2);
-      if (tokens(build(middle).text) <= remaining) low = middle;
-      else high = middle - 1;
+    const longest = (high: number, fits: (count: number) => boolean) => {
+      let low = 0;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (fits(middle)) low = middle; else high = middle - 1;
+      }
+      return low;
+    };
+    const stateCount = longest(states.length, count => tokens(build(count, 0).text) <= remaining);
+    if (stateCount < states.length) {
+      if (!stateCount) return empty();
+      const { material, text } = build(stateCount, 0);
+      const rendered = measuredMemory(text, material);
+      return { ...rendered, knowledgeCommitIds: [], knowledgeStates: states.slice(0, stateCount).map(state => state.receipt) };
     }
-    const kept = low, { material, text } = build(kept);
-    const commits = ordered.slice(0, kept);
-    // A genuine archive/merge/split notice is useful by itself, but never truncate a transition's
-    // directly affected revision list to manufacture a fit.
-    if (tokens(text) > remaining || (!commits.length && !states.length)) return empty();
+    const bodyCount = longest(ordered.length, count => tokens(build(stateCount, count).text) <= remaining);
+    const { material, text } = build(stateCount, bodyCount);
+    const commits = ordered.slice(0, bodyCount), selectedStates = states.slice(0, stateCount);
+    if (tokens(text) > remaining || (!commits.length && !selectedStates.length)) return empty();
     const rendered = measuredMemory(text, material);
     return { ...rendered, knowledgeCommitIds: commits,
-      ...(states.length ? { knowledgeStates: states.map(state => state.receipt) } : {}) };
+      ...(selectedStates.length ? { knowledgeStates: selectedStates.map(state => state.receipt) } : {}) };
   };
   /** 25d "Trace address queries": one comma component read as an inclusive fact-id interval, `F81-F90`.
    * The hyphen is the whole interval grammar, so `..` keeps its single meaning (`F81..` walks later

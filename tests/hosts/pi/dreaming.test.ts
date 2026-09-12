@@ -114,6 +114,48 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
   } finally { await h.dispose(); }
 });
 
+test("34b native host: unchanged indivisible retained work stops relaunching until its graph changes", async () => {
+  const { h, store, item, content } = await seeded();
+  let other: Store | undefined;
+  try {
+    let requests = 0;
+    h.provider(async () => ++requests === 1
+      ? call("oversize", "memory", { operations: [{ op: "update", id: `K${item.knowledgeId}@${item.commit}`,
+        text: "oversized ".repeat(11000), category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "indivisible retained output" }], skipped: [] })
+      : reply("Done"), { autoStop: false });
+    await h.turn(); await h.drain();
+    expect((await terminal(h)).outcome).toBe("failure");
+    const target = { sessionId: 1, branch: "main", headTurnId: store.knowledgePath(1).headTurnId! };
+    const oversized = store.currentCommit(item.knowledgeId, target)[0]!;
+
+    // The first pre-request refusal records the disposition on the existing logical task.
+    await h.turn(); await h.drain();
+    expect(h.memory.taskEligibility("dreaming", target)).toEqual({ due: false });
+    expect(store.getClaim(1, "dreaming")).toBeNull();
+    expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 1 }]);
+    const blockedAt = requests, runCount = store.listRuns(1).length;
+    await h.turn(); await h.turn(); await h.drain();
+    expect(requests).toBe(blockedAt);
+    expect(store.listRuns(1)).toHaveLength(runCount);
+    expect(store.taskFailures(1)).toMatchObject([{ phase: "dreaming", count: 1 }]);
+
+    // A successor changes the retained obligation graph and restores normal automatic eligibility.
+    other = new Store(h.dbPath);
+    const peer = other.createSession({ host: "peer", projectId: store.getSession(1)!.projectId, enrollmentChoice: true,
+      startedAt: "now", firstReplyAt: "now" });
+    const turn = other.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "repair", startedAt: "now" });
+    const repaired = other.commitConsolidationRun({ path: { sessionId: peer.id, branch: "main", headTurnId: turn.id },
+      run: { kind: "manual", sessionId: peer.id, branch: "main", createdAt: "now" }, operations: [{ op: "update",
+        knowledgeId: oversized.knowledgeId, baseCommit: oversized.id, ...content, text: "fitting successor" }] });
+    if (!repaired.ok) throw new Error(repaired.problems.join("; "));
+    expect(h.memory.taskEligibility("dreaming", target)).toEqual({ due: true });
+    h.provider(async () => { requests++; return reply("Reviewed fitting successor"); }, { autoStop: false });
+    await h.turn(); await h.drain();
+    expect(store.isKnowledgeProcessed(repaired.committed[0]!.commit)).toBe(true);
+    expect(requests).toBe(blockedAt + 1);
+  } finally { other?.close(); await h.dispose(); }
+});
+
 test("32d native host: Consolidator and Dreamer occupy independent seats", async () => {
   const { h, store } = await seeded({ "consolidation.triggerTokens": 1 });
   let release!: () => void;

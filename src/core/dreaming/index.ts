@@ -16,6 +16,14 @@ export type DreamingResult = { automaticOff?: string } & (
   | { outcome: "empty" }
   | { outcome: "dropped"; reason?: string }
   | { outcome: "success" | "failure" | "cancelled" | "conflict"; runId: number; problems: string[] });
+export class DreamingAdmissionBlocked extends Error {
+  readonly rangeId: number;
+  readonly signature: string;
+  constructor(rangeId: number, signature: string, message: string) {
+    super(message); this.rangeId = rangeId; this.signature = signature;
+  }
+}
+
 export interface DreamingAgentInput extends AgentControl {
   kind: "dreaming"; sessionId: number; branch: string; model: string; mode: "subagent";
   prompt: string; promptHash: string; text: string;
@@ -40,8 +48,10 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   if (!ids.length && !versionIds.length && !changed.versions.length) {
     if (!retained) throw new Error("Dreaming capacity: oldest change with its current body and framing exceeds 10000; left pending");
     const ownBlocked = selected.blocked.filter(label => label.startsWith("retained task output "));
-    if (selected.ownBlocked) throw new Error(`Dreaming capacity: retained task output ${ownBlocked.map(label => label.slice("retained task output ".length)).join(", ")} exceeds 10000 with its current body and framing; left pending`);
-    throw new Error(`Dreaming capacity: retained changes ${selected.blocked.join(", ") || "(none)"} each exceed 10000 with their current body and framing; left pending`);
+    const message = selected.ownBlocked
+      ? `Dreaming capacity: retained task output ${ownBlocked.map(label => label.slice("retained task output ".length)).join(", ")} exceeds 10000 with its current body and framing; left pending`
+      : `Dreaming capacity: retained changes ${selected.blocked.join(", ") || "(none)"} each exceed 10000 with their current body and framing; left pending`;
+    throw new DreamingAdmissionBlocked(retained.id, selected.blockedSignature ?? "[]", message);
   }
   if (tokens(changedText(changed)) > 10000) throw new Error("Dreaming capacity: selected retained changed material exceeds 10000; left pending");
   const processed = store.listCurrentKnowledge(path).filter(v => store.isKnowledgeProcessed(v.revision.id));

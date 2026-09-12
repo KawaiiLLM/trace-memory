@@ -129,6 +129,13 @@ test("32: completion is transactional and hard-capped; edits committed by a fail
   expect(f.store.retryDreamingRange(f.target)?.anchor).toBe(f.item.commit);
   // One indivisible oversized own result is never clipped or certified without being supplied.
   await expect(f.memory.dream(f.target)).rejects.toThrow(/retained task output .* exceeds 10000/);
+  expect(f.memory.taskEligibility("dreaming", f.target)).toEqual({ due: false });
+  const runs = f.store.listRuns(f.target.sessionId).length;
+  await expect(f.memory.dream({ ...f.target, automatic: true })).resolves.toMatchObject({ outcome: "dropped" });
+  expect(f.store.listRuns(f.target.sessionId)).toHaveLength(runs);
+  // An explicit retry reconsiders the same retained identity once, without fabricating a worker run.
+  await expect(f.memory.dream({ ...f.target, automatic: false })).rejects.toThrow(/retained task output .* exceeds 10000/);
+  expect(f.store.listRuns(f.target.sessionId)).toHaveLength(runs);
 });
 
 test("32d: full reads outside the family cannot expand writes; split and merge stay atomic", async () => {

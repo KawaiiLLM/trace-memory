@@ -41,7 +41,10 @@ writable family through retries; current exact results are resolved afresh. Its 
 is audit and authority, not a permanently indivisible input batch: a later admission reselects whole
 current results for still-unsettled events within 10k. An enlarged event that cannot fit alone remains
 pending with a capacity diagnostic, without preventing independently fitting retained events from
-completing first. No event omitted from the supplied batch is settled. Earlier legal Dreamer outputs
+completing first. When no component fits, the existing execution audit records the exact obligation/result
+disposition and releases the seat. Unchanged automatic entries do not readmit it; a changed obligation
+graph or explicit catchup/recovery/direct retry can reconsider the same retained task. No event omitted
+from the supplied batch is settled. Earlier legal Dreamer outputs
 remain mandatory candidates. Admission freezes material, model/thinking and profile. It supplies
 processed knowledge within 20k, changed knowledge within 10k and whole direct facts within 10k,
 with framing and explicit omitted-fact receipts. Runtime reads never extend the family or batch.
@@ -753,17 +756,21 @@ Pass `null` explicitly for legacy null branches.
 snapshot and commit graph it starts with applicable current exact revisions, removes exact Knowledge
 bodies already visible, and then suppresses a candidate only when its nonempty direct change supports
 are all visible Facts or all have proven complete Noting bindings to retained original/bounded Raw
-entries. Empty supports and missing, partial or legacy-unknown bindings fail closed and remain
-candidates. A recognized bounded Raw identity deliberately counts even when truncation removed the
-actual evidentiary span: this can miss a useful Knowledge delivery, while opaque summaries and unknown
+entries. A bounded carrier's database/native pair must name an entry in that exact selected session
+path; a valid row from another or sibling path proves no coverage. Empty supports and missing, partial
+or legacy-unknown bindings fail closed and remain candidates. A recognized bounded Raw identity
+deliberately counts even when truncation removed the actual evidentiary span: this can miss a useful
+Knowledge delivery, while opaque summaries and unknown
 bindings deliberately risk redundant delivery instead of claiming coverage. Applicability and evidence
 are checked on the selected session path; project-only targets use project/global scope and do not
 infer path evidence.
 
 Applicable visible Knowledge bodies and persisted state notices are rendered and charged first against
-`render.knowledgeBlockTokens` (default 20,000). Candidate bodies then fit only as complete rendered
-items in normal category/time/id order. Exact fit is accepted; zero or negative remainder emits no
-body, and omission receipts alone never create a message. Archive/supersede/merge/split notices have
+`render.knowledgeBlockTokens` (default 20,000). Missing state transitions then fit as complete items in
+their stable prefix order, followed by complete candidate bodies in normal category/time/id order. An
+unfit next transition is not skipped for a body; a fitting transition prefix remains publishable. Exact
+fit is accepted; zero or negative remainder and a single unfit item emit nothing, and omission receipts
+alone never create a message. Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
 foreground publication. Consolidator references keep their separate

@@ -37,7 +37,7 @@ Pending processing is the union of applicable unsettled events, unfinished retai
 
 Retained event and version obligations, original anchor, path and writable family stay immutable. Admission resolves their current results and selects whole shared-result components within the existing 10,000-token changed-material cap. An oversized component is never partially supplied and does not pin an independent fitting retained component. Numeric triggers, logical-task identity, compaction protection and footer counts read the same exact-version projection.
 
-Worker completion and tree navigation launch nothing. A later eligible entry completion or existing bounded compaction recovery may admit pending work. Repeated unchanged blocked work does not create a polling or retry loop.
+Worker completion and tree navigation launch nothing. If no complete retained component fits, the existing logical-task execution audit records its exact obligation/result disposition and releases the seat. Unchanged automatic entries do not readmit it; a relevant graph change or explicit catchup, recovery or direct retry can reconsider the same retained task. No timer or second task identity is added.
 
 ## Atomic finalization
 

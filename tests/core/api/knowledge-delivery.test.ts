@@ -58,6 +58,34 @@ test("34c evidence predicate uses complete Fact or proven complete original/boun
   expect(f.memory.injection(f.target, original).knowledgeCommitIds).toEqual([first.commit, both.commit]);
 });
 
+test("34c valid database/native pairs from sibling and foreign paths cannot masquerade as selected bounded Raw", () => {
+  const f = fixture();
+  const sameSessionSibling = f.memory.appendEntry({ sessionId: f.session.id, turnId: f.turn.id, nativeLineage: "lineage",
+    nativeId: "same-session-sibling", role: "user", text: "off-path source", raw: "{}", calls: [] });
+  f.memory.selectEntries(f.session.id, "sibling", [...f.entries.map(entry => entry.id), sameSessionSibling.id]);
+  const selectedSnapshot = f.memory.store.pathSnapshot(f.target);
+  expect(f.memory.store.visibleSourceEntryIds(f.target, selectedSnapshot, new Map([[sameSessionSibling.nativeId, "view"]]),
+    new Map([[sameSessionSibling.id, sameSessionSibling.nativeId]]))).toEqual(new Set());
+
+  const peer = f.memory.store.createSession({ host: "peer", projectId: f.memory.store.getSession(f.session.id)!.projectId,
+    enrollmentChoice: true, startedAt: time, firstReplyAt: time });
+  const turn = f.memory.store.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "peer evidence", startedAt: time });
+  const sibling = f.memory.appendEntry({ sessionId: peer.id, turnId: turn.id, nativeLineage: "peer", nativeId: "peer-sibling",
+    role: "user", text: "foreign source", raw: "{}", calls: [] });
+  f.memory.selectEntries(peer.id, "sibling", [sibling.id]);
+  const noted = f.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, branch: "sibling", createdAt: time },
+    entryIds: [sibling.id], facts: [{ turnId: turn.id, entryIds: [sibling.id], category: "decision", actor: "user",
+      text: "shared-project foreign fact", source: [`T${turn.id}#E${sibling.entryOrdinal}`], createdAt: time }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const knowledge = f.create("foreign-supported current knowledge", [noted.facts[0]!.id]);
+  const forged = view({ raw: new Map([[sibling.nativeId, "view"]]), rawEntryIds: new Map([[sibling.id, sibling.nativeId]]) });
+  expect(f.memory.injection(f.target, forged).knowledgeCommitIds).toContain(knowledge.commit);
+  // The same identified bounded carrier remains valid on its real selected session/path.
+  expect(f.memory.store.visibleSourceEntryIds({ sessionId: peer.id, branch: "sibling", headTurnId: turn.id },
+    f.memory.store.pathSnapshot({ sessionId: peer.id, branch: "sibling", headTurnId: turn.id }), forged.raw, forged.rawEntryIds!))
+    .toEqual(new Set([sibling.id]));
+});
+
 test("34c recognized bounded Raw may suppress even when truncation removed the evidentiary text", () => {
   const f = fixture({ render: { entryTokens: 40, toolInputTokens: 20, toolResultTokens: 20 } });
   const text = "head ".repeat(200) + "EVIDENCE-ONLY-IN-OMITTED-MIDDLE" + " tail".repeat(200);
@@ -185,6 +213,74 @@ test("34c a retained state-only receipt consumes allowance without granting body
   f.memory.config.render.knowledgeBlockTokens = tokens(candidate.text);
   const state = { fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] };
   expect(f.memory.injection(f.target, view({ knowledgeStates: new Set([knowledgeStateKey(state)]) })).text).toBe("");
+});
+
+test("34c state transitions are whole deterministic prefix items and only selected receipts persist", () => {
+  const f = fixture();
+  const parents = [f.create("retire first", [f.facts[0]!.id]), f.create("retire second", [f.facts[1]!.id]), f.create("retire third", [f.facts[0]!.id])];
+  const archives = parents.map((parent, index) => {
+    const result = f.memory.store.commitConsolidationRun({ path: f.target,
+      run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive",
+        knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[index % 2]!.id], reason: `retire ${index}`, createdAt: time }] });
+    if (!result.ok) throw new Error(result.problems.join("; "));
+    return result.committed[0]!;
+  });
+  const visibleParents = new Set(parents.map(parent => parent.commit));
+  const firstOnly = f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([parents[0]!.commit]) }));
+  expect(firstOnly.knowledgeStates).toEqual([{ fromCommit: parents[0]!.commit, toCommits: [archives[0]!.commit] }]);
+  const visibleValues = parents.map(parent => {
+    const revision = f.memory.store.knowledgeRevision(parent.commit)!;
+    return { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision };
+  });
+  const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge(visibleValues, Infinity, renderKnowledge).groups, receipts: [] }));
+  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(firstOnly.text);
+
+  const first = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
+  expect(first.knowledgeCommitIds).toEqual([]);
+  expect(first.knowledgeStates).toEqual([{ fromCommit: parents[0]!.commit, toCommits: [archives[0]!.commit] }]);
+  expect(first.text).toContain(`K${parents[0]!.knowledgeId}@${parents[0]!.commit} is archived`);
+  expect(first.text).not.toContain(`K${parents[1]!.knowledgeId}@${parents[1]!.commit} is archived`);
+  expect(first.text).not.toContain("omitted");
+
+  const firstReceipt = knowledgeStateKey(first.knowledgeStates![0]!);
+  f.memory.config.render.knowledgeBlockTokens = 20_000;
+  const second = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents, knowledgeStates: new Set([firstReceipt]) }));
+  expect(second.knowledgeStates).toEqual([
+    { fromCommit: parents[1]!.commit, toCommits: [archives[1]!.commit] },
+    { fromCommit: parents[2]!.commit, toCommits: [archives[2]!.commit] },
+  ]);
+  expect(second.text).not.toContain(`K${parents[0]!.knowledgeId}@${parents[0]!.commit} is archived`);
+  expect(second.text).toContain(`K${parents[1]!.knowledgeId}@${parents[1]!.commit} is archived`);
+  expect(second.text).toContain(`K${parents[2]!.knowledgeId}@${parents[2]!.commit} is archived`);
+
+  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(firstOnly.text) - 1;
+  const unfit = f.memory.injection(f.target, view({ knowledgeCommitIds: visibleParents }));
+  expect(unfit).toMatchObject({ text: "", knowledgeCommitIds: [] });
+  expect(unfit.knowledgeStates).toBeUndefined();
+});
+
+test("34c state-prefix budgeting shares exact framing with bodies without acknowledging an omitted body", () => {
+  const f = fixture();
+  const parent = f.create("retire visible parent", [f.facts[0]!.id]);
+  const archive = f.memory.store.commitConsolidationRun({ path: f.target,
+    run: { kind: "manual", sessionId: f.session.id, branch: "main", createdAt: time }, operations: [{ op: "archive",
+      knowledgeId: parent.knowledgeId, baseCommit: parent.commit, supports: [f.facts[0]!.id], reason: "retire", createdAt: time }] });
+  if (!archive.ok) throw new Error(archive.problems.join("; "));
+  const body = f.create("deliver this complete body", [f.facts[1]!.id]);
+  const visible = view({ knowledgeCommitIds: new Set([parent.commit]) });
+  const full = f.memory.injection(f.target, visible);
+  expect(full.knowledgeStates).toEqual([{ fromCommit: parent.commit, toCommits: [archive.committed[0]!.commit] }]);
+  expect(full.knowledgeCommitIds).toEqual([body.commit]);
+  const parentRevision = f.memory.store.knowledgeRevision(parent.commit)!;
+  const parentValue = { knowledge: f.memory.store.getKnowledge(parent.knowledgeId)!, revision: parentRevision };
+  const visibleCost = tokens(injectionText({ knowledge: budgetKnowledge([parentValue], Infinity, renderKnowledge).groups, receipts: [] }));
+  f.memory.config.render.knowledgeBlockTokens = visibleCost + tokens(full.text);
+  expect(f.memory.injection(f.target, visible)).toMatchObject({ knowledgeCommitIds: [body.commit], knowledgeStates: full.knowledgeStates });
+  f.memory.config.render.knowledgeBlockTokens--;
+  const partial = f.memory.injection(f.target, visible);
+  expect(partial.knowledgeCommitIds).toEqual([]);
+  expect(partial.knowledgeStates).toEqual(full.knowledgeStates);
+  expect(partial.text).not.toContain("deliver this complete body");
 });
 
 test("34c merge notices are scoped to visible parents and do not grant the survivor body", () => {

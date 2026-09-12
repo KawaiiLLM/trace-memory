@@ -126,6 +126,68 @@ test("34b: comparable origin rejects a successor whose later evidence is inappli
   expect(refused).not.toContain("re-read");
 });
 
+test.each(["missing run", "missing session"] as const)("34b: %s provenance rejects the affected stale write atomically, regardless of successor applicability", missing => {
+  for (const applicable of [false, true]) {
+    const f = pathFixture();
+    const support = applicable ? f.fact : (() => {
+      const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "left", createdAt: at }, facts: [{
+        turnId: f.turn.id, entryIds: [f.left.id], category: "decision", actor: "user", text: "left-only provenance case",
+        source: [`T${f.turn.id}#E2`], createdAt: at,
+      }] });
+      if (!noted.ok) throw new Error(noted.problems.join("; "));
+      return noted.facts[0]!.id;
+    })();
+    const left = f.memory.tools(f.path("left", f.left.id));
+    left.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    const written = left.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+      text: applicable ? "shared successor" : "left-only successor", category: "constraint", scope: "project",
+      supports: [`F${support}`], topics: [], reason: "first consumer" }], skipped: [] });
+    const successor = JSON.parse(written).committed[0].commit as number;
+    const revision = f.store.knowledgeRevision(successor)!;
+    if (missing === "missing run") f.store.db.prepare("UPDATE knowledge_revisions SET run_id = NULL WHERE id = ?").run(successor);
+    else f.store.db.prepare("UPDATE runs SET session_id = NULL WHERE id = ?").run(revision.runId!);
+
+    const root = f.write("root", f.root.id, {});
+    root.trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    const beforeKnowledge = f.store.db.prepare("SELECT count(*) count FROM knowledge").get()!.count;
+    const beforeRevisions = f.store.listKnowledgeRevisions().length;
+    const rejected = root.memory.execute({ operations: [
+      { op: "create", text: "must roll back", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "rollback probe" },
+      { op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`, text: "must reject", category: "constraint", scope: "project",
+        supports: [`F${f.fact}`], topics: [], reason: "stale write" },
+    ], skipped: [] });
+    expect(rejected).toContain("cannot determine target-session provenance");
+    expect(rejected).toContain(`K${f.base.knowledgeId}@${f.base.commit}`);
+    expect(f.store.db.prepare("SELECT count(*) count FROM knowledge").get()!.count).toBe(beforeKnowledge);
+    expect(f.store.listKnowledgeRevisions()).toHaveLength(beforeRevisions);
+    expect(f.store.knowledgeRevision(successor)?.text).toBe(applicable ? "shared successor" : "left-only successor");
+  }
+});
+
+test("34b: proven independent sessions keep the applicability guard even when the prior origin is unknown", () => {
+  const f = pathFixture();
+  const other = TraceMemory(f.db, async () => success); memories.push(other);
+  const session = other.store.createSession({ host: "other", projectId: f.project.id, enrollmentChoice: true, startedAt: at, firstReplyAt: at });
+  const turn = other.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "other", startedAt: at });
+  const entry = other.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: "other", nativeId: "other-root", role: "user", text: "other", raw: "{}", calls: [] });
+  other.selectEntries(session.id, "main", [entry.id]);
+  const origin = other.store.triggerOrigin({ sessionId: session.id, branch: "main", headTurnId: turn.id }, entry.id);
+  const run = other.store.bindRunOrigin({ kind: "manual" as const, sessionId: session.id, branch: "main", createdAt: at }, origin);
+  const successor = other.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id }, run,
+    operations: [{ op: "update", knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit, text: "independent applicable successor",
+      category: "constraint", scope: "project", supports: [f.fact], topics: [], reason: "independent", createdAt: at }] });
+  if (!successor.ok) throw new Error(successor.problems.join("; "));
+  const runId = other.store.knowledgeRevision(successor.committed[0]!.commit)!.runId!;
+  other.store.db.prepare("UPDATE runs SET origin_session_id = NULL, origin_entry_ids = NULL WHERE id = ?").run(runId);
+
+  const root = f.write("root", f.root.id, {});
+  root.trace.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+  const rejected = root.memory.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
+    text: "cross-session stale", category: "constraint", scope: "project", supports: [`F${f.fact}`], topics: [], reason: "stale" }], skipped: [] });
+  expect(rejected).toContain("applicable consuming successor from independent target session");
+  expect(rejected).not.toContain("cannot determine target-session provenance");
+});
+
 test("34b: an applicable independent-session successor retains the stale-base refusal", () => {
   const f = pathFixture();
   const committed = update(f, "left", f.left.id, "left result");
