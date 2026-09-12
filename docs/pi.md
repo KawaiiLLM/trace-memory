@@ -93,7 +93,9 @@ export TRACE_MEMORY_CONFIG='{"dbPath":"~/.trace-memory/trace.db","noting.trigger
 - `dreaming.model` and `dreaming.thinking` use the same model/thinking Settings selectors,
   defaults and precedence as the other phases. Dreamer has no fork option or new settings page.
   Its `dreaming.maxToolRounds` defaults to 50 and accepts 1–50; the initial pass and one
-  system-generated repair share that bound. Provider retries do not reset it.
+  system-generated repair share that bound. Provider retries do not reset it. Repair feedback is
+  a clearly host-generated user-role message, not a new user assertion. It enters through the public
+  prompt lifecycle so the same Dreamer system instructions survive all repair continuations.
 - `notingModel` and `consolidationModel` accept `provider/model-id`, or `session`. Omission
   and `session` both resolve to the current session model's audited provider/id.
 - `notingThinking` and `consolidationThinking` (26d) accept `inherit` (the default) or one of Pi's

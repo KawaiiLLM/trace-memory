@@ -89,8 +89,21 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
   try {
     // 6k changed body fits admission; 4.5k processed outside the family makes the pool over-cap.
     let requests = 0, tools = 0, transient = false;
+    let initialSystem: string | undefined;
+    const repairSystems: (string | undefined)[] = [], repairToolSets: (string[] | undefined)[] = [];
+    let initialTools: string[] | undefined, repairHistory: { role: string; content?: unknown }[] | undefined;
     h.provider(async conversation => {
       requests++;
+      const isRepair = conversation.messages.some(m => JSON.stringify(m).includes("System-generated Dreamer completion check"));
+      if (requests === 1) {
+        initialSystem = conversation.systemPrompt;
+        initialTools = conversation.tools?.map(tool => tool.name);
+      }
+      if (isRepair) {
+        repairSystems.push(conversation.systemPrompt);
+        repairToolSets.push(conversation.tools?.map(tool => tool.name));
+        repairHistory ??= conversation.messages;
+      }
       if (requests === 1) {
         const outside = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", text: "outside ".repeat(4500), category: "constraint", scope: "project", supports: [1], topics: [], reason: "outside frozen family", createdAt: "now" }] });
         if (!outside.ok) throw Error(outside.problems.join());
@@ -109,7 +122,19 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     expect(audit.problems.join()).toContain("exceeds 10000");
     expect(store.isKnowledgeProcessed(item.commit)).toBe(false);
     const log = readFileSync(audit.nativeLog, "utf8").trim().split("\n").map(line => JSON.parse(line));
-    expect(log.filter(e => e.type === "custom_message" && e.customType === "trace-memory-dreamer-check")).toHaveLength(1);
+    const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
+    expect(repairMessages).toHaveLength(1);
+    expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
+    expect(initialSystem).toContain("Use only trace, search, memory and check.");
+    expect(repairSystems.length).toBeGreaterThan(1);
+    expect(repairSystems.every(system => system === initialSystem),
+      JSON.stringify(repairSystems.map(system => ({ bytes: system === undefined ? undefined : Buffer.byteLength(system), dreamer: system?.startsWith("# Dreamer") })))).toBe(true);
+    expect(repairSystems.every(system => system?.includes("Only this host-bound Dreamer may use supports: []"))).toBe(true);
+    expect(initialTools).toEqual(["trace", "search", "check", "memory"]);
+    expect(repairToolSets.every(tools => JSON.stringify(tools) === JSON.stringify(initialTools))).toBe(true);
+    expect(repairHistory?.filter(m => m.role === "toolResult")).toHaveLength(24);
+    expect(String(repairHistory?.find(m => m.role === "user")?.content)).toContain("Changed knowledge (unsettled events):");
+    expect(repairMessages[0]).toMatchObject({ type: "message", message: { role: "user" } });
     expect(requests).toBe(52); // 50 tool rounds, one pass-ending text, one provider retry
   } finally { await h.dispose(); }
 });

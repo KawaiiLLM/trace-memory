@@ -84,8 +84,10 @@ may derive independently. Independent target sessions retain the applicable-succ
 ancestry-dependent write with an unknown historical origin fails explicitly rather than guessing.
 
 `DreamingAgentInput.passEnd(rounds)` is a host callback after the native prompt's complete tool
-loop and retries, never after an intermediate tool turn. One system-generated custom message may
-repair an invalid pass in the same child. `reportRounds` exposes the native counter to check;
+loop and retries, never after an intermediate tool turn. One host-generated user-role message may
+repair an invalid pass in the same child. It is labelled as a system-generated check, not evidence.
+The public prompt lifecycle reapplies the same Dreamer system instructions for every repair request,
+including tool continuations and retries; it does not create a new worker. `reportRounds` exposes the native counter to check;
 `dreaming.maxToolRounds` defaults to 50 and accepts 1–50, shared across both passes. The child's
 automatic compaction remains disabled through the existing in-memory Settings override.
 

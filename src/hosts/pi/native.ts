@@ -424,7 +424,10 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
       const followup = task.passEnd(rounds);
       if (followup && rounds < task.maxToolRounds) {
-        await session.sendCustomMessage({ customType: "trace-memory-dreamer-check", content: followup, display: true }, { triggerTurn: true, deliverAs: "followUp" });
+        // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
+        // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
+        // The feedback identifies itself as host-generated, not evidence, in this same child log.
+        await session.sendUserMessage(followup, { expandPromptTemplates: false });
         await session.waitForIdle();
         task.passEnd(rounds);
       }
