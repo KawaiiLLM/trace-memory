@@ -173,6 +173,14 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
   h.answers.push("Settings", undefined); await command(h, ""); // opened, then cancelled: inert
   const shown = h.dialogs.at(-1)!.options!;
   expect(shown).toEqual([
+    // 35d: the same editor begins with the bound database's three editable policy values and the
+    // three capacities derived from that exact triple; global preferences retain their own layers.
+    "Global Knowledge budget: 4000 tokens (database)",
+    "Project Knowledge budget: 10000 tokens per project owner pool (database)",
+    "Session Knowledge budget: 1000 tokens per session owner pool (database)",
+    "Applicable Knowledge capacity: 15000 tokens (derived, read-only)",
+    "Knowledge injection capacity: 20000 tokens (derived, read-only)",
+    "Dreamer processed-input capacity: 20000 tokens (derived, read-only)",
     "Noter mode: fork (Project); Global=subagent masked",
     `Noter model: follow foreground (Default); fork mode inherits the foreground model fake/test`,
     // 26d: a fork inherits the foreground thinking level too, so the Noter's line discloses it here
@@ -188,6 +196,7 @@ test("18a/24b, as 29e left it: Settings shows each phase's three preferences wit
     "Dreamer thinking: inherit (Default)",
     "Closed-session scope: project (Default)",
   ]);
+  expect(h.dialogs.at(-1)!.title).toContain(`bound database: ${join(h.dir, "trace.db")}`);
   expect(h.dialogs.at(-1)!.title).toContain(globalPath); // where a saved preference goes
   expect([readFileSync(globalPath), readFileSync(projectPath)]).toEqual(before);
   expect(h.requests).toEqual([]);
@@ -344,7 +353,7 @@ test("19c 2026-09-08: the legacy execution-mode key still selects the mode, and 
   expect(h.memory.store.listRuns(1).map(r => r.mode)).toEqual(["subagent"]); // the alias selected fresh context
   h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: subagent (Environment)"); // canonical key, honest source
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Environment)"); // canonical key, honest source
   expect(h.dialogs.at(-1)!.options!.join("\n")).not.toContain("branchModeDefault"); // and only the canonical key
 });
 
@@ -357,7 +366,7 @@ test("19c 2026-09-08: a legacy key in one layer is masked by the canonical key i
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, "");
   // 18a precedence decides; supplying the two spellings in two layers is migration, not a conflict.
-  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: fork (Project); Global=subagent masked");
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: fork (Project); Global=subagent masked");
   writeFileSync(globalPath, "{}"); writeFileSync(projectPath, "{}");
 });
 
@@ -371,6 +380,6 @@ test("19c 2026-09-08: one layer supplying both execution-mode spellings with dif
   writeFileSync(globalPath, JSON.stringify({ "trace-memory": { "noting.branchModeDefault": false, "noting.forkModeDefault": false } }));
   await h.emit("session_start"); h.ctx.hasUI = true;
   h.answers.push("Settings", undefined); await command(h, "");
-  expect(h.dialogs.at(-1)!.options![0]).toBe("Noter mode: subagent (Global)");
+  expect(h.dialogs.at(-1)!.options).toContain("Noter mode: subagent (Global)");
   writeFileSync(globalPath, "{}");
 });
