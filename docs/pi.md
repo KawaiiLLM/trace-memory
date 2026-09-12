@@ -29,8 +29,9 @@ including those before commit reasons and versioned topics (21a/21b), are not su
 Recent 32-series schemas migrate phase, processing, execution and actor-role metadata in place,
 without marking legacy knowledge processed. Ticket 34a also labels existing revision supports as
 `complete_result`, adds binary split/check constraints and nullable immutable trigger-origin fields
-transactionally; revision ids, parents, links, Raw, audit, marks and certifications are preserved.
-Historical missing origins remain unknown rather than guessed. Stop older executors before opening
+transactionally; Ticket 34b adds retained exact-version obligations. Revision ids, parents, links,
+Raw, audit, event settlements, marks and certifications are preserved. Historical missing origins
+remain unknown rather than guessed, and ancestry-dependent writes fail explicitly when they need one. Stop older executors before opening
 the upgraded database; mixed-runtime writes are unsupported. Preserve backups and logs.
 See the [installation guide](../README.md#install) before loading the package.
 
@@ -258,9 +259,12 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   edits as new trigger work. Material is 20k processed knowledge, 10k changed knowledge and 10k
   whole direct facts, with framing and receipts; no automatic Raw block or note tool is supplied.
   Legal update/binary-merge/binary-split/archive batches commit immediately; parentless create is
-  forbidden. Only trusted Dreamer maintenance may carry empty change supports. Final processing
-  requires the shared-scope check and exact event/result certification described in
-  [the core contract](core.md#dreamer-execution-32d).
+  forbidden. Only trusted Dreamer maintenance may carry empty change supports. Exact operation bases
+  are transactionally guarded by immutable trigger ancestry: comparable same-session origins cannot
+  compete, divergent siblings may, and independent sessions retain applicable-successor rejection.
+  Final processing settles accounted supplied events separately from successor-free candidate
+  certification, including restored exact-version obligations, as described in
+  [the core contract](core.md#dreamer-execution-34b).
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -1445,13 +1449,15 @@ memory. The key is the target session, phase and oldest selected backlog item: a
 for Noting, the first fact in Consolidation selection order, or the frozen change event for
 Dreamer. A new leaf, a growing tail, another executor or partial Dreamer edits do not reset it.
 Dreamer uses the same settlement primitives. Its immediate edits do not count as successful
-maintenance: a failed final check keeps the range pending and contributes one business failure,
-with one precise [user-ruled exception](dreamer-external-conflict.md): only an external successor
-created after freeze, with no other acceptance failure, ends as `conflict`. It leaves the existing
-streak unchanged (two stays two), certifies nothing and preserves the run/usage audit. It is not
-user cancellation and does not exempt Noter, Consolidator, provider errors or illegal writes.
-The next eligible entry completion can refreeze the retained range's actual current results;
-worker completion itself starts no retry. Independent phase seats and bounded recovery uses are unchanged.
+maintenance until final acceptance. A consumed formally supplied base is an accounted successful
+disposition: its event is settled without certifying or adopting the consumer, and an all-consumed
+batch may finish with no certificates. One precise [user-ruled exception](dreamer-external-conflict.md)
+remains neutral: an independently verified post-freeze successor of reference-only processed
+material, with no other acceptance failure, ends as `conflict`. It leaves the existing streak
+unchanged (two stays two), certifies nothing and preserves the run/usage audit. It is not user
+cancellation and does not exempt Noter, Consolidator, provider errors or illegal writes. Worker
+completion starts no retry; the next eligible entry completion or bounded recovery may admit pending
+outside events or restored exact-version obligations. Independent phase seats remain unchanged.
 
 Provider retries and fork fallback share one durable execution identity. A refused fork followed
 by successful fresh execution adds no failure; a terminal fresh failure adds one. Incomplete

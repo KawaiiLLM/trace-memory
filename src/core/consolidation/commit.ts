@@ -68,10 +68,6 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       const applicableReads = tips.filter(k => current.some(r => r.id === k.revision.id));
       const read = applicableReads.length === 1 ? applicableReads[0] : tips.length === 1 ? tips[0] : undefined;
       if (!Number.isSafeInteger(id) || !read) errors.push(`${address}: ${tips.length > 1 ? "several tips; specify a commit: " + tips.map(k => `K${id}@${k.revision.id}`).join(", ") : "knowledge was not read as visible and active"}`);
-      else {
-        const bad = store.baseProblem(id, read.revision.id, path);
-        if (bad) errors.push(bad);
-      }
       const base = read?.revision.id ?? 0;
       if (touched.has(base)) errors.push(`${address}: duplicate operation target`);
       touched.add(base);

@@ -35,9 +35,9 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   const ownCommits = retained ? store.dreamingOwnCommits(retained.id) : undefined;
   const admission = store.dreamingInputSnapshot(path, ownCommits);
   const changedText = (value: ReturnType<typeof admission.input>) => `Changed knowledge (unsettled events):\n${value.text}`;
-  const selected = admission.select(retained?.eventIds, candidate => tokens(changedText(candidate)) <= 10000);
-  const ids = selected.eventIds, changed = selected.input;
-  if (!ids.length && !changed.versions.length) {
+  const selected = admission.select(retained ? [...retained.eventIds, ...retained.versionIds] : undefined, candidate => tokens(changedText(candidate)) <= 10000);
+  const ids = selected.eventIds, versionIds = selected.versionIds, changed = selected.input;
+  if (!ids.length && !versionIds.length && !changed.versions.length) {
     if (!retained) throw new Error("Dreaming capacity: oldest change with its current body and framing exceeds 10000; left pending");
     const ownBlocked = selected.blocked.filter(label => label.startsWith("retained task output "));
     if (selected.ownBlocked) throw new Error(`Dreaming capacity: retained task output ${ownBlocked.map(label => label.slice("retained task output ".length)).join(", ")} exceeds 10000 with its current body and framing; left pending`);
@@ -72,8 +72,8 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   const supplied = [...processed.filter(v => oldIds.includes(v.revision.id)), ...changed.versions];
-  const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id), origin);
-  return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, changed, material, text,
+  const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id), origin, versionIds);
+  return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, versionIds, changed, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const,
     readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),
     outputRoots: changed.versions.map(v => v.revision.id), ownCommitsAtFreeze: ownCommits ?? [],
@@ -86,53 +86,67 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const { sessionId, branch, path, range, eventIds, readKnowledgeCommits, outputRoots, ownCommitsAtFreeze } = frozen;
   let rounds = 0, repaired = false;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
-    promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${range.eventIds.at(-1)}`, createdAt: new Date().toISOString() };
-  // Reading grants exact write handles, not certification. This execution may certify its frozen
-  // versions and this retained task's own outputs, but never a later external version merely read.
+    promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${Math.max(range.anchor, ...range.eventIds, ...range.versionIds)}`, createdAt: new Date().toISOString() };
+  // Complete reads grant write handles only. Formal processing membership is the frozen changed
+  // versions; the host, not the model, derives all legitimate own descendants from those roots.
   const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
-  const changedAtFreeze = new Set(frozen.changed.versions.map(v => v.revision.id));
+  const formal = new Set(frozen.changed.versions.map(v => v.revision.id));
+  const eventResults = new Map(frozen.changed.eventResults.map(value => [value.eventId, value.commits]));
   const check = () => {
-    const problems: string[] = [...binding.memory.problems, ...binding.toolProblems];
-    const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
+    const failures: string[] = [...binding.toolProblems];
     let family = range.knowledgeIds;
-    try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { problems.push(String(error)); }
-    const own = store.dreamingOwnCommits(range.id);
+    try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
+    const allOwn = store.dreamingOwnCommits(range.id);
     const frozenOwn = new Set(ownCommitsAtFreeze);
-    const freshOwn = own.filter(id => !frozenOwn.has(id));
-    const certificationRoots = [...new Set([...outputRoots, ...freshOwn])];
-    const state = store.dreamingInput(path, eventIds, certificationRoots);
-    const graph = store.commitGraph(path);
-    const descendantsOfFrozen = new Set<number>();
-    for (const handle of readKnowledgeCommits) if (family.includes(handle.knowledgeId) || changedAtFreeze.has(handle.commit)) {
-      const descendants = graph.descendants(handle.commit);
-      for (const id of descendants) descendantsOfFrozen.add(id);
-      if (!graph.current.some(r => r.knowledgeId === handle.knowledgeId || descendants.has(r.id)))
-        problems.push(`K${handle.knowledgeId}@${handle.commit}: no applicable result remains on the frozen path`);
-    }
-    const eligible = new Set([...admitted, ...freshOwn]);
-    for (const id of certificationRoots) if (!descendantsOfFrozen.has(id))
-      for (const child of graph.descendants(id)) descendantsOfFrozen.add(child);
-    // Settled event labels may disappear from state after another target completes them. The
-    // actual current descendants of exactly what this execution read still decide staleness, while
-    // only the selected changed results are candidates for a new processing certificate.
-    const results = graph.current.filter(r => descendantsOfFrozen.has(r.id));
-    for (const revision of results) if (!eligible.has(revision.id)) {
-      if (revision.id > frozen.commitBoundary && descendantsOfFrozen.has(revision.id))
+    const freshOwn = allOwn.filter(id => !frozenOwn.has(id));
+    const graph = store.commitGraph(null);
+    const formalDescendants = new Set<number>();
+    for (const root of formal) for (const id of graph.descendants(root)) formalDescendants.add(id);
+    const ownCandidates = freshOwn.filter(id => formalDescendants.has(id));
+    const candidates = [...new Set([...formal, ...ownCandidates])].sort((a, b) => a - b);
+    const consumers = store.consumingSuccessors(candidates);
+    const resultIds = candidates.filter(id => consumers.get(id)!.length === 0);
+
+    // A transaction refusal is forgivable only when core returned an exact consumed base and the
+    // fresh graph still contains that consuming edge for a formal processing version.
+    const verifiedConflicts = binding.memory.competitiveConflicts.filter(conflict => formal.has(conflict.baseCommit) &&
+      conflict.successorCommits.some(id => consumers.get(conflict.baseCommit)?.includes(id)));
+    if (binding.memory.problems.length && (!binding.memory.competitiveConflicts.length ||
+        verifiedConflicts.length !== binding.memory.competitiveConflicts.length)) failures.push(...binding.memory.problems);
+
+    const accountedEventIds = eventIds.filter(eventId => {
+      const roots = eventResults.get(eventId) ?? [];
+      return roots.length > 0 && roots.every(id => formal.has(id) && (resultIds.includes(id) || consumers.get(id)!.length > 0 ||
+        ownCandidates.some(own => graph.descendants(id).has(own))));
+    });
+    if (accountedEventIds.length !== eventIds.length)
+      failures.push(`Dreamer did not account for supplied events: ${eventIds.filter(id => !accountedEventIds.includes(id)).map(id => `K@${id}`).join(", ")}`);
+
+    // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only
+    // processed material. Consumed formal inputs and filtered leaves are successful dispositions.
+    const pathGraph = store.commitGraph(path);
+    const ownSet = new Set(freshOwn);
+    const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
+    for (const reference of [...admitted].filter(id => !formal.has(id))) {
+      const descendants = pathGraph.descendants(reference);
+      for (const revision of pathGraph.current) if (revision.id > frozen.commitBoundary && descendants.has(revision.id) &&
+          revision.id !== reference && !ownSet.has(revision.id) && !externalSuccessors.some(value => value.commit === revision.id))
         externalSuccessors.push({ knowledgeId: revision.knowledgeId, commit: revision.id });
-      else problems.push(`K${revision.knowledgeId}@${revision.id}: result is not an admitted version or this task's own descendant`);
     }
-    // A later execution may freeze the actual merge result without adding its identity to the
-    // writable family. A trace during this execution still grants no certification.
-    const resultIds = state.versions.map(v => v.revision).filter(v => eligible.has(v.id)).map(v => v.id).sort((a, b) => a - b);
-    // Recheck every scope touched by the frozen handles, including a read-only successor, but add
-    // only true changed-result candidates to the tentative processed set.
-    const affected = new Set([...results, ...frozen.changed.versions.map(v => v.revision)].map(revision => placementOwner(store, { revision })));
+
+    const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
     const scopes = checkProcessedScopes(store, resultIds, affected);
-    problems.push(...scopes.problems);
-    return { family, eventIds, retainedEventIds: range.eventIds, resultIds, pendingEventIds: state.events.map(e => e.id),
-      versions: state.versions.map(v => ({ knowledgeId: v.revision.knowledgeId, commit: v.revision.id, processed: store.isKnowledgeProcessed(v.revision.id) })),
-      ...scopes, externalSuccessors, failures: problems,
-      problems: [...problems, ...externalSuccessors.map(v => `K${v.knowledgeId}@${v.commit}: external successor after freeze${family.includes(v.knowledgeId) ? "" : " outside frozen family; read-only"}; reading alone cannot certify it`)],
+    failures.push(...scopes.problems);
+    const state = store.dreamingInput(path, eventIds, candidates);
+    const problems = [...failures, ...externalSuccessors.map(value =>
+      `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
+    return { family, eventIds: accountedEventIds, retainedEventIds: range.eventIds, resultIds,
+      pendingEventIds: state.events.map(event => event.id),
+      versions: candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
+        knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
+        successorCommits: consumers.get(commit),
+      }; }),
+      verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, failures, problems,
       remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired };
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
@@ -169,7 +183,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         run.response = JSON.stringify({ ...JSON.parse(run.response!), check: final, problems: final.problems });
         store.updateRun(runId, { ...run, outcome });
         if (outcome === "conflict") store.settleDreamingConflict(run, final.problems.join("; "));
-        else store.completeDreaming(runId, eventIds, final.resultIds);
+        else store.completeDreaming(runId, final.eventIds, final.resultIds);
         return { outcome, runId, problems: final.problems };
       });
     } catch (error) { problems.push(String(error)); }

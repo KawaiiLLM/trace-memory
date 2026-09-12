@@ -1,4 +1,4 @@
-import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
+import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput, CommitGraph } from "./index.ts";
 import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES, type TriggerOrigin } from "../model/index.ts";
 
@@ -35,6 +35,10 @@ CREATE TABLE IF NOT EXISTS dreaming_range_events (
   range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
   event_id INTEGER NOT NULL REFERENCES knowledge_revisions(id), PRIMARY KEY(range_id,event_id)
 );
+CREATE TABLE IF NOT EXISTS dreaming_range_versions (
+  range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
+  commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id), PRIMARY KEY(range_id,commit_id)
+);
 CREATE TABLE IF NOT EXISTS dreaming_family (
   range_id INTEGER NOT NULL REFERENCES dreaming_ranges(id),
   knowledge_id INTEGER NOT NULL REFERENCES knowledge(id), PRIMARY KEY(range_id,knowledge_id)
@@ -50,8 +54,8 @@ CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
 );
 `;
 
-export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number }
-export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; knowledgeIds: number[]; origin: TriggerOrigin | null }
+export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number; kind: "event" | "version" }
+export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; versionIds: number[]; knowledgeIds: number[]; origin: TriggerOrigin | null }
 
 export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION, cache = true): number {
   const cached = store.db.prepare("SELECT tokens FROM knowledge_weights WHERE commit_id = ? AND view_version = ?").get(commitId, version);
@@ -67,13 +71,43 @@ export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE
 }
 
 export function pendingEvents(store: Store, path: KnowledgePath, cache = true,
-  snapshot = store.pathSnapshot(path), input?: ApplicabilityInput): KnowledgeEvent[] {
+  snapshot = store.pathSnapshot(path), prepared?: ReturnType<Store["commitGraphInput"]>, preparedGraph?: CommitGraph): KnowledgeEvent[] {
   const candidates = store.pendingKnowledgeRevisions(path);
-  if (!candidates.length) return [];
   const retained = new Set(store.db.prepare(`SELECT e.event_id FROM dreaming_range_events e JOIN dreaming_ranges r ON r.id = e.range_id
     WHERE r.session_id = ? AND r.branch = ? AND r.completed_run IS NULL`).all(path.sessionId, path.branch ?? "").map(r => Number(r.event_id)));
-  return candidates.filter(r => retained.has(r.id) || store.commitApplies(r, path, snapshot, input))
-    .map(r => ({ id: r.id, knowledgeId: r.knowledgeId, tokens: changeWeight(store, r.id, KNOWLEDGE_VIEW_VERSION, cache) }));
+  const needsVersionProjection = !!prepared || !!store.db.prepare(`SELECT 1 WHERE
+    EXISTS (SELECT 1 FROM settled_knowledge_events) OR EXISTS (
+      SELECT 1 FROM knowledge_revisions k JOIN dreaming_run_ranges d ON d.run_id = k.run_id
+      JOIN dreaming_ranges r ON r.id = d.range_id LEFT JOIN processed_knowledge_versions p ON p.commit_id = k.id
+      WHERE r.completed_run IS NULL AND p.commit_id IS NULL)`).get();
+  const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
+  const applies = (revision: Parameters<Store["commitApplies"]>[0]) => retained.has(revision.id) ||
+    store.commitApplies(revision, path, snapshot, prepared?.metadata, facts, commits);
+  if (!needsVersionProjection) return candidates.filter(applies)
+    .map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
+      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "event" as const }));
+  const input = prepared ?? store.commitGraphInput();
+  const events = candidates.filter(applies);
+  const graph = preparedGraph ?? store.commitGraph(path, undefined, snapshot, input);
+  const eventIds = new Set(events.map(event => event.id));
+  const represented = new Set<number>();
+  for (const revision of graph.current) {
+    const pending = [revision.id], visited = new Set<number>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (eventIds.has(id)) { represented.add(revision.id); break; }
+      pending.push(...(input.parents.get(id) ?? []));
+    }
+  }
+  const processed = store.processedKnowledgeVersions(graph.current.map(revision => revision.id));
+  const restored = graph.current.filter(revision => !processed.has(revision.id) && !represented.has(revision.id));
+  return [...events.map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
+      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "event" as const })),
+    ...restored.map(revision => ({ id: revision.id, knowledgeId: revision.knowledgeId,
+      tokens: changeWeight(store, revision.id, KNOWLEDGE_VIEW_VERSION, cache), kind: "version" as const }))]
+    .sort((left, right) => left.id - right.id || left.kind.localeCompare(right.kind));
 }
 
 /** Full block, never a truncated budget selection. Shared by placement and final certification. */

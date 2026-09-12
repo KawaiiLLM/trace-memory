@@ -176,7 +176,7 @@ test("32d native host: provider overflow does not compact a Dreamer or roll back
   } finally { await h.dispose(); }
 });
 
-test.each([false, true])("external merge=%s conflict keeps pending work without completion chaining; next entry refreezes and completes", async merge => {
+test.each([false, true])("external merge=%s consumes the exact input without completion chaining; next entry processes the outside event", async merge => {
   const { h, store, item, content } = await seeded();
   const other = new Store(h.dbPath);
   let entered!: () => void, release!: () => void;
@@ -203,25 +203,26 @@ test.each([false, true])("external merge=%s conflict keeps pending work without 
     if (!written.ok) throw Error(written.problems.join());
     const external = written.committed[0]!;
     release(); await first;
-    expect((await terminal(h)).outcome).toBe("conflict");
-    expect(requests).toBe(2); // ordinary pass + the sole system repair, not another worker
+    expect((await terminal(h)).outcome).toBe("success");
+    expect(requests).toBe(1);
     expect(store.listRuns(1).filter(r => r.kind === "dreaming")).toHaveLength(1);
-    expect(store.db.prepare("SELECT * FROM dreaming_completions").all()).toEqual([]);
+    expect(store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([item.commit]);
+    expect(store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all()).toEqual([]);
     expect(store.isKnowledgeProcessed(external.commit)).toBe(false);
-    expect(store.taskFailures(1)).toEqual([]);
+    expect(store.taskFailures(1).every(row => row.count === 0)).toBe(true);
     await h.drain();
-    expect(requests).toBe(2);
-    expect(store.retryDreamingRange(store.knowledgePath(1, "main"))?.anchor).toBe(item.commit);
+    expect(requests).toBe(1);
+    expect(store.retryDreamingRange(store.knowledgePath(1, "main"))).toBeNull();
     h.provider(async conversation => {
       expect(JSON.stringify(conversation.messages)).toContain(`K${external.knowledgeId}@${external.commit}`);
       return reply("Maintained the freshly frozen external version");
     }, { autoStop: false });
     await h.turn(); await h.drain();
     const runs = store.listRuns(1).filter(r => r.kind === "dreaming");
-    expect(runs.map(r => r.outcome)).toEqual(["conflict", "success"]);
+    expect(runs.map(r => r.outcome)).toEqual(["success", "success"]);
     expect(store.isKnowledgeProcessed(external.commit)).toBe(true);
     expect(store.isKnowledgeProcessed(item.commit)).toBe(false);
-    expect(store.pendingKnowledgeEvents(store.knowledgePath(1, "main")).map(e => e.id)).toContain(external.commit);
+    expect(store.pendingKnowledgeEvents(store.knowledgePath(1, "main"))).toEqual([]);
     expect(store.retryDreamingRange(store.knowledgePath(1, "main"))).toBeNull();
   } finally { release(); other.close(); await h.dispose(); }
 });
