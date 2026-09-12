@@ -16,7 +16,7 @@ afterEach(() => {
 const open = (path = ":memory:") => { const store = new Store(path); stores.push(store); return store; };
 const file = () => { const dir = mkdtempSync(join(tmpdir(), "tm-budget-policy-")); dirs.push(dir); return join(dir, "trace.db"); };
 
-interface WorkerMessage { type: string; ok?: boolean; error?: string; value?: unknown }
+interface WorkerMessage { type: string; ok?: boolean; error?: string; sql?: string; value?: unknown }
 
 function operationWorker(path: string, release = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))) {
   const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
@@ -102,6 +102,85 @@ async function overlap(path: string, winnerAction: unknown, loserAction: unknown
   const [won, lost] = await Promise.all([winner.wait("result"), loser.wait("result")]);
   await Promise.all([winner.close(), loser.close()]);
   return { won, lost };
+}
+
+function initializationWorker(path: string, role: "holder" | "observer", release: Int32Array) {
+  const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
+  const child = new Worker(`
+    const { workerData, parentPort } = require('node:worker_threads');
+    const release = new Int32Array(workerData.release);
+    parentPort.once('message', async message => {
+      try {
+        if (message.type !== 'construct') throw new Error('unknown initialization worker action');
+        const { DatabaseSync } = require('node:sqlite');
+        const originalExec = DatabaseSync.prototype.exec;
+        let probed = false;
+        DatabaseSync.prototype.exec = function(sql) {
+          const text = String(sql);
+          if (!probed && /\\bBEGIN\\s+IMMEDIATE\\b/i.test(text)) {
+            probed = true;
+            originalExec.call(this, 'PRAGMA busy_timeout = 0');
+            if (workerData.role === 'holder') {
+              const value = originalExec.call(this, sql);
+              parentPort.postMessage({ type: 'held', sql: text });
+              Atomics.wait(release, 0, 0);
+              originalExec.call(this, 'PRAGMA busy_timeout = 5000');
+              return value;
+            }
+            try {
+              originalExec.call(this, sql);
+              throw new Error('constructor contention probe unexpectedly acquired the initialization lock');
+            } catch (error) {
+              if (!String(error).includes('locked')) throw error;
+              parentPort.postMessage({ type: 'blocked', sql: text, error: String(error) });
+              Atomics.wait(release, 0, 0);
+              originalExec.call(this, 'PRAGMA busy_timeout = 5000');
+              return originalExec.call(this, sql);
+            }
+          }
+          return originalExec.call(this, sql);
+        };
+        const { Store } = await import(workerData.module);
+        const store = new Store(workerData.path);
+        let value;
+        try { value = store.knowledgeBudgets(); }
+        finally { store.close(); }
+        parentPort.postMessage({ type: 'result', ok: true, value });
+      } catch (error) {
+        parentPort.postMessage({ type: 'result', ok: false, error: String(error) });
+      }
+    });
+  `, { eval: true, workerData: { module, path, role, release: release.buffer } });
+  const queued: WorkerMessage[] = [];
+  let waiting: { resolve: (value: WorkerMessage) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> } | undefined;
+  let failed: Error | undefined;
+  child.on("message", (message: WorkerMessage) => {
+    if (waiting) {
+      const waiter = waiting; waiting = undefined; clearTimeout(waiter.timer); waiter.resolve(message);
+    } else queued.push(message);
+  });
+  child.on("error", error => {
+    failed = error;
+    if (waiting) {
+      const waiter = waiting; waiting = undefined; clearTimeout(waiter.timer); waiter.reject(error);
+    }
+  });
+  return {
+    child,
+    start: () => child.postMessage({ type: "construct" }),
+    next: () => {
+      if (queued.length) return Promise.resolve(queued.shift()!);
+      if (failed) return Promise.reject(failed);
+      if (waiting) return Promise.reject(new Error("initialization worker already has a pending message wait"));
+      return new Promise<WorkerMessage>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          waiting = undefined;
+          reject(new Error(`timed out waiting for ${role} initialization worker`));
+        }, 5_000);
+        waiting = { resolve, reject, timer };
+      });
+    },
+  };
 }
 
 test("35d defaults and derived capacities are one exact safe-integer policy", () => {
@@ -343,45 +422,51 @@ test.each(["placement", "reduction"] as const)("35d real overlapping project pla
   expect(checked.knowledgeBudgets().project).toBe(winnerName === "placement" ? 20_000 : cap);
 });
 
-test("35d concurrent constructors overlap behind an explicit barrier and publish exactly one default row", async () => {
+test("35d concurrent constructors observe the initialization lock and publish exactly one default row", async () => {
   const path = file(), legacy = open(path);
   legacy.db.exec("DROP TABLE knowledge_budget_policy");
   legacy.close(); stores.splice(stores.indexOf(legacy), 1);
-  const lock = new DatabaseSync(path); lock.exec("BEGIN IMMEDIATE");
-  const module = new URL("../../../src/core/store/index.ts", import.meta.url).href;
-  const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3));
-  const workers = Array.from({ length: 2 }, () => new Worker(`
-    const { workerData, parentPort } = require('node:worker_threads');
-    const state = new Int32Array(workerData.state);
-    Atomics.add(state, 0, 1); Atomics.notify(state, 0);
-    Atomics.wait(state, 1, 0);
-    Atomics.add(state, 2, 1); Atomics.notify(state, 2);
-    import(workerData.module).then(({ Store }) => {
-      const store = new Store(workerData.path);
-      parentPort.postMessage(store.knowledgeBudgets());
-      store.close();
-    }).catch(error => { throw error; });
-  `, { eval: true, workerData: { module, path, state: state.buffer } }));
-  while (Atomics.load(state, 0) < 2) {
-    const current = Atomics.load(state, 0);
-    const waitAsync = (Atomics as unknown as { waitAsync(value: Int32Array, index: number, expected: number): { value: PromiseLike<string> | string } }).waitAsync;
-    await Promise.resolve(waitAsync(state, 0, current).value);
+  const release = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  const holder = initializationWorker(path, "holder", release);
+  const observer = initializationWorker(path, "observer", release);
+  try {
+    // Listeners are installed before either start message. `held` is sent only after the first
+    // constructor's real BEGIN IMMEDIATE succeeds and while that initialization transaction is open.
+    holder.start();
+    const held = await holder.next();
+    expect(held).toMatchObject({ type: "held", sql: expect.stringMatching(/BEGIN IMMEDIATE/) });
+
+    observer.start();
+    const blocked = await observer.next();
+    // This is not worker readiness: the second constructor reports only after its own BEGIN IMMEDIATE
+    // receives SQLite's locked error from the first constructor's still-uncommitted transaction.
+    expect(blocked).toMatchObject({
+      type: "blocked",
+      sql: expect.stringMatching(/BEGIN IMMEDIATE/),
+      error: expect.stringMatching(/database is locked/),
+    });
+
+    Atomics.store(release, 0, 1); Atomics.notify(release, 0, 2);
+    const results = await Promise.all([holder.next(), observer.next()]);
+    const defaults = {
+      global: 4_000, project: 10_000, session: 1_000,
+      applicable: 15_000, injection: 20_000, dreamingProcessedInput: 20_000,
+    };
+    expect(results).toEqual([
+      { type: "result", ok: true, value: defaults },
+      { type: "result", ok: true, value: defaults },
+    ]);
+
+    const checked = open(path);
+    expect(checked.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
+    checked.setKnowledgeBudget("project", 15_000);
+    checked.close(); stores.splice(stores.indexOf(checked), 1);
+    const reopened = open(path);
+    expect(reopened.knowledgeBudgets()).toMatchObject({ project: 15_000, applicable: 20_000, injection: 25_000 });
+    expect(reopened.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
+  } finally {
+    // Failed lock assertions and worker failures cannot strand the holder or leave live workers.
+    Atomics.store(release, 0, 1); Atomics.notify(release, 0, 2);
+    await Promise.allSettled([holder.child.terminate(), observer.child.terminate()]);
   }
-  Atomics.store(state, 1, 1); Atomics.notify(state, 1, 2);
-  while (Atomics.load(state, 2) < 2) {
-    const current = Atomics.load(state, 2);
-    const waitAsync = (Atomics as unknown as { waitAsync(value: Int32Array, index: number, expected: number): { value: PromiseLike<string> | string } }).waitAsync;
-    await Promise.resolve(waitAsync(state, 2, current).value);
-  }
-  const results = workers.map(worker => new Promise<Record<string, number>>((resolve, reject) => {
-    worker.once("message", resolve); worker.once("error", reject);
-  }));
-  lock.exec("COMMIT"); lock.close();
-  expect(await Promise.all(results)).toEqual([
-    expect.objectContaining({ global: 4_000, project: 10_000, session: 1_000 }),
-    expect.objectContaining({ global: 4_000, project: 10_000, session: 1_000 }),
-  ]);
-  await Promise.all(workers.map(worker => worker.terminate()));
-  const checked = open(path);
-  expect(checked.db.prepare("SELECT count(*) AS n FROM knowledge_budget_policy").get()!.n).toBe(1);
-});
+}, 15_000);
