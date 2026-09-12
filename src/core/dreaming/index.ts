@@ -7,6 +7,7 @@ import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
 import { similarity, type ConsolidateInput } from "../consolidation/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
+import type { TriggerOrigin } from "../model/index.ts";
 
 const prompt = readFileSync(new URL("../prompts/dreaming.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -26,7 +27,8 @@ export interface DreamingAgentInput extends AgentControl {
   reportRounds(rounds: number): void;
 }
 
-export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig) {
+export function freezeDreaming(store: Store, input: DreamingInput, config: TraceMemoryConfig,
+  origin: TriggerOrigin | null = store.triggerOrigin({ sessionId: input.sessionId, branch: input.branch, headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId }, input.triggerEntryId)) {
   const retained = store.retryDreamingRange(store.knowledgePath(input.sessionId, input.branch, input.headTurnId));
   const path = retained ? { sessionId: retained.sessionId, branch: retained.branch, headTurnId: retained.headTurnId }
     : { sessionId: input.sessionId, branch: input.branch, headTurnId: input.headTurnId! };
@@ -70,7 +72,7 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
       tokens(prompt) + tokens(JSON.stringify(dreamingToolDefinitions())) + tokens(text) > input.capacity.inputTokens))
     throw new Error("Dreaming capacity: frozen material and tools exceed model input allowance; left pending");
   const supplied = [...processed.filter(v => oldIds.includes(v.revision.id)), ...changed.versions];
-  const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id));
+  const range = store.retainDreamingRange(path, ids, supplied.map(v => v.knowledge.id), origin);
   return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, changed, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const,
     readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),

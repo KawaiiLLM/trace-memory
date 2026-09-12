@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
+import type { TriggerOrigin } from "../model/index.ts";
 import type { Store, RunInput, Phase } from "./index.ts";
 
-export interface LogicalTask { sessionId: number; phase: Phase; head: number }
+export interface LogicalTask { sessionId: number; phase: Phase; head: number; origin?: TriggerOrigin | null }
 export type ExecutionOutcome = "success" | "failure" | "cancelled" | "conflict";
 export const EXECUTIONS_SQL = `
 CREATE TABLE IF NOT EXISTS task_executions (
@@ -9,7 +10,8 @@ CREATE TABLE IF NOT EXISTS task_executions (
   phase TEXT NOT NULL CHECK(phase IN ('noting','consolidation','dreaming')),
   head INTEGER NOT NULL CHECK(head > 0),
   outcome TEXT CHECK(outcome IN ('success','failure','cancelled','conflict')),
-  terminal_run INTEGER REFERENCES runs(id), reason TEXT, updated_at TEXT NOT NULL
+  terminal_run INTEGER REFERENCES runs(id), reason TEXT, updated_at TEXT NOT NULL,
+  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_execution_task ON task_executions(session_id,phase,head);
 CREATE TABLE IF NOT EXISTS execution_runs (
@@ -35,9 +37,9 @@ export function beginExecution(store: Store, task: LogicalTask, previous?: strin
       throw new Error("Fallback must continue the same unsettled logical task");
     return previous;
   }
-  const id = randomUUID();
-  store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,updated_at) VALUES (?,?,?,?,?)")
-    .run(id, task.sessionId, task.phase, task.head, new Date().toISOString());
+  const id = randomUUID(), origin = task.origin ?? null;
+  store.db.prepare("INSERT INTO task_executions(id,session_id,phase,head,updated_at,origin_session_id,origin_entry_ids) VALUES (?,?,?,?,?,?,?)")
+    .run(id, task.sessionId, task.phase, task.head, new Date().toISOString(), origin?.sessionId ?? null, origin ? JSON.stringify(origin.entryIds) : null);
   return id;
 }
 

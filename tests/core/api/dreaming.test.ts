@@ -143,7 +143,8 @@ test("32d: full reads outside the family cannot expand writes; split and merge s
     trace.execute({ address: `K${external.knowledgeId}` });
     expect(memory.execute({ operations: [{ op: "archive", id: `K${external.knowledgeId}@${external.commit}`, supports: [], reason: "outside" }], skipped: [] })).toContain("read-only");
     const content = { text: "split claim", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Separate claims without adding facts" };
-    const split = JSON.parse(memory.execute({ operations: [{ op: "create", ...content }, { op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`, ...content }], skipped: [] })).committed;
+    const split = JSON.parse(memory.execute({ operations: [{ op: "split", id: `K${f.item.knowledgeId}@${f.item.commit}`, supports: content.supports, reason: content.reason,
+      children: [{ text: "first split claim", category: "constraint", topics: [] }, { text: "second split claim", category: "constraint", topics: [] }] }], skipped: [] })).committed;
     expect(split).toHaveLength(2);
     for (const item of split) trace.execute({ address: `K${item.knowledgeId}` });
     const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${split[1].knowledgeId}@${split[1].commit}`, absorb: [`K${split[0].knowledgeId}@${split[0].commit}`], ...content }], skipped: [] })).committed;
@@ -293,7 +294,8 @@ test("32d: own split/update/merge/archive outputs survive failure and reopen und
   const f = fixture(async task => {
     const memory = task.tools.find(t => t.name === "memory")!, trace = task.tools.find(t => t.name === "trace")!;
     const content = { text: "separate exact claim", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Retain conditions" };
-    const split = JSON.parse(memory.execute({ operations: [{ op: "create", ...content }, { op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`, ...content }], skipped: [] })).committed;
+    const split = JSON.parse(memory.execute({ operations: [{ op: "split", id: `K${f.item.knowledgeId}@${f.item.commit}`, supports: content.supports, reason: content.reason,
+      children: [{ text: "first exact claim", category: "constraint", topics: [] }, { text: "second exact claim", category: "constraint", topics: [] }] }], skipped: [] })).committed;
     expect(split).toHaveLength(2); own.push(...split);
     for (const item of split) trace.execute({ address: `K${item.knowledgeId}` });
     const updated = JSON.parse(memory.execute({ operations: [{ op: "update", id: `K${split[0].knowledgeId}@${split[0].commit}`, ...content, text: "refined exact claim" }], skipped: [] })).committed;
@@ -310,7 +312,7 @@ test("32d: own split/update/merge/archive outputs survive failure and reopen und
     const task = raw as DreamingAgentInput;
     expect(next.store.retryDreamingRange(f.target)).toEqual(retained);
     const current = next.store.commitGraph(f.target).current;
-    const survivor = current.find(v => v.knowledgeId === f.item.knowledgeId)!, child = current.find(v => v.knowledgeId !== f.item.knowledgeId)!;
+    const survivor = current[0]!, child = current[1]!;
     const memory = task.tools.find(t => t.name === "memory")!;
     const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${survivor.knowledgeId}@${survivor.id}`, absorb: [`K${child.knowledgeId}@${child.id}`], text: "combined exact claims", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Preserve both claims" }], skipped: [] })).committed;
     expect(merged).toHaveLength(1); own.push(...merged);
@@ -371,10 +373,9 @@ test("32d: retained split outputs can finish unchanged on retry without losing e
   const f = fixture(async task => {
     if (!first) return success;
     first = false;
-    const content = { text: "separate claim", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Separate claims" };
-    expect(JSON.parse(task.tools.find(t => t.name === "memory")!.execute({ operations: [
-      { op: "create", ...content }, { op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`, ...content },
-    ], skipped: [] })).committed).toHaveLength(2);
+    const content = { supports: ["F1"], reason: "Separate claims" };
+    expect(JSON.parse(task.tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "split", id: `K${f.item.knowledgeId}@${f.item.commit}`, ...content,
+      children: [{ text: "first separate claim", category: "constraint", topics: [] }, { text: "second separate claim", category: "constraint", topics: [] }] }], skipped: [] })).committed).toHaveLength(2);
     return { ...success, outcome: "failure" };
   });
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");

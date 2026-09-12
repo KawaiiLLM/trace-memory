@@ -273,9 +273,9 @@ test("21b 2026-09-08: reordering the same label set renders the same metadata, a
   write.execute({ operations: [{ ...create, topics: ["storage", "auth"] }, { ...create, text: "Commit the lockfile", topics: [" auth ", "storage"] },
     { ...create, text: "Run the tests", topics: [] }], skipped: [] }); // the third is explicitly unclassified
   const metadata = (address: string) => memory.trace(address).split("\n")[1];
-  expect(metadata("K1@1")).toBe('  supports: F1 · topics: ["auth","storage"]');
+  expect(metadata("K1@1")).toBe('  change supports: F1 · topics: ["auth","storage"]');
   expect(metadata("K2@2")).toBe(metadata("K1@1")); // the same set, submitted in another order
-  expect(metadata("K3@3")).toBe("  supports: F1"); // unclassified: no metadata at all
+  expect(metadata("K3@3")).toBe("  change supports: F1"); // unclassified: no metadata at all
 });
 
 test("21b 2026-09-08: a topic-only update is an ordinary update; old commits keep their labels, clearing is explicit, merge states the survivor's set and archive inherits", () => {

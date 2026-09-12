@@ -26,8 +26,12 @@ runner into a temporary database, with the provider stubbed at the wire. See bel
 
 This Beta requires a database created by the current schema. Older development databases,
 including those before commit reasons and versioned topics (21a/21b), are not supported.
-Recent 32-series schemas migrate phase, processing, execution and Dreamer actor-role metadata
-in place, without marking legacy knowledge processed. Preserve old databases and logs and choose a new, unused `dbPath`.
+Recent 32-series schemas migrate phase, processing, execution and actor-role metadata in place,
+without marking legacy knowledge processed. Ticket 34a also labels existing revision supports as
+`complete_result`, adds binary split/check constraints and nullable immutable trigger-origin fields
+transactionally; revision ids, parents, links, Raw, audit, marks and certifications are preserved.
+Historical missing origins remain unknown rather than guessed. Stop older executors before opening
+the upgraded database; mixed-runtime writes are unsupported. Preserve backups and logs.
 See the [installation guide](../README.md#install) before loading the package.
 
 ## Configuration
@@ -253,8 +257,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   claim/slot waits. A frozen unfinished range retains retry eligibility without charging its own
   edits as new trigger work. Material is 20k processed knowledge, 10k changed knowledge and 10k
   whole direct facts, with framing and receipts; no automatic Raw block or note tool is supplied.
-  Legal memory batches commit immediately, while final processing requires the shared-scope
-  check and exact event/result certification described in [the core contract](core.md#dreamer-execution-32d).
+  Legal update/binary-merge/binary-split/archive batches commit immediately; parentless create is
+  forbidden. Only trusted Dreamer maintenance may carry empty change supports. Final processing
+  requires the shared-scope check and exact event/result certification described in
+  [the core contract](core.md#dreamer-execution-32d).
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —
   the fact line with its relations and the joining separator — the trigger over the whole applicable
@@ -337,7 +343,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 ## Executor slots, claims and shutdown
 
 Each enabled active Pi runtime is an executor with one Noting, one Consolidation and one
-Dreaming slot, including borrowed tasks. C and D may overlap; no database-wide seat is held. Each eligible entry completion checks
+Dreaming slot, including borrowed tasks. C and D may overlap; no database-wide seat is held. At
+admission Pi passes the exact persisted source-entry head, so core freezes the target session plus
+ordered native-entry prefix before later same-Turn entries or foreground navigation can move it. Each eligible entry completion checks
 free slots. Own eligible work has priority under the normal trigger thresholds (29d removed the
 branch delivery gate). If no own task can be claimed, one enabled normally closed
 target with a nonempty phase queue may use that slot, even for one entry or one

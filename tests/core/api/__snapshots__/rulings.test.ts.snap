@@ -12,9 +12,9 @@ Facts:
   source: T2#user
 Commits (by evidence):
 [K1@1] [constraint/project] Use blue tiles
-  supports: F1
+  change supports: F1
 [K1@2] [constraint/project] C version
-  supports: F2
+  change supports: F2
 Pending raw:
 [T4#E1@text] user: Unrecorded <work> & more
 [T4#E2@text] assistant: Pending

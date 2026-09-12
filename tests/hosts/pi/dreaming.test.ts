@@ -47,6 +47,17 @@ test("32d native host: entry completion starts fresh Dreamer; no tool check stil
     const run = await terminal(h);
     expect(run.outcome).toBe("success"); expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test-thinking");
     expect(JSON.parse(run.response!).thinking).toEqual({ requested: "high", effective: "high" });
+    expect(run.origin).not.toBeNull();
+    expect(run.origin!.sessionId).toBe(1);
+    const exactTrigger = run.origin!.entryIds.at(-1)!;
+    const laterHead = store.sourceHeadEntryId(1, "main", store.knowledgePath(1).headTurnId!)!;
+    expect(exactTrigger).toBeLessThan(laterHead);
+    expect(store.getSourceEntry(exactTrigger)!.turnId).toBe(store.getSourceEntry(laterHead)!.turnId);
+    expect(run.origin!.entryIds).not.toContain(laterHead);
+    const range = store.dreamingRange(1, true)!;
+    expect(range.origin).toEqual(run.origin);
+    const execution = store.db.prepare("SELECT e.origin_session_id, e.origin_entry_ids FROM task_executions e JOIN execution_runs x ON x.execution_id = e.id WHERE x.run_id = ?").get(run.id)!;
+    expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(run.origin);
     expect(store.isKnowledgeProcessed(item.commit)).toBe(true);
     expect(JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8")).compaction.enabled).toBe(true);
     expect(h.requests).toHaveLength(1);

@@ -212,7 +212,7 @@ export default function (pi: ExtensionAPI) {
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
   // system — it drives 17c's own executor slot and target claim under a frozen entry/fact snapshot).
   type Catchup = {
-    sessionId: number; branch: string; headTurnId: number;
+    sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number;
     maxEntryId?: number; entryTotal: number; // Noting boundary: undefined means nothing was pending to note
     factIds: Set<number>; factTotal: number; // Consolidation boundary: pending-at-freeze plus produced-by-this-drain
     stopped: boolean;
@@ -429,7 +429,7 @@ export default function (pi: ExtensionAPI) {
   // One admission path for ordinary (own/borrowed) and manual-catchup work (18b): only the target,
   // mode/model and admission flags differ. `boundary` is absent for ordinary automatic work.
   // The return type is written out because 27b/27c's re-admission re-enters this function.
-  const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: { sessionId: number; branch: string; headTurnId: number },
+  const attemptPhase = (context: ExtensionContext, kind: WorkerPhase, target: TaskTarget,
       selected: { mode: "fork" | "subagent"; model: string; fallbackReason?: string },
       options: { borrowed: boolean; automatic: boolean; boundary?: TaskBoundary; forkAttempt?: ForkRefusal; signal?: AbortSignal },
       ): Promise<NotingResult | ConsolidateResult | DreamingResult | { outcome: "dropped"; permanent?: string }> => {
@@ -912,7 +912,7 @@ export default function (pi: ExtensionAPI) {
   const checkQueues = () => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
-    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head };
+    const own = { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
     for (const kind of ["noting", "consolidation", "dreaming"] as const) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
@@ -985,7 +985,7 @@ export default function (pi: ExtensionAPI) {
     const c = catchup;
     if (!c || c.stopped || c.outcome || closed) return;
     const context = ctx;
-    const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId };
+    const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
     const p = catchupProgress(c);
     const phase: "noting" | "consolidation" | undefined = p.remainingEntries ? "noting" : p.remainingFacts ? "consolidation" : undefined;
     if (!phase) {
@@ -1038,7 +1038,7 @@ export default function (pi: ExtensionAPI) {
     const pendingNow = memory.pendingEntries(sessionId, branch, headTurnId);
     const maxEntryId = pendingNow.length ? Math.max(...pendingNow.map(e => e.id)) : undefined;
     const factsNow = memory.store.consolidationBatch(sessionId, branch, headTurnId).map(f => f.id);
-    catchup = { sessionId, branch, headTurnId, maxEntryId, entryTotal: pendingNow.length, factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false };
+    catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length, factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false };
     if (!pendingNow.length && !factsNow.length) { catchup.outcome = "completed"; ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return; }
     driveCatchup(); // Starts the cancellable operation and returns; stop remains available while it runs.
     ctx.ui.notify(catchupLine()!, "info"); // Honestly reports the immediate result: running or Waiting for an occupied phase/claim.
@@ -1320,7 +1320,7 @@ export default function (pi: ExtensionAPI) {
   const definitions = toolDefinitions.map(definition => ({ ...definition, label: definition.name,
     async execute(_id: string, raw: unknown, _signal: unknown, _update: unknown, context: ExtensionContext) {
       ensure(context); reconcile();
-      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id,
+      const bound = state.sessionId && current?.id ? memory.tools({ kind: "manual", sessionId: state.sessionId, branch: state.branch, currentTurnId: current.id, triggerEntryId: state.sourceHead,
         readKnowledgeCommits: [...visible(binding()).knowledgeCommitIds].flatMap(commit => {
           const revision = memory.store.knowledgeRevision(commit);
           return revision ? [{ knowledgeId: revision.knowledgeId, commit }] : [];

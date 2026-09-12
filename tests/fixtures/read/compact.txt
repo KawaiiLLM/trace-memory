@@ -1,7 +1,7 @@
 <knowledge>
 <constraint>
 [K1@1] [constraint/project] 地形层和高度层一起读。
-  supports: F1
+  change supports: F1
 </constraint>
 </knowledge>
 

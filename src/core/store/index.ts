@@ -5,12 +5,13 @@
 
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { migrateDreaming } from "./migration.ts";
+import { migrateDreaming, migrateKnowledgeLineage } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
 import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, changeWeight, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
+import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
 import type {
   Actor,
   Knowledge,
@@ -29,6 +30,7 @@ import type {
   Run,
   RunKind,
   RunOutcome,
+  TriggerOrigin,
   Session,
   ToolCall,
   Turn,
@@ -141,11 +143,13 @@ CREATE TABLE IF NOT EXISTS knowledge_revisions (
   category TEXT NOT NULL CHECK (category IN ('constraint','open','dispute','goal','mechanism','term','reference')),
   scope TEXT NOT NULL CHECK (scope IN ('session','project','global')),
   supports TEXT NOT NULL,
-  op TEXT NOT NULL CHECK (op IN ('create','update','merge','archive')),
+  support_semantics TEXT NOT NULL DEFAULT 'complete_result' CHECK (support_semantics IN ('complete_result','change')),
+  op TEXT NOT NULL CHECK (op IN ('create','update','merge','split','archive')),
   reason TEXT NOT NULL,
   topics TEXT NOT NULL DEFAULT '[]',
   run_id INTEGER REFERENCES runs(id),
   created_at TEXT NOT NULL,
+  actor_role TEXT CHECK(actor_role IS NULL OR actor_role IN ('consolidation','dreaming','manual')),
   UNIQUE (knowledge_id, id)
 );
 
@@ -172,8 +176,11 @@ CREATE TABLE IF NOT EXISTS runs (
   mode TEXT,
   request TEXT,
   response TEXT,
+  origin_session_id INTEGER REFERENCES sessions(id),
+  origin_entry_ids TEXT,
   outcome TEXT NOT NULL CHECK (outcome IN ('success','failure','cancelled','bounced','conflict')),
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  CHECK ((origin_session_id IS NULL) = (origin_entry_ids IS NULL))
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_marks (
@@ -277,7 +284,7 @@ export interface SourceInput {
 export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number; blocks?: SourceBlock[] }
 
 export type Phase = "noting" | "consolidation" | "dreaming";
-export interface TaskTarget { sessionId: number; branch: string; headTurnId: number }
+export interface TaskTarget { sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number }
 export interface TaskClaim {
   sessionId: number; phase: Phase; executorId: string; token: string; expiresAt: number;
   borrowed: boolean; reserved: boolean;
@@ -288,6 +295,8 @@ export type ClosedSessionScope = "off" | "project" | "global";
 export interface RunInput {
   /** Host-only capability, never accepted from tool arguments or serialized as evidence. */
   dreamingAuthority?: object;
+  /** Core-only capability binding a frozen trigger origin. */
+  originAuthority?: object;
   executionId?: string;
   /** Retained source range for Dreamer's immediate writes; not a new trigger source. */
   dreamingRangeId?: number;
@@ -384,6 +393,15 @@ export type KnowledgeOperationInput =
       createdAt: string;
     }
   | {
+      op: "split";
+      knowledgeId: number;
+      baseCommit: number;
+      children: { text: string; category: KnowledgeCategory; topics: string[] }[];
+      supports: number[];
+      reason: string;
+      createdAt: string;
+    }
+  | {
       op: "archive";
       knowledgeId: number;
       baseCommit: number;
@@ -410,6 +428,7 @@ export interface CommitGraph {
 /** Metadata for one synchronous projection. Rebuild after assignment changes; never cache across reads. */
 export interface ApplicabilityInput {
   revisions?: Map<number, KnowledgeRevision>;
+  parents?: Map<number, number[]>;
   runs: Map<number, number>;
   projects: Map<number, number>;
   facts: Map<number, { fact: Fact; sessionId: number; entries: number[] }>;
@@ -515,12 +534,22 @@ function toKnowledgeRevision(row: any): KnowledgeRevision {
     category: row.category,
     scope: row.scope,
     supports: JSON.parse(row.supports),
+    supportSemantics: row.support_semantics ?? "complete_result",
     op: row.op,
     reason: row.reason,
     topics: JSON.parse(row.topics),
     runId: row.run_id,
     createdAt: row.created_at,
   };
+}
+
+function triggerOriginFromRow(row: any): TriggerOrigin | null {
+  if (row.origin_session_id == null && row.origin_entry_ids == null) return null;
+  const ids = JSON.parse(String(row.origin_entry_ids));
+  if (!Number.isInteger(row.origin_session_id) || row.origin_session_id <= 0 || !Array.isArray(ids) || !ids.length ||
+    ids.some((id: unknown) => !Number.isInteger(id) || Number(id) <= 0) || new Set(ids).size !== ids.length)
+    throw new Error("stored trigger origin is malformed");
+  return { sessionId: Number(row.origin_session_id), entryIds: ids.map(Number) };
 }
 
 function toRun(row: any): Run {
@@ -536,6 +565,7 @@ function toRun(row: any): Run {
     mode: row.mode,
     request: row.request,
     response: row.response,
+    origin: triggerOriginFromRow(row),
     outcome: row.outcome,
     createdAt: row.created_at,
   };
@@ -547,6 +577,49 @@ export class Store {
   readonly db: DatabaseSync;
   closed = false;
   private readonly dreamingAuthorities = new WeakMap<object, { rangeId: number; sessionId: number; token: string; executionId: string; runId: number }>();
+  private readonly originAuthorities = new WeakMap<object, TriggerOrigin | null>();
+
+  /** Capture once at admission. The ordered ids end at the exact native entry represented by this target. */
+  triggerOrigin(path: KnowledgePath, triggerEntryId?: number): TriggerOrigin | null {
+    if (!path.branch || path.headTurnId == null) return null;
+    const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch) as { entry_ids: string } | undefined;
+    if (!row) return null;
+    let ids: unknown;
+    try { ids = JSON.parse(row.entry_ids); } catch { throw new Error("trigger origin path is malformed"); }
+    if (!Array.isArray(ids)) throw new Error("trigger origin path is malformed");
+    const explicit = triggerEntryId === undefined ? undefined : ids.indexOf(triggerEntryId);
+    if (explicit !== undefined && explicit < 0) throw new Error("trigger origin does not contain the exact triggering entry");
+    const captured = explicit === undefined ? ids : ids.slice(0, explicit + 1);
+    if (captured.some(id => !Number.isInteger(id) || Number(id) <= 0) || new Set(captured).size !== captured.length)
+      throw new Error("trigger origin path is malformed");
+    if (!captured.length) return null;
+    const rows = this.db.prepare("SELECT id, session_id, turn_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify(captured)) as { id: number; session_id: number; turn_id: number }[];
+    if (rows.length !== captured.length || rows.some(entry => entry.session_id !== path.sessionId)) throw new Error("trigger origin path contains a missing or foreign entry");
+    const byId = new Map(rows.map(entry => [entry.id, entry]));
+    const turns = this.pathTurns(path);
+    let trigger = explicit === undefined ? -1 : explicit;
+    if (triggerEntryId !== undefined && !turns.has(byId.get(triggerEntryId)!.turn_id))
+      throw new Error("trigger origin does not contain the exact triggering entry");
+    if (explicit === undefined) for (let i = 0; i < captured.length; i++) if (turns.has(byId.get(Number(captured[i]))!.turn_id)) trigger = i;
+    if (trigger < 0) throw new Error("trigger origin has no entry on the target ancestry");
+    const prefix = captured.slice(0, trigger + 1).map(Number);
+    if (prefix.some(id => !turns.has(byId.get(id)!.turn_id))) throw new Error("trigger origin is not an ordered native ancestry");
+    return { sessionId: path.sessionId, entryIds: prefix };
+  }
+
+  /** Bind a captured value to a run object without exposing serialized authority. */
+  bindRunOrigin(run: RunInput, origin: TriggerOrigin | null): RunInput {
+    const authority = {};
+    this.originAuthorities.set(authority, origin ? { sessionId: origin.sessionId, entryIds: [...origin.entryIds] } : null);
+    return { ...run, originAuthority: authority };
+  }
+
+  private runOrigin(run: RunInput): TriggerOrigin | null {
+    if (!run.originAuthority || !this.originAuthorities.has(run.originAuthority)) return null;
+    const origin = this.originAuthorities.get(run.originAuthority)!;
+    return origin ? { sessionId: origin.sessionId, entryIds: [...origin.entryIds] } : null;
+  }
 
   /** Called only by admitted host execution, not by a model-facing tool. */
   bindDreamingRun(run: RunInput): RunInput {
@@ -629,11 +702,10 @@ export class Store {
             update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : normalizeSource ? "null" : null, entry.id);
           }
         }
-        if (!this.db.prepare("PRAGMA table_info(knowledge_revisions)").all().some(r => r.name === "actor_role"))
-          this.db.exec("ALTER TABLE knowledge_revisions ADD COLUMN actor_role TEXT CHECK(actor_role IS NULL OR actor_role = 'dreaming')");
       });
       this.db.exec(PROCESSING_SQL);
       this.db.exec(EXECUTIONS_SQL);
+      migrateKnowledgeLineage(this.db);
     } catch (error) {
       try { this.db.close(); } catch { /* Preserve the initialization error. */ }
       throw error;
@@ -732,6 +804,11 @@ export class Store {
     });
   }
   beginExecution(task: LogicalTask, previous?: string): string { return this.transaction(() => beginExecution(this, task, previous)); }
+  executionOrigin(id: string): TriggerOrigin | null {
+    const row = this.db.prepare("SELECT origin_session_id, origin_entry_ids FROM task_executions WHERE id = ?").get(id);
+    if (!row) throw new Error("Unknown execution");
+    return triggerOriginFromRow(row);
+  }
   taskFailures(sessionId: number) {
     return this.db.prepare("SELECT * FROM task_failures WHERE session_id = ? ORDER BY phase, head").all(sessionId).map(row => ({
       phase: row.phase as Phase, head: Number(row.head), count: Number(row.count), lastReason: String(row.last_reason ?? ""),
@@ -1134,8 +1211,9 @@ export class Store {
   }
 
   private insertRun(input: RunInput & { outcome: RunOutcome }): number {
-    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, outcome, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    const origin = this.runOrigin(input);
+    const info = this.db.prepare(`INSERT INTO runs (kind, session_id, branch, range_from, range_to, prompt_hash, model, mode, request, response, origin_session_id, origin_entry_ids, outcome, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
         input.kind,
         input.sessionId ?? null,
         input.branch ?? null,
@@ -1146,6 +1224,8 @@ export class Store {
         input.mode ?? null,
         input.request ?? null,
         input.entryAudit ? JSON.stringify({ ...JSON.parse(input.response ?? "{}"), entryAudit: input.entryAudit }) : input.response ?? null,
+        origin?.sessionId ?? null,
+        origin ? JSON.stringify(origin.entryIds) : null,
         input.outcome,
         input.createdAt,
       );
@@ -1248,10 +1328,9 @@ export class Store {
   commitGraph(path: KnowledgePath | null, projectId?: number, prepared?: PathSnapshot, input = this.commitGraphInput()): CommitGraph {
     const snapshot = path ? prepared ?? this.pathSnapshot(path) : null;
     const { revisions, parents, metadata } = input;
-    const facts = new Map<number, boolean>();
-    const applicable = revisions.filter(r => (projectId === undefined || r.scope === "global" ||
-      (r.scope === "project" && r.runId !== null && metadata.projects.get(metadata.runs.get(r.runId)!) === projectId)) &&
-      (!path || this.commitApplies(r, path, snapshot!, metadata, facts)));
+    const facts = new Map<number, boolean>(), commits = new Map<number, boolean>(), projectCommits = new Map<number, boolean>();
+    const applicable = revisions.filter(r => (projectId === undefined || this.commitAppliesToProject(r, projectId, metadata, projectCommits)) &&
+      (!path || this.commitApplies(r, path, snapshot!, metadata, facts, commits)));
     return this.projectCommitGraph(revisions, parents, applicable);
   }
 
@@ -1266,6 +1345,7 @@ export class Store {
     const factIds = JSON.stringify([...new Set(revisions.flatMap(r => r.supports))]);
     const metadata: ApplicabilityInput = {
       revisions: new Map(revisions.map(r => [r.id, r])),
+      parents,
       runs: new Map(this.db.prepare("SELECT id, session_id FROM runs WHERE id IN (SELECT value FROM json_each(?))")
         .all(runIds).map(r => [Number(r.id), Number(r.session_id)])),
       projects: new Map(this.db.prepare("SELECT id, project_id FROM sessions").all().map(r => [Number(r.id), Number(r.project_id)])),
@@ -1400,17 +1480,58 @@ export class Store {
       : fact.source.every(source => entries.addresses(Number(/^T([1-9]\d*)#/.exec(source)![1])).has(sourceKey(source)));
   }
 
-  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput, facts = new Map<number, boolean>()): boolean {
-    // Empty evidence is not universal applicability: maintenance retirement inherits the exact parent,
-    // including its original run-session attribution, even when another session hosts the Dreamer.
-    if (commit.actorRole === "dreaming" && commit.op === "archive" && !commit.supports.length) {
-      const parent = commit.parentId === null ? null : input?.revisions?.get(commit.parentId) ?? this.knowledgeRevision(commit.parentId);
-      return !!parent && this.commitApplies(parent, path, snapshot, input, facts);
-    }
-    return this.admits(commit, path.sessionId, input) && commit.supports.every(id => {
-      if (!facts.has(id)) facts.set(id, this.factOnPath(input ? input.facts.get(id)!.fact : this.getFact(id)!, path, snapshot, input));
+  private commitAppliesToProject(commit: KnowledgeRevision, projectId: number, input: ApplicabilityInput,
+    commits: Map<number, boolean>, visiting = new Set<number>()): boolean {
+    if (commits.has(commit.id)) return commits.get(commit.id)!;
+    if (visiting.has(commit.id)) throw new Error(`knowledge lineage cycle at commit ${commit.id}`);
+    visiting.add(commit.id);
+    const runSession = commit.runId === null ? undefined : input.runs.get(commit.runId);
+    let applies = commit.scope === "global" || (commit.scope === "project" && runSession !== undefined && input.projects.get(runSession) === projectId);
+    if (applies && commit.supportSemantics === "change") applies = (input.parents?.get(commit.id) ?? []).every(id => {
+      const parent = input.revisions?.get(id);
+      if (!parent) throw new Error(`knowledge commit ${commit.id} has missing parent ${id}`);
+      return this.commitAppliesToProject(parent, projectId, input, commits, visiting);
+    });
+    visiting.delete(commit.id); commits.set(commit.id, applies);
+    return applies;
+  }
+
+  commitApplies(commit: KnowledgeRevision, path: KnowledgePath, snapshot = this.pathSnapshot(path), input?: ApplicabilityInput,
+    facts = new Map<number, boolean>(), commits = new Map<number, boolean>(), visiting = new Set<number>()): boolean {
+    if (commits.has(commit.id)) return commits.get(commit.id)!;
+    if (visiting.has(commit.id)) throw new Error(`knowledge lineage cycle at commit ${commit.id}`);
+    visiting.add(commit.id);
+    const own = this.admits(commit, path.sessionId, input) && commit.supports.every(id => {
+      if (!facts.has(id)) {
+        const stored = input?.facts.get(id)?.fact ?? this.getFact(id);
+        if (!stored) throw new Error(`knowledge commit ${commit.id} cites missing fact ${id}`);
+        facts.set(id, this.factOnPath(stored, path, snapshot, input));
+      }
       return facts.get(id)!;
     });
+    let applies = own;
+    if (applies && commit.supportSemantics === "change") {
+      const ids = input?.parents?.get(commit.id) ?? this.commitParents(commit).map(parent => parent.id);
+      applies = ids.every(id => {
+        const parent = input?.revisions?.get(id) ?? this.knowledgeRevision(id);
+        if (!parent) throw new Error(`knowledge commit ${commit.id} has missing parent ${id}`);
+        return this.commitApplies(parent, path, snapshot, input, facts, commits, visiting);
+      });
+    }
+    visiting.delete(commit.id); commits.set(commit.id, applies);
+    return applies;
+  }
+
+  /** Effective grounding is used for explanations/accounting; direct supports remain the immutable change evidence. */
+  revisionGrounds(commit: KnowledgeRevision, memo = new Map<number, Set<number>>(), visiting = new Set<number>()): Set<number> {
+    const cached = memo.get(commit.id); if (cached) return new Set(cached);
+    if (visiting.has(commit.id)) throw new Error(`knowledge lineage cycle at commit ${commit.id}`);
+    visiting.add(commit.id);
+    const grounds = new Set(commit.supports);
+    if (commit.supportSemantics === "change") for (const parent of this.commitParents(commit))
+      for (const id of this.revisionGrounds(parent, memo, visiting)) grounds.add(id);
+    visiting.delete(commit.id); memo.set(commit.id, grounds);
+    return new Set(grounds);
   }
 
   commitParents(commit: KnowledgeRevision): KnowledgeRevision[] {
@@ -1492,11 +1613,15 @@ export class Store {
           const range = this.validateDreamingRun(input.run, path);
           const parents = input.operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(a => a.knowledgeId)] : [op.knowledgeId]);
           if (parents.some(id => !range.knowledgeIds.includes(id))) throw new Error("knowledge outside the frozen Dreamer family is read-only");
-          if (input.operations.some(op => op.op === "create") && !input.operations.some(op => op.op === "update" || op.op === "archive")) throw new Error("Dreamer create must derive from a family update/archive in the same atomic batch");
+          if (input.operations.some(op => op.op === "create")) throw new Error("Dreamer cannot create knowledge without an explicit split parent");
+        } else if (input.operations.some(op => op.op === "split" || (op.op === "merge" && input.run.kind === "consolidation"))) {
+          throw new Error("structural operation requires trusted Dreamer authority");
         }
         for (const op of input.operations) {
-          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, this.isDreamingRun(input.run));
-          if (outcome.ok) committed.push(outcome.value);
+          const trustedDreaming = this.isDreamingRun(input.run);
+          const role: "consolidation" | "dreaming" | "manual" = trustedDreaming ? "dreaming" : input.run.kind === "consolidation" ? "consolidation" : "manual";
+          const outcome = this.applyKnowledgeOperation(op, runId, projectId, sessionId, path, trustedDreaming, role);
+          if (outcome.ok) committed.push(...outcome.value);
           else throw new Error(outcome.reason);
         }
         for (const factId of input.consolidated ?? []) this.markConsolidated(factId, runId, projectId);
@@ -1519,9 +1644,10 @@ export class Store {
   }
 
   private applyKnowledgeOperation(op: KnowledgeOperationInput, runId: number, projectId: number,
-    sessionId: number, path: KnowledgePath | null, dreaming = false): { ok: true; value: CommittedKnowledgeOp } | { ok: false; reason: string } {
+    sessionId: number, path: KnowledgePath | null, dreaming = false, role: "consolidation" | "dreaming" | "manual" = "manual"): { ok: true; value: CommittedKnowledgeOp[] } | { ok: false; reason: string } {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
-    if (op.op === "merge") op = { ...op, absorb: op.absorb.filter((a, i, all) => all.findIndex(b => b.knowledgeId === a.knowledgeId && b.baseCommit === a.baseCommit) === i) };
+    if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
+      return { ok: false, reason: "merge requires exactly two distinct parents" };
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
@@ -1532,32 +1658,50 @@ export class Store {
       if (seen.has(target.baseCommit)) return { ok: false, reason: "duplicate merge parent; a commit cannot absorb itself" };
       seen.add(target.baseCommit);
     }
-    if (op.op === "merge" && !op.absorb.length) return { ok: false, reason: "merge: nothing to absorb" };
     const prior = targets.length ? this.getKnowledgeRevision(targets[0]!.knowledgeId, targets[0]!.baseCommit)! : null;
-    const scope = op.op === "archive" ? prior!.scope : op.scope;
+    const scope = op.op === "archive" || op.op === "split" ? prior!.scope : op.scope;
     const supports = op.supports;
-    if (!supports.length && !(dreaming && op.op === "archive")) return { ok: false, reason: "supports must not be empty; only a trusted Dreamer archive has an exception" };
+    if (!supports.length && !dreaming) return { ok: false, reason: "supports must not be empty; only a trusted Dreamer maintenance operation has an exception" };
     if (typeof op.reason !== "string" || !op.reason.trim()) return { ok: false, reason: "reason must be a non-empty commit message" };
     const bad = this.citationProblem(supports, scope, path ?? this.knowledgePath(sessionId));
     if (bad) return { ok: false, reason: bad };
+    const range = this.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId);
+    const insertRevision = (knowledgeId: number, parentId: number | null, text: string, category: KnowledgeCategory, topics: string[], revisionOp: KnowledgeOp) => {
+      const info = this.db.prepare(`INSERT INTO knowledge_revisions
+        (knowledge_id, parent_id, text, category, scope, supports, support_semantics, op, reason, topics, run_id, created_at, actor_role)
+        VALUES (?, ?, ?, ?, ?, ?, 'change', ?, ?, ?, ?, ?, ?)`).run(knowledgeId, parentId, text, category, scope,
+          JSON.stringify(supports), revisionOp, op.reason, JSON.stringify(topics), runId, op.createdAt, role);
+      const commit = Number(info.lastInsertRowid);
+      if (range) this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?, ?)").run(range.range_id!, knowledgeId);
+      changeWeight(this, commit);
+      return commit;
+    };
+    if (op.op === "split") {
+      if (op.children.length !== 2) return { ok: false, reason: "split requires exactly two complete children" };
+      if (op.children.some(child => !child.text.trim() || !KNOWLEDGE_CATEGORIES.includes(child.category) ||
+          !Array.isArray(child.topics) || child.topics.some(topic => typeof topic !== "string" || !topic.trim())))
+        return { ok: false, reason: "split requires exactly two complete children with text, category and topics" };
+      const author = this.getKnowledge(op.knowledgeId)!.author;
+      const values = op.children.map(child => {
+        const knowledgeId = Number(this.db.prepare("INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)")
+          .run(projectId, sessionId, author).lastInsertRowid);
+        const commit = insertRevision(knowledgeId, prior!.id, child.text, child.category, child.topics, "split");
+        this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'split_from', ?, ?)")
+          .run(op.knowledgeId, op.baseCommit, knowledgeId, commit);
+        return { op: "split" as const, knowledgeId, commit };
+      });
+      return { ok: true, value: values };
+    }
     const knowledgeId = op.op === "create" ? Number(this.db.prepare(
       "INSERT INTO knowledge (project_id, origin_session_id, author) VALUES (?, ?, ?)",
     ).run(projectId, sessionId, op.author).lastInsertRowid) : targets[0]!.knowledgeId;
-    const info = this.db.prepare(`INSERT INTO knowledge_revisions (knowledge_id, parent_id, text, category, scope, supports, op, reason, topics, run_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
-      op.op === "archive" ? prior!.category : op.category, scope, JSON.stringify(supports), op.op,
-      // 21b: labels belong to this immutable revision; an archive inherits its parent's, as it does category and scope.
-      op.reason, JSON.stringify(op.op === "archive" ? prior!.topics : op.topics), runId, op.createdAt);
-    const commitId = Number(info.lastInsertRowid);
-    if (dreaming) this.db.prepare("UPDATE knowledge_revisions SET actor_role = 'dreaming' WHERE id = ?").run(commitId);
-    const range = this.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId);
-    if (range) this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?, ?)").run(range.range_id!, knowledgeId);
-    changeWeight(this, commitId);
+    const commitId = insertRevision(knowledgeId, prior?.id ?? null, op.op === "archive" ? "" : op.text,
+      op.op === "archive" ? prior!.category : op.category, op.op === "archive" ? prior!.topics : op.topics, op.op);
     if (op.op === "merge") for (const parent of op.absorb) {
       this.db.prepare("INSERT INTO knowledge_links (from_knowledge, from_commit, kind, to_knowledge, to_commit) VALUES (?, ?, 'merged_into', ?, ?)")
         .run(parent.knowledgeId, parent.baseCommit, knowledgeId, commitId);
     }
-    return { ok: true, value: { op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId } };
+    return { ok: true, value: [{ op: op.op, ...(op.op === "create" ? { handle: op.handle } : {}), knowledgeId, commit: commitId }] };
   }
 
   // -- shared exact Dreamer processing; no automatic worker is launched by these primitives --
@@ -1772,7 +1916,8 @@ export class Store {
     const row = this.db.prepare(`SELECT * FROM dreaming_ranges WHERE id = ?${includeCompleted ? "" : " AND completed_run IS NULL"}`).get(id);
     return row ? { id, sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: Number(row.head_turn_id), anchor: Number(row.anchor),
       eventIds: this.db.prepare("SELECT event_id FROM dreaming_range_events WHERE range_id = ? ORDER BY event_id").all(id).map(r => Number(r.event_id)),
-      knowledgeIds: this.db.prepare("SELECT knowledge_id FROM dreaming_family WHERE range_id = ? ORDER BY knowledge_id").all(id).map(r => Number(r.knowledge_id)) } : null;
+      knowledgeIds: this.db.prepare("SELECT knowledge_id FROM dreaming_family WHERE range_id = ? ORDER BY knowledge_id").all(id).map(r => Number(r.knowledge_id)),
+      origin: triggerOriginFromRow(row) } : null;
   }
 
   openDreamingRange(sessionId: number, branch: string): DreamingRange | null {
@@ -1780,15 +1925,15 @@ export class Store {
     return row ? this.dreamingRange(Number(row.id)) : null;
   }
 
-  retainDreamingRange(target: TaskTarget, eventIds: number[], suppliedKnowledgeIds: number[] = []): DreamingRange {
+  retainDreamingRange(target: TaskTarget, eventIds: number[], suppliedKnowledgeIds: number[] = [], origin: TriggerOrigin | null = this.triggerOrigin(target, target.triggerEntryId)): DreamingRange {
     return this.transaction(() => {
       const retained = this.openDreamingRange(target.sessionId, target.branch);
       if (retained) return retained;
       const pending = this.pendingKnowledgeEvents(target);
       const ids = [...new Set(eventIds)].sort((a, b) => a - b);
       if (!ids.length || ids.some(id => !pending.some(e => e.id === id))) throw new Error("Dreaming range requires exact applicable pending events");
-      const id = Number(this.db.prepare("INSERT INTO dreaming_ranges(session_id,branch,head_turn_id,anchor) VALUES (?,?,?,?)")
-        .run(target.sessionId, target.branch, target.headTurnId, ids[0]!).lastInsertRowid);
+      const id = Number(this.db.prepare("INSERT INTO dreaming_ranges(session_id,branch,head_turn_id,anchor,origin_session_id,origin_entry_ids) VALUES (?,?,?,?,?,?)")
+        .run(target.sessionId, target.branch, target.headTurnId, ids[0]!, origin?.sessionId ?? null, origin ? JSON.stringify(origin.entryIds) : null).lastInsertRowid);
       for (const event of pending.filter(e => ids.includes(e.id))) {
         this.db.prepare("INSERT INTO dreaming_range_events VALUES (?,?)").run(id, event.id);
         this.db.prepare("INSERT OR IGNORE INTO dreaming_family VALUES (?,?)").run(id, event.knowledgeId);

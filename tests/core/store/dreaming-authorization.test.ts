@@ -73,7 +73,7 @@ test("32d: simultaneous processes migrate the actor column under one short schem
   const reopened = new Store(db); stores.push(reopened);
   expect(reopened.db.prepare("PRAGMA table_info(knowledge_revisions)").all().filter(r => r.name === "actor_role")).toHaveLength(1);
   expect(reopened.knowledgeRevision(f.item.commit)?.actorRole).toBeUndefined();
-  expect(() => reopened.db.prepare("UPDATE knowledge_revisions SET actor_role = 'manual' WHERE id = ?").run(f.item.commit)).toThrow(/CHECK/);
+  expect(() => reopened.db.prepare("UPDATE knowledge_revisions SET actor_role = 'noting' WHERE id = ?").run(f.item.commit)).toThrow(/CHECK/);
 });
 
 test.each(["manual", "noting", "consolidation", "dreaming"] as const)("32d: %s self-description grants no empty-support archive authority", kind => {
@@ -133,14 +133,14 @@ test("32d: create plus merge is not a split; rejection has zero batch side effec
   expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [merge] }).ok).toBe(true);
 });
 
-test.each(["update", "archive"] as const)("32d: create plus authorized family %s is a legal atomic split", op => {
+test.each(["update", "archive"] as const)("34a: create plus authorized family %s cannot impersonate an explicit split", op => {
   const f = fixture(), run = f.store.bindDreamingRun(f.run);
   const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [
     { op: "create", handle: "$split", author: "test", ...f.content },
     { ...f.content, ...f.archive, op, supports: op === "archive" ? [] : f.content.supports },
   ] });
-  expect(result.ok).toBe(true);
-  if (result.ok) expect(result.committed).toHaveLength(2);
+  expect(result.ok).toBe(false);
+  expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
 });
 
 test("32d: an outside-family update cannot decorate create into a split", () => {

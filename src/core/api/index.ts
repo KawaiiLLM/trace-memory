@@ -24,6 +24,8 @@ export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } fro
 export { enrollmentDefault } from "../store/index.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
+export { compareTriggerOrigins } from "../model/index.ts";
+export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
@@ -308,6 +310,8 @@ export interface TaskOptions {
   /** Durable execution shared only with a refused attempt's fallback. */
   executionId?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
+  /** Persisted source-entry identity at host admission; later same-Turn entries must not move it. */
+  triggerEntryId?: number;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
    * (a requested fork resolved to subagent by the host's cache-miss latch). Capacity and material
    * follow it; the requested mode is still recorded (review 2026-09-08). */
@@ -493,8 +497,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
-            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children);
-            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap);
+            const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
+            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds);
+            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds);
             if (text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
             return text;
           });
@@ -685,12 +690,13 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (input.cancellation !== undefined && input.cancellation < cancellation)
       return { outcome: "dropped", reason: CANCELLED_BEFORE_FALLBACK };
     const generation = cancellation;
-    const target = { sessionId: input.sessionId, branch: input.branch,
+    const target = { sessionId: input.sessionId, branch: input.branch, triggerEntryId: input.triggerEntryId,
       headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId! };
     const closedSessionScope = cfg.closedSessionScope;
     let claim: TaskClaim | null = null;
     let empty = false, projectId: number;
     let executionId: string;
+    let origin: import("../model/index.ts").TriggerOrigin | null = null;
     let frozen: ReturnType<typeof freezeNoting> | ReturnType<typeof freezeConsolidation> | ReturnType<typeof freezeDreaming> | null;
     try { frozen = store.transaction(() => {
       // Candidate discovery is advisory: recheck the executor and borrowing scope atomically
@@ -721,10 +727,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (!claim) return null;
       projectId = store.getSession(input.sessionId)!.projectId;
       const selected = { ...input, ...target, ...(input.borrowed ? { mode: "subagent" as const } : {}) };
+      const admittedOrigin = input.executionId ? store.executionOrigin(input.executionId) : store.triggerOrigin(target, target.triggerEntryId);
       const frozen = phase === "noting" ? freezeNoting(store, selected, cfg, resultText)
-        : phase === "dreaming" ? freezeDreaming(store, selected, cfg) : freezeConsolidation(store, selected, cfg);
+        : phase === "dreaming" ? freezeDreaming(store, selected, cfg, admittedOrigin) : freezeConsolidation(store, selected, cfg);
+      origin = phase === "dreaming" ? (frozen as ReturnType<typeof freezeDreaming>).range.origin : admittedOrigin;
       const head = "entries" in frozen ? frozen.entries[0]?.id : "rangeFacts" in frozen ? frozen.rangeFacts[0]?.id : frozen.range.anchor;
-      if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head }, input.executionId);
+      if (head !== undefined) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
       return frozen;
     }); } catch (error) {
       // 27d repair 2: a batch frozen on exact membership whose evidence another executor already
@@ -761,6 +769,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       run.claim = claim!; run.projectId = projectId; run.executorSessionId = input.executorSessionId;
       run.executionId = executionId!;
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
+      Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
       const binding = bindTools(store, read, context, run, review, undefined, dreaming);
       task.close = binding.close;

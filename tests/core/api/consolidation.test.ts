@@ -335,7 +335,7 @@ test("accounting diagnoses uncited user facts and agent questions, then accepts 
   expect(skipped.diagnostics).toEqual([]);
 });
 
-for (const operation of ["update", "archive", "merge"] as const) test(`accounting evaluates supports after ${operation}`, async () => {
+for (const operation of ["update", "archive", "merge"] as const) test(`accounting evaluates inherited lineage after ${operation}`, async () => {
   const f = fact(), other = fact(memories.observation, { actor: "agent" }), e = knowledge([f]), survivor = knowledge([other]);
   const output = operation === "update" ? updateOutput(e, other) : operation === "archive"
     ? { ...empty, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${other}`] }] }
@@ -348,7 +348,7 @@ for (const operation of ["update", "archive", "merge"] as const) test(`accountin
     return;
   }
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
+  expect(result.diagnostics).toEqual([]);
   expect(memory.store.currentCommit(e)[0]?.op).toBe(operation === "archive" ? "archive" : "update");
 });
 
@@ -510,13 +510,13 @@ test("exactly 200 estimated tokens is accepted without a length diagnostic", asy
   expect(result.diagnostics).toEqual([]);
 });
 
-test("narrowing another session's global knowledge cannot conceal an uncited fact", async () => {
+test("narrowing another session's global knowledge retains its inherited grounding", async () => {
   const f = fact(), e = knowledge([f], { scope: "global", sessionId: session() });
   const other = fact(memories.observation, { actor: "agent" });
   const output = { ...empty, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", ...updateOutput(e, other).operations[0], scope: "session" }] };
   queue(output, output); const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
-  expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${f}`] });
+  expect(result.diagnostics).toEqual([]);
   expect(memory.store.currentCommit(e, memory.store.knowledgePath(sessionId))[0]?.scope).toBe("session");
 });
 

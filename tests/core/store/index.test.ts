@@ -460,7 +460,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 
-  test("knowledge origin survives another session's edit and project moves without revision-one ownership", () => {
+  test("knowledge identity origin survives while recursive parent scope blocks a moved editor", () => {
     const { p, s, factId } = seed(), peer = makeSession(p.id);
     const turn = store.appendTurn({ sessionId: peer.id, kind: "turn", startedAt: consolidationAt });
     const recorded = store.commitNotingRun({ run: { kind: "noting", sessionId: peer.id, createdAt: consolidationAt },
@@ -478,7 +478,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     store.mergeProject(target.id, survivor.id);
     store.close(); store = new Store(dbPath);
     expect(store.getKnowledge(id)?.originSessionId).toBe(s.id);
-    expect(store.currentCommit(id, store.knowledgePath(peer.id)).map(r => r.id)).toEqual([2]);
+    expect(store.currentCommit(id, store.knowledgePath(peer.id)).map(r => r.id)).toEqual([]);
     expect(store.currentCommit(id, store.knowledgePath(s.id)).map(r => r.id)).toEqual([1]);
   });
 
@@ -502,7 +502,7 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.listVisibleKnowledge(s.id, p.id).map((e) => e.knowledge.id)).toContain(id);
   });
 
-  test("a knowledge item cannot absorb itself; duplicate absorb targets collapse to one", () => {
+  test("34a merge rejects self and duplicate parents instead of normalizing cardinality", () => {
     const { s, factId } = seed();
     const mk = (text: string) =>
       store.commitConsolidationRun({
@@ -514,20 +514,20 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     if (!a.ok || !b.ok) throw new Error("setup failed");
     const aId = a.committed[0]!.knowledgeId;
     const bId = b.committed[0]!.knowledgeId;
-    const run = { kind: "consolidation" as const, sessionId: s.id, createdAt: consolidationAt };
+    const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
     const rejected = store.commitConsolidationRun({ run, operations: [
       { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: aId, baseCommit: 1 }], text: "A", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
-    expect(rejected.problems.join(" ")).toContain("cannot absorb itself");
+    expect(rejected.problems.join(" ")).toContain("exactly two distinct parents");
     const merged = store.commitConsolidationRun({ run, operations: [
       { op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: aId, intoBaseCommit: 1, absorb: [{ knowledgeId: bId, baseCommit: 2 }, { knowledgeId: bId, baseCommit: 2 }], text: "A and B", category: "term", scope: "project", supports: [factId], createdAt: consolidationAt },
     ] });
-    expect(merged.ok).toBe(true);
-    expect(store.currentCommit(aId)[0]?.op).toBe("merge");
-    expect(store.currentCommit(bId)[0]?.op).toBeUndefined();
-    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 1 });
+    expect(merged.ok).toBe(false);
+    expect(store.currentCommit(aId)[0]?.op).toBe("create");
+    expect(store.currentCommit(bId)[0]?.op).toBe("create");
+    expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 0 });
   });
 
   test("a noting commit rejects turns and watermarks outside its own session and branch", () => {

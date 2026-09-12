@@ -51,20 +51,31 @@ an optional priority comparator in its sixth: required bodies are protected befo
 including category and receipt framing. Ordinary callers without priority keep their stable order.
 
 The host calls `Store.bindDreamingRun` only after claiming the target and assigning an execution.
-It returns a capability object registered in a Store-local WeakMap, bound to the session, range,
-claim token, execution and one run record. Tool arguments and role strings cannot construct it;
-other database connections cannot reuse it. All batches reference that same admitted run. Legal
-memory calls commit immediately; rejected batches roll back only themselves. Create is restricted
-to an atomic split with a family update/archive; every compound participant keeps exact-handle
-validation. Consolidator still uses candidate/review and fact accounting but rejects merge.
+It returns a capability object registered in a Store-local WeakMap, bound to the session, retained
+range, claim token, execution and one run record. Tool arguments and role strings cannot construct
+it; other database connections cannot reuse it. Dreamer may update, binary-merge, binary-split and
+archive inside that family, but cannot create parentless Knowledge. Split is one operation with one
+fully read exact parent and two complete child bodies; the transaction creates both identities and
+`split_from` links or none. Merge accepts exactly two distinct parents. Consolidator remains limited
+to fact-backed create/update/archive with candidate review and accounting.
 
-Only a capability-bound archive may use empty supports. Its nonempty reason is a maintenance
-judgment, not factual evidence. The nullable `knowledge_revisions.actor_role` column is added to
-existing databases, with a SQLite CHECK limiting populated values to `dreaming`; no history is
-relabeled. The immutable revision carries role, run, parent and reason. Empty-support archive
-applicability follows the exact parent (including original attribution), not an empty-list
-vacuous truth. Trace and search distinguish maintenance retirement while preserving predecessor
-text and factual evidence.
+Every new revision stores a complete body or archival state while `supports` stores only this
+change's facts. `support_semantics='complete_result'` preserves historical interpretation;
+`'change'` recursively requires the revision's own scope/facts and every exact parent's historical
+applicability. Parent activity is irrelevant. Effective grounding recursively unions direct change
+supports for trace, numeric diagnostics and fact accounting without mutating any stored list.
+Only a capability-bound Dreamer may use empty supports, for any legal maintenance operation; this
+is a maintenance judgment that inherits all parent conditions, not vacuous universal applicability.
+`actor_role` records `consolidation`, `dreaming` or `manual` for new revisions; legacy null remains.
+
+At admission core also copies an immutable trigger origin: target memory-session id and the ordered
+`source_entries.id` prefix from native root through the exact triggering entry. Runs reference it,
+executions retain it across fallback/retry, and Dreamer ranges retain it across partial maintenance
+and reopen. A later same-Turn entry or mutable `source_paths` row cannot extend the frozen sequence.
+Historical null remains unknown and malformed new capture fails. `compareTriggerOrigins` returns
+`same`, `ancestor`, `descendant` or `divergent` only within one session, `independent` across sessions,
+and `unknown` when either side is absent. Ticket 34b consumes this value for path-conflict decisions;
+this slice intentionally adds no new path guard or settlement behavior.
 
 `DreamingAgentInput.passEnd(rounds)` is a host callback after the native prompt's complete tool
 loop and retries, never after an intermediate tool turn. One system-generated custom message may
@@ -645,23 +656,19 @@ The host receives one `ConsolidationAgentInput` with frozen `input`, the four bo
 until the provider stops. `reportRequest` captures each exact provider request before
 execution; the final returned request is the last one sent.
 
-`memory({operations, skipped})` accepts one operation shape: `op`, `id`, `absorb`,
-`text`, `category`, `scope`, `supports`, `reason`, `topics`. Every operation requires non-empty
-`supports` — this commit's evidence, which may mix the grounds of the resulting text
-with the correction or withdrawal that prompted it — and a non-empty `reason`, its
-commit message. A reason establishes no evidence, scope, applicability or accounting,
-and core never parses addresses out of it. Create/update/merge also require complete
-resulting text, category, scope and `topics`; supports replaces the old set, and so
-does topics — an empty array is unclassified or an explicit clearing, and a merge
-states the survivor's own labels rather than the union of its parents'. Labels are
-strings, trimmed, non-empty, deduplicated and stored in code-point order; case,
-language and spelling are untouched, and the submitted order carries no meaning.
-Create forbids
-id; update/archive/merge require it. Merge alone requires absorb. Archive permits
-only op, id, supports and reason, and inherits category, scope and topics from its parent.
-Inapplicable and unknown fields are rejected, and a commit-level `because` is rejected
-by name. Skipped items are `{fact, because}` with a range fact and a non-empty
-explanation; that protocol is unchanged.
+Consolidator's `memory({operations, skipped})` accepts only create/update/archive. Every operation
+requires non-empty change `supports` and a non-empty `reason`; reason is a commit message and grants
+no evidence, scope, applicability or accounting. Create/update require the complete resulting text,
+category, scope and topics. Archive accepts only op/id/supports/reason and inherits its parent body.
+Earlier grounding is reached through lineage, never copied into the new support list. Labels remain
+trimmed, deduplicated complete replacement sets. Inapplicable fields and commit-level `because` are
+rejected. Skipped items remain `{fact, because}`.
+
+Dreamer's immediate form accepts update/merge/split/archive. It alone may use empty supports. Merge
+has one `id`, exactly one `absorb` and one complete result. Split has `id`, supports, reason and exactly
+two `{text, category, topics}` children; both inherit parent scope. Every parent is an exact complete
+read. Parentless create and the historical create-plus-update/archive decomposition workaround are
+rejected atomically.
 
 The first valid batch writes nothing. Its tool result contains ordered item results
 and `feedback: {role: "user", content}`. The host appends this feedback once as a user
@@ -676,16 +683,17 @@ Lexical matching uses Unicode character bigram Jaccard after removing punctuatio
 and whitespace. NEAR includes all visible active neighbours at or above
 `consolidation.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
 range facts near each open/goal item. Budget omissions do not limit either search.
-Update or merge answers NEAR; archiving a neighbour does not. Initial create review
+Update answers NEAR; archiving a neighbour does not. Initial create review
 obligations remain conservatively while creates remain in the final batch, so
 reordering operations cannot silently discard a warning. No acknowledgement field
 or third review round exists.
 
-Targets must match the visible active revisions frozen at run start; manual calls
-use current revisions. Every item is checked before writing and every participant
-is rechecked in the immediate transaction. Any rejection writes no operations.
-The survivor revision, merged status and links, run record and frozen Consolidation
-fact membership commit together; absorbed items retain their own last revision.
+Targets must match the visible active revisions frozen at run start. Manual calls use current
+revisions and retain their existing fact-backed binary-merge surface, but gain neither split nor
+empty-support authority; Consolidator still cannot merge. Every item
+is checked before writing and every participant is rechecked in the immediate transaction. Any
+rejection writes no operations. The revision, run record and frozen Consolidation fact membership
+commit together.
 Ticket 29d retired automatic foreground receipt delivery, which the 2026-09-08 supersession had made
 unconditional: a commit is delivered to no conversation, in either worker mode. The foreground learns
 a background result through a later compaction, an explicit read, or — ticket 31, the one exception —
@@ -693,12 +701,13 @@ the single knowledge supplement its host asks for after a project change or a re
 receiving material does not mean the parent received it. Supports cite project facts available at start.
 
 Accounting runs on actual visible knowledge after applying the batch inside that
-transaction, including concurrent changes to untouched knowledge. A range fact cited
-by an archive that applied in this batch counts as archival evidence and needs no
-duplicate skipped entry; a candidate-only or rejected archive does not. Uncited user
+transaction, including concurrent changes to untouched knowledge. It follows effective grounding
+through exact parent lineage. A range fact cited directly or inherited by an archive that applied
+in this batch counts as archival evidence and needs no duplicate skipped entry; a candidate-only or
+rejected archive does not. Uncited user
 facts and questions missing from skipped yield `uncited_facts`. Other diagnostics are
 `unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
-numeric lexemes against supporting facts' text and quotes; the reason is never read by
+numeric lexemes against direct and inherited grounding facts' text and quotes; the reason is never read by
 that diagnostic, and never by any other.
 All diagnostics commit and derive no fact or knowledge status.
 

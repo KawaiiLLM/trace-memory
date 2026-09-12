@@ -38,8 +38,9 @@ export const KNOWLEDGE_SCOPES = ["session", "project", "global"] as const;
 export type KnowledgeScope = (typeof KNOWLEDGE_SCOPES)[number];
 
 
-export const KNOWLEDGE_OPS = ["create", "update", "merge", "archive"] as const;
+export const KNOWLEDGE_OPS = ["create", "update", "merge", "split", "archive"] as const;
 export type KnowledgeOp = (typeof KNOWLEDGE_OPS)[number];
+export type SupportSemantics = "complete_result" | "change";
 
 export const RUN_KINDS = ["noting", "consolidation", "dreaming", "manual"] as const;
 export type RunKind = (typeof RUN_KINDS)[number];
@@ -123,8 +124,8 @@ export interface Knowledge {
 }
 
 export interface KnowledgeRevision {
-  /** Immutable trusted maintenance provenance; absence denotes legacy/fact-backed authorship. */
-  actorRole?: "dreaming" | null;
+  /** Immutable submitting role. Absence denotes a legacy revision whose role was not recorded. */
+  actorRole?: "consolidation" | "dreaming" | "manual" | null;
   id: number;
   knowledgeId: number;
   parentId: number | null;
@@ -132,6 +133,8 @@ export interface KnowledgeRevision {
   category: KnowledgeCategory;
   scope: KnowledgeScope;
   supports: number[];
+  /** Legacy lists ground the complete result; new lists contain only this revision's change grounds. */
+  supportSemantics: SupportSemantics;
   op: KnowledgeOp;
   /** The commit message: why this change was made. Never evidence, scope or applicability (ticket 21a). */
   reason: string;
@@ -149,6 +152,17 @@ export interface KnowledgeLink {
   toCommit: number;
 }
 
+export interface TriggerOrigin { readonly sessionId: number; readonly entryIds: readonly number[] }
+export type TriggerOriginRelation = "same" | "ancestor" | "descendant" | "divergent" | "independent" | "unknown";
+/** Pure 34a handoff contract. Ticket 34b decides what, if anything, each relation refuses. */
+export function compareTriggerOrigins(left: TriggerOrigin | null, right: TriggerOrigin | null): TriggerOriginRelation {
+  if (!left || !right) return "unknown";
+  if (left.sessionId !== right.sessionId) return "independent";
+  const common = Math.min(left.entryIds.length, right.entryIds.length);
+  for (let i = 0; i < common; i++) if (left.entryIds[i] !== right.entryIds[i]) return "divergent";
+  return left.entryIds.length === right.entryIds.length ? "same" : left.entryIds.length < right.entryIds.length ? "ancestor" : "descendant";
+}
+
 export interface Run {
   id: number;
   kind: RunKind;
@@ -161,6 +175,8 @@ export interface Run {
   mode: string | null;
   request: string | null;
   response: string | null;
+  /** Frozen native trigger ancestry. Null is preserved for historical/headless runs with no native proof. */
+  origin: TriggerOrigin | null;
   outcome: RunOutcome;
   createdAt: string;
 }
@@ -286,9 +302,10 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
 
 // ---- Memory tool input ----
 export interface MemoryOperation {
-  op: "create" | "update" | "merge" | "archive";
+  op: "create" | "update" | "merge" | "split" | "archive";
   id?: string;
   absorb?: string[];
+  children?: { text: string; category: KnowledgeCategory; topics: string[] }[];
   text?: string;
   category?: KnowledgeCategory;
   scope?: KnowledgeScope;

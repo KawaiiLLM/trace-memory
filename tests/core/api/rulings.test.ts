@@ -496,15 +496,15 @@ test("2026-09-07 A: C/D paths see c2/c3, fork ancestor sees c1, D's later commit
   expect(memory.store.getKnowledgeRevision(1, 4)).not.toHaveProperty("rev");
 });
 
-test("2026-09-07 A: revert then develop on one path follows commit ancestry, including an inapplicable intermediate", () => {
+test("34a: a child cannot escape an inapplicable historical parent by citing shared evidence", () => {
   const { root, c, node, edit, tips, content } = commitPaths();
   expect(edit(c, "C version").committed[0].commit).toBe(2);
   const next = node(c.sessionId, c.headTurnId, "C");
   expect(next.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: next.read(), ...content(root.fact) }]).committed[0].commit).toBe(3);
-  // Commit 3 cites only root evidence, so it supersedes commit 1 even where commit 2 does not apply.
-  expect(tips(root)).toEqual([3]);
+  // Commit 3 cites only root evidence, but its exact parent remains child-only.
+  expect(tips(root)).toEqual([1]);
   expect(edit(next, "Develop after revert").committed[0].commit).toBe(4);
-  expect(tips(next)).toEqual([4]); expect(tips(root)).toEqual([3]);
+  expect(tips(next)).toEqual([4]); expect(tips(root)).toEqual([1]);
   expect(memory.trace("K1@1..K1@4")).toContain("{+Develop+}");
   expect(memory.trace("K1..")).toContain("K1@3 update");
 });
@@ -760,18 +760,18 @@ test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records t
   expect(memory.store.getKnowledgeRevision(2, 4)?.parentId).toBe(3);
 });
 
-test("2026-09-07 A: scope applies before supersedence for first-prompt injection and bare path reads", () => {
+test("34a: recursive parent scope bounds first-prompt injection and path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Shared globally"), scope: "global" }]);
   const outsideProject = memory.store.createProject({ name: "outside", declaredBy: "mark" });
   const outside = peer(outsideProject.id);
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Project only") }]);
-  expect(memory.inject({ projectId: outsideProject.id })).toContain("K1@2");
-  expect(memory.trace("K1", outside).split("\n")[0]).toContain("K1@2");
+  expect(memory.inject({ projectId: outsideProject.id })).not.toContain("K1@");
+  expect(memory.trace("K1", outside).split("\n")[0]).toBe("K1 path current: none");
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Session only"), scope: "session" }]);
   const ownProject = memory.store.getSession(root.sessionId)!.projectId;
   expect(memory.inject({ projectId: ownProject })).toContain("K1@3");
-  expect(memory.inject({ projectId: outsideProject.id })).toContain("K1@2");
+  expect(memory.inject({ projectId: outsideProject.id })).not.toContain("K1@");
   expect(memory.inject(root)).toContain("K1@4");
 });
 
@@ -832,7 +832,7 @@ test("2026-09-07 A/B: Consolidation, NEAR and accounting use every current tip o
   recorded(memory, c.sessionId, c.branch, c.headTurnId);
   const cResult = await memory.consolidate({ sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId });
   if (cResult.outcome !== "success") throw new Error("expected success");
-  expect(cResult.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [c.fact] });
+  expect(cResult.diagnostics).not.toContainEqual({ kind: "uncited_facts", facts: [c.fact] });
 });
 
 test("2026-09-07 B: stale absorbed bases name the surviving current commit across merge links", () => {

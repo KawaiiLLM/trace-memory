@@ -10,7 +10,7 @@ const admit = "Initial admission of this conclusion.", update = "Substantive cor
 const archived = "Retired: the cited evidence withdraws this conclusion.";
 type Operation = Parameters<ReturnType<typeof sourceSeededMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
 function consolidation(...operations: Operation[]) {
-  const result = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations });
+  const result = memory.store.commitConsolidationRun({ run: { kind: operations.some(op => op.op === "merge") ? "manual" : "consolidation", sessionId, createdAt: time }, operations });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.problems.join(", "));
   return result.committed;
@@ -41,18 +41,18 @@ afterEach(() => memory.close());
 test("current knowledge and historical snapshot include evidence and revision metadata", () => {
   const id = create();
   edit(id, 1, "use blue tiles now", { category: "constraint", scope: "global", supports: [2, 3] });
-  expect(memory.trace(`K${id}`)).toBe(`K1 tips (newest-created: K1@2):\n[K1@2] [constraint/global] use blue tiles now\n  supports: F2, F3\n  parents: K1@1\n  children: none\n  K1@2 update ${time} supports: F2, F3 reason: ${update}\nCommit history:\nCommits:\n  K1@1 create ${time} supports: F1 reason: ${admit}\n  K1@2 update ${time} supports: F2, F3 reason: ${update}`);
-  expect(memory.trace(`K${id}@1`)).toBe(`[K1@1] [reference/project] use red tiles now\n  supports: F1\n  parents: none\n  children: K1@2\n  K1@1 create ${time} supports: F1 reason: ${admit}`);
+  expect(memory.trace(`K${id}`)).toBe(`K1 tips (newest-created: K1@2):\n[K1@2] [constraint/global] use blue tiles now\n  change supports: F2, F3\n  actor: consolidation; run R3; reason: ${update}\n  inherited lineage supports: F1\n  parents: K1@1\n  children: none\n  K1@2 update ${time} change supports: F2, F3 reason: ${update}\nCommit history:\nCommits:\n  K1@1 create ${time} change supports: F1 reason: ${admit}\n  K1@2 update ${time} change supports: F2, F3 reason: ${update}`);
+  expect(memory.trace(`K${id}@1`)).toBe(`[K1@1] [reference/project] use red tiles now\n  change supports: F1\n  actor: consolidation; run R2; reason: ${admit}\n  inherited lineage supports: none\n  parents: none\n  children: K1@2\n  K1@1 create ${time} change supports: F1 reason: ${admit}`);
 });
 
 test("diff preserves unchanged spans and lists all transitions even if endpoints revert", () => {
   const id = create();
   edit(id, 1, "use blue tiles now", { supports: [2], category: "constraint", scope: "global" });
   edit(id, 2, "use green tiles now", { supports: [2, 3], category: "constraint", scope: "global", reason: "Third reading after the shared correction" });
-  expect(memory.trace(`K${id}@1..K${id}@3`)).toBe(`[K1@1..K1@3]\n  text: use [-red-]{+green+} tiles now\n  supports added: F2, F3\n  supports removed: F1\n  category: reference -> constraint\n  scope: project -> global\n  reason: ${admit} -> Third reading after the shared correction\nCommits:\n  K1@2 update ${time} supports: F2 reason: ${update}\n  K1@3 update ${time} supports: F2, F3 reason: Third reading after the shared correction`);
+  expect(memory.trace(`K${id}@1..K${id}@3`)).toBe(`[K1@1..K1@3]\n  text: use [-red-]{+green+} tiles now\n  change supports added: F2, F3\n  change supports removed: F1\n  category: reference -> constraint\n  scope: project -> global\n  reason: ${admit} -> Third reading after the shared correction\nCommits:\n  K1@2 update ${time} change supports: F2 reason: ${update}\n  K1@3 update ${time} change supports: F2, F3 reason: Third reading after the shared correction`);
   edit(id, 3, "use red tiles now");
-  expect(memory.trace(`K${id}@1..K${id}@4`)).toContain("text: use red tiles now\n  supports added: none\n  supports removed: none");
-  expect(memory.trace(`K${id}@1..K${id}@4`)).toContain(`K1@3 update ${time} supports: F2, F3 reason: Third reading after the shared correction`);
+  expect(memory.trace(`K${id}@1..K${id}@4`)).toContain("text: use red tiles now\n  change supports added: none\n  change supports removed: none");
+  expect(memory.trace(`K${id}@1..K${id}@4`)).toContain(`K1@3 update ${time} change supports: F2, F3 reason: Third reading after the shared correction`);
   expect(memory.trace(`K${id}@2..K${id}@2`)).toContain("Commits: none");
 });
 
@@ -84,8 +84,8 @@ test("merged knowledge retain their snapshot and frozen survivor revision; archi
   expect(memory.trace(`K${absorbed}`)).toContain("children: K2@3");
   expect(memory.trace(`K${absorbed}@1`)).not.toContain("later survivor");
   consolidation({ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: survivor, baseCommit: 4, supports: [4], createdAt: time });
-  expect(memory.trace(`K${survivor}`)).toContain("[K2@5] [reference/project] \n  supports: F4"); // 21a: an archive keeps its own evidence
-  expect(memory.trace(`K${survivor}@5`)).toContain(`K2@5 archive ${time} supports: F4 reason: ${archived}`);
+  expect(memory.trace(`K${survivor}`)).toContain("[K2@5] [reference/project] \n  change supports: F4"); // 21a: an archive keeps its own evidence
+  expect(memory.trace(`K${survivor}@5`)).toContain(`K2@5 archive ${time} change supports: F4 reason: ${archived}`);
 });
 
 test("negation walk branches, repeats shared descendants, excludes weak and support edges, and ends every branch", () => {

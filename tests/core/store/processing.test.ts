@@ -402,14 +402,14 @@ test("32: completion validation and certification roll back atomically; external
   expect(a.store.pendingKnowledgeEvents(a.target).map(e => e.id)).toEqual([later.commit]);
 });
 
-test("32: placement uses revision run ownership, revalidates A→B→A and preserves exact completion", () => {
+test("34a: placement revalidation preserves certification while parent scope bounds a moved child", () => {
   const a = fixture(), b = fixture(a.store, "B"), author = fixture(a.store);
   const c = a.create();
   const updated = author.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...author.content });
   a.store.completeDreaming(author.success(), [c.commit, updated.commit], [updated.commit]);
   a.store.declareProject(author.s.id, "B", "mark");
   expect(a.store.getKnowledge(c.knowledgeId)!.projectId).toBe(a.p.id);
-  expect(a.store.listCurrentKnowledge(b.target).map(v => v.revision.id)).toEqual([updated.commit]);
+  expect(a.store.listCurrentKnowledge(b.target).map(v => v.revision.id)).toEqual([]);
   a.store.declareProject(author.s.id, "A", "mark");
   expect(a.store.db.prepare("SELECT * FROM knowledge_placement_validations").all()).toHaveLength(2);
   expect(a.store.isKnowledgeProcessed(updated.commit)).toBe(true);

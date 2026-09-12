@@ -46,9 +46,14 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const errors: string[] = [];
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
-    if (!["create", "update", "merge", "archive"].includes(op)) errors.push("invalid op");
-    if (frozen && op === "merge") errors.push("Consolidator cannot merge or split knowledge families; Dreamer owns complex maintenance");
-    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []), ...(op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
+    const dreaming = store.isDreamingRun(run);
+    const allowed = dreaming ? ["update", "merge", "split", "archive"]
+      : run.kind === "consolidation" ? ["create", "update", "archive"] : ["create", "update", "merge", "archive"];
+    if (!allowed.includes(op)) errors.push(op === "split" || (op === "merge" && run.kind === "consolidation")
+      ? "structural operation requires trusted Dreamer authority" : "invalid op");
+    const structural = op === "split";
+    const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
+      ...(structural ? ["children"] : op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
     // 21a: the commit-level `because` array is gone. Name it rather than report an unknown field, so a
     // model still writing the old shape is told which two fields replace it.
     for (const key of Object.keys(value)) if (key === "because") errors.push('because: removed field; supply "reason" (a string) and "supports" (the commit\'s evidence)');
@@ -73,21 +78,30 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       return { knowledgeId: id, baseCommit: base };
     };
     const dest = op !== "create" ? target(value.id) : undefined;
-    const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length ? value.absorb.map(target) : (errors.push("merge must absorb at least one knowledge item"), [])) : [];
-    if (op !== "archive") {
+    const absorb = op === "merge" ? (Array.isArray(value.absorb) && value.absorb.length === 1 ? value.absorb.map(target)
+      : (errors.push("merge requires exactly two distinct parents"), [])) : [];
+    const children = op === "split" && Array.isArray(value.children) && value.children.length === 2 ? value.children.map((raw, childIndex) => {
+      const child = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as NonNullable<typeof value.children>[number];
+      if (Object.keys(child).some(key => !["text", "category", "topics"].includes(key))) errors.push(`child ${childIndex + 1}: inapplicable field`);
+      if (typeof child.text !== "string" || !child.text.length || /\b[FK]\d+\b/.test(child.text)) errors.push(`child ${childIndex + 1}: expected non-empty text without fact or knowledge ids`);
+      if (!KNOWLEDGE_CATEGORIES.includes(child.category!)) errors.push(`child ${childIndex + 1}: invalid category`);
+      return { text: child.text!, category: child.category!, topics: labels(child.topics, errors) };
+    }) : op === "split" ? (errors.push("split requires exactly two complete children"), []) : [];
+    if (op !== "archive" && op !== "split") {
       if (typeof value.text !== "string" || !value.text.length || /\b[FK]\d+\b/.test(value.text)) errors.push("text: expected non-empty text without fact or knowledge ids");
       if (!KNOWLEDGE_CATEGORIES.includes(value.category!)) errors.push("invalid category");
       if (!KNOWLEDGE_SCOPES.includes(value.scope!)) errors.push("invalid scope");
     }
-    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !(op === "archive" && store.isDreamingRun(run))), reason: value.reason!,
-      topics: op === "archive" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
-    const scope = op === "archive" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
+    const content = { text: value.text!, category: value.category!, scope: value.scope!, supports: facts(value.supports, errors, !dreaming), reason: value.reason!,
+      topics: op === "archive" || op === "split" ? [] : labels(value.topics, errors), createdAt: run.createdAt };
+    const scope = op === "archive" || op === "split" ? knowledge.find(k => k.revision.id === dest?.baseCommit)?.revision.scope : value.scope;
     if (scope && content.supports.every(Number.isSafeInteger)) {
       const bad = store.citationProblem(content.supports, scope, path);
       if (bad) errors.push(bad);
     }
     if (!errors.length) operations.push(op === "create" ? { op: "create", handle: `$e${index + 1}`, author: run.model ?? "manual", ...content }
       : op === "merge" ? { op: "merge", intoKnowledgeId: dest!.knowledgeId, intoBaseCommit: dest!.baseCommit, absorb, ...content }
+      : op === "split" ? { op: "split", ...dest!, children, supports: content.supports, reason: content.reason, createdAt: run.createdAt }
       : op === "archive" ? { op: "archive", ...dest!, supports: content.supports, reason: content.reason, createdAt: run.createdAt } : { op: "update", ...dest!, ...content });
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
@@ -105,13 +119,22 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   }
   const diagnostics: ConsolidationDiagnostic[] = [];
+  const diagnosticLineageMemo = new Map<number, Set<number>>();
   for (const op of operations) {
     if (op.op === "archive") continue;
     const label = op.op === "create" ? op.handle : `K${op.op === "merge" ? op.intoKnowledgeId : op.knowledgeId}`;
-    const cited = new Set(op.supports.flatMap(id => numbers(`${store.getFact(id)!.text}\n${store.getFact(id)!.quote ?? ""}`)));
-    const unsupported = [...new Set(numbers(op.text))].filter(n => !cited.has(n));
-    if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: label, numbers: unsupported });
-    if (tokens(op.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: label, tokens: tokens(op.text) });
+    const inherited = op.op === "create" ? [] : op.op === "merge"
+      ? [op.intoBaseCommit, ...op.absorb.map(parent => parent.baseCommit)] : [op.baseCommit];
+    const grounding = new Set([...op.supports, ...inherited.flatMap(commit => {
+      const revision = store.knowledgeRevision(commit); return revision ? [...store.revisionGrounds(revision, diagnosticLineageMemo)] : [];
+    })]);
+    const cited = new Set([...grounding].flatMap(id => numbers(`${store.getFact(id)!.text}\n${store.getFact(id)!.quote ?? ""}`)));
+    const bodies = op.op === "split" ? op.children.map((child, index) => ({ label: `${label}/child${index + 1}`, text: child.text })) : [{ label, text: op.text }];
+    for (const body of bodies) {
+      const unsupported = [...new Set(numbers(body.text))].filter(n => !cited.has(n));
+      if (unsupported.length) diagnostics.push({ kind: "unsupported_numbers", knowledge: body.label, numbers: unsupported });
+      if (tokens(body.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: body.label, tokens: tokens(body.text) });
+    }
   }
   return { results, operations, batch, diagnostics };
 }
@@ -121,9 +144,11 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
  * an archive leaves no active conclusion to cite it. Candidate-only or rejected archives are not here. */
 export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath,
   committed: CommittedKnowledgeOp[] = []): ConsolidationDiagnostic[] {
-  const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => k.revision.supports));
+  const lineageMemo = new Map<number, Set<number>>();
+  const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => [...store.revisionGrounds(k.revision, lineageMemo)]));
   for (const op of committed) if (op.op === "archive") {
-    for (const id of store.getKnowledgeRevision(op.knowledgeId, op.commit)?.supports ?? []) cited.add(id);
+    const revision = store.getKnowledgeRevision(op.knowledgeId, op.commit);
+    for (const id of revision ? store.revisionGrounds(revision, lineageMemo) : []) cited.add(id);
   }
   const skipped = new Set(batch.skipped.map(s => s.fact));
   const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));

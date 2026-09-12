@@ -1,9 +1,9 @@
 import type { Store, KnowledgePath, KnowledgeWithRevision, ApplicabilityInput } from "./index.ts";
 import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.ts";
-import { KNOWLEDGE_CATEGORIES } from "../model/index.ts";
+import { KNOWLEDGE_CATEGORIES, type TriggerOrigin } from "../model/index.ts";
 
 /** Change this whenever the immutable knowledge material rendering changes. Marks are not events. */
-export const KNOWLEDGE_VIEW_VERSION = "32b-v1";
+export const KNOWLEDGE_VIEW_VERSION = "34a-v1";
 export const PROCESSING_SQL = `
 CREATE TABLE IF NOT EXISTS knowledge_weights (
   commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS dreaming_ranges (
   session_id INTEGER NOT NULL REFERENCES sessions(id), branch TEXT NOT NULL,
   head_turn_id INTEGER NOT NULL REFERENCES turns(id),
   anchor INTEGER NOT NULL REFERENCES knowledge_revisions(id),
-  completed_run INTEGER REFERENCES dreaming_completions(run_id)
+  completed_run INTEGER REFERENCES dreaming_completions(run_id),
+  origin_session_id INTEGER REFERENCES sessions(id), origin_entry_ids TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dreaming_open_range ON dreaming_ranges(session_id, branch) WHERE completed_run IS NULL;
 CREATE TABLE IF NOT EXISTS dreaming_range_events (
@@ -50,7 +51,7 @@ CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
 `;
 
 export interface KnowledgeEvent { id: number; knowledgeId: number; tokens: number }
-export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; knowledgeIds: number[] }
+export interface DreamingRange { id: number; sessionId: number; branch: string; headTurnId: number; anchor: number; eventIds: number[]; knowledgeIds: number[]; origin: TriggerOrigin | null }
 
 export function changeWeight(store: Store, commitId: number, version = KNOWLEDGE_VIEW_VERSION, cache = true): number {
   const cached = store.db.prepare("SELECT tokens FROM knowledge_weights WHERE commit_id = ? AND view_version = ?").get(commitId, version);

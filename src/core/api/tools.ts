@@ -10,8 +10,8 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
   execute(input: unknown): string;
 }
-export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; readKnowledgeCommits?: { knowledgeId: number; commit: number }[] }
-  | { kind: "noting" | "consolidation" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; entryIds?: number[]; range: { from: string; to: string };
+export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; readKnowledgeCommits?: { knowledgeId: number; commit: number }[] }
+  | { kind: "noting" | "consolidation" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string };
       readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
 type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
@@ -29,7 +29,7 @@ const budgets = { itemBudget: { ...contentBudget, default: 2000 }, toolCallBudge
 const factId = { type: "string", pattern: "^F[1-9][0-9]*$" };
 const knowledgeId = { type: "string", pattern: "^K[1-9][0-9]*@[1-9][0-9]*$" };
 const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "merge", "archive"] }, id: knowledgeId,
-  absorb: { type: "array", items: knowledgeId, minItems: 1, uniqueItems: true }, text: { type: "string", minLength: 1 },
+  absorb: { type: "array", items: knowledgeId, minItems: 1, maxItems: 1, uniqueItems: true }, text: { type: "string", minLength: 1 },
   category: { enum: KNOWLEDGE_CATEGORIES }, scope: { enum: KNOWLEDGE_SCOPES }, supports: { type: "array", items: factId, minItems: 1 },
   reason: { type: "string", minLength: 1 }, topics: { type: "array", items: { type: "string", minLength: 1 } } }, ["op", "supports", "reason"]), allOf: [
   { if: { properties: { op: { const: "create" } } }, then: { not: { required: ["id"] } }, else: { required: ["id"] } },
@@ -41,16 +41,24 @@ export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "trace", description: "Read evidence by address. For a complete knowledge version use trace({address:'K12@57',itemBudget:null}); pageBudget still applies. Follow every cursor before an exact write handle is granted. Complete K versions already supplied internally need no reread. T792 is a Turn; T792#E2 is its stable native entry; T792#E2@text, @thinking or @toolCallId select stored blocks. T792@user/@assistant/@toolResult selects complete role messages; @text collects text (including result text), never arguments or thinking. T792@F* selects Turn-owned facts. T792#E2..E7 is inclusive (gaps allowed); T792#E2,E7 keeps written order and repeats, with a trailing @selector applying to the whole selection. A new complete T/F/K target starts another component. Tool IDs containing delimiters or reserved selector names use a JSON-quoted selector. No other globbing or chained @. Legacy #user/#assistant/#tN remain readable; new citations use exact E addresses. itemBudget caps EACH child of the selected container (Turn: entries; one entry: blocks), default 2000; toolCallBudget and toolResultBudget default 100 as additional ceilings. null disables each content ceiling independently; to remove all compression set ALL THREE to null. pageBudget independently defaults to 2000 for every trace read. Knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...budgets, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: `Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.`, parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_READ_TOKENS }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
   { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. Thinking is readable, not evidence for new facts: @thinking and thinking-only entries are invalid sources; whole mixed entries cite only text/call/result blocks. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
-  { name: "memory", description: "Write one atomic knowledge batch. Consolidation runs are the normal writers; main agents may write but have no memory duty. Every operation, archive included, carries non-empty supports (this commit's fact evidence) and a reason (the commit message, never evidence). Create, update and merge also submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); an archive inherits its parent's topics. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection: update, merge and archive reject the whole batch if the read base has an applicable successor on this path; re-read and resubmit. Update/archive and every merge participant require an explicit K1@57 handle whose complete body was supplied or read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
+  { name: "memory", description: "Write one atomic ordinary knowledge batch. Consolidation runs are the normal writers and may create, update or archive; main agents may also make a fact-backed binary merge but have no memory duty. Operations carry non-empty change supports and a reason. Create/update submit the complete resulting text/category/scope/topics; archive inherits its parent body. Automatic merge/split maintenance belongs to Dreamer; split is unavailable to manual callers. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection is atomic; re-read and resubmit. Update/archive and every manual merge parent require an explicit complete-body K1@57 read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
 export function dreamingToolDefinitions(): Omit<ToolDefinition, "execute">[] {
   const tools = structuredClone(toolDefinitions.filter(t => t.name !== "note"));
   const memory = tools.find(t => t.name === "memory")!;
-  memory.description = "Apply one atomic batch immediately within the frozen Dreamer family. No candidate/review resubmission. Create only as a split with a family update/archive in the same batch. All create/update/merge require factual supports. Only this trusted Dreamer may archive with supports: [] and an honest nonempty maintenance reason; scope and applicability inherit the exact parent. Every update/archive/merge participant requires an exact complete-body read K@commit. Reads outside the family remain read-only. Earlier valid batches survive failure; only a passing host check certifies completion.";
+  memory.description = "Apply one atomic batch immediately within the frozen Dreamer family. No candidate/review resubmission. Allowed operations are update, an exactly-two-parent merge, an atomic one-parent/two-child split, and archive; create is forbidden. Every result body is complete, while supports describe only this change and may be [] for a trusted maintenance judgment. Split children each supply complete text/category/topics and inherit the parent's scope and shared supports. Every parent requires an exact complete-body K@commit read. Reads outside the retained family remain read-only. Earlier valid batches survive failure; only a passing host check certifies current descendants.";
   const operation = (memory.parameters.properties as any).operations.items;
+  operation.properties.op.enum = ["update", "merge", "split", "archive"];
   operation.properties.supports.minItems = 0;
-  operation.allOf.push({ if: { properties: { op: { const: "archive" } } }, else: { properties: { supports: { minItems: 1 } } } });
+  operation.properties.children = { type: "array", minItems: 2, maxItems: 2, items: object({
+    text: { type: "string", minLength: 1 }, category: { enum: KNOWLEDGE_CATEGORIES },
+    topics: { type: "array", items: { type: "string", minLength: 1 } },
+  }, ["text", "category", "topics"]) };
+  operation.allOf[2] = { if: { properties: { op: { enum: ["archive", "split"] } } },
+    then: { not: { anyOf: ["text", "category", "scope", "topics"].map(key => ({ required: [key] })) } },
+    else: { required: ["text", "category", "scope", "topics"] } };
+  operation.allOf.push({ if: { properties: { op: { const: "split" } } }, then: { required: ["children"] }, else: { not: { required: ["children"] } } });
   tools.push({ name: "check", description: "Read-only completion check: exact events/results, family, current versions, claims and full shared scope totals, remaining rounds and repair availability. It never commits or certifies knowledge.", parameters: object({}) });
   return tools;
 }
@@ -106,15 +114,16 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     }
     if (!allowed.has(from)) throw new Error("invalid frozen range ancestry");
   }
-  const run: RunInput = metadata ?? { kind: context.kind, sessionId: session.id, branch: context.branch,
-    rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
-    rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
-  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
   if (context.kind === "consolidation" && !review) throw new Error("Consolidation tools require the frozen review context supplied by integrate()");
   // The branch rides on the path so applicability is judged per source entry (review 2026-09-08 P1).
   const path = context.kind === "manual" ? { sessionId: session.id, headTurnId: context.currentTurnId, branch: context.branch }
     : context.kind === "noting" ? { sessionId: session.id, headTurnId: Number(context.range.to.split("/T")[1]), branch: context.branch }
     : context.kind === "dreaming" ? dreaming!.path : review!.frozen.path;
+  const plain: RunInput = { kind: context.kind, sessionId: session.id, branch: context.branch,
+    rangeFrom: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.from,
+    rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
+  const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
+  if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
   const sourceTurns = store.pathTurns(path);
   const initialPath = context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];

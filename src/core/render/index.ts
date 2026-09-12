@@ -547,7 +547,7 @@ export const runMode = (mode: string | null): string =>
   mode === "branch" ? "legacy request-copy execution (branch)" : mode ?? "?";
 
 /** A run record as a human summary; `full` adds the tool rounds and previews of the raw request and response. */
-export function renderRun(run: { id: number; kind: string; outcome: string; sessionId: number | null; branch: string | null; rangeFrom: string | null; rangeTo: string | null; model: string | null; mode: string | null; request: string | null; response: string | null; createdAt: string },
+export function renderRun(run: { id: number; kind: string; outcome: string; sessionId: number | null; branch: string | null; rangeFrom: string | null; rangeTo: string | null; model: string | null; mode: string | null; request: string | null; response: string | null; origin?: { readonly sessionId: number; readonly entryIds: readonly number[] } | null; createdAt: string },
   factIds: number[], commits: { knowledgeId: number; id: number; op: string; reason: string }[], full = false): string {
   let response: Record<string, unknown> = {};
   try { response = JSON.parse(run.response ?? "{}") ?? {}; } catch { response = {}; }
@@ -560,6 +560,7 @@ export function renderRun(run: { id: number; kind: string; outcome: string; sess
   if (!problems.length && run.outcome !== "success") problems.push(`no problem text recorded; response: ${cut(run.response ?? "", 40, 0)}`);
   const lines = [`R${run.id} ${run.kind} ${run.outcome} ${run.createdAt}`,
     `  S${run.sessionId ?? "?"} / branch ${run.branch ?? "?"}  ${run.rangeFrom ?? "?"}..${run.rangeTo ?? "?"}`,
+    `  trigger origin: ${run.origin ? `S${run.origin.sessionId}/E[${run.origin.entryIds.join(",")}]` : "unknown"}`,
     `  model ${run.model ?? "?"}  mode ${runMode(run.mode)}`,
     `  created: ${[...factIds.map((id) => `F${id}`), ...commits.map((c) => `K${c.knowledgeId}@${c.id} (${c.op}: ${c.reason})`)].join(", ") || "nothing"}`,
     response.usageStatus === "unknown" ? "  usage: unknown  cost unknown"
@@ -604,19 +605,24 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  supports: ${r.supports.map((id) => `F${id}`).join(", ")}${topicList(r.topics)}${r.actorRole === "dreaming" ? `\n  actor: dreaming; run R${r.runId}; parent K${r.knowledgeId}@${r.parentId}; ${r.op === "archive" && !r.supports.length ? "maintenance judgment; " : ""}reason: ${r.reason}` : ""}`;
+  const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
-  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} supports: ${factAddresses(r.supports)} reason: ${r.reason}`;
+  `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
 export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
   revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
 
-export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity): string {
+export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
+  effectiveGrounds: number[] = value.revision.supports): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
+  const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+    ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
+    ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
     `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
   const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
   return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
@@ -654,8 +660,8 @@ function diffText(before: string, after: string): string {
 export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity): string {
   const text = diffText(a.text, b.text), prefix = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]\n  text: `;
   const whole = [prefix + text,
-    `  supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
-    `  supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
+    `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
+    `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,
     ...(a.category === b.category ? [] : [`  category: ${a.category} -> ${b.category}`]),
     ...(a.scope === b.scope ? [] : [`  scope: ${a.scope} -> ${b.scope}`]),
     ...(a.reason === b.reason ? [] : [`  reason: ${a.reason} -> ${b.reason}`]),

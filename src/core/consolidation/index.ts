@@ -167,12 +167,14 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
     throw new Error(`${CONSOLIDATION_CAPACITY}the frozen batch of ${applicable.length} facts exceeds consolidation.batchTokens (${config.consolidation.batchTokens}); left pending`);
   // The negated-evidence cues are mandatory material and grow with the selected facts, so they are
   // derived per candidate batch: a smaller batch has fewer cues.
+  const lineageMemo = new Map<number, Set<number>>();
+  const effectiveGrounds = new Map(knowledge.map(item => [item.revision.id, store.revisionGrounds(item.revision, lineageMemo)]));
   const remindersFor = (batch: Fact[]) => {
     const reminders: string[] = [];
     const reminderCommits = new Set<number>();
     for (const item of knowledge) for (const fact of batch) {
       for (const edge of relations.get(fact.id)!) {
-        if (edge.fromFact !== fact.id || edge.kind !== "negate" || !item.revision.supports.includes(edge.toFact)) continue;
+        if (edge.fromFact !== fact.id || edge.kind !== "negate" || !effectiveGrounds.get(item.revision.id)!.has(edge.toFact)) continue;
         let cited = byId.get(edge.toFact);
         if (!cited) {
           cited = store.getFact(edge.toFact)!;
