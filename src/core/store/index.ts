@@ -1877,7 +1877,10 @@ export class Store {
     return changeWeight(this, commitId, version);
   }
 
-  pendingKnowledgeEvents(path: KnowledgePath) { return pendingEvents(this, path); }
+  pendingKnowledgeEvents(path: KnowledgePath, snapshot = this.pathSnapshot(path),
+    prepared?: ReturnType<Store["commitGraphInput"]>, preparedGraph?: CommitGraph) {
+    return pendingEvents(this, path, true, snapshot, prepared, preparedGraph);
+  }
 
   pendingKnowledgeRevisions(path: KnowledgePath) {
     // Compare immutable integer identities first; deserialize only pending candidates, not the
@@ -2171,6 +2174,20 @@ export class Store {
   /** 32d passes its target/claim/frozen-family recheck here, inside the same short transaction.
    * The successful run and two exact sets are authoritative; no watermark or tip substitution. */
   completeDreaming(runId: number, eventIds: number[], resultIds: number[], validate: () => void = () => {}): void {
+    this.completeDreamingTransaction(runId, eventIds, resultIds, validate);
+  }
+
+  /** Finalize a core Dreamer pass while publishing the exact canonical budget projection used for
+   * certification. The observer cannot bypass validation: every caller still reaches the same
+   * quota check, and an observer failure rolls the whole completion back. */
+  completeDreamingWithScopeAudit(runId: number, eventIds: number[], resultIds: number[],
+    observe: (check: ReturnType<typeof checkProcessedScopes>, budgets: KnowledgeBudgets) => void,
+    validate: () => void = () => {}): void {
+    this.completeDreamingTransaction(runId, eventIds, resultIds, validate, observe);
+  }
+
+  private completeDreamingTransaction(runId: number, eventIds: number[], resultIds: number[], validate: () => void,
+    observe?: (check: ReturnType<typeof checkProcessedScopes>, budgets: KnowledgeBudgets) => void): void {
     this.transaction(() => {
       const events = [...new Set(eventIds)].sort((a, b) => a - b), results = [...new Set(resultIds)].sort((a, b) => a - b);
       const previous = this.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").get(runId);
@@ -2187,7 +2204,13 @@ export class Store {
         const revision = this.knowledgeRevision(id)!;
         return placementOwner(this, { revision });
       }));
-      const check = checkProcessedScopes(this, results, affected);
+      const budgets = this.knowledgeBudgets();
+      // The immutable revision/applicability input is also valid for range closure after the
+      // certificate rows are inserted; only processed status changes, and that is read separately.
+      const graphInput = observe || affected.size ? this.commitGraphInput() : undefined;
+      const projection = processedProjection(this, results, observe ? undefined : affected, graphInput);
+      const check = checkProcessedProjection(projection, affected, budgets);
+      observe?.(check, budgets);
       if (check.problems.length) throw new Error(check.problems.join("; "));
       this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
       for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
@@ -2198,7 +2221,7 @@ export class Store {
       const ranges = this.db.prepare(`SELECT session_id, branch FROM dreaming_ranges WHERE completed_run IS NULL
         AND NOT EXISTS (SELECT 1 FROM dreaming_range_events e WHERE e.range_id = dreaming_ranges.id
           AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).all();
-      const input = ranges.length ? this.commitGraphInput() : undefined;
+      const input = ranges.length ? graphInput ?? this.commitGraphInput() : undefined;
       for (const row of ranges) {
         const path = { sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: null };
         const range = this.openDreamingRange(path.sessionId, path.branch);

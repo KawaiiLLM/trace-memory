@@ -82,7 +82,7 @@ test.each([2, 12])("32b performance: %s settled ranges keep their own branch/hea
   const input = vi.spyOn(a.store, "commitGraphInput"), graph = vi.spyOn(a.store, "commitGraph"), facts = vi.spyOn(a.store, "factOnPath");
   a.store.completeDreaming(readers[0]!.success(), [c.commit], [c.commit]);
   expect(facts.mock.calls.length).toBeLessThanOrEqual(graph.mock.calls.length);
-  expect(input).toHaveBeenCalledTimes(2); // certification plus one shared range-closing input
+  expect(input).toHaveBeenCalledTimes(1); // certification and shared range closure reuse one immutable graph input
   expect(graph.mock.calls.some(([p]) => p?.branch === "sibling" && p.headTurnId === later.id)).toBe(true);
   expect(ranges.every(r => a.store.dreamingRange(r.id) === null)).toBe(true);
   expect(a.store.dreamingRange(original.id)).not.toBeNull();

@@ -173,12 +173,13 @@ export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, 
   return r.scope === "session" ? `session:${sessionId}` : `project:${projectId}`;
 }
 
-export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>) {
+export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>,
+  prepared?: ReturnType<Store["commitGraphInput"]>) {
   const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
   const pools = new Map<string, Map<number, KnowledgeWithRevision>>();
   const owners = new Map<number, string>();
   if (affected?.size === 0) return { pools, owners, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
-  const input = store.commitGraphInput();
+  const input = prepared ?? store.commitGraphInput();
   // A full audit names empty owner pools too. In particular, archiving an owner's last active item
   // must not make the canonical check claim that no owner was checked. Affected-scope enforcement
   // still filters these identities below without changing the accounting algorithm.
