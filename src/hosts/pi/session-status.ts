@@ -57,7 +57,13 @@ export function allocateCells(values: readonly number[], cells: number): number[
   for (let i = 0, left = cells - counts.reduce((sum, count) => sum + count, 0); i < left; i++) counts[order[i]!.i]!++;
   return counts;
 }
-const estimate = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
+const estimate = (n: number) => n > 0 && n < 0.001 ? "<0.001"
+  : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
+  : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
+const approximate = (n: number) => {
+  const amount = estimate(n);
+  return amount.startsWith("<") ? amount : `~${amount}`;
+};
 const share = (value: number, total: number) => total ? (value < total / 100 && percent(value / total) === "1.0%" ? "<1%" : percent(value / total)) : "0.0%";
 const categoryOrder = ["System", "Tools", "Skills", "Memory", "Conversation", "Other"] as const;
 const colors: Record<(typeof categoryOrder)[number] | "Difference", Parameters<Paint>[0]> = {
@@ -98,13 +104,13 @@ export function compositionMap(value: ContextComposition, model: string, width: 
     }
   }
 
-  const headline = capacityKnown ? `~${estimate(sdkTokens)} / ${estimate(window)} tokens (${percent(sdkTokens / window)})`
-    : sdkTokens !== undefined ? `~${estimate(sdkTokens)} tokens`
-    : window !== undefined ? `Context window ~${estimate(window)} tokens` : undefined;
+  const headline = capacityKnown ? `${approximate(sdkTokens)} / ${estimate(window)} tokens (${percent(sdkTokens / window)})`
+    : sdkTokens !== undefined ? `${approximate(sdkTokens)} tokens`
+    : window !== undefined ? `Context window ${approximate(window)} tokens` : undefined;
   const state = !capacityKnown
     ? sdkTokens === undefined && window === undefined ? "SDK usage and context window unavailable."
       : sdkTokens === undefined ? "SDK usage unavailable." : "Context window unavailable."
-    : overWindow ? `Context exceeds window by ~${estimate(sdkTokens - window)} tokens; grid capped.`
+    : overWindow ? `Context exceeds window by ${approximate(sdkTokens - window)} tokens; grid capped.`
     : localTotal > sdkTokens ? "Local text exceeds SDK total; grid uses SDK." : undefined;
 
   const legend: string[] = [model, ...(headline ? [headline] : []), ...(state ? [state] : []), "",
@@ -113,16 +119,16 @@ export function compositionMap(value: ContextComposition, model: string, width: 
     const amount = value.amounts[name];
     if (amount <= 0) continue;
     const label = name === "Skills" ? "Skill catalog" : name;
-    const amountText = `~${estimate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`;
+    const amountText = `${approximate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`;
     const details = name === "Memory" ? memoryOrder.filter(part => value.memory[part] > 0)
       .map(part => `${part} ${estimate(value.memory[part])}`).join(", ") : "";
     legend.push(paint(colors[name], `${usedGlyph} ${label} ${amountText}`) + (details ? ` — ${details}` : ""));
   }
   if (coherent && sdkTokens > localTotal)
-    legend.push(paint(colors.Difference, `${usedGlyph} Difference ~${estimate(sdkTokens - localTotal)} (${share(sdkTokens - localTotal, window)})`));
+    legend.push(paint(colors.Difference, `${usedGlyph} Difference ${approximate(sdkTokens - localTotal)} (${share(sdkTokens - localTotal, window)})`));
   if (capacityKnown) {
     const free = Math.max(0, window - sdkTokens);
-    legend.push(paint("dim", `${freeGlyph} Free ~${estimate(free)} (${share(free, window)})`));
+    legend.push(paint("dim", `${freeGlyph} Free ${approximate(free)} (${share(free, window)})`));
   }
 
   const legendWidth = width >= 80 && cells.length ? width - 42 : width;

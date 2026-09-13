@@ -20,6 +20,11 @@ function fixture() {
   const pi = { getActiveTools: () => [], getAllTools: () => [] };
   return { sm, ctx, read: () => contextComposition(ctx, pi) };
 }
+function numericComposition(sdkTokens: number, window: number | undefined, system = 0): ContextComposition {
+  return { amounts: { System: system, Tools: 0, Skills: 0, Memory: 0, Conversation: 0, Other: 0 },
+    memory: { Knowledge: 0, Facts: 0, Raw: 0, Unclassified: 0 }, total: system, sdkTokens,
+    sdkDifference: sdkTokens - system, window, complete: true };
+}
 const material = { knowledge: [{ category: "constraint", text: "[K1@1] Keep the retained knowledge" }],
   facts: ["[F1] A retained fact"], entries: [{ id: 1, view: "[T1#user]: Raw text" }], receipts: ["omitted older history"] };
 const measured = measuredMemory(compactText(material), material);
@@ -247,6 +252,47 @@ test("unavailable, fractional, boundary and huge over-window values remain hones
   text = compositionMap(overWithLargerLocal, "test", 40).join("\n");
   expect(text.replace(/\s+/g, " ")).toContain("Context exceeds window by ~1 tokens; grid capped.");
   expect(text).not.toContain("Local text exceeds SDK total");
+});
+
+test("positive sub-milltoken overflow remains visible without changing the over-window state", () => {
+  const value = numericComposition(100.0001, 100, 100);
+  const lines = compositionMap(value, "test", 40);
+  const text = lines.join("\n"), compact = text.replace(/\s+/g, " ");
+  expect(lines.slice(0, 10).join("")).toBe("⛁".repeat(200));
+  expect(text).toContain("~100 / 100 tokens (>100%)");
+  expect(compact).toContain("Context exceeds window by <0.001 tokens; grid capped.");
+  expect(text).not.toContain("exceeds window by ~0 tokens");
+  expect(text).not.toContain("Difference");
+});
+
+test("positive sub-milltoken Difference and Free remain distinct from exact zero", () => {
+  let text = compositionMap(numericComposition(100.0001, 101, 100), "test", 40).join("\n");
+  expect(text).toContain("Difference <0.001 (<0.1%)");
+  expect(text).not.toContain("Difference ~0 ");
+
+  text = compositionMap(numericComposition(99.9999, 100), "test", 40).join("\n");
+  expect(text).toContain("Free <0.001 (<0.1%)");
+  expect(text).not.toContain("Free ~0 ");
+
+  text = compositionMap(numericComposition(100, 100, 100), "test", 40).join("\n");
+  expect(text).toContain("Free ~0 (0.0%)");
+  expect(text).not.toContain("Difference");
+});
+
+test("tiny positive SDK usage remains visible with and without a valid window", () => {
+  let text = compositionMap(numericComposition(0.0001, 100), "test", 40).join("\n");
+  expect(text).toContain("<0.001 / 100 tokens (<0.1%)");
+  expect(text).toContain("Difference <0.001 (<0.1%)");
+  expect(text).not.toContain("~0 / 100 tokens");
+
+  text = compositionMap(numericComposition(Number.MIN_VALUE, undefined), "test", 40).join("\n");
+  expect(text.replace(/\s+/g, " ")).toContain("<0.001 tokens Context window unavailable.");
+  expect(text).not.toContain("~0 tokens");
+  expect(text).not.toContain("Difference");
+
+  text = compositionMap(numericComposition(0, 100), "test", 40).join("\n");
+  expect(text).toContain("~0 / 100 tokens (0.0%)");
+  expect(text).not.toContain("<0.001 / 100 tokens");
 });
 
 test("only active tool schemas count; image capacity is not fabricated from base64", () => {
