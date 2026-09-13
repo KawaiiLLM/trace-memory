@@ -498,31 +498,40 @@ immediately, so stop can be invoked while it runs.
 #### Current session measurements
 
 The context panel estimates **Pi's current rebuilt text**, not final provider wire
-or an exact tokenizer bill. It reads the selected `buildContextEntries()` snapshot,
-projects entries with Pi's public message APIs, and uses the core text estimator.
-It includes the current system prompt and active tool definitions. This local census
-stays separate from `getContextUsage()`: a positive SDK/text difference is an
-unclassified numerical gap, never distributed proportionally among categories, and a
-negative difference never shrinks measured text. An incomplete text/non-text census is
-disclosed independently; the numerical difference does not identify or measure image or
-other non-text content.
+or an exact tokenizer bill. It reads one selected `buildContextEntries()` snapshot,
+projects entries with Pi's public message APIs, and uses the core text estimator. The
+census includes the current system prompt and active tool definitions. It remains
+separate from `getContextUsage()`; the display never scales local categories to match the
+SDK estimate or interprets their numerical difference as image or other non-text usage.
+An incomplete census keeps its measured values and adds `(partial)` to the category
+heading.
 
-A valid SDK token estimate and context window drive the 100-cell occupancy grid even
-when the local census is incomplete or differs in either direction. SDK occupancy and
-remaining capacity are labelled as estimates, not provider-wire measurements or
-guaranteed free space, and remaining capacity never goes below zero. When SDK usage or
-the window is unavailable or invalid, the grid is omitted and a concise unavailable
-state appears beside the local category estimates. Reopening takes a new snapshot, so a
-later valid SDK estimate appears without reloading the extension.
+When local category sum is no greater than SDK occupancy and occupancy is within the
+model window, one 200-cell partition shows System, Tools, Skill catalog, Memory,
+Conversation, Other, a positive neutral Difference and Free in that fixed order.
+Largest-remainder allocation runs once across the complete vector, so each cell is 0.5%
+of the window, ties follow category order and a nonzero category can receive no cell.
+Legend values remain the unscaled estimates rather than values derived from cell counts.
+
+The raw values select exceptional displays before rounding. Missing SDK usage or window
+omits the grid and names the missing input. Occupancy above the window fills all 200 cells
+with the accent color and reports the numeric overage while retaining percentages above
+100%. Local text above an in-window SDK total uses the SDK's single-color occupied/free
+grid, including at most one partial cell, and reports the discrepancy without a negative
+Difference. Both valid exceptional states retain the local category rows. Reopening takes
+a new snapshot, so later valid SDK data replaces an unavailable display without reloading
+the extension.
 
 - **Memory:** every retained initial injection, on/project supplement and marked custom
   compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
-  changing project or disabling enrollment does not subtract text still retained.
-- **Memory's continuous bar:** Knowledge, Facts and Raw estimates captured from the
-  same assembled material, checked against its body hash, nonnegative safe-integer parts,
-  and a sum no larger than the body estimate. Titles, receipts and other
-  framing remain Unclassified. Old, malformed or body-mismatched metadata makes that
-  entire carrier Unclassified. Coverage IDs and database inventory never measure capacity.
+  changing project or disabling enrollment does not subtract text still retained. A
+  positive Memory legend row appends nonzero Knowledge, Facts, Raw and Unclassified
+  values as ordinary text in that order, with no second allocation or percentages.
+- **Memory metadata:** Knowledge, Facts and Raw estimates come from the same assembled
+  material and require a matching body hash, nonnegative safe-integer parts and a sum no
+  larger than the body estimate. Titles, receipts and other framing remain Unclassified.
+  Old, malformed or body-mismatched metadata makes the entire carrier Unclassified.
+  Coverage IDs and database inventory never measure capacity.
 - **Skill catalog:** Pi's formatted names, descriptions and locations, deducted from
   System only when the full catalog has one exact occurrence in the actual prompt,
   using Pi's selected-tools semantics (read preferred, bash fallback, neither omits it).
@@ -530,13 +539,11 @@ later valid SDK estimate appears without reloading the extension.
 - **Conversation / Other:** retained ordinary messages and native summaries / other
   extensions' custom messages. Pi-excluded bash executions contribute nothing.
 
-The capacity grid floors full SDK-occupancy cells, preserves one partial cell and
-saturates at 100 cells when over window; numeric percentages still use the window and
-may exceed 100%. Local category legends retain nonzero estimates and sub-percent
-percentages but do not pretend to partition the SDK total. The Memory bar uses Memory's
-own total with largest-remainder allocation. Zero Memory has no filled bar. Wide
-terminals put the capacity legend beside five grid rows; narrow terminals stack it
-below. Pi's width utilities handle display width. In the TUI, this panel alone uses the
+At 80 columns or wider, the panel uses a 39-column spaced 20-by-10 grid, a three-column
+gap and the wrapped legend beside it. From 20 through 79 columns, the unspaced grid and
+complete wrapped legend stack. Below 20 columns the text stays width-safe without
+manufacturing a one-cell-per-row grid. Pi's ANSI-aware display-width utilities wrap the
+complete section before pagination. In the TUI, this panel alone uses the
 public `ui.custom` overlay API, not an oversized native selector title. The overlay
 uses the terminal's available screen rather than the fullscreen editor dock. Its
 component supplies every allocated viewport row; Pi's public compositor supplies the

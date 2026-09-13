@@ -43,11 +43,12 @@ try {
   const requestsBeforePanel = h.requests.length;
   h.setContextUsage({ tokens: 1, contextWindow: 200000, percent: 0 });
   await trace("");
-  assert.ok(h.notices.at(-1)!.includes("SDK occupancy estimate ~1 / 200k"));
-  assert.ok(h.notices.at(-1)!.includes("below local rebuilt text estimate"));
-  assert.ok(h.notices.at(-1)!.includes("Estimated remaining"));
+  assert.ok(h.notices.at(-1)!.includes("~1 / 200k tokens (<0.1%)"));
+  assert.ok(h.notices.at(-1)!.includes("Local text exceeds SDK total; grid uses SDK."));
+  assert.ok(h.notices.at(-1)!.includes("Free ~200k (<100%)"));
+  assert.ok(h.notices.at(-1)!.includes("Estimated usage by category"));
   assert.ok(!h.notices.at(-1)!.includes("?".repeat(20)));
-  assert.ok(h.notices.at(-1)!.includes("Pi rebuilt text estimate"));
+  assert.ok(!h.notices.at(-1)!.includes("Pi rebuilt text estimate"));
   h.setContextUsage({ tokens: 44500, contextWindow: 200000, percent: 22.25 });
   const terminal = { columns: 40, rows: 24, write() {}, hideCursor() {}, showCursor() {} };
   const tui = new TuiAltScreen(terminal as never, false);
@@ -74,8 +75,9 @@ try {
       }
       assert.ok(seen.join(" ").includes("Pending / trigger (~tokens)") && seen.join(" ").includes("Dreaming      ░░░░░░░░░░"));
       assert.ok(seen.join(" ").includes("⛶") && !seen.join(" ").includes("not task completion or worker"));
-      assert.ok(seen.join(" ").includes("Memory ~0"));
-      assert.ok(seen.join(" ").includes("Pi rebuilt text estimate"));
+      assert.ok(!seen.join(" ").includes("Memory ~0"));
+      assert.ok(!seen.join(" ").includes("Pi rebuilt text estimate"));
+      assert.ok(seen.join(" ").includes("Estimated usage by category"));
       assert.ok(seen.join(" ").includes("Tools ~"));
       component.handleInput?.("\x1b"); assert.ok(cancelled);
     } finally { handle.hide(); component.dispose?.(); }

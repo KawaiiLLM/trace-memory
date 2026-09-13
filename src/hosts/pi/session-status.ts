@@ -52,64 +52,93 @@ export function allocateCells(values: readonly number[], cells: number): number[
   const total = values.reduce((sum, value) => sum + value, 0);
   if (!total) return values.map(() => 0);
   const shares = values.map(value => value / total * cells), counts = shares.map(Math.floor);
-  const order = shares.map((value, i) => ({ i, remainder: value - counts[i]! })).sort((a, b) => b.remainder - a.remainder);
+  const order = shares.map((value, i) => ({ i, remainder: value - counts[i]! }))
+    .sort((a, b) => b.remainder - a.remainder || a.i - b.i);
   for (let i = 0, left = cells - counts.reduce((sum, count) => sum + count, 0); i < left; i++) counts[order[i]!.i]!++;
   return counts;
 }
 const estimate = (n: number) => n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M` : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
 const share = (value: number, total: number) => total ? (value < total / 100 && percent(value / total) === "1.0%" ? "<1%" : percent(value / total)) : "0.0%";
-const colors: Record<string, Parameters<Paint>[0]> = { System: "syntaxKeyword", Tools: "syntaxFunction", Skills: "syntaxString",
-  Memory: "accent", Conversation: "syntaxNumber", Other: "syntaxType",
-  Knowledge: "syntaxKeyword", Facts: "syntaxString", Raw: "syntaxNumber", Unclassified: "muted" };
+const categoryOrder = ["System", "Tools", "Skills", "Memory", "Conversation", "Other"] as const;
+const colors: Record<(typeof categoryOrder)[number] | "Difference", Parameters<Paint>[0]> = {
+  System: "syntaxKeyword", Tools: "syntaxFunction", Skills: "syntaxString", Memory: "accent",
+  Conversation: "syntaxNumber", Other: "syntaxType", Difference: "muted",
+};
+const memoryOrder = ["Knowledge", "Facts", "Raw", "Unclassified"] as const;
 
 export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
-  const window = value.window, sdkTokens = value.sdkTokens;
+  const window = valid(value.window) && value.window > 0 ? value.window : undefined;
+  const sdkTokens = valid(value.sdkTokens) ? value.sdkTokens : undefined;
   const capacityKnown = window !== undefined && sdkTokens !== undefined;
   const preferred = ["⛁", "⛶", "⛀"] as const;
   const [usedGlyph, freeGlyph, partialGlyph] = preferred.every(glyph => visibleWidth(glyph) === 1)
     ? preferred : ["#", ".", "+"] as const;
-  let lines: string[];
+  const local = categoryOrder.map(name => value.amounts[name]);
+  const localTotal = local.reduce((sum, amount) => sum + amount, 0);
+  const coherent = capacityKnown && localTotal <= sdkTokens && sdkTokens <= window;
+  const overWindow = capacityKnown && sdkTokens > window;
+  let cells: string[] = [];
+
+  if (coherent) {
+    const difference = sdkTokens - localTotal;
+    const free = window - sdkTokens;
+    const segments = [...local, difference, free];
+    const counts = allocateCells(segments, 200);
+    const segmentColors = [...categoryOrder.map(name => colors[name]), colors.Difference, "dim"] as const;
+    cells = counts.flatMap((count, index) => Array(count).fill(
+      paint(segmentColors[index]!, index === counts.length - 1 ? freeGlyph : usedGlyph),
+    ));
+  } else if (capacityKnown) {
+    if (overWindow) cells = Array(200).fill(paint("accent", usedGlyph));
+    else {
+      const occupied = sdkTokens / window * 200;
+      const full = Math.floor(occupied);
+      cells = Array.from({ length: 200 }, (_, index) => index < full
+        ? paint("accent", usedGlyph) : index < occupied ? paint("accent", partialGlyph) : paint("dim", freeGlyph));
+    }
+  }
+
+  const headline = capacityKnown ? `~${estimate(sdkTokens)} / ${estimate(window)} tokens (${percent(sdkTokens / window)})`
+    : sdkTokens !== undefined ? `~${estimate(sdkTokens)} tokens`
+    : window !== undefined ? `Context window ~${estimate(window)} tokens` : undefined;
+  const state = !capacityKnown
+    ? sdkTokens === undefined && window === undefined ? "SDK usage and context window unavailable."
+      : sdkTokens === undefined ? "SDK usage unavailable." : "Context window unavailable."
+    : overWindow ? `Context exceeds window by ~${estimate(sdkTokens - window)} tokens; grid capped.`
+    : localTotal > sdkTokens ? "Local text exceeds SDK total; grid uses SDK." : undefined;
+
+  const legend: string[] = [model, ...(headline ? [headline] : []), ...(state ? [state] : []), "",
+    `Estimated usage by category${value.complete ? "" : " (partial)"}`];
+  for (const name of categoryOrder) {
+    const amount = value.amounts[name];
+    if (amount <= 0) continue;
+    const label = name === "Skills" ? "Skill catalog" : name;
+    const amountText = `~${estimate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`;
+    const details = name === "Memory" ? memoryOrder.filter(part => value.memory[part] > 0)
+      .map(part => `${part} ${estimate(value.memory[part])}`).join(", ") : "";
+    legend.push(paint(colors[name], `${usedGlyph} ${label} ${amountText}`) + (details ? ` — ${details}` : ""));
+  }
+  if (coherent && sdkTokens > localTotal)
+    legend.push(paint(colors.Difference, `${usedGlyph} Difference ~${estimate(sdkTokens - localTotal)} (${share(sdkTokens - localTotal, window)})`));
   if (capacityKnown) {
-    const ratio = sdkTokens / window;
-    const usedCells = Math.min(100, ratio * 100);
-    const fullCells = Math.floor(usedCells);
-    const cells = Array.from({ length: 100 }, (_, index) => index < fullCells
-      ? paint("accent", usedGlyph) : index < usedCells ? paint("accent", partialGlyph) : paint("dim", freeGlyph));
-    const grid = Array.from({ length: 5 }, (_, row) => cells.slice(row * 20, row * 20 + 20).join(width >= 80 ? " " : ""));
-    const remaining = Math.max(0, window - sdkTokens);
-    const legend = [model,
-      `SDK occupancy estimate ~${estimate(sdkTokens)} / ${estimate(window)} (${percent(ratio)})`,
-      `${paint("accent", usedGlyph)} Occupied estimate ~${estimate(sdkTokens)} (${percent(ratio)})`,
-      `${paint("dim", freeGlyph)} Estimated remaining ~${estimate(remaining)} (${percent(Math.max(0, 1 - ratio))})`];
-    const gridWidth = visibleWidth(grid[0]!);
-    const right = legend.flatMap(line => wrapTextWithAnsi(line, Math.max(1, width - gridWidth - 3)));
-    lines = width >= 80 ? Array.from({ length: Math.max(5, right.length) }, (_, i) =>
-      `${grid[i] ?? " ".repeat(gridWidth)}${right[i] ? `   ${right[i]}` : ""}`) : [...grid, ...legend];
-  } else {
-    lines = [model, `Capacity estimate unavailable: ${sdkTokens === undefined ? "SDK usage" : "context window"} unavailable.`];
-    if (sdkTokens !== undefined) lines.push(`SDK occupancy estimate ~${estimate(sdkTokens)}; remaining unavailable.`);
+    const free = Math.max(0, window - sdkTokens);
+    legend.push(paint("dim", `${freeGlyph} Free ~${estimate(free)} (${share(free, window)})`));
   }
 
-  const local = Object.entries(value.amounts);
-  lines.push("", `Local rebuilt text ~${estimate(value.total)}${window !== undefined ? ` / ${estimate(window)} (${share(value.total, window)})` : ""}`,
-    ...local.filter(([, amount]) => amount > 0).map(([name, amount]) =>
-      `${paint(colors[name]!, usedGlyph)} ${name === "Skills" ? "Skill catalog" : name} ~${estimate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`));
-  if (sdkTokens !== undefined) {
-    const difference = value.sdkDifference!;
-    if (difference === 0) lines.push("SDK and local rebuilt text estimates match numerically.");
-    else if (difference > 0) lines.push(`SDK estimate is ~${estimate(difference)} above local rebuilt text estimate; unclassified numerical gap.`);
-    else lines.push(`SDK estimate is ~${estimate(-difference)} below local rebuilt text estimate; local categories are not reduced.`);
-  }
-  if (!value.complete) lines.push("Local census incomplete: some text or non-text content is unmeasured; the SDK/text difference does not identify or measure it.");
-
-  lines.push("", `Memory ~${estimate(value.amounts.Memory)}`);
-  const parts = Object.entries(value.memory), bar = allocateCells(parts.map(([, n]) => n), Math.max(1, Math.min(60, width)));
-  const solid = visibleWidth("█") === 1 ? "█" : "#";
-  lines.push(value.amounts.Memory ? parts.map(([name], i) => paint(colors[name]!, solid.repeat(bar[i]!))).join("") : paint("dim", "No retained memory"));
-  if (value.amounts.Memory) lines.push(parts.filter(([, n]) => n > 0).map(([name, n]) => `${paint(colors[name]!, usedGlyph)} ${name} ${estimate(n)}${n < value.amounts.Memory / 100 ? ` (${share(n, value.amounts.Memory)})` : ""}`).join("  "));
-  lines.push("", "Pi rebuilt text estimate (not provider wire)",
-    "SDK occupancy and remaining are estimates; remaining is not guaranteed free space.", "");
-  return lines;
+  const legendWidth = width >= 80 && cells.length ? width - 42 : width;
+  const wrappedLegend = legend.flatMap(line => line ? wrapTextWithAnsi(line, Math.max(1, legendWidth)) : [""]);
+  // Twenty columns is the complete-layout floor. Below it, retain safe text reflow
+  // without manufacturing a one-cell-per-row composition.
+  if (width < 20 || cells.length === 0) return wrappedLegend;
+  const spaced = width >= 80;
+  const grid = Array.from({ length: 10 }, (_, row) => cells.slice(row * 20, row * 20 + 20).join(spaced ? " " : ""));
+  if (!spaced) return [...grid, ...wrappedLegend];
+  const gridWidth = 39;
+  return Array.from({ length: Math.max(grid.length, wrappedLegend.length) }, (_, index) => {
+    const right = wrappedLegend[index];
+    if (!right) return grid[index] ?? "";
+    return `${grid[index] ?? " ".repeat(gridWidth)}   ${right}`;
+  });
 }
 
 export function pendingBar(label: string, value: ReturnType<TraceMemory["pendingTokens"]>, compact = true, paint: Paint = plain): string {

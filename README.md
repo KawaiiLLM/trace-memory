@@ -4,6 +4,10 @@ Traceable cross-session memory for Pi. A background Noter extracts facts from co
 
 **Beta.7 release (`next`).** The Pi adapter is implemented and tested with Pi 0.85.1 on Node 24.6.0. Claude Code remains an unshipped stub. Real-workflow extraction and recall quality are still being evaluated.
 
+## Unreleased
+
+- **Colored context composition:** Current session presents the existing local census as a 200-cell category-colored partition when local totals, SDK occupancy and model window are numerically coherent. Difference reconciles the two estimates and Free shows the remaining window. Compact fallback states cover unavailable inputs, local totals above SDK occupancy and occupancy above the window. Memory's Knowledge/Facts/Raw/Unclassified detail now stays inline in its top-level legend row.
+
 ## Beta.7 changes — September 13, 2026
 
 Beta.7 combines Knowledge lineage and delivery changes, Dreamer workflow and database budgets, and the Current session display fixes.

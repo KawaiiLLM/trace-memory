@@ -6,7 +6,8 @@ import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding
 import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-panel.ts";
 import { host, reply } from "./test-host.ts";
-import { contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
+import { compositionMap, contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
+import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 
 // These are installed Pi internals only in tests: reproduce the actual fullscreen dock,
 // not selector.render() or an invented terminal-height approximation.
@@ -131,6 +132,36 @@ test.each([40, 80, 100])("real overlay at %i x 24 keeps every action executable 
     s.key("\r"); expect(await result).toBe(actions[action]);
     expect(s.frame().join("\n")).toContain("original footer");
   }
+});
+
+test.each([20, 40, 79, 80, 100, 160].flatMap(width => [24, 60].map(height => ({ width, height }))))("wrapped composition retains long identity and Memory details across $width x $height pages", async ({ width, height }) => {
+  const composition: ContextComposition = {
+    amounts: { System: 1900, Tools: 3800, Skills: 1200, Memory: 30300, Conversation: 143500, Other: 12800 },
+    memory: { Knowledge: 10500, Facts: 9900, Raw: 9621, Unclassified: 279 },
+    total: 193500, sdkTokens: 207000, sdkDifference: 13500, window: 512000, complete: false,
+  };
+  const model = `${"long-provider-".repeat(5)}PROVIDER-END/${"long-model-".repeat(5)}MODEL-END`;
+  const panelBody = (available: number, paint?: any) => statusBody([
+    ...recovery, ...compositionMap(composition, model, available, paint), "Final detail: paging complete",
+  ], available, paint);
+  const s = screenHarness(width, height);
+  const result = showSessionPanel(s.ctx, panelBody, actions);
+  const seen: string[] = [];
+  for (let page = 0; page < 80; page++) {
+    const frame = s.frame(); seen.push(...frame);
+    expect(frame.every(line => visibleWidth(line) <= width)).toBe(true);
+    for (const label of actions) expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
+    s.key("\x1b[6~");
+  }
+  const text = seen.join(" ").replace(/\s+/g, " ");
+  expect(text).toContain("long-provider-");
+  expect(text).toContain("long-model-");
+  expect(text.replaceAll(" ", "")).toContain("MODEL-END");
+  for (const phrase of ["Estimated usage by category (partial)", "Skill catalog ~1.2k",
+    "Memory ~30.3k", "Knowledge 10.5k", "Facts 9.9k", "Raw 9.6k", "Unclassified 279", "Difference ~13.5k",
+    "Free ~305k", "Use /trace on to resume.", "Final detail: paging complete"])
+    expect(text).toContain(phrase);
+  s.key("\x1b"); expect(await result).toBeUndefined();
 });
 
 test.each([40, 80, 100])("overlay remains independent of the real minimum editor-dock allocation at %i x 24", async width => {
@@ -293,7 +324,7 @@ test("Current session is inert with eligible native Dreamer work; the next turn 
     h.ctx.hasUI = false;
     await h.commands.get("trace").handler("", h.ctx);
     await h.drain();
-    expect(h.notices.at(-1)).toContain("Pi rebuilt text estimate");
+    expect(h.notices.at(-1)).toContain("Estimated usage by category");
     expect(snapshot()).toBe(before); expect(h.entries).toEqual(entries);
     expect(h.requests).toHaveLength(requests);
     h.ctx.hasUI = true;
@@ -346,7 +377,7 @@ test("TUI keyboard actions retain confirmations, inputs and conditional Retry fo
   } finally { await h.dispose(); }
 });
 
-test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => ({ width, mode: mode as "fullscreen" | "regular" }))))("actual Current session first viewport at $width x 24 $mode", async ({ width, mode }) => {
+test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].map(mode => ({ width, mode: mode as "fullscreen" | "regular" }))))("actual Current session composition is reachable at $width x 24 $mode", async ({ width, mode }) => {
   const h = host({ "noting.triggerTokens": 50 });
   try {
     await h.turn(); h.setContextUsage({ tokens: 44500, contextWindow: 1000000, percent: 4.45 });
@@ -356,28 +387,24 @@ test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => (
     await new Promise(resolve => setImmediate(resolve));
     const first = s.frame().map(line => line.trimEnd()).join("\n");
     const compactFirst = first.replace(/[⛁⛶⛀]/g, "").replace(/\s+/g, " ");
-    expect(compactFirst).toContain("SDK occupancy estimate ~44.5k / 1M (4.5%)");
+    expect(compactFirst).toContain("~44.5k / 1M tokens (4.5%)");
     expect(first).toContain("fake/test");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
-    expect(compactFirst).toContain("Estimated remaining ~955.5k (95.5%)");
-    expect(first).toMatchSnapshot();
     s.key("\x1b[6~");
     const second = s.frame().map(line => line.trimEnd()).join("\n");
-    expect(second).toMatchSnapshot();
     const viewed = [first, second];
     for (let page = 0; page < 2; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
-    const seen = viewed.join("\n");
-    expect(seen).toContain("S1 | On(default) | $0.0000");
-    expect(seen).toContain("Project: pi:pi-test (undeclared)");
-    expect(seen).toContain("Noting        ███████░░░  72.0% 36/50");
-    expect(seen).toContain("Dreaming      ░░░░░░░░░░");
-    expect(seen).toContain("Consolidation ░░░░░░░░░░");
-    expect(seen).toContain("Memory ~0");
+    const seen = viewed.join("\n"), squashed = seen.replace(/\s+/g, "");
+    for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
+      "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
+      "Estimated usage by category", "Difference ~42.7k (4.3%)", "Free ~955.5k (95.5%)"])
+      expect(squashed).toContain(phrase.replace(/\s+/g, ""));
+    expect(seen).not.toContain("Memory ~0");
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }
 });
 
-test.each([40, 80, 100])("long project and actual recovery remain reachable at %i x 24", async width => {
+test.each([20, 40, 79, 80, 100, 160])("long project and actual recovery remain reachable at %i x 24", async width => {
   const h = host();
   try {
     await h.turn();

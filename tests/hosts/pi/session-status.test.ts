@@ -2,7 +2,8 @@ import { afterEach, expect, test, vi } from "vitest";
 import { Text, visibleWidth } from "@earendil-works/pi-tui";
 import * as tui from "@earendil-works/pi-tui";
 import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { contextMap, pendingBar, statusBody } from "../../../src/hosts/pi/session-status.ts";
+import { compositionMap, contextMap, pendingBar, statusBody } from "../../../src/hosts/pi/session-status.ts";
+import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { host } from "./test-host.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import * as rendering from "../../../src/core/render/index.ts";
@@ -52,6 +53,15 @@ test("preferred glyphs are one Pi cell; width anomaly alone selects ASCII fallba
   vi.mocked(tui.visibleWidth).mockReturnValueOnce(1).mockReturnValueOnce(2);
   const lines = contextMap({ tokens: 1500, contextWindow: 100000, percent: 1.5 }, "test", 40);
   expect(lines[0]).toBe("#+" + ".".repeat(18));
+  expect(lines.join("\n")).not.toMatch(/[⛁⛀⛶]/);
+});
+
+test("composition uses ASCII alternatives when preferred glyph width is unsafe", () => {
+  const value: ContextComposition = { amounts: { System: 10, Tools: 0, Skills: 0, Memory: 0, Conversation: 0, Other: 0 },
+    memory: { Knowledge: 0, Facts: 0, Raw: 0, Unclassified: 0 }, total: 10, sdkTokens: 10, sdkDifference: 0, window: 100, complete: true };
+  vi.mocked(tui.visibleWidth).mockReturnValueOnce(2);
+  const lines = compositionMap(value, "test", 40);
+  expect(lines.slice(0, 10).join("")).toBe("#".repeat(20) + ".".repeat(180));
   expect(lines.join("\n")).not.toMatch(/[⛁⛀⛶]/);
 });
 
@@ -135,7 +145,8 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   const h = setup(); await h.emit("session_start");
   h.setContextUsage(undefined);
   let title = await open(h);
-  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("/ 200k"); // Model capacity and rebuilt text remain available without SDK usage.
+  expect(title).toContain("Session: No session"); expect(title).toContain("(no session)"); expect(title).toContain("Context window ~200k tokens");
+  expect(title).toContain("SDK usage unavailable."); // Model capacity and local categories remain available without SDK usage.
   await h.turn();
   const before = changes(h), entries = structuredClone(h.entries), footer = h.statuses.get("trace-memory");
   title = await open(h);
@@ -153,12 +164,13 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
   const h = setup(); await h.turn();
   h.setContextUsage(undefined);
   const unavailable = await open(h);
-  expect(unavailable).toContain("Capacity estimate unavailable: SDK usage unavailable");
+  expect(unavailable).toContain("SDK usage unavailable.");
   expect(unavailable).not.toContain("?".repeat(20));
   h.setContextUsage({ tokens: 60237, contextWindow: 512000, percent: 0 });
   const available = await open(h);
-  expect(available).toContain("SDK occupancy estimate ~60.2k / 512k");
-  expect(available).toContain("Estimated remaining ~451.8k");
+  expect(available).toContain("~60.2k / 512k tokens (11.8%)");
+  expect(available).toContain("Free ~451.8k (88.2%)");
+  expect(available).toContain("Estimated usage by category");
   expect(h.requests).toEqual([]);
 });
 
@@ -208,13 +220,14 @@ test("shared identity stays concise in overview and complete in On/Off confirmat
   expect(h.memory.store.enabled(1)).toBe(false);
 });
 
-test("headless shares composition while retaining verbose explanations and command forms", async () => {
+test("headless shares compact composition while retaining operational explanations and command forms", async () => {
   const h = setup(); await h.turn();
   await h.commands.get("trace").handler("", h.ctx);
   const status = h.notices.at(-1)!;
   expect(status).toContain("fake/test");
-  expect(status).toContain("Pi rebuilt text estimate (not provider wire)");
-  expect(status).toContain("Memory ~");
+  expect(status).toContain("Estimated usage by category");
+  expect(status).not.toContain("Pi rebuilt text estimate (not provider wire)");
+  expect(status).not.toContain("Memory ~0");
   expect(status).toContain("/trace project");
   expect(status).toContain("Enrollment: Enabled (default)");
   expect(status).toContain("Pending / trigger is not task completion or worker readiness.");
@@ -300,12 +313,16 @@ test("headless and UI read the same composition once per opening without writes 
   expect(usage).toHaveBeenCalledTimes(1); expect(census).toHaveBeenCalledTimes(1);
   const title = await open(h);
   expect(usage).toHaveBeenCalledTimes(2); expect(census).toHaveBeenCalledTimes(2);
-  const composition = (text: string) => text.slice(text.indexOf("fake/test"), text.indexOf("Pi rebuilt text estimate") + "Pi rebuilt text estimate (not provider wire)".length);
+  const composition = (text: string) => {
+    const start = text.indexOf("fake/test");
+    const ends = [text.indexOf("\nSession:", start), text.indexOf("\nS1 |", start)].filter(index => index >= 0);
+    return text.slice(start, Math.min(...ends));
+  };
   expect(composition(headless)).toBe(composition(title));
   for (const text of [headless, title]) {
-    expect(text).toContain("SDK occupancy estimate ~1 / 1k");
-    expect(text).toContain("below local rebuilt text estimate");
-    expect(text).toContain("Estimated remaining ~999");
+    expect(text).toContain("~1 / 1k tokens (0.1%)");
+    expect(text).toContain("Local text exceeds SDK total; grid uses SDK.");
+    expect(text).toContain("Free ~999 (99.9%)");
     expect(text).not.toContain("?".repeat(20));
     expect(text).toContain("Fork: suppressed");
   }
