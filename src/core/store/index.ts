@@ -471,6 +471,21 @@ export type CommitConsolidationResult =
   | { ok: true; runId: number; committed: CommittedKnowledgeOp[] }
   | { ok: false; runId: number; problems: string[]; conflicts?: ConsumedBaseConflict[] };
 
+export interface DreamingScopeAudit {
+  check: ReturnType<typeof checkProcessedScopes>;
+  budgets: KnowledgeBudgets;
+}
+
+/** Carries the authoritative rejected projection for failure audit only; retry always recomputes it. */
+export class DreamingScopeAuditError extends Error {
+  readonly audit: DreamingScopeAudit;
+  constructor(audit: DreamingScopeAudit) {
+    super(audit.check.problems.join("; "));
+    this.name = "DreamingScopeAuditError";
+    this.audit = audit;
+  }
+}
+
 class ConsumedBaseConflictError extends Error {
   readonly conflict: ConsumedBaseConflict;
   constructor(conflict: ConsumedBaseConflict, message: string) { super(message); this.conflict = conflict; }
@@ -2174,21 +2189,21 @@ export class Store {
   /** 32d passes its target/claim/frozen-family recheck here, inside the same short transaction.
    * The successful run and two exact sets are authoritative; no watermark or tip substitution. */
   completeDreaming(runId: number, eventIds: number[], resultIds: number[], validate: () => void = () => {}): void {
-    this.completeDreamingTransaction(runId, eventIds, resultIds, validate);
+    this.completeDreamingTransaction(runId, eventIds, resultIds, validate, false);
   }
 
-  /** Finalize a core Dreamer pass while publishing the exact canonical budget projection used for
-   * certification. The observer cannot bypass validation: every caller still reaches the same
-   * quota check, and an observer failure rolls the whole completion back. */
-  completeDreamingWithScopeAudit(runId: number, eventIds: number[], resultIds: number[],
-    observe: (check: ReturnType<typeof checkProcessedScopes>, budgets: KnowledgeBudgets) => void,
-    validate: () => void = () => {}): void {
-    this.completeDreamingTransaction(runId, eventIds, resultIds, validate, observe);
+  /** Finalize a core Dreamer pass and return the canonical pre-certification budget receipt only
+   * after its result has passed enforcement. Rejections throw with the same receipt, but never
+   * certify. No caller runs between the authoritative projection and certification. */
+  completeDreamingWithScopeAudit(runId: number, eventIds: number[], resultIds: number[]): DreamingScopeAudit {
+    const audit = this.completeDreamingTransaction(runId, eventIds, resultIds, () => {}, true);
+    if (!audit) throw new Error("Dreaming scope audit is unavailable for an already completed run");
+    return audit;
   }
 
   private completeDreamingTransaction(runId: number, eventIds: number[], resultIds: number[], validate: () => void,
-    observe?: (check: ReturnType<typeof checkProcessedScopes>, budgets: KnowledgeBudgets) => void): void {
-    this.transaction(() => {
+    fullAudit: boolean): DreamingScopeAudit | undefined {
+    return this.transaction(() => {
       const events = [...new Set(eventIds)].sort((a, b) => a - b), results = [...new Set(resultIds)].sort((a, b) => a - b);
       const previous = this.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").get(runId);
       if (previous) {
@@ -2207,11 +2222,11 @@ export class Store {
       const budgets = this.knowledgeBudgets();
       // The immutable revision/applicability input is also valid for range closure after the
       // certificate rows are inserted; only processed status changes, and that is read separately.
-      const graphInput = observe || affected.size ? this.commitGraphInput() : undefined;
-      const projection = processedProjection(this, results, observe ? undefined : affected, graphInput);
+      const graphInput = fullAudit || affected.size ? this.commitGraphInput() : undefined;
+      const projection = processedProjection(this, results, fullAudit ? undefined : affected, graphInput);
       const check = checkProcessedProjection(projection, affected, budgets);
-      observe?.(check, budgets);
-      if (check.problems.length) throw new Error(check.problems.join("; "));
+      const audit = { check, budgets };
+      if (check.problems.length) throw new DreamingScopeAuditError(audit);
       this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
       for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
       for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
@@ -2228,6 +2243,7 @@ export class Store {
         if (range && !this.dreamingRangePending(range, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
           WHERE session_id = ? AND branch = ? AND completed_run IS NULL`).run(runId, path.sessionId, path.branch);
       }
+      return audit;
     });
   }
 

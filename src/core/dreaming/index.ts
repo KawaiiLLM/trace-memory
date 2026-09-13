@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { Store, RunInput } from "../store/index.ts";
+import { DreamingScopeAuditError, type Store, type RunInput } from "../store/index.ts";
 import { checkProcessedScopes, placementOwner, processedBlock } from "../store/processing.ts";
 import { renderFact, renderFactGroups, renderKnowledgeBlock, budgetKnowledge, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
@@ -151,6 +151,10 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     }
 
     const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
+    const versions = candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
+      knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
+      successorCommits: consumers.get(commit),
+    }; });
     const pending = store.pendingKnowledgeEvents(path, pathSnapshot, graphInput, pathGraph);
     const target = store.getSession(path.sessionId);
     if (!target) failures.push(`Dreamer target session ${path.sessionId} is unavailable`);
@@ -164,11 +168,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
         pendingEventIds: pending.filter(value => value.kind === "event").map(value => value.id),
         pendingVersionIds: pending.filter(value => value.kind === "version").map(value => value.id),
-        relevantOwnerScopes,
-        versions: candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
-          knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
-          successorCommits: consumers.get(commit),
-        }; }),
+        relevantOwnerScopes, versions,
         verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures: finalFailures, problems,
         remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired,
         capacities: { applicable: currentBudgets.applicable, injection: currentBudgets.injection,
@@ -231,16 +231,22 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         }
 
         // completeDreamingWithScopeAudit owns the only canonical processed projection in this
-        // transaction. Its observer receives those exact totals for the audit; it cannot suppress
-        // quota enforcement, and any graph/audit/settlement failure rolls back the provisional run.
+        // transaction and exposes it only after enforcing it. Core then finishes the audit; any
+        // final graph/audit/settlement failure rolls back the provisional completion in the outer
+        // transaction. Rejected scope receipts carry blockers without certifying anything.
         store.updateRun(runId, { ...run, outcome: "success" });
-        store.completeDreamingWithScopeAudit(runId, state.eventIds, state.resultIds, (scopes, currentBudgets) => {
-          finalCheck = state.finish(scopes, currentBudgets);
-          if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
-          run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
-          store.updateRun(runId, { ...run, outcome: "success" });
-        });
-        return { outcome: "success" as const, runId, problems: [...finalCheck!.problems] };
+        let audit: ReturnType<Store["completeDreamingWithScopeAudit"]>;
+        try {
+          audit = store.completeDreamingWithScopeAudit(runId, state.eventIds, state.resultIds);
+        } catch (error) {
+          if (error instanceof DreamingScopeAuditError) finalCheck = state.finish(error.audit.check, error.audit.budgets);
+          throw error;
+        }
+        finalCheck = state.finish(audit.check, audit.budgets);
+        if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
+        run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
+        store.updateRun(runId, { ...run, outcome: "success" });
+        return { outcome: "success" as const, runId, problems: [...finalCheck.problems] };
       });
     } catch (error) {
       const message = String(error);

@@ -448,10 +448,11 @@ test("final completion reuses its one authoritative processed projection for aud
 
 test("35 a downstream settlement failure keeps the successful final check distinct and rolls back certification", async () => {
   const f = fixture(async () => {
-    const original = f.store.completeDreamingWithScopeAudit.bind(f.store);
-    vi.spyOn(f.store, "completeDreamingWithScopeAudit").mockImplementationOnce((...args) => {
-      original(...args);
-      throw new Error("injected settlement failure");
+    const original = f.store.updateRun.bind(f.store);
+    let successfulUpdates = 0;
+    vi.spyOn(f.store, "updateRun").mockImplementation((...args) => {
+      if (args[1].outcome === "success" && ++successfulUpdates === 2) throw new Error("injected settlement failure");
+      return original(...args);
     });
     return success;
   });
