@@ -320,7 +320,10 @@ test("28: user cancellation never starts native fallback", async () => {
     await turns(h, 2);
     let release = () => {};
     const held = new Promise<void>(resolve => { release = resolve; });
-    h.provider(async conversation => { await held; return notes(conversation); });
+    h.provider(async conversation => {
+      await held;
+      return isNoting(conversation) ? notes(conversation) : consolidates(h, conversation);
+    });
     // A compatible task of another operation is already running, so this compaction owns nothing:
     // it is parked on the reuse wait when the user cancels.
     await h.commands.get("trace").handler("catchup", h.ctx);

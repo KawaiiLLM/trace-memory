@@ -1,4 +1,4 @@
-export { toolDefinitions, toolRejected, validateReadInput } from "./tools.ts";
+export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
@@ -27,6 +27,7 @@ export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
 export { compareTriggerOrigins } from "../model/index.ts";
 export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
+export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 
@@ -56,6 +57,8 @@ export interface TraceMemoryConfig {
     forkModeDefault: boolean;
     batchTokens: number;
     triggerTokens: number;
+    /** Character-bigram Jaccard threshold for automatic same-session fact review. */
+    nearThreshold: number;
     /** Tool rounds a run may take before it fails; 0 = unlimited (the model stops when it stops). */
     maxToolRounds: number;
   };
@@ -103,6 +106,7 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     forkModeDefault: false,
     batchTokens: 10_000,
     triggerTokens: 10_000,
+    nearThreshold: 0.40,
     maxToolRounds: 0,
   },
   dreaming: { triggerTokens: 5_000, maxToolRounds: 50 },
@@ -785,7 +789,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
-      const binding = bindTools(store, read, context, run, review, undefined, dreaming);
+      const binding = bindTools(store, read, context, run, review, undefined, dreaming, cfg.noting.nearThreshold);
       task.close = binding.close;
       return binding;
     };

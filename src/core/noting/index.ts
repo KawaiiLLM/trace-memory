@@ -3,12 +3,13 @@ import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry } from "../store/index.ts";
 import type { bindTools } from "../api/tools.ts";
-import { toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
+import { reviewFeedback, toolDefinitions, type ToolDefinition, type ToolContext } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITLE, type NotingMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
+import type { NotingDiagnostic } from "./review.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -57,6 +58,8 @@ export interface NotingAgentInput extends AgentControl {
   supplied: SuppliedMaterial;
   /** The view versions, budgets and omissions core records for this batch. */
   entryAudit: EntryAudit;
+  /** Read a note receipt's user-role NEAR feedback for delivery before the next provider request. */
+  reviewFeedback(toolResult: string): string | undefined;
   tools: ToolDefinition[];
   reportRequest: (request: unknown) => void;
 }
@@ -78,7 +81,7 @@ export type NotingResult = { executionId?: string; automaticOff?: string } & (
    * says why a task that never ran dropped — cancelled before the fallback, or evidence another
    * executor already processed. */
   | { outcome: "dropped"; refused?: unknown; runId?: number; reason?: string }
-  | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
+  | { outcome: "success"; runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
       /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
        * nothing and had nothing rejected. Retained as diagnostic metadata; persisted logical-task
@@ -353,7 +356,8 @@ export async function runNoting(
   const binding = tools({ kind: "noting", sessionId, branch, range, entryIds: entries.map(e => e.id), readKnowledgeCommits }, run);
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
-    material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), tools: binding.tools, reportRequest: binding.reportRequest };
+    material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), reviewFeedback,
+    tools: binding.tools, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) { result = agentException(error); }
@@ -374,7 +378,8 @@ export async function runNoting(
   // hook, before the body leaves — reports none.
   if (result.refused !== undefined) {
     if (result.request == null) return { outcome: "dropped", refused: result.refused };
-    recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched, problems: [String(result.output)] });
+    recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+      ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems: [String(result.output)] });
     return { outcome: "dropped", refused: result.refused, runId: store.recordRun({ ...run, outcome: "failure" }).id };
   }
   // 26a: the run ended normally, committed nothing and had nothing rejected. That is incomplete, not
@@ -386,7 +391,9 @@ export async function runNoting(
     : result.outcome !== "success" ? [String(result.output ?? result.outcome)]
     : requestMissing(result) ? ["runAgent must return the exact provider request"]
     : incomplete ? [NOTING_INCOMPLETE] : binding.problems;
-  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched, problems });
+  recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+    ...(binding.committed ? { diagnostics: binding.committed.diagnostics } : {}),
+    ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems });
   if (binding.committed) {
     const after = updateCommitted(store, binding.committed.runId, run, problems);
     return { outcome: "success", ...binding.committed, ...(after.length ? { problems: after } : {}) };

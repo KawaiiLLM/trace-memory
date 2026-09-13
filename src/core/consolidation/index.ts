@@ -6,12 +6,15 @@ import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
-import { toolDefinitions } from "../api/tools.ts";
+import { reviewFeedback, toolDefinitions } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { knowledgeStatusNotes } from "../api/read.ts";
 import { budgetMaterial, consolidationText, RANGE_FACTS_TITLE, REMINDER_TITLE,
   type ConsolidationMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
+import { similarity } from "./similarity.ts";
+
+export { similarity } from "./similarity.ts";
 
 const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -285,17 +288,6 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
   return { range, material, text, supplied: keptIdentities, readKnowledgeCommits, over: budgeted.over };
 }
 
-// Unicode character bigrams retain CJK text; punctuation and whitespace are ignored.
-function bigrams(text: string): Set<string> {
-  const chars = [...text.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "")];
-  return new Set(chars.slice(1).map((c, i) => chars[i]! + c));
-}
-export function similarity(a: string, b: string): number {
-  const left = bigrams(a), right = bigrams(b);
-  const intersection = [...left].filter((gram) => right.has(gram)).length;
-  const union = left.size + right.size - intersection;
-  return union ? intersection / union : 0;
-}
 const candidates = (output: MemoryBatch) => output.operations.flatMap((op, i) => op.op === "archive" ? [] : [{ id: op.op === "create" ? `$e${i + 1}` : op.id!, text: op.text! }]);
 
 export async function runConsolidation(store: Store, frozen: ReturnType<typeof freezeConsolidation>, runAgent: RunAgent,
@@ -306,13 +298,8 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
   // batch that runs is exactly the batch whose size was checked.
   const { range, material, text, supplied } = frozen.prepared;
   const readKnowledgeCommits = frozen.prepared.readKnowledgeCommits;
-  // A first valid `memory` batch commits nothing and returns the review guidance inside its receipt,
-  // as a user-role message. Core owns that protocol and reads its own receipt; the adapter only
-  // decides how to put the message in front of the model (native message, steering, appended turn).
-  const reviewFeedback = (toolResult: string): string | undefined => {
-    try { const value = JSON.parse(toolResult); return value?.feedback?.role === "user" ? String(value.feedback.content) : undefined; }
-    catch { return undefined; }
-  };
+  // A first valid `memory` batch commits nothing and returns guidance in the same generic writer
+  // receipt that Noting uses. The host reads it through the shared core hook and only delivers it.
   const base = { kind: "consolidation" as const, sessionId, branch, range, readKnowledgeCommits, model, mode, prompt, promptHash };
   const run: RunInput = { kind: "consolidation", sessionId, branch, rangeFrom: range.from, rangeTo: range.to, promptHash, model, mode, createdAt: new Date().toISOString() };
   const label = (item: typeof knowledge[number]) => `K${item.knowledge.id}@${item.revision.id}`;

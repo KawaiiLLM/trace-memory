@@ -252,7 +252,7 @@ test("18a 2026-09-08: all count/token keys and masked layers validate by key", a
       expect(() => TraceMemory(":memory:", async () => reply("") as never, { [section]: { [key]: invalid } })).toThrow(`${section}.${key}`);
     }
   }
-  for (const [key, invalid] of [["noting.forkModeDefault", "fork"], ["noting.branchModeDefault", "fork"], ["noting.maxToolRounds", -1], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
+  for (const [key, invalid] of [["noting.forkModeDefault", "fork"], ["noting.branchModeDefault", "fork"], ["noting.maxToolRounds", -1], ["noting.nearThreshold", 2], ["consolidation.nearThreshold", 2], ["noting.triggerAnsweredTurns", 1], ["deliverFacts", true]]) {
     writeFileSync(join(h.dir, "agent", "settings.json"), JSON.stringify({ "trace-memory": { [key as string]: invalid } }));
     await expect(h.emit("session_start")).rejects.toThrow(key as string);
   }

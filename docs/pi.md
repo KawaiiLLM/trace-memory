@@ -59,6 +59,7 @@ For example, either settings file can contain:
     "consolidation.forkModeDefault": false,
     "noting.triggerTokens": 10000,
     "noting.batchTokens": 10000,
+    "noting.nearThreshold": 0.4,
     "consolidation.triggerTokens": 5000,
     "dreaming.triggerTokens": 5000,
     "dreaming.maxToolRounds": 50,
@@ -237,6 +238,9 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   `noting.triggerTokens` defaults to **10,000 compressed-view tokens** measured
   with `renderEntry` over `pendingEntries`, including separators. Original Raw size,
   entry count and answered Turns do not trigger runs. Excluded sources contribute nothing.
+  `noting.nearThreshold` defaults to **0.40** and accepts a finite number in [0,1]. It controls
+  the pre-commit same-session/path lexical review only; it does not replace Consolidation's
+  independent 0.28 threshold and is not one of the façade's dynamically replaced keys.
 - `noting.batchTokens` defaults to **10,000** (ticket 20; it was 50,000 through 17b): the oldest
   contiguous whole-entry prefix, without Turn boundaries. An entry is never skipped so that smaller
   later entries can fill the remaining space, and a partly filled batch is valid. Excess waits for
@@ -664,8 +668,8 @@ Editing a setting starts no worker and does not touch the cache-miss latch.
 
 All configuration layers validate before use, including masked values. Unknown or
 removed keys fail by name. Counts and token limits require positive safe integers;
-`maxToolRounds` retains its documented zero-unlimited sentinel, and `nearThreshold`
-is a similarity in [0,1]. Mode settings require booleans. Impossible view capacity
+`maxToolRounds` retains its documented zero-unlimited sentinel, and both phase-specific
+`nearThreshold` settings are similarities in [0,1]. Mode settings require booleans. Impossible view capacity
 still fails with a capacity message and retains pending sources. Changing `dbPath`
 requires reloading the extension. The enabled footer's `memory: 9->252=>54` means 9 applicable
 facts still need consolidation, followed by 252 unprocessed and 54 processed applicable current
@@ -1159,10 +1163,11 @@ rewind, a new entry, a compaction and the memory-session allocation each invalid
 passes `visible` to core only for a task whose effective mode is `fork`, beside the
 `capacity.prefixTokens` measure it freezes at the same moment. An explicit subagent, and a fork
 re-admitted as a subagent after any refusal (27b/27c: `fallbackReason` makes the effective mode
-subagent), pass none and get the complete fresh material. Consolidation's review guidance is still read back from the
-`memory` receipt with core's own `input.reviewFeedback(result)`; the adapter only chooses how to
-put that message in front of the model (here: a native user message queued with `deliverAs:
-"steer"`).
+subagent), pass none and get the complete fresh material. Noting and Consolidation review guidance is read back from the writer receipt with
+core's own `input.reviewFeedback(result)`; the adapter only chooses how to put that message in front
+of the model (here: a native user message queued with `deliverAs: "steer"`). The next fork/subagent
+request therefore carries the NEAR review without changing the phase's initial-material accounting;
+if that actual request exceeds capacity, the normal overflow/refusal path applies before commit.
 
 ## The runner (19a/19b, sole runner since 19c)
 

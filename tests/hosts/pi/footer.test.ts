@@ -8,7 +8,7 @@
 // commit, that the indicator is Pi theme roles in the ruled precedence while routine text stays dim,
 // and that a refresh loads no Raw, rendered Knowledge or run audit body and builds one path snapshot.
 import { afterEach, expect, test, vi } from "vitest";
-import { host as createHost, reply, notingFact, consolidationReply, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, type Reply } from "./test-host.ts";
 import { countPathBuilds, countRunBodies, countSourceReads } from "../../perf/fixture.ts";
 import * as rendering from "../../../src/core/render/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
@@ -142,7 +142,7 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   // A provider failure after the commit keeps the progress: it is a problem on a success, and the
   // committed work is not restored to the pending queue.
   const pendingBefore = Number(footer(h).entries);
-  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
+  h.provider(async c => noteCommitted(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
   // 29d: no trailing extra reply here. Without the retired delivery pause a small trailing entry no
   // longer joins the previous batch, and would start a further run this case is not about.
   await h.turn(); await h.drain();

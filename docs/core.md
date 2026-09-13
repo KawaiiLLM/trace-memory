@@ -21,9 +21,9 @@ the domain prompt and its hash, the frozen range and knowledge commits, the mode
 `reportRequest`, `entryAudit`, one `material` object of rendered, budgeted parts, `text` — one
 prepared string, whatever mode runs the task (29b; the `{fresh, inherited}` pair is gone) — and
 `supplied`, the identities that text actually carries. The host decides which message carries the
-text; it lays out no block of its own and chooses between no representations. Consolidation additionally supplies
-`reviewFeedback(toolResult)`, core's own reader of a `memory` receipt: the host delivers the returned
-guidance as a user message but does not parse the protocol.
+text; it lays out no block of its own and chooses between no representations. Noting and Consolidation
+additionally supply `reviewFeedback(toolResult)`, core's own reader of a writer receipt: the host
+delivers returned guidance as a user message but does not parse either protocol.
 
 **Audit availability.** A host that cannot expose a provider request returns
 `audit: {available: false, reason}` instead of `request`; core records the limitation in the run
@@ -294,15 +294,48 @@ trace evidence, the tool-call input/result sequence, problems and committed IDs.
 `{kind: "manual", sessionId, branch, currentTurnId}`, or to a Noting context
 with `{kind: "noting", sessionId, branch, range: {from, to},
 readKnowledgeCommits, entryIds}`. `note({facts})` validates every item and commits nothing
-on any rejection; a corrected whole batch may be resubmitted. Success returns
-`results` in order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or
-`rejected: <reason>`. An accepted empty batch returns `results: []`, `factIds: []` and
-`committed: "zero facts; this batch is complete"`; a refused one, having no item slot to
-carry the reason, returns a plain `rejected: <reason>`. A Noting binding commits at most one batch. The batch,
-run record and frozen entry progress commit in one transaction.
+on any rejection; a corrected whole batch may be resubmitted. On the first valid Noting submission,
+the binding reads and holds the same-session facts applicable to its immutable source-path snapshot.
+It uses character-bigram Jaccard at `noting.nearThreshold` (default 0.40) and selects at most three
+neighbours per submitted fact by descending score then ascending fact ID. Any neighbour returns
+per-item results plus user-role NEAR feedback and writes nothing. After the host reports the next
+provider request, the next valid submission commits its complete batch without another review. No
+neighbour commits on the first valid call. Manual notes bypass review. Success returns `results` in
+order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or `rejected: <reason>`. An accepted
+empty batch returns `results: []`, `factIds: []` and `committed: "zero facts; this batch is complete"`;
+a refused one, having no item slot to carry the reason, returns a plain `rejected: <reason>`. A Noting
+binding commits at most one batch. Candidate facts, applicability bindings and relations use three
+batched queries in one database snapshot; rejected submissions do not read the pool. The synthetic
+scale method, executable bounds and recorded measurements are in [Ticket 38 performance](perf-38.md).
+The shown first batch, pairs and effective
+threshold remain unchanged in `notingNearReview`, while the complete historical pool remains
+binding-local. On commit, `diagnostics` compares every actual final fact with every unique held fact ID
+shown anywhere in that attempt. The same bigram similarity and captured threshold apply, without
+pairing by original position or selecting another top three. An explicit final `support` or `negate` of
+either strength answers the identity pair; otherwise a still-near pair is recorded as
+`{kind: "unanswered_near", pairs: [{fact: "F…", neighbour: "F…", score: …}]}`. Dropped and
+rewritten-below-threshold facts contribute no pair, while inserted final facts may contribute pairs only
+for IDs that were actually shown. Duplicate identity pairs collapse. Empty diagnostics are `[]` on a
+successful automatic Noting commit; no-review, empty-batch and answered reviews therefore add no
+placeholder problem. Manual notes remain outside this automatic diagnostic.
+
+The diagnostic is audit output only: it derives no relation or state and never gates the commit. It is
+computed from the binding's held pool and actual committed identities inside the commit response path,
+without rereading current facts. A pre-commit failure has no committed diagnostic. Ordinary finalization
+and provider failure, overflow or cancellation after commit retain it beside the provider problem and
+business-success outcome. A fork fallback creates a new binding; failed and committing attempts retain
+their own shown evidence and cannot share diagnostic inputs. The batch, run record and frozen entry
+progress commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Consolidation range. They do not
 advance Noting. `memory` writes knowledge with the uniform batch contract below.
+
+Noting's NEAR message renders each selected earlier fact with existing relations and identifies the
+guidance as system-generated, not evidence. Review is not initial material and does not debit the
+Noting material windows, but it enters child context and therefore remains subject to the actual-request
+capacity guard. A failure, cancellation or overflow after review but before commit advances nothing; a
+provider problem after commit retains business success and records the problem. A fresh fallback attempt
+receives a new binding and may review again.
 
 New sources are exact `T<id>#E<n>` entries or their actual `@text`, `@thinking` or opaque-call-ID blocks in the frozen entry set (Noting) or selected source path (manual). Legacy `#user`, `#assistant` and `#t<n>` retain their historical meaning and stored spelling. The host supplies ordered normalized blocks once; raw JSON shape guesses cannot invent precise fragments. Time is the first source turn's
 `started_at`; timestamps from the model are rejected. Event facts require

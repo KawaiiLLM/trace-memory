@@ -1118,6 +1118,26 @@ export class Store {
     ).all(sessionId).map(toFact);
   }
 
+  /** One immutable Noting NEAR pool read. Facts, source bindings and rendered relations use three
+   * batched queries in one database snapshot regardless of pool size; applicability reuses
+   * factOnPath and the binding's path snapshot rather than consulting the mutable branch tip. */
+  notingNearPool(sessionId: number, path: KnowledgePath, snapshot: PathSnapshot): { facts: Fact[]; relations: Map<number, FactRelation[]> } {
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
+        WHERE t.session_id = ? ORDER BY f.id`).all(sessionId);
+      const projected: ApplicabilityInput = { runs: new Map(), projects: new Map(), facts: new Map() };
+      for (const row of rows) {
+        const fact = toFact(row);
+        projected.facts.set(fact.id, { fact, sessionId: Number(row.session_id), runId: Number(row.run_id), entries: [] });
+      }
+      const ids = JSON.stringify([...projected.facts.keys()]);
+      for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(ids))
+        projected.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
+      const facts = [...projected.facts.values()].map(value => value.fact).filter(fact => this.factOnPath(fact, path, snapshot, projected));
+      return { facts, relations: this.listFactRelationsOf(facts.map(fact => fact.id)) };
+    });
+  }
+
   listProjectFacts(projectId: number): Fact[] {
     return this.db.prepare(
       `SELECT f.* FROM facts f JOIN turns t ON t.id = f.turn_id
@@ -1477,26 +1497,15 @@ export class Store {
     if (!path.branch || !path.headTurnId) return null;
     const row = this.db.prepare("SELECT entry_ids FROM source_paths WHERE session_id = ? AND branch = ?").get(path.sessionId, path.branch) as { entry_ids: string } | undefined;
     if (!row) return null;
-    const ids = new Set<number>(), byTurn = new Map<number, number[]>();
-    for (const { id, turn_id } of this.db.prepare("SELECT e.id, e.turn_id FROM json_each(?) j JOIN source_entries e ON e.id = j.value")
-      .all(row.entry_ids) as { id: number; turn_id: number }[]) {
+    const ids = new Set<number>(), addresses = new Map<number, Set<string>>();
+    for (const { id, turn_id, addresses: raw } of this.db.prepare("SELECT e.id, e.turn_id, e.addresses FROM json_each(?) j JOIN source_entries e ON e.id = j.value")
+      .all(row.entry_ids) as { id: number; turn_id: number; addresses: string }[]) {
       if (!turns.has(turn_id)) continue;
-      ids.add(id); byTurn.set(turn_id, [...(byTurn.get(turn_id) ?? []), id]);
+      ids.add(id);
+      if (!addresses.has(turn_id)) addresses.set(turn_id, new Set());
+      for (const address of JSON.parse(raw) as string[]) addresses.get(turn_id)!.add(address);
     }
-    const cache = new Map<number, Set<string>>();
-    return { ids, addresses: (turnId: number) => {
-      if (!cache.has(turnId)) cache.set(turnId, this.addressesOf(turnId, byTurn.get(turnId) ?? []));
-      return cache.get(turnId)!;
-    } };
-  }
-
-  /** Historical source membership for one Turn's selected entries, including persisted precise
-   * fragments and legacy role/tool aliases. New-note permission is checked separately. */
-  private addressesOf(turnId: number, ids: number[]): Set<string> {
-    const addresses = new Set<string>();
-    for (const row of ids.length ? this.db.prepare("SELECT addresses FROM source_entries WHERE turn_id = ? AND id IN (SELECT value FROM json_each(?))").all(turnId, JSON.stringify(ids)) : [])
-      for (const address of JSON.parse(String(row.addresses)) as string[]) addresses.add(address);
-    return addresses;
+    return { ids, addresses: (turnId: number) => addresses.get(turnId) ?? new Set() };
   }
 
   factEntries(factId: number): number[] {
