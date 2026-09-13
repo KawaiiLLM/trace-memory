@@ -10,7 +10,8 @@ import { showSessionPanel, type SessionBody } from "./session-panel.ts";
 import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
-import { TraceMemory, enrollmentDefault, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
+import { TraceMemory, enrollmentDefault, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
+import { CURRENT_CONTEXT_SNAPSHOT_EVENT, isCurrentContextSnapshotRequest, type CurrentContextSnapshotProviderResult } from "./context-snapshot.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -66,7 +67,7 @@ export function visibility(manager: VisibleSource) {
 // stale "a value import of SettingsManager needs pi-server" comment — went with the request-copy
 // runner; nothing in this adapter reads or duplicates Pi's runtime settings any more.
 
-import { piSourceBlocks } from "./source.ts";
+import { piPersistedSource, piSourceBlocks } from "./source.ts";
 
 export default function (pi: ExtensionAPI) {
   const environment = process.env.TRACE_MEMORY_CONFIG;
@@ -712,14 +713,9 @@ export default function (pi: ExtensionAPI) {
         if (data.dbPath === dbPath) lineage = data.piId;
         continue;
       }
-      if (entry.type !== "message") continue;
-      const message = entry.message;
-      if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") continue;
-      const natural = message.role === "toolResult" ? "" : text(message);
-      const calls = message.role === "assistant" ? message.content.filter(c => c.type === "toolCall") : [];
-      // A user message is a Turn boundary whatever it carries (an image-only message has no text); only an
-      // assistant message with neither text nor tool calls is nothing (review 2026-09-08).
-      if (!natural && !calls.length && message.role === "assistant" && !message.content.some(c => c.type === "thinking")) continue;
+      const source = piPersistedSource(entry);
+      if (!source) continue;
+      const { message, text: natural, calls } = source;
       const known = memory.store.findSourceEntry(state.sessionId, lineage, entry.id);
       if (known) {
         if (known.raw !== JSON.stringify(message)) missing(`entry ${entry.id} changed after persistence`);
@@ -760,6 +756,81 @@ export default function (pi: ExtensionAPI) {
     if (turnId) { state.head = turnId; if (current) current.id = turnId; }
     reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
   });
+
+  const unavailable = (reason: Exclude<CurrentContextSnapshotProviderResult, { available: true }>["reason"], message: string,
+      over?: { knowledge: boolean; facts: boolean; raw: boolean }): CurrentContextSnapshotProviderResult =>
+    ({ available: false, reason, message, ...(over ? { over } : {}) });
+  /** A model-free, write-free compact allocation at the exact persisted native node already imported
+   * by normal host ingestion. This function deliberately calls neither reconcile nor flush. */
+  const currentContextSnapshot = (): CurrentContextSnapshotProviderResult => {
+    if (closed) return unavailable("closed", "Trace Memory executor is closed");
+    if (!ctx || !state) return unavailable("not-initialized", "Trace Memory has not received session_start");
+    if (!state.sessionId || !state.head) return unavailable("not-initialized", "Trace Memory has no memory session at the current native node");
+    if (!enabled()) return unavailable("disabled", "Trace Memory is disabled for the current memory session");
+    const nativeSessionId = ctx.sessionManager.getSessionId();
+    const nativeLeafId = ctx.sessionManager.getLeafId();
+    if (!ctx.sessionManager.getSessionFile?.() || !nativeLeafId)
+      return unavailable("node-not-ready", "The current native session or leaf is not persisted");
+    if (nativeSessionId !== state.piId)
+      return unavailable("node-not-ready", "Trace Memory is not bound to the current native session");
+
+    const ancestry = ctx.sessionManager.getBranch() as { id: string }[];
+    const ancestryIds = ancestry.map(entry => entry.id);
+    if (!reconciled || reconciled.ids.length > ancestryIds.length
+        || !reconciled.ids.every((id, index) => ancestryIds[index] === id))
+      return unavailable("node-not-ready", "The current native ancestry is not the ancestry Trace Memory has ingested");
+    // Metadata after the last ingestion boundary changes neither source membership nor material. A
+    // persisted source in that tail is different: returning the preceding database head would be stale.
+    if (ancestry.slice(reconciled.ids.length).some(entry => piPersistedSource(entry)))
+      return unavailable("node-not-ready", "The current native ancestry contains source entries Trace Memory has not ingested");
+    const nativeSources = ancestry.map(entry => piPersistedSource(entry)).filter((entry): entry is NonNullable<typeof entry> => !!entry);
+    const target = { sessionId: state.sessionId, projectId: state.projectId, branch: state.branch, headTurnId: state.head };
+
+    return memory.store.transaction(() => {
+      const storedSession = memory.store.getSession(target.sessionId);
+      if (!storedSession || storedSession.projectId !== target.projectId)
+        return unavailable("node-not-ready", "Trace Memory's current memory binding changed");
+      if (!memory.store.enabled(target.sessionId))
+        return unavailable("disabled", "Trace Memory is disabled for the current memory session");
+      const sources = memory.store.sourcePath(target.sessionId, target.branch, target.headTurnId);
+      const storedIds = sources.map(entry => entry.id);
+      if (storedIds.length !== reconciled!.selected.length || storedIds.some((id, index) => reconciled!.selected[index] !== id)
+          || sources.length !== nativeSources.length
+          || sources.some((entry, index) => entry.nativeId !== nativeSources[index]!.id
+            || entry.raw !== JSON.stringify(nativeSources[index]!.message)))
+        return unavailable("node-not-ready", "The current native source path is not completely reconciled with Trace Memory");
+      const compact = memory.compact(target.sessionId, target.branch, target.headTurnId, []);
+      if ("native" in compact) return unavailable("capacity", compact.reason, compact.over);
+      if (!compact.composition || !compact.charged)
+        return unavailable("data-error", "The compact allocator returned incomplete accounting");
+      return {
+        available: true,
+        node: {
+          nativeSessionId,
+          nativeLeafId,
+          memorySessionId: target.sessionId,
+          projectId: target.projectId,
+          branch: target.branch,
+          headTurnId: target.headTurnId,
+          sourceEntries: sources.map(entry => ({ id: entry.id, nativeLineage: entry.nativeLineage,
+            nativeId: entry.nativeId, turnId: entry.turnId })),
+        },
+        text: compact.text,
+        estimatedTokens: tokens(compact.text),
+        composition: compact.composition,
+        charged: compact.charged,
+        supplied: compact.supplied,
+      };
+    });
+  };
+  const unsubscribeCurrentContextSnapshot = pi.events.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, request => {
+    if (!isCurrentContextSnapshotRequest(request)) return;
+    let result: CurrentContextSnapshotProviderResult;
+    try { result = currentContextSnapshot(); }
+    catch (error) { result = unavailable("data-error", error instanceof Error ? error.message : String(error)); }
+    request.reply(result);
+  });
+
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
   const flush = (ended = false) => { reconcile(false); if (enabled() && ended && current?.id) memory.store.updateTurn(current.id, { endedAt: now() }); };
   pi.on("before_provider_request", (event, context) => {
@@ -1267,6 +1338,7 @@ export default function (pi: ExtensionAPI) {
       try { if (state?.sessionId) memory.store.closeSession(state.sessionId); } catch (error) { report(error); }
     } finally {
       clearTimeout(timer);
+      unsubscribeCurrentContextSnapshot();
       try { memory.close(); } catch (error) { report(error); }
     }
   });

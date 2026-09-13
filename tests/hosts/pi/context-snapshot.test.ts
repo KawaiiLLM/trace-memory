@@ -1,0 +1,207 @@
+import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { expect, test, vi } from "vitest";
+import { requestCurrentContextSnapshot, CURRENT_CONTEXT_SNAPSHOT_EVENT, CURRENT_CONTEXT_SNAPSHOT_VERSION,
+  type CurrentContextSnapshotProviderResult } from "../../../src/hosts/pi/context-snapshot.ts";
+import { fixture, say } from "./native-fixture.ts";
+import { host } from "./test-host.ts";
+import { tokens } from "../../../src/core/api/index.ts";
+
+const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTokens": 1_000_000_000 };
+
+function request(h: ReturnType<typeof host>) {
+  return requestCurrentContextSnapshot(h.eventBus);
+}
+
+function databaseSnapshot(h: ReturnType<typeof host>) {
+  const tables = h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
+    .map(row => String(row.name));
+  return Object.fromEntries(tables.map(table => [table, h.memory.store.db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+}
+
+function seedMaterial(h: ReturnType<typeof host>) {
+  const store = h.memory.store;
+  const noted = store.commitNotingRun({
+    run: { kind: "noting", sessionId: 1, branch: "main", createdAt: "seed" },
+    entryIds: [],
+    facts: [
+      { turnId: 1, category: "decision", actor: "user", text: "SNAPSHOT_KNOWLEDGE_EVIDENCE", source: ["T1#user"], createdAt: "seed" },
+      { turnId: 1, category: "observation", actor: "agent", text: "SNAPSHOT_PENDING_FACT", source: ["T1#assistant"], createdAt: "seed" },
+    ],
+  });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const knowledge = store.commitConsolidationRun({
+    path: { sessionId: 1, branch: "main", headTurnId: 1 },
+    run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: "seed" },
+    consolidated: [noted.facts[0]!.id],
+    operations: [{ op: "create", handle: "$k", topics: [], reason: "Initial admission.", author: "fixture",
+      text: "SNAPSHOT_KNOWLEDGE", category: "constraint", scope: "session", supports: [noted.facts[0]!.id], createdAt: "seed" }],
+  });
+  if (!knowledge.ok) throw new Error(knowledge.problems.join("; "));
+  return { pendingFactId: noted.facts[1]!.id, knowledgeCommitId: knowledge.committed[0]!.commit };
+}
+
+test("current snapshot is the existing empty-coverage compact at the exact persisted node and is read-only", async () => {
+  const f = await fixture(quiet);
+  try {
+    f.script(() => say("SNAPSHOT_RAW_REPLY"));
+    await f.turn("SNAPSHOT_RAW_PROMPT");
+    const ids = seedMaterial(f.h);
+    const store = f.h.memory.store;
+    const stateBefore = {
+      nativeEntries: structuredClone(f.manager().getEntries()),
+      sources: store.listSourceEntries(1),
+      pending: store.pendingEntries(1, "main", 1).map(entry => entry.id),
+      runs: store.listRuns(1),
+      claims: store.db.prepare("SELECT * FROM task_claims ORDER BY session_id, phase").all(),
+      carriers: f.manager().getEntries().filter(entry => entry.type === "custom_message" || entry.type === "compaction"),
+      requests: f.sent.length,
+      database: databaseSnapshot(f.h),
+    };
+    const expected = f.h.memory.compact(1, "main", 1, []);
+    if ("native" in expected) throw new Error(expected.reason);
+
+    const first = request(f.h);
+    expect(first.available).toBe(true);
+    if (!first.available) throw new Error(first.message);
+    expect(first.text).toBe(expected.text);
+    expect(first.estimatedTokens).toBe(tokens(first.text));
+    expect(first.composition).toEqual(expected.composition);
+    expect(first.composition.knowledge).toBeGreaterThan(0);
+    expect(first.composition.facts).toBeGreaterThan(0);
+    expect(first.composition.raw).toBeGreaterThan(0);
+    expect(first.charged).toEqual(expected.charged);
+    expect(first.supplied).toEqual(expected.supplied);
+    expect(first.text).toContain("SNAPSHOT_KNOWLEDGE");
+    expect(first.text).toContain("SNAPSHOT_PENDING_FACT");
+    expect(first.text).toContain("SNAPSHOT_RAW_PROMPT");
+    expect(first.text).toContain("SNAPSHOT_RAW_REPLY");
+    expect(first.supplied.factIds).toContain(ids.pendingFactId);
+    expect(first.supplied.knowledgeCommitIds).toContain(ids.knowledgeCommitId);
+    expect(first.node).toMatchObject({ nativeSessionId: f.manager().getSessionId(), nativeLeafId: f.manager().getLeafId(),
+      memorySessionId: 1, projectId: 1, branch: "main", headTurnId: 1 });
+    expect(first.node.sourceEntries.map(entry => entry.nativeId)).toEqual(store.sourcePath(1, "main", 1).map(entry => entry.nativeId));
+
+    expect(request(f.h)).toEqual(first);
+    expect(f.manager().getEntries()).toEqual(stateBefore.nativeEntries);
+    expect(store.listSourceEntries(1)).toEqual(stateBefore.sources);
+    expect(store.pendingEntries(1, "main", 1).map(entry => entry.id)).toEqual(stateBefore.pending);
+    expect(store.listRuns(1)).toEqual(stateBefore.runs);
+    expect(store.db.prepare("SELECT * FROM task_claims ORDER BY session_id, phase").all()).toEqual(stateBefore.claims);
+    expect(f.manager().getEntries().filter(entry => entry.type === "custom_message" || entry.type === "compaction")).toEqual(stateBefore.carriers);
+    expect(f.sent).toHaveLength(stateBefore.requests);
+    expect(databaseSnapshot(f.h)).toEqual(stateBefore.database);
+  } finally { await f.dispose(); }
+}, 30_000);
+
+test("missing, uninitialized, disabled and shutdown lifecycle are explicit without waiting", async () => {
+  const empty = createEventBus();
+  expect(requestCurrentContextSnapshot(empty)).toMatchObject({ available: false, reason: "missing-provider" });
+
+  const h = host(quiet);
+  try {
+    expect(request(h)).toMatchObject({ available: false, reason: "not-initialized" });
+    h.ctx.sessionManager.getSessionFile = () => `${h.dir}/persisted.jsonl`;
+    await h.turn();
+    await h.commands.get("trace").handler("off", h.ctx);
+    expect(request(h)).toMatchObject({ available: false, reason: "disabled" });
+    await h.commands.get("trace").handler("on", h.ctx);
+    const shutdown = h.emit("session_shutdown", { reason: "quit" });
+    expect(request(h)).toMatchObject({ available: false, reason: "closed" });
+    await shutdown;
+    expect(request(h)).toMatchObject({ available: false, reason: "missing-provider" });
+  } finally { await h.dispose(); }
+});
+
+test("persisted source not yet ingested is refused, while non-source metadata after the boundary is ignored", async () => {
+  const f = await fixture(quiet);
+  try {
+    f.script(() => say("answer"));
+    await f.turn("first");
+    expect(request(f.h).available).toBe(true);
+    f.manager().appendCustomEntry("another-extension", { display: "metadata" });
+    expect(request(f.h).available).toBe(true);
+
+    f.manager().appendMessage({ role: "assistant", content: [{ type: "text", text: "SAME_TURN_LATEST" }], timestamp: 2 } as never);
+    expect(request(f.h)).toMatchObject({ available: false, reason: "node-not-ready" });
+    await f.h.emit("agent_end");
+    const ready = request(f.h);
+    expect(ready.available).toBe(true);
+    if (ready.available) {
+      expect(ready.text).toContain("SAME_TURN_LATEST");
+      expect(ready.node.sourceEntries.at(-1)?.nativeId).toBe(
+        f.manager().getBranch().filter(entry => entry.type === "message").at(-1)?.id);
+    }
+  } finally { await f.dispose(); }
+}, 30_000);
+
+test("branch switches select exact source membership and returned snapshots do not move with later writes", async () => {
+  const f = await fixture(quiet);
+  try {
+    f.script(() => say("answer"));
+    await f.turn("BRANCH_FIRST");
+    const forkPoint = f.manager().getLeafId()!;
+    await f.turn("MAIN_ONLY");
+    const mainTip = f.manager().getLeafId()!;
+    const main = request(f.h);
+    expect(main.available && main.text).toContain("MAIN_ONLY");
+
+    f.manager().branch(forkPoint);
+    await f.h.emit("session_tree");
+    const sibling = request(f.h);
+    expect(sibling.available).toBe(true);
+    if (!sibling.available) throw new Error(sibling.message);
+    expect(sibling.text).toContain("BRANCH_FIRST");
+    expect(sibling.text).not.toContain("MAIN_ONLY");
+    expect(sibling.node.nativeLeafId).not.toBe(mainTip);
+    const frozen = structuredClone(sibling);
+
+    f.manager().appendMessage({ role: "user", content: "SIBLING_ONLY", timestamp: 3 } as never);
+    await f.h.emit("agent_end");
+    const advancedSibling = request(f.h);
+    expect(advancedSibling.available).toBe(true);
+    if (advancedSibling.available) expect(advancedSibling.text).toContain("SIBLING_ONLY");
+    expect(sibling).toEqual(frozen);
+
+    f.manager().branch(mainTip);
+    await f.h.emit("session_tree");
+    const restored = request(f.h);
+    expect(restored.available && restored.text).toContain("MAIN_ONLY");
+    expect(restored.available && restored.text).not.toContain("SIBLING_ONLY");
+  } finally { await f.dispose(); }
+}, 30_000);
+
+test("allocator refusal is capacity, never a worker or native-compaction fallback", async () => {
+  const f = await fixture({ ...quiet, "compaction.factsTokens": 1, "compaction.rawTokens": 1, "compaction.overflowTokens": 1 });
+  try {
+    f.script(() => say("answer"));
+    await f.turn("required raw material");
+    const sent = f.sent.length;
+    const runs = f.h.memory.store.listRuns(1).length;
+    const result = request(f.h);
+    expect(result).toMatchObject({ available: false, reason: "capacity" });
+    if (!result.available) expect(result.message).toContain("required material exceeds shared overflow");
+    expect(f.sent).toHaveLength(sent);
+    expect(f.h.memory.store.listRuns(1)).toHaveLength(runs);
+    expect(f.manager().getEntries().some(entry => entry.type === "compaction")).toBe(false);
+  } finally { await f.dispose(); }
+}, 30_000);
+
+test("data errors remain explicit and duplicate providers are rejected", async () => {
+  const bus = createEventBus();
+  const reply: CurrentContextSnapshotProviderResult = { available: false, reason: "not-initialized", message: "fake" };
+  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, raw => {
+    const request = raw as { version: number; reply(value: CurrentContextSnapshotProviderResult): void };
+    expect(request.version).toBe(CURRENT_CONTEXT_SNAPSHOT_VERSION);
+    request.reply(reply);
+  });
+  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, raw => (raw as { reply(value: CurrentContextSnapshotProviderResult): void }).reply(reply));
+  expect(requestCurrentContextSnapshot(bus)).toMatchObject({ available: false, reason: "provider-conflict" });
+
+  const f = await fixture(quiet);
+  try {
+    f.script(() => say("answer"));
+    await f.turn("source");
+    f.h.memory.store.db.prepare("UPDATE source_paths SET entry_ids = 'not-json' WHERE session_id = 1").run();
+    expect(request(f.h)).toMatchObject({ available: false, reason: "data-error" });
+  } finally { await f.dispose(); }
+});

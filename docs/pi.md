@@ -684,6 +684,67 @@ current total, a new revision is unprocessed, and archives and superseded versio
 disabled session's footer is the compact `🧠 ○ off` line (24a); Enabled but idle keeps the dim hollow
 indicator and its counts.
 
+## Current context snapshot for other extensions
+
+Trace Memory provides one synchronous, current-node-only interface on Pi's shared event bus:
+`trace-memory:current-context-snapshot:v1`. It renders the existing compact allocator with the
+configured fixed budgets and **empty retained coverage**. The result is fresh material for a child
+that inherits none of the parent's Knowledge, Facts or Raw; it is not the last persisted compaction
+summary and it does not create a new model summary.
+
+The request payload is `{ version: 1, reply(result) }`. The provider calls `reply` during the same
+`emit`. A consumer that receives no synchronous reply treats the provider as missing; it must not
+wait on a timeout. More than one reply is a provider conflict. Consumers that declare Trace Memory
+as a dependency can use the typed helper and result types shipped in
+`trace-memory/src/hosts/pi/context-snapshot.ts`:
+
+```ts
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { requestCurrentContextSnapshot } from
+  "trace-memory/src/hosts/pi/context-snapshot.ts";
+
+export default function (pi: ExtensionAPI) {
+  pi.registerCommand("child-with-memory", {
+    description: "Prepare current Trace Memory context for a child",
+    handler: async () => {
+      const snapshot = requestCurrentContextSnapshot(pi.events);
+      if (!snapshot.available) {
+        // missing-provider, provider-conflict, not-initialized, closed, disabled,
+        // node-not-ready, capacity, or data-error
+        throw new Error(`${snapshot.reason}: ${snapshot.message}`);
+      }
+      // The consumer decides whether and how to place snapshot.text in its child.
+      // snapshot.node, estimatedTokens, composition, charged and supplied remain
+      // available for identity, accounting and audit.
+      await startChildWithInjectedContext(snapshot.text);
+    },
+  });
+}
+```
+
+A consumer without a package dependency may emit that structural payload directly and apply the
+same zero/multiple synchronous-reply checks. The event is request/reply only: there is no registry,
+cache, timer, IPC or reply event to loop back into.
+
+The successful result contains the native session UUID and persisted leaf, the memory session,
+project, branch and head Turn, plus the exact ordered persisted source-entry identities used by the
+allocation. `supplied` is the allocator's actual existing `SuppliedMaterial`; `composition`,
+`charged` and `estimatedTokens` use the existing renderer and estimator. The returned value is a
+complete detached result: later tree navigation or memory commits do not retarget or mutate it.
+
+The operation is read-only. It does not reconcile or flush host state, restore a session, admit a
+source/Turn, update a visibility or processing ledger, acquire a claim, run recovery, start a worker,
+call a model, compact Pi, alter messages, or change settings. A persisted source entry missing from
+the already reconciled exact ancestry returns `node-not-ready` rather than reading the preceding
+memory head. Non-source custom entries and compaction metadata after the ingestion boundary do not
+make an otherwise current node unready. Content still streaming or otherwise not yet persisted by
+Pi is outside the snapshot. `capacity` reports the allocator refusal and optional contributing
+windows; it grants no permission to run Pi's native compaction. Other store/rendering failures return
+`data-error` rather than an empty or stale success.
+
+This v1 interface accepts no target, historical node, custom budget, retained coverage, persistence,
+permission or delivery option. The consumer owns child creation and injection.
+
 ## Compaction and the post-compaction boundary (20c, one view since 30, three windows since 28a, bounded recovery since 28b)
 
 `session_before_compact` reconciles persisted history, then asks core to allocate over

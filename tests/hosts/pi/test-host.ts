@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { buildContextEntries, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildContextEntries, createEventBus, type ExtensionAPI, type ExtensionContext, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import extension, { piResultText } from "../../../src/hosts/pi/index.ts";
 import type { ThinkingLevel } from "../../../src/hosts/pi/native.ts";
 import { TraceMemory, toolRejected } from "../../../src/core/api/index.ts";
@@ -238,7 +238,9 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
       return responseOf(await Promise.race([scripted, cancelled]));
     } finally { inflight--; activity++; }
   }));
+  const eventBus = createEventBus();
   const pi = { on: (name: string, fn: any) => hooks.set(name, fn), registerTool: (tool: any) => tools.set(tool.name, tool),
+    events: eventBus,
     getActiveTools: () => [...tools.keys()], getAllTools: () => [...tools.values()],
     registerCommand: (name: string, command: any) => commands.set(name, command),
     // 26b: the foreground thinking level, as Pi's own extension API exposes it. The default is the
@@ -361,7 +363,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     /** 27a: the context measure `ctx.getContextUsage()` reports, switchable per case. */
     setContextUsage: (value: { tokens: number | null; contextWindow: number; percent: number | null } | undefined) => { contextUsage = value; },
     /** The foreground level this host reports to the extension, switchable mid-run by a case. */
-    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
+    setThinkingLevel: (level: ThinkingLevel) => { thinkingLevel = level; }, getThinkingLevel: () => thinkingLevel, dialogs, answers, dispose, dir, dbPath, signals, ctx, eventBus, entries, allEntries, persist, compaction, hooks, tools, commands, notices, statuses, memory, emit, prompt, answer, turn, drain, requests, conversations,
     provider: (fn: typeof provider, options: { autoStop?: boolean; ignoreAbort?: boolean } = {}) => { provider = fn; autoStop = options.autoStop ?? true; ignoreAbort = options.ignoreAbort ?? false; } };
 }
 export function notingFact(conversation: Conversation) {

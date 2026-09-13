@@ -270,7 +270,7 @@ test("18a 2026-09-08: concurrent first initialization and restart keep one atomi
     import extension from ${JSON.stringify(new URL("../../../src/hosts/pi/index.ts", import.meta.url).href)};
     import { readFileSync } from 'node:fs';
     const hooks = new Map(), entries = [];
-    extension({ on: (n, f) => hooks.set(n, f), registerCommand() {}, registerTool() {}, appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data, id: String(entries.length) }) });
+    extension({ on: (n, f) => hooks.set(n, f), events: { on() { return () => {}; }, emit() {} }, registerCommand() {}, registerTool() {}, appendEntry: (customType, data) => entries.push({ type: 'custom', customType, data, id: String(entries.length) }) });
     const ctx = { cwd: process.cwd(), ui: { notify() {}, setStatus() {} }, sessionManager: { getSessionId: () => 'old-native', getHeader: () => ({ timestamp: '2000-01-01T00:00:00Z' }), getBranch: () => entries, getEntries: () => entries, getLeafId: () => null } };
     await hooks.get('session_start')({}, ctx);
     process.stdout.write(readFileSync(process.env.PI_CODING_AGENT_DIR + '/trace-memory-baseline.json', 'utf8'));
