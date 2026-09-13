@@ -15,11 +15,11 @@ A whole atomic batch rolls back on a refused base. Consolidator may completely r
 Final acceptance constructs candidates in core from:
 
 1. exact formally supplied processing versions; and
-2. every legitimate descendant committed by this retained Dreamer run from those versions.
+2. exact revisions legally committed by this authorized run inside the frozen writable family, including the result when it actually updates, merges, splits or archives processed-reference knowledge.
 
-The model does not enumerate candidates. Arbitrary reads, processed reference material, outside successors and writable-family membership add none.
+The second rule certifies the result of authorized maintenance, not its reference input. The exact submitting run comes from the bound run capability and committed revision provenance, not the retained range as a whole or an actor label. The model does not enumerate candidates. Arbitrary runtime reads, untouched processed references, writable-family membership, outputs of earlier attempts not formally readmitted, and outside successors add none.
 
-Core rechecks the committed global successor graph in the final transaction. Only candidates with no consuming successor of any kind receive a new exact-version certificate. Unchanged supplied leaves, both own split children and own archive-state leaves qualify. Consumed supplied versions and own intermediates do not. Existing historical certificates are never removed.
+Core rechecks the committed global successor graph in the final transaction. Only candidates with no consuming successor of any kind receive a new exact-version certificate. Unchanged formally supplied leaves, terminal own reference maintenance, both own split children and own archive-state leaves qualify. Consumed supplied versions and own intermediates do not. Existing historical certificates are never removed. The complete resulting accepted processed pool, including terminal own reference maintenance, must pass the current shared caps in that same transaction before any new certificate or event settlement is written.
 
 Each formally supplied event is judged independently. An accepted candidate or core-verified consumption of its selected base accounts for that event. Success settles exactly those accounted event IDs and certifies the separate successor-free candidate IDs. The consuming rival and its own event are not adopted, settled or certified. Thus an all-consumed batch may succeed with an empty certificate set and close immediately.
 

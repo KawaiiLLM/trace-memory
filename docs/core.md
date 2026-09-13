@@ -104,12 +104,19 @@ events, candidates, successor-free results, consumed inputs, conflicts and failu
 `runs.response.check`. Finalization reads those exact sets rather than the receipt, while affected-owner
 filtering preserves the existing success rules. Receipt identities are diagnostics only: they grant
 neither a complete-body handle nor write or certification authority.
-Core constructs processing candidates from the formally supplied changed versions and
-all legitimate descendants committed by this run; model output never enumerates candidates. Complete
-reads, writable-family membership and outside successors add none. Before completion, core rechecks
-the global consuming graph and removes every candidate with an update, archive, split or merge
-consumer. Unchanged supplied leaves, both split children and archive-state leaves remain candidates;
-consumed originals and intermediates do not. Existing certificates are never revoked.
+Core constructs processing candidates from the formally supplied changed versions and exact
+revisions legally committed by this authorized run inside its frozen writable family. The latter
+includes a terminal result when this run actually maintains processed-reference knowledge. It does not
+include the reference base itself. Model output never enumerates candidates, and committed `run_id`
+provenance plus the bound run capability, claim and family checks identify legal current-run output;
+retained-range membership or an actor label alone does not. Arbitrary runtime reads, untouched
+processed references, writable-family membership, earlier-attempt outputs not formally readmitted and
+outside successors add none. Before completion, core rechecks the global consuming graph and removes
+every candidate with an update, archive, split or merge consumer. Unchanged formal leaves, terminal own
+reference maintenance, both split children and archive-state leaves remain candidates; consumed
+originals and intermediates do not. Existing certificates are never revoked. The same final transaction
+validates the complete resulting accepted processed pool against current shared caps before inserting
+any certificate or event settlement.
 
 Each supplied event is accounted separately by an accepted candidate or verified consumption of its
 selected base. Successful completion may therefore settle an all-consumed batch with no new

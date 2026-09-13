@@ -90,31 +90,30 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   return { sessionId: path.sessionId, branch: path.branch, path, range, eventIds: ids, versionIds, changed, material, text,
     profile: structuredClone(config.render), model: input.model ?? "session", mode: "subagent" as const,
     readKnowledgeCommits: supplied.map(v => ({ knowledgeId: v.knowledge.id, commit: v.revision.id })),
-    outputRoots: changed.versions.map(v => v.revision.id), ownCommitsAtFreeze: ownCommits ?? [],
     commitBoundary: Number(store.db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM knowledge_revisions").get()!.id),
     maxToolRounds: config.dreaming.maxToolRounds, admittedProcessedInputCap: processedInputCap };
 }
 
 export async function runDreaming(store: Store, frozen: ReturnType<typeof freezeDreaming>, runAgent: RunAgent,
   bind: (context: Parameters<typeof bindTools>[2], run: RunInput, review?: undefined, dreaming?: Parameters<typeof bindTools>[6]) => ReturnType<typeof bindTools>): Promise<DreamingResult> {
-  const { sessionId, branch, path, range, eventIds, readKnowledgeCommits, outputRoots, ownCommitsAtFreeze } = frozen;
+  const { sessionId, branch, path, range, eventIds, readKnowledgeCommits } = frozen;
   let rounds = 0, repaired = false;
   const run: RunInput = { kind: "dreaming", sessionId, branch, dreamingRangeId: range.id, model: frozen.model, mode: "subagent",
     promptHash, rangeFrom: `K@${range.anchor}`, rangeTo: `K@${Math.max(range.anchor, ...range.eventIds, ...range.versionIds)}`, createdAt: new Date().toISOString() };
   // Complete reads grant write handles only. Formal processing membership is the frozen changed
-  // versions; the host, not the model, derives all legitimate own descendants from those roots.
+  // versions. A processed reference remains outside that membership unless this exact authorized
+  // run legally maintains it inside the frozen family; then only the run's own output is added.
   const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
   const formal = new Set(frozen.changed.versions.map(v => v.revision.id));
   const eventResults = new Map(frozen.changed.eventResults.map(value => [value.eventId, value.commits]));
   const check = (): DreamingCheckResult => {
     let family = range.knowledgeIds;
-    const allOwn = store.dreamingOwnCommits(range.id);
-    const frozenOwn = new Set(ownCommitsAtFreeze);
-    const freshOwn = allOwn.filter(id => !frozenOwn.has(id));
+    const currentRunId = store.dreamingRunId(run);
+    if (currentRunId === undefined) throw new Error("trusted Dreamer run binding required");
+    // The bound run capability, claim and frozen-family write checks make every committed revision
+    // here a legal operation of this pass. Range membership or an actor label is not provenance.
+    const ownCandidates = store.listCommitsByRun(currentRunId).map(revision => revision.id);
     const graph = store.commitGraph(null);
-    const formalDescendants = new Set<number>();
-    for (const root of formal) for (const id of graph.descendants(root)) formalDescendants.add(id);
-    const ownCandidates = freshOwn.filter(id => formalDescendants.has(id));
     const candidates = [...new Set([...formal, ...ownCandidates])].sort((a, b) => a - b);
     const consumers = store.consumingSuccessors(candidates);
     const resultIds = candidates.filter(id => consumers.get(id)!.length === 0);
@@ -140,7 +139,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only
     // processed material. Consumed formal inputs and filtered leaves are successful dispositions.
     const pathGraph = store.commitGraph(path);
-    const ownSet = new Set(freshOwn);
+    const ownSet = new Set(ownCandidates);
     const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
     for (const reference of [...admitted].filter(id => !formal.has(id))) {
       const descendants = pathGraph.descendants(reference);

@@ -261,7 +261,11 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   are transactionally guarded by immutable trigger ancestry: comparable same-session origins cannot
   compete, divergent siblings may, and independent sessions retain applicable-successor rejection.
   Final processing settles accounted supplied events separately from successor-free candidate
-  certification, including restored exact-version obligations, as described in
+  certification. Candidates include formal processing versions and this exact authorized run's legal
+  outputs from actual maintenance inside the frozen family, including processed-reference maintenance;
+  untouched references,
+  runtime reads and other runs' outputs gain no processing status. Restored exact-version obligations
+  follow the same rule, as described in
   [the core contract](core.md#dreamer-execution-34b).
 - `consolidation.triggerTokens` defaults to **5,000 rendered fact tokens** and
   `consolidation.batchTokens` to **10,000** (ticket 20). Both count the same rendered fact view —

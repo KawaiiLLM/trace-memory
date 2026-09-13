@@ -33,6 +33,169 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, b
 }
 const success = { outcome: "success", output: "done", request: { exact: "request" } } as const;
 
+function addProcessedReference(f: ReturnType<typeof fixture>, text = "reference rule") {
+  const created = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [
+    { op: "create", handle: `$reference-${text}`, author: "test", ...f.content, text },
+  ] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  const item = created.committed[0]!;
+  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, outcome: "success", createdAt: "now" });
+  f.store.completeDreaming(run.id, [item.commit], [item.commit]);
+  return { item, runId: run.id };
+}
+
+test("own maintenance of a supplied processed reference is certified atomically with formal work", async () => {
+  let calls = 0;
+  let reference!: { knowledgeId: number; commit: number };
+  let formalOutput = 0, referenceOutput = 0;
+  const f = fixture(async task => {
+    calls++;
+    const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [
+      { op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`, text: "maintained formal rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "Maintain supplied formal work" },
+      { op: "update", id: `K${reference.knowledgeId}@${reference.commit}`, text: "maintained reference rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "Maintain supplied processed reference" },
+    ], skipped: [] })).committed as { knowledgeId: number; commit: number }[];
+    expect(committed).toHaveLength(2);
+    formalOutput = committed[0]!.commit;
+    referenceOutput = committed[1]!.commit;
+    return success;
+  });
+  const prior = addProcessedReference(f);
+  reference = prior.item;
+
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const completion = f.store.db.prepare("SELECT event_ids, result_ids FROM dreaming_completions WHERE run_id = ?").get(result.runId)!;
+  expect(JSON.parse(String(completion.event_ids))).toEqual([f.item.commit]);
+  expect(JSON.parse(String(completion.result_ids))).toEqual([formalOutput, referenceOutput]);
+  expect(f.store.isKnowledgeProcessed(formalOutput)).toBe(true);
+  expect(f.store.isKnowledgeProcessed(referenceOutput)).toBe(true);
+  expect(f.store.db.prepare("SELECT run_id FROM processed_knowledge_versions WHERE commit_id = ?").get(reference.commit)?.run_id).toBe(prior.runId);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+  expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([]);
+
+  expect(await f.memory.dream({ ...f.target, automatic: true })).toEqual({ outcome: "empty" });
+  expect(calls).toBe(1);
+});
+
+test("reference maintenance is included in the real budget projection before certification", async () => {
+  let reference!: { knowledgeId: number; commit: number };
+  let formalOutput = 0, oversizedOutput = 0, repairedOutput = 0;
+  const f = fixture(async task => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    const first = JSON.parse(memory.execute({ operations: [
+      { op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`, text: "budgeted formal rule", category: "constraint", scope: "project", supports: [], topics: [], reason: "Maintain formal rule" },
+      { op: "update", id: `K${reference.knowledgeId}@${reference.commit}`, text: "oversized-reference ".repeat(150), category: "constraint", scope: "project", supports: [], topics: [], reason: "First attempted reference maintenance" },
+    ], skipped: [] })).committed as { knowledgeId: number; commit: number }[];
+    formalOutput = first[0]!.commit;
+    oversizedOutput = first[1]!.commit;
+    const repair = task.passEnd(2);
+    expect(repair).toContain("processed knowledge");
+    expect(repair).toContain("One repair");
+
+    task.tools.find(tool => tool.name === "trace")!.execute({ address: `K${reference.knowledgeId}@${oversizedOutput}`, itemBudget: null });
+    const second = JSON.parse(memory.execute({ operations: [{ op: "update", id: `K${reference.knowledgeId}@${oversizedOutput}`,
+      text: "small maintained reference", category: "constraint", scope: "project", supports: [], topics: [], reason: "Repair the real processed pool" }], skipped: [] })).committed;
+    repairedOutput = second[0].commit;
+    expect(task.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
+    return success;
+  });
+  reference = addProcessedReference(f).item;
+  const projectScope = `project:${f.store.getSession(f.target.sessionId)!.projectId}`;
+  const used = f.store.checkProcessedScopes().totals.find(total => total.scope === projectScope)!.tokens;
+  f.store.setKnowledgeBudget("project", used + 300);
+
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("success");
+  expect(f.store.isKnowledgeProcessed(formalOutput)).toBe(true);
+  expect(f.store.isKnowledgeProcessed(oversizedOutput)).toBe(false);
+  expect(f.store.isKnowledgeProcessed(repairedOutput)).toBe(true);
+  expect(f.store.checkProcessedScopes().problems).toEqual([]);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+});
+
+test("own multi-step maintenance certifies only terminal update, split and archive outputs", async () => {
+  let reference!: { knowledgeId: number; commit: number };
+  const intermediates: number[] = [], terminals: number[] = [];
+  const f = fixture(async task => {
+    const memory = task.tools.find(tool => tool.name === "memory")!;
+    const trace = task.tools.find(tool => tool.name === "trace")!;
+    const update = (id: string, text: string) => JSON.parse(memory.execute({ operations: [{ op: "update", id, text,
+      category: "constraint", scope: "project", supports: [], topics: [], reason: `Maintain ${text}` }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
+
+    const formal = update(`K${f.item.knowledgeId}@${f.item.commit}`, "formal intermediate");
+    const firstReference = update(`K${reference.knowledgeId}@${reference.commit}`, "reference intermediate one");
+    intermediates.push(formal.commit, firstReference.commit);
+    trace.execute({ address: `K${reference.knowledgeId}@${firstReference.commit}`, itemBudget: null });
+    const secondReference = update(`K${reference.knowledgeId}@${firstReference.commit}`, "reference intermediate two");
+    intermediates.push(secondReference.commit);
+    trace.execute({ address: `K${f.item.knowledgeId}@${formal.commit}`, itemBudget: null });
+    trace.execute({ address: `K${reference.knowledgeId}@${secondReference.commit}`, itemBudget: null });
+    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${reference.knowledgeId}@${secondReference.commit}`,
+      absorb: [`K${f.item.knowledgeId}@${formal.commit}`], text: "merged formal and reference meaning", category: "constraint", scope: "project",
+      supports: [], topics: [], reason: "Preserve both admitted parents" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
+    intermediates.push(merged.commit);
+    trace.execute({ address: `K${merged.knowledgeId}@${merged.commit}`, itemBudget: null });
+    const split = JSON.parse(memory.execute({ operations: [{ op: "split", id: `K${merged.knowledgeId}@${merged.commit}`, supports: [], reason: "Separate independent terminal claims",
+      children: [{ text: "first split terminal path", category: "constraint", topics: [] }, { text: "second split archive path", category: "constraint", topics: [] }] }], skipped: [] })).committed as { knowledgeId: number; commit: number }[];
+    intermediates.push(...split.map(value => value.commit));
+    trace.execute({ address: `K${split[0]!.knowledgeId}@${split[0]!.commit}`, itemBudget: null });
+    const childUpdate = update(`K${split[0]!.knowledgeId}@${split[0]!.commit}`, "first child intermediate");
+    intermediates.push(childUpdate.commit);
+    trace.execute({ address: `K${childUpdate.knowledgeId}@${childUpdate.commit}`, itemBudget: null });
+    const childTerminal = update(`K${childUpdate.knowledgeId}@${childUpdate.commit}`, "first child terminal");
+    trace.execute({ address: `K${split[1]!.knowledgeId}@${split[1]!.commit}`, itemBudget: null });
+    const archived = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${split[1]!.knowledgeId}@${split[1]!.commit}`,
+      supports: [], reason: "Deliberate terminal archive" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
+    terminals.push(childTerminal.commit, archived.commit);
+    return success;
+  });
+  reference = addProcessedReference(f).item;
+
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const completion = f.store.db.prepare("SELECT result_ids FROM dreaming_completions WHERE run_id = ?").get(result.runId)!;
+  expect(JSON.parse(String(completion.result_ids))).toEqual(terminals);
+  expect(terminals.every(id => f.store.isKnowledgeProcessed(id))).toBe(true);
+  expect(intermediates.every(id => !f.store.isKnowledgeProcessed(id))).toBe(true);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+});
+
+test.each(["failure", "cancelled"] as const)("a %s after reference writes recovers through bounded formal readmission", async firstOutcome => {
+  let attempt = 0;
+  let reference!: { knowledgeId: number; commit: number };
+  let partialOutput = 0;
+  const f = fixture(async task => {
+    attempt++;
+    if (attempt === 1) {
+      const committed = JSON.parse(task.tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update",
+        id: `K${reference.knowledgeId}@${reference.commit}`, text: "partial reference maintenance", category: "constraint", scope: "project",
+        supports: [], topics: [], reason: "Committed before interrupted completion" }], skipped: [] })).committed;
+      partialOutput = committed[0].commit;
+      return { ...success, outcome: firstOutcome, output: `${firstOutcome} after write` };
+    }
+    expect(task.material.changed).toContain(`K${reference.knowledgeId}@${partialOutput}`);
+    return success;
+  });
+  const prior = addProcessedReference(f);
+  reference = prior.item;
+
+  expect((await f.memory.dream(f.target)).outcome).toBe(firstOutcome);
+  expect(f.store.isKnowledgeProcessed(partialOutput)).toBe(false);
+  expect(f.store.retryDreamingRange(f.target)).not.toBeNull();
+  const recovered = await f.memory.dream(f.target);
+  expect(recovered.outcome).toBe("success");
+  if (!("runId" in recovered)) throw new Error("missing run id");
+  const completion = f.store.db.prepare("SELECT event_ids, result_ids FROM dreaming_completions WHERE run_id = ?").get(recovered.runId)!;
+  expect(JSON.parse(String(completion.event_ids))).toEqual([f.item.commit]);
+  expect(JSON.parse(String(completion.result_ids))).toEqual([f.item.commit, partialOutput]);
+  expect(f.store.isKnowledgeProcessed(partialOutput)).toBe(true);
+  expect(f.store.db.prepare("SELECT run_id FROM processed_knowledge_versions WHERE commit_id = ?").get(reference.commit)?.run_id).toBe(prior.runId);
+  expect(f.store.retryDreamingRange(f.target)).toBeNull();
+  expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([]);
+});
+
 test("32d: no-change completion runs the host check without a check tool call", async () => {
   const f = fixture(async task => { expect(task.tools.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]); return success; });
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
