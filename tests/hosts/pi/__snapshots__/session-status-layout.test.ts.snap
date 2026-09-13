@@ -5,22 +5,22 @@ exports[`actual Current session first viewport at 40 x 24 'fullscreen' 1`] = `
 up/down Select | enter Open |
 escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
-SDK mismatch: 44.5k > text ~1.8k; gap
-Unknown
-~44.5k / 1M (4.5%)
+SDK occupancy estimate ~44.5k / 1M
+(4.5%)
+⛁ Occupied estimate ~44.5k (4.5%)
+⛶ Estimated remaining ~955.5k (95.5%)
+
+Local rebuilt text ~1.8k / 1M (0.2%)
 ⛁ Tools ~1.8k (0.2%)
 ⛁ Conversation ~12 (<0.1%)
-⛁ Unknown ~42.7k (4.3%)
-⛶ Free ~955.5k (95.5%)
-
-Memory ~0
-No retained memory
+SDK estimate is ~42.7k above local
+rebuilt text estimate; unclassified
 → Off
   Runs
   Project
@@ -32,22 +32,22 @@ exports[`actual Current session first viewport at 40 x 24 'fullscreen' 2`] = `
 up/down Select | enter Open |
 escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ Conversation ~12 (<0.1%)
-⛁ Unknown ~42.7k (4.3%)
-⛶ Free ~955.5k (95.5%)
+numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider
 wire)
+SDK occupancy and remaining are
+estimates; remaining is not guaranteed
+free space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
 Noting        ███████░░░  72.0% 36/50
 Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -59,22 +59,22 @@ exports[`actual Current session first viewport at 40 x 24 'regular' 1`] = `
 up/down Select | enter Open |
 escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁⛁⛁⛁⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
+⛁⛁⛁⛁⛀⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 ⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶⛶
 fake/test
-SDK mismatch: 44.5k > text ~1.8k; gap
-Unknown
-~44.5k / 1M (4.5%)
+SDK occupancy estimate ~44.5k / 1M
+(4.5%)
+⛁ Occupied estimate ~44.5k (4.5%)
+⛶ Estimated remaining ~955.5k (95.5%)
+
+Local rebuilt text ~1.8k / 1M (0.2%)
 ⛁ Tools ~1.8k (0.2%)
 ⛁ Conversation ~12 (<0.1%)
-⛁ Unknown ~42.7k (4.3%)
-⛶ Free ~955.5k (95.5%)
-
-Memory ~0
-No retained memory
+SDK estimate is ~42.7k above local
+rebuilt text estimate; unclassified
 → Off
   Runs
   Project
@@ -86,22 +86,22 @@ exports[`actual Current session first viewport at 40 x 24 'regular' 2`] = `
 up/down Select | enter Open |
 escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ Conversation ~12 (<0.1%)
-⛁ Unknown ~42.7k (4.3%)
-⛶ Free ~955.5k (95.5%)
+numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider
 wire)
+SDK occupancy and remaining are
+estimates; remaining is not guaranteed
+free space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
 Pending / trigger (~tokens)
 Noting        ███████░░░  72.0% 36/50
 Consolidation ░░░░░░░░░░   0.0% 0/5k
-Dreaming      ░░░░░░░░░░   0.0% 0/5k
 → Off
   Runs
   Project
@@ -112,23 +112,23 @@ exports[`actual Current session first viewport at 80 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-                                          ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK occupancy estimate ~44.5k / 1M
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Occupied estimate ~44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Estimated remaining ~955.5k (95.5%)
+
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical
+gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
-
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free
 → Off
   Runs
   Project
@@ -139,16 +139,16 @@ exports[`actual Current session first viewport at 80 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-                                          ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical
+gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free
+space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
@@ -166,23 +166,23 @@ exports[`actual Current session first viewport at 80 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   Unknown
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-                                          ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK occupancy estimate ~44.5k / 1M
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Occupied estimate ~44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Estimated remaining ~955.5k (95.5%)
+
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical
+gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
-
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free
 → Off
   Runs
   Project
@@ -193,16 +193,16 @@ exports[`actual Current session first viewport at 80 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-                                          ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical
+gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free
+space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
@@ -220,23 +220,23 @@ exports[`actual Current session first viewport at 100 x 24 'fullscreen' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap Unknown
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK occupancy estimate ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Occupied estimate ~44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Estimated remaining ~955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free space.
 
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
-Noting        ███████░░░  72.0% 36/50
 → Off
   Runs
   Project
@@ -247,16 +247,16 @@ exports[`actual Current session first viewport at 100 x 24 'fullscreen' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)
@@ -274,23 +274,23 @@ exports[`actual Current session first viewport at 100 x 24 'regular' 1`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛁ ⛁ ⛁ ⛁ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK mismatch: 44.5k > text ~1.8k; gap Unknown
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+⛁ ⛁ ⛁ ⛁ ⛀ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   fake/test
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   SDK occupancy estimate ~44.5k / 1M (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Occupied estimate ~44.5k (4.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛶ Estimated remaining ~955.5k (95.5%)
+⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶
+
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free space.
 
-S1 | On(default) | $0.0000
-Project: pi:pi-test (undeclared)
-Pending / trigger (~tokens)
-Noting        ███████░░░  72.0% 36/50
 → Off
   Runs
   Project
@@ -301,16 +301,16 @@ exports[`actual Current session first viewport at 100 x 24 'regular' 2`] = `
 "Current session
 up/down Select | enter Open | escape/ctrl+c Back
 pageUp/pageDown Scroll
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ~44.5k / 1M (4.5%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Tools ~1.8k (0.2%)
-⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶ ⛶   ⛁ Conversation ~12 (<0.1%)
-                                          ⛁ Unknown ~42.7k (4.3%)
-                                          ⛶ Free ~955.5k (95.5%)
+Local rebuilt text ~1.8k / 1M (0.2%)
+⛁ Tools ~1.8k (0.2%)
+⛁ Conversation ~12 (<0.1%)
+SDK estimate is ~42.7k above local rebuilt text estimate; unclassified numerical gap.
 
 Memory ~0
 No retained memory
 
 Pi rebuilt text estimate (not provider wire)
+SDK occupancy and remaining are estimates; remaining is not guaranteed free space.
 
 S1 | On(default) | $0.0000
 Project: pi:pi-test (undeclared)

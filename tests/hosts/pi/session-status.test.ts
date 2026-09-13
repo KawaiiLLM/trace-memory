@@ -149,6 +149,19 @@ test("no session, Off, zero and unavailable remain distinct; original actions an
   expect(h.requests).toEqual([]);
 });
 
+test("reopening replaces unavailable SDK capacity with the current valid estimate", async () => {
+  const h = setup(); await h.turn();
+  h.setContextUsage(undefined);
+  const unavailable = await open(h);
+  expect(unavailable).toContain("Capacity estimate unavailable: SDK usage unavailable");
+  expect(unavailable).not.toContain("?".repeat(20));
+  h.setContextUsage({ tokens: 60237, contextWindow: 512000, percent: 0 });
+  const available = await open(h);
+  expect(available).toContain("SDK occupancy estimate ~60.2k / 512k");
+  expect(available).toContain("Estimated remaining ~451.8k");
+  expect(h.requests).toEqual([]);
+});
+
 test("cold and warm Dreaming weights show identical data without any DB writes or grants", async () => {
   const h = setup({ "noting.triggerTokens": 999999, "consolidation.triggerTokens": 4321, "dreaming.triggerTokens": 1234 });
   await h.turn();
@@ -290,9 +303,10 @@ test("headless and UI read the same composition once per opening without writes 
   const composition = (text: string) => text.slice(text.indexOf("fake/test"), text.indexOf("Pi rebuilt text estimate") + "Pi rebuilt text estimate (not provider wire)".length);
   expect(composition(headless)).toBe(composition(title));
   for (const text of [headless, title]) {
-    expect(text).toContain("SDK mismatch: 1");
-    expect(text).toContain("free unknown");
-    expect(text).not.toContain("Free ~");
+    expect(text).toContain("SDK occupancy estimate ~1 / 1k");
+    expect(text).toContain("below local rebuilt text estimate");
+    expect(text).toContain("Estimated remaining ~999");
+    expect(text).not.toContain("?".repeat(20));
     expect(text).toContain("Fork: suppressed");
   }
   expect(changes(h)).toBe(before); expect(h.entries).toEqual(entries);

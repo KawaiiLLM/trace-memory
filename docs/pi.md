@@ -497,16 +497,23 @@ immediately, so stop can be invoked while it runs.
 
 #### Current session measurements
 
-The context matrix estimates **Pi's current rebuilt text**, not final provider wire
+The context panel estimates **Pi's current rebuilt text**, not final provider wire
 or an exact tokenizer bill. It reads the selected `buildContextEntries()` snapshot,
 projects entries with Pi's public message APIs, and uses the core text estimator.
-It includes the current system prompt and active tool definitions. A positive gap
-between these estimates and `getContextUsage()` is **Unknown**, never distributed
-proportionally among categories. The SDK total is shown separately as matching the text,
-mismatched (in either direction), or unknown. A lower, missing, invalid or unavailable
-SDK total never shrinks measured content and leaves free capacity unknown; the matrix
-uses question marks while retaining the estimated category legends and Memory bar.
-Missing text or unpriced non-text content also makes free capacity unknown.
+It includes the current system prompt and active tool definitions. This local census
+stays separate from `getContextUsage()`: a positive SDK/text difference is an
+unclassified numerical gap, never distributed proportionally among categories, and a
+negative difference never shrinks measured text. An incomplete text/non-text census is
+disclosed independently; the numerical difference does not identify or measure image or
+other non-text content.
+
+A valid SDK token estimate and context window drive the 100-cell occupancy grid even
+when the local census is incomplete or differs in either direction. SDK occupancy and
+remaining capacity are labelled as estimates, not provider-wire measurements or
+guaranteed free space, and remaining capacity never goes below zero. When SDK usage or
+the window is unavailable or invalid, the grid is omitted and a concise unavailable
+state appears beside the local category estimates. Reopening takes a new snapshot, so a
+later valid SDK estimate appears without reloading the extension.
 
 - **Memory:** every retained initial injection, on/project supplement and marked custom
   compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
@@ -523,15 +530,18 @@ Missing text or unpriced non-text content also makes free capacity unknown.
 - **Conversation / Other:** retained ordinary messages and native summaries / other
   extensions' custom messages. Pi-excluded bash executions contribute nothing.
 
-The 100 cells share one largest-remainder allocation against window capacity;
-small categories have no minimum cell. Their colored legends retain nonzero estimates
-and sub-percent percentages. Over-capacity matrices saturate and apportion 100 cells
-among retained categories; numeric percentages still use the window and may exceed 100%.
-The Memory bar uses Memory's own total, with the same rounding rule. Zero Memory has
-no filled bar. Wide terminals put the legend beside five grid rows; narrow terminals
-stack it below. Pi's width utilities handle display width. In the TUI, this panel alone uses the
+The capacity grid floors full SDK-occupancy cells, preserves one partial cell and
+saturates at 100 cells when over window; numeric percentages still use the window and
+may exceed 100%. Local category legends retain nonzero estimates and sub-percent
+percentages but do not pretend to partition the SDK total. The Memory bar uses Memory's
+own total with largest-remainder allocation. Zero Memory has no filled bar. Wide
+terminals put the capacity legend beside five grid rows; narrow terminals stack it
+below. Pi's width utilities handle display width. In the TUI, this panel alone uses the
 public `ui.custom` overlay API, not an oversized native selector title. The overlay
-uses the terminal's available screen rather than the fullscreen editor dock.
+uses the terminal's available screen rather than the fullscreen editor dock. Its
+component supplies every allocated viewport row; Pi's public compositor supplies the
+horizontal padding, so no conversation, editor, footer or background output shows
+through and dismissal can restore the current underlying frame.
 Recovery warnings lead the scrollable body; the action list stays visible. The
 usual arrows (or `j`/`k`), Enter and Escape retain selection/cancellation semantics;
 Page Up/Down scroll status without moving the selected action. Configured Pi

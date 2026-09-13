@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { ExtensionSelectorComponent, initTheme } from "@earendil-works/pi-coding-agent";
-import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Container, Text, TuiAltScreen, TuiMainScreen, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-panel.ts";
 import { host, reply } from "./test-host.ts";
 import { contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
@@ -27,9 +27,11 @@ const body = (width: number) => statusBody(["Current session", ...contextMap({ t
   "Noting: [##########] 12,000 / 10,000 (120.0%)", "Consolidation: [..........] 0 / 5,000 (0.0%)",
   "Dreaming: [#.........] 500 / 5,000 (10.0%)", "Pending / trigger is not task completion or worker readiness.",
   "Cost: $0.0000", ...recovery], width);
-export function dockFrame(editor: any, width: number, height: number, crowded = false) {
+export function dockFrame(editor: any, width: number, height: number, crowded = false,
+  transcript = "transcript\n".repeat(40), pending = "") {
   const empty = new Container(), editorContainer = new Container(); editorContainer.addChild(editor);
-  const { root } = createChatViewport({ document: new Text("transcript\n".repeat(40), 0, 0), pendingMessages: empty,
+  const { root } = createChatViewport({ document: new Text(transcript, 0, 0),
+    pendingMessages: pending ? new Text(pending, 0, 0) : empty,
     status: empty, widgetsAbove: crowded ? new Text("existing widget\n".repeat(100), 0, 0) : empty,
     editor: editorContainer, widgetsBelow: empty, footer: new Text("original footer", 0, 0) });
   return renderLayoutFrame(root, width, height, () => {});
@@ -47,7 +49,8 @@ test.each([40, 80, 100])("legacy native title reproduces fullscreen clipping at 
 
 // Exercise Pi's real overlay compositor AFTER renderLayoutFrame, and its real input routing.
 // A fake terminal supplies dimensions only; no stdout, user's settings, or actual terminal is used.
-function screenHarness(width: number, height: number, mode: "fullscreen" | "regular" = "fullscreen", crowded = false) {
+function screenHarness(width: number, height: number, mode: "fullscreen" | "regular" = "fullscreen", crowded = false,
+  background?: () => { conversation: string; output: string }) {
   const terminal = { columns: width, rows: height, write() {}, hideCursor() {}, showCursor() {} };
   const tui: any = mode === "fullscreen" ? new TuiAltScreen(terminal as any, false) : new TuiMainScreen(terminal as any, false);
   tui.requestRender = () => {}; tui.requestImmediateRender = () => {};
@@ -58,18 +61,58 @@ function screenHarness(width: number, height: number, mode: "fullscreen" | "regu
     const handle = tui.showOverlay(component, options.overlayOptions);
   }) } };
   const frame = () => {
-    const base = mode === "fullscreen" ? dockFrame(new Text("editor", 0, 0), terminal.columns, terminal.rows, crowded).lines
-      : Array(60).fill("regular transcript").concat("editor", "original footer");
+    const sentinels = background?.();
+    const combined = sentinels ? `${sentinels.conversation} | ${sentinels.output}` : "regular transcript";
+    const base = mode === "fullscreen"
+      ? dockFrame(new Text(sentinels ? `editor ${combined}` : "editor", 0, 0), terminal.columns, terminal.rows, crowded,
+        `${combined}\n`.repeat(60), sentinels ? `${combined}\n`.repeat(4) : "").lines
+      : Array(60).fill(truncateToWidth(combined, terminal.columns, "")).concat(
+        truncateToWidth(`editor ${combined}`, terminal.columns, ""),
+        truncateToWidth(sentinels ? `original footer ${combined}` : "original footer", terminal.columns, ""));
     const lines: string[] = tui.compositeOverlays(base, terminal.columns, terminal.rows).slice(-terminal.rows);
     expect(lines).toHaveLength(terminal.rows);
     expect(lines.every(line => visibleWidth(line) <= terminal.columns)).toBe(true);
     return lines.map(stripTerminalSequences);
   };
-  return { ctx, terminal, kb, frame, key: (key: string) => tui.handleTerminalInput(key) };
+  return { ctx, terminal, tui, kb, frame, key: (key: string) => tui.handleTerminalInput(key) };
 }
 
 const overview = (width: number, paint?: any) => statusBody([...recovery, ...contextMap({ tokens: 44500, contextWindow: 1000000, percent: 4.45 }, "fake/test", width, paint),
   "Pending: / trigger — estimated tokens", "Noting: 12,000 / 10,000 (120.0%)", "Consolidation: 0 / 5,000", "Dreaming: 500 / 5,000", "Final detail: shared identity"], width, paint);
+
+test.each(["fullscreen", "regular"] as const)("real %s compositor keeps the full viewport opaque and restores the latest background", async mode => {
+  let generation = 1;
+  const background = () => ({
+    conversation: `\u001b[31mCONVERSATION_SENTINEL_${generation}_会話界\u001b[0m`,
+    output: `\u001b[32mBACKGROUND_OUTPUT_SENTINEL_${generation}_輸出\u001b[0m`,
+  });
+  const s = screenHarness(72, 30, mode, false, background);
+  const initial = s.frame().join("\n");
+  expect(initial).toContain("CONVERSATION_SENTINEL_1");
+  expect(initial).toContain("BACKGROUND_OUTPUT_SENTINEL_1");
+  const previousFocus = { render: () => ["focus target"], invalidate() {} };
+  s.tui.setFocus(previousFocus);
+
+  const short = showSessionPanel(s.ctx, width => statusBody(["Short ANSI \u001b[35mline\u001b[0m with wide 字"], width), ["Close"]);
+  expect(s.tui.getFocusedComponent()).not.toBe(previousFocus);
+  expect(s.frame().join("\n")).not.toMatch(/(?:CONVERSATION|BACKGROUND_OUTPUT)_SENTINEL/);
+  generation = 2; // Simulate conversation/subagent output requesting a background redraw.
+  expect(s.frame().join("\n")).not.toMatch(/(?:CONVERSATION|BACKGROUND_OUTPUT)_SENTINEL/);
+  for (const [width, height] of [[24, 8], [40, 4], [90, 36]] as const) {
+    s.terminal.columns = width; s.terminal.rows = height;
+    expect(s.frame().join("\n")).not.toMatch(/(?:CONVERSATION|BACKGROUND_OUTPUT)_SENTINEL/);
+  }
+  s.key("\x1b"); expect(await short).toBeUndefined();
+  const restored = s.frame().join("\n");
+  expect(restored).toContain("CONVERSATION_SENTINEL_2");
+  expect(restored).toContain("BACKGROUND_OUTPUT_SENTINEL_2");
+  expect(s.tui.getFocusedComponent()).toBe(previousFocus);
+
+  s.terminal.columns = 28; s.terminal.rows = 6;
+  const long = showSessionPanel(s.ctx, width => statusBody(Array.from({ length: 80 }, (_, i) => `Long ${i} 字`), width), ["Close"]);
+  expect(s.frame().join("\n")).not.toMatch(/(?:CONVERSATION|BACKGROUND_OUTPUT)_SENTINEL/);
+  s.key("\x1b"); await long;
+});
 
 test.each([40, 80, 100])("real overlay at %i x 24 keeps every action executable and all recovery scrollable", async width => {
   for (const mode of ["fullscreen", "regular"] as const) for (let action = 0; action < actions.length; action++) {
@@ -312,15 +355,18 @@ test.each([40, 80, 100].flatMap(width => ["fullscreen", "regular"].map(mode => (
     h.answers.push("Current session"); const command = h.commands.get("trace").handler("", h.ctx);
     await new Promise(resolve => setImmediate(resolve));
     const first = s.frame().map(line => line.trimEnd()).join("\n");
-    expect(first).toContain("~44.5k / 1M (4.5%)");
+    const compactFirst = first.replace(/[⛁⛶⛀]/g, "").replace(/\s+/g, " ");
+    expect(compactFirst).toContain("SDK occupancy estimate ~44.5k / 1M (4.5%)");
     expect(first).toContain("fake/test");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
-    expect(first).toContain("Free ~955.5k (95.5%)");
+    expect(compactFirst).toContain("Estimated remaining ~955.5k (95.5%)");
     expect(first).toMatchSnapshot();
     s.key("\x1b[6~");
     const second = s.frame().map(line => line.trimEnd()).join("\n");
     expect(second).toMatchSnapshot();
-    const seen = first + "\n" + second;
+    const viewed = [first, second];
+    for (let page = 0; page < 2; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
+    const seen = viewed.join("\n");
     expect(seen).toContain("S1 | On(default) | $0.0000");
     expect(seen).toContain("Project: pi:pi-test (undeclared)");
     expect(seen).toContain("Noting        ███████░░░  72.0% 36/50");

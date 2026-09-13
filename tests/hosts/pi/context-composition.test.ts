@@ -135,59 +135,78 @@ test("loaded SKILL.md/reference content and pasted tags stay Conversation; exclu
   expect(before.amounts.Conversation).toBeGreaterThan(0);
 });
 
-test("reported totals never rescale measured categories; unknown gap, missing APIs and non-text remain honest", () => {
+test("SDK occupancy remains separate from measured text and an incomplete local census", () => {
   const f = fixture(), baseline = f.read();
   f.ctx.getContextUsage = () => ({ tokens: 10000, contextWindow: 500000, percent: 2 });
-  expect(f.read().amounts.System).toBe(baseline.amounts.System);
-  expect(f.read().amounts.Unknown).toBe(10000 - baseline.total);
-  f.ctx.getContextUsage = () => ({ tokens: 0, contextWindow: 500000, percent: 0 });
-  expect(f.read().total).toBe(baseline.total);
-  f.ctx.getSystemPrompt = () => { throw Error("unavailable"); };
-  expect(f.read().complete).toBe(false);
-  expect(compositionMap(f.read(), "test", 80).join("\n")).toContain("free unknown");
-  expect(compositionMap(f.read(), "test", 80).join("\n")).not.toContain("Free ~");
+  let value = f.read();
+  expect(value.amounts.System).toBe(baseline.amounts.System);
+  expect(value.total).toBe(baseline.total);
+  expect(value.sdkDifference).toBe(10000 - baseline.total);
+
+  f.ctx.getSystemPrompt = () => "x".repeat(407_300); // about 58.2k local text, matching the report shape
+  f.sm.appendMessage({ role: "user", content: [
+    { type: "text", text: "measured text remains classified" },
+    { type: "image", data: "a".repeat(1000), mimeType: "image/png" },
+  ], timestamp: 1 });
+  f.ctx.getContextUsage = () => ({ tokens: 60237, contextWindow: 512000, percent: 0 });
+  value = f.read();
+  const text = compositionMap(value, "test", 80).join("\n");
+  expect(value.complete).toBe(false);
+  expect(value.total).toBeGreaterThan(58_100);
+  expect(value.total).toBeLessThan(58_300);
+  expect(value.total).toBeLessThan(value.sdkTokens!);
+  expect(text).toContain("SDK occupancy estimate ~60.2k / 512k");
+  expect(text).toContain("Estimated remaining ~451.8k");
+  expect(text).toContain("unclassified numerical gap");
+  expect(text).toContain("non-text content is unmeasured");
+  expect(text).not.toContain("?".repeat(20));
 });
 
-test.each([1, 102, 150, null, undefined, -1, NaN, Infinity])("SDK total %s is disclosed without rescaling or invented Free", reported => {
+test.each([1, 102, 150, null, undefined, -1, NaN, Infinity])("SDK total %s is disclosed without rescaling local categories", reported => {
   const f = fixture();
   f.ctx.getSystemPrompt = () => "x".repeat(714); // exactly 102 rebuilt tokens
   f.ctx.getContextUsage = () => ({ tokens: reported, contextWindow: 1000, percent: 99 }) as any;
-  const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
+  const value = f.read(), lines = compositionMap(value, "test", 40), text = lines.join("\n");
   const valid = typeof reported === "number" && Number.isFinite(reported) && reported >= 0;
   expect(value.amounts.System).toBe(102);
-  expect(value.amounts.Unknown).toBe(valid ? Math.max(0, reported - 102) : 0);
-  expect(text).toContain(!valid ? "SDK unknown" : reported === 102 ? "SDK matches text" : "SDK mismatch");
-  expect(text.includes("Free ~")).toBe(valid && reported >= 102);
-  if (!valid || reported < 102) {
-    expect(text).toContain("free unknown");
-    expect(text).not.toContain("89.8%");
-    expect(text).toContain("?".repeat(20));
+  expect(value.total).toBe(102);
+  expect(value.sdkDifference).toBe(valid ? reported - 102 : undefined);
+  expect(text).toContain(valid ? "SDK occupancy estimate" : "Capacity estimate unavailable: SDK usage unavailable");
+  expect(text).toContain("Local rebuilt text ~102");
+  expect(text.includes("Estimated remaining")).toBe(valid);
+  expect(text).not.toContain("?".repeat(20));
+  if (valid && reported < 102) {
+    expect(text).toContain("below local rebuilt text estimate");
+    expect(text).toContain("local categories are not reduced");
   }
 });
 
-test("usage exceptions, unknown windows, fractional SDK estimates and overcapacity stay honest", () => {
+test("usage exceptions, unavailable windows, fractional SDK estimates and overcapacity stay honest", () => {
   const f = fixture();
   f.ctx.getContextUsage = () => { throw Error("usage unavailable"); };
-  expect(compositionMap(f.read(), "test", 40).join("\n")).toContain("SDK unknown");
+  let lines = compositionMap(f.read(), "test", 40);
+  expect(lines.join("\n")).toContain("Capacity estimate unavailable: SDK usage unavailable");
+  expect(lines.join("\n")).not.toContain("?".repeat(20));
   f.ctx.getSystemPrompt = () => "x".repeat(714);
   for (const window of [undefined, 0, -1, NaN, Infinity]) {
     f.ctx.model!.contextWindow = window as number;
     f.ctx.getContextUsage = () => ({ tokens: 102, contextWindow: window, percent: null }) as any;
     const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
     expect(value.window).toBeUndefined();
-    expect(text).toContain("/ Unknown");
-    expect(text).not.toContain("Free ~");
+    expect(text).toContain("Capacity estimate unavailable: context window unavailable");
+    expect(text).toContain("SDK occupancy estimate ~102");
+    expect(text).not.toContain("?".repeat(20));
   }
   f.ctx.getContextUsage = () => ({ tokens: 102.5, contextWindow: 100, percent: 102.5 });
   const value = f.read(), text = compositionMap(value, "test", 40).join("\n");
   expect(value.sdkTokens).toBe(102.5); // SDK estimates are not persisted composition integers.
-  expect(value.amounts.Unknown).toBe(0.5);
-  expect(text).toContain("SDK mismatch");
+  expect(value.sdkDifference).toBe(0.5);
+  expect(text).toContain("unclassified numerical gap");
   expect(text).toContain("102.5%");
-  expect(text).not.toContain("Free ~");
+  expect(text).not.toContain("Estimated remaining ~-");
   expect(compositionMap(value, "test", 40).slice(0, 5).join("")).toBe("⛁".repeat(100));
   f.ctx.getContextUsage = () => ({ tokens: 1e30, contextWindow: 1000, percent: 0 });
-  expect(compositionMap(f.read(), "test", 40).join("\n")).toContain("> text ~102"); // No cancellation from subtracting a huge SDK gap.
+  expect(compositionMap(f.read(), "test", 40).join("\n")).toContain("above local rebuilt text estimate"); // No cancellation from subtracting a huge SDK gap.
 });
 
 test("only active tool schemas count; image capacity is not fabricated from base64", () => {
@@ -222,17 +241,19 @@ test("shared rounding gives 100 cells without tiny-category minimums; zero and o
   const f = fixture(); f.ctx.getSystemPrompt = () => "";
   f.ctx.getContextUsage = () => ({ tokens: 0, contextWindow: 500000, percent: 0 });
   expect(compositionMap(f.read(), "test", 40).slice(0, 5).join("")).toBe("⛶".repeat(100));
+  f.ctx.getContextUsage = () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 });
+  expect(compositionMap(f.read(), "test", 40).slice(0, 5).join("")).toBe("⛀" + "⛶".repeat(99));
   f.sm.appendCustomMessageEntry("trace-memory", "raw ".repeat(100), false);
   f.ctx.model!.contextWindow = 1;
   f.ctx.getContextUsage = () => ({ tokens: 100, contextWindow: 1, percent: 10000 });
   const lines = compositionMap(f.read(), "test", 40);
   expect(lines.slice(0, 5).join("")).toBe("⛁".repeat(100));
-  expect(lines.join("\n")).not.toContain("Free ~");
+  expect(lines.join("\n")).toContain("Estimated remaining ~0 (0.0%)");
 });
 
 test.each([1, 20, 40, 80, 100])("composition and single continuous Memory bar fit %i columns", width => {
-  const value: ContextComposition = { amounts: { System: 800, Skills: 300, Tools: 0, Memory: 24000, Conversation: 0, Other: 0, Unknown: 0 },
-    memory: { Knowledge: 12000, Facts: 6000, Raw: 6000, Unclassified: 0 }, window: 500000, total: 25100, sdkTokens: 25100, complete: true };
+  const value: ContextComposition = { amounts: { System: 800, Skills: 300, Tools: 0, Memory: 24000, Conversation: 0, Other: 0 },
+    memory: { Knowledge: 12000, Facts: 6000, Raw: 6000, Unclassified: 0 }, window: 500000, total: 25100, sdkTokens: 25100, sdkDifference: 0, complete: true };
   const paint = (color: string, text: string) => `\x1b[${color === "syntaxKeyword" ? 31 : color === "syntaxString" ? 32 : 33}m${text}\x1b[39m`;
   const lines = compositionMap(value, "fake/test", width, paint);
   const rendered = statusBody(lines, width);

@@ -43,9 +43,10 @@ try {
   const requestsBeforePanel = h.requests.length;
   h.setContextUsage({ tokens: 1, contextWindow: 200000, percent: 0 });
   await trace("");
-  assert.ok(h.notices.at(-1)!.includes("SDK mismatch: 1"));
-  assert.ok(h.notices.at(-1)!.includes("free unknown"));
-  assert.ok(!h.notices.at(-1)!.includes("Free ~"));
+  assert.ok(h.notices.at(-1)!.includes("SDK occupancy estimate ~1 / 200k"));
+  assert.ok(h.notices.at(-1)!.includes("below local rebuilt text estimate"));
+  assert.ok(h.notices.at(-1)!.includes("Estimated remaining"));
+  assert.ok(!h.notices.at(-1)!.includes("?".repeat(20)));
   assert.ok(h.notices.at(-1)!.includes("Pi rebuilt text estimate"));
   h.setContextUsage({ tokens: 44500, contextWindow: 200000, percent: 22.25 });
   const terminal = { columns: 40, rows: 24, write() {}, hideCursor() {}, showCursor() {} };
@@ -66,6 +67,7 @@ try {
         const screen = (tui as any).compositeOverlays(Array(24).fill("background"), terminal.columns, terminal.rows);
         assert.equal(screen.length, terminal.rows);
         const plain = screen.map(stripTerminalSequences);
+        assert.ok(!plain.some((line: string) => line.includes("background")), "open overlay must cover every viewport row");
         for (const action of ["Off", "Runs", "Project", "Mark"])
           assert.ok(plain.some((line: string) => line.trim().replace(/^→ /, "") === action));
         seen.push(...plain); component.handleInput?.("\x1b[6~");
