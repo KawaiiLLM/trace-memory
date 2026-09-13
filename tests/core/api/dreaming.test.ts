@@ -427,9 +427,33 @@ test.each(["policy", "graph"] as const)("35 rejecting final %s race persists the
   expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
 });
 
+test("final completion reuses its one authoritative processed projection for audit and quota enforcement", async () => {
+  let finalGraphInputs = 0;
+  const f = fixture(async () => {
+    const graphInputs = vi.spyOn(f.store, "commitGraphInput");
+    const transaction = f.store.transaction.bind(f.store);
+    vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
+      graphInputs.mockClear(); // awaited post-run validation happened before this final transaction
+      const value = transaction(fn);
+      finalGraphInputs = graphInputs.mock.calls.length;
+      return value;
+    });
+    return success;
+  });
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+  // Candidate/path/pending inspection shares one graph input. Audit, quota enforcement and
+  // post-certification range closure share the other; no graph is rebuilt within either calculation.
+  expect(finalGraphInputs).toBe(2);
+});
+
 test("35 a downstream settlement failure keeps the successful final check distinct and rolls back certification", async () => {
   const f = fixture(async () => {
-    vi.spyOn(f.store, "completeDreaming").mockImplementationOnce(() => { throw new Error("injected settlement failure"); });
+    const original = f.store.updateRun.bind(f.store);
+    let successfulUpdates = 0;
+    vi.spyOn(f.store, "updateRun").mockImplementation((...args) => {
+      if (args[1].outcome === "success" && ++successfulUpdates === 2) throw new Error("injected settlement failure");
+      return original(...args);
+    });
     return success;
   });
   const result = await f.memory.dream(f.target);

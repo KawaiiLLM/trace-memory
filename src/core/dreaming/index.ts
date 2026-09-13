@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { Store, RunInput } from "../store/index.ts";
+import { DreamingScopeAuditError, type Store, type RunInput } from "../store/index.ts";
 import { checkProcessedScopes, placementOwner, processedBlock } from "../store/processing.ts";
 import { renderFact, renderFactGroups, renderKnowledgeBlock, budgetKnowledge, tokens } from "../render/index.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
@@ -106,14 +106,16 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const admitted = new Set(readKnowledgeCommits.map(v => v.commit));
   const formal = new Set(frozen.changed.versions.map(v => v.revision.id));
   const eventResults = new Map(frozen.changed.eventResults.map(value => [value.eventId, value.commits]));
-  const check = (): DreamingCheckResult => {
+  const inspect = () => {
     let family = range.knowledgeIds;
     const currentRunId = store.dreamingRunId(run);
     if (currentRunId === undefined) throw new Error("trusted Dreamer run binding required");
     // The bound run capability, claim and frozen-family write checks make every committed revision
     // here a legal operation of this pass. Range membership or an actor label is not provenance.
     const ownCandidates = store.listCommitsByRun(currentRunId).map(revision => revision.id);
-    const graph = store.commitGraph(null);
+    const graphInput = store.commitGraphInput();
+    const pathSnapshot = store.pathSnapshot(path);
+    const graph = store.commitGraph(null, undefined, undefined, graphInput);
     const candidates = [...new Set([...formal, ...ownCandidates])].sort((a, b) => a - b);
     const consumers = store.consumingSuccessors(candidates);
     const resultIds = candidates.filter(id => consumers.get(id)!.length === 0);
@@ -138,7 +140,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
 
     // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only
     // processed material. Consumed formal inputs and filtered leaves are successful dispositions.
-    const pathGraph = store.commitGraph(path);
+    const pathGraph = store.commitGraph(path, undefined, pathSnapshot, graphInput);
     const ownSet = new Set(ownCandidates);
     const externalSuccessors: { knowledgeId: number; commit: number }[] = [];
     for (const reference of [...admitted].filter(id => !formal.has(id))) {
@@ -148,33 +150,39 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         externalSuccessors.push({ knowledgeId: revision.knowledgeId, commit: revision.id });
     }
 
-    // One policy read owns every cap and derived capacity in this canonical snapshot. The full
-    // projection is retained for audit; the receipt separately selects this target's owner rows.
-    const currentBudgets = store.knowledgeBudgets();
     const affected = new Set(candidates.map(id => placementOwner(store, { revision: store.knowledgeRevision(id)! })));
-    const scopes = checkProcessedScopes(store, resultIds, affected, currentBudgets, true);
-    failures.push(...scopes.problems);
-    const pending = store.pendingKnowledgeEvents(path);
+    const versions = candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
+      knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
+      successorCommits: consumers.get(commit),
+    }; });
+    const pending = store.pendingKnowledgeEvents(path, pathSnapshot, graphInput, pathGraph);
     const target = store.getSession(path.sessionId);
     if (!target) failures.push(`Dreamer target session ${path.sessionId} is unavailable`);
     const relevantOwnerScopes = ["global", ...(target ? [`project:${target.projectId}`, `session:${target.id}`] : [])];
-    const problems = [...failures, ...externalSuccessors.map(value =>
-      `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
-    return { family, suppliedEventIds: eventIds, eventIds: accountedEventIds, retainedEventIds: range.eventIds,
-      candidateIds: candidates, resultIds,
-      consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
-      pendingEventIds: pending.filter(value => value.kind === "event").map(value => value.id),
-      pendingVersionIds: pending.filter(value => value.kind === "version").map(value => value.id),
-      relevantOwnerScopes,
-      versions: candidates.map(commit => { const revision = store.knowledgeRevision(commit)!; return {
-        knowledgeId: revision.knowledgeId, commit, processed: store.isKnowledgeProcessed(commit),
-        successorCommits: consumers.get(commit),
-      }; }),
-      verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures, problems,
-      remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired,
-      capacities: { applicable: currentBudgets.applicable, injection: currentBudgets.injection,
-        dreamingProcessedInput: currentBudgets.dreamingProcessedInput },
-      admittedProcessedInputCap: frozen.admittedProcessedInputCap };
+    const finish = (scopes: ReturnType<typeof checkProcessedScopes>, currentBudgets: ReturnType<Store["knowledgeBudgets"]>): DreamingCheckResult => {
+      const finalFailures = [...failures, ...scopes.problems];
+      const problems = [...finalFailures, ...externalSuccessors.map(value =>
+        `K${value.knowledgeId}@${value.commit}: independently verified external successor of reference-only processed material after freeze; reading alone cannot certify it`)];
+      return { family, suppliedEventIds: eventIds, eventIds: accountedEventIds, retainedEventIds: range.eventIds,
+        candidateIds: candidates, resultIds,
+        consumedInputIds: [...formal].filter(id => candidates.includes(id) && consumers.get(id)!.length > 0),
+        pendingEventIds: pending.filter(value => value.kind === "event").map(value => value.id),
+        pendingVersionIds: pending.filter(value => value.kind === "version").map(value => value.id),
+        relevantOwnerScopes, versions,
+        verifiedConsumedBases: verifiedConflicts, ...scopes, externalSuccessors, operationFailures, failures: finalFailures, problems,
+        remainingRounds: Math.max(0, frozen.maxToolRounds - rounds), repairAvailable: !repaired,
+        capacities: { applicable: currentBudgets.applicable, injection: currentBudgets.injection,
+          dreamingProcessedInput: currentBudgets.dreamingProcessedInput },
+        admittedProcessedInputCap: frozen.admittedProcessedInputCap };
+    };
+    return { eventIds: accountedEventIds, resultIds, affected, externalSuccessors, finish };
+  };
+  const check = (): DreamingCheckResult => {
+    const state = inspect();
+    // Awaited pass-end and post-run checks always read current policy/projection; they are never
+    // reused across the provider await. Only the later final transaction shares its own snapshot.
+    const currentBudgets = store.knowledgeBudgets();
+    return state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, true), currentBudgets);
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
@@ -211,14 +219,34 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         // against a coherent final graph. Persist audit + settlement together, before returning.
         // Keep the returned value outside SQLite rollback so a rejection can retain the exact state
         // that rejected it rather than the earlier optimistic check.
-        finalCheck = check();
+        const state = inspect();
+        if (state.externalSuccessors.length) {
+          const currentBudgets = store.knowledgeBudgets();
+          finalCheck = state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, true), currentBudgets);
+          if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
+          run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
+          store.updateRun(runId, { ...run, outcome: "conflict" });
+          store.settleDreamingConflict(run, finalCheck.problems.join("; "));
+          return { outcome: "conflict" as const, runId, problems: [...finalCheck.problems] };
+        }
+
+        // completeDreamingWithScopeAudit owns the only canonical processed projection in this
+        // transaction and exposes it only after enforcing it. Core then finishes the audit; any
+        // final graph/audit/settlement failure rolls back the provisional completion in the outer
+        // transaction. Rejected scope receipts carry blockers without certifying anything.
+        store.updateRun(runId, { ...run, outcome: "success" });
+        let audit: ReturnType<Store["completeDreamingWithScopeAudit"]>;
+        try {
+          audit = store.completeDreamingWithScopeAudit(runId, state.eventIds, state.resultIds);
+        } catch (error) {
+          if (error instanceof DreamingScopeAuditError) finalCheck = state.finish(error.audit.check, error.audit.budgets);
+          throw error;
+        }
+        finalCheck = state.finish(audit.check, audit.budgets);
         if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
-        const outcome = finalCheck.externalSuccessors.length ? "conflict" as const : "success" as const;
         run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
-        store.updateRun(runId, { ...run, outcome });
-        if (outcome === "conflict") store.settleDreamingConflict(run, finalCheck.problems.join("; "));
-        else store.completeDreaming(runId, [...finalCheck.eventIds], [...finalCheck.resultIds]);
-        return { outcome, runId, problems: [...finalCheck.problems] };
+        store.updateRun(runId, { ...run, outcome: "success" });
+        return { outcome: "success" as const, runId, problems: [...finalCheck.problems] };
       });
     } catch (error) {
       const message = String(error);

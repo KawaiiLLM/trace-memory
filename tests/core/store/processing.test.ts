@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Store, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
+import { DreamingScopeAuditError, Store, type DreamingScopeAudit, type KnowledgeOperationInput } from "../../../src/core/store/index.ts";
 import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { DEFAULT_KNOWLEDGE_BUDGETS, KNOWLEDGE_VIEW_VERSION, checkProcessedProjection, deriveKnowledgeBudgets, processedBlock } from "../../../src/core/store/processing.ts";
 import { TraceMemory } from "../../../src/core/api/index.ts";
@@ -82,7 +82,7 @@ test.each([2, 12])("32b performance: %s settled ranges keep their own branch/hea
   const input = vi.spyOn(a.store, "commitGraphInput"), graph = vi.spyOn(a.store, "commitGraph"), facts = vi.spyOn(a.store, "factOnPath");
   a.store.completeDreaming(readers[0]!.success(), [c.commit], [c.commit]);
   expect(facts.mock.calls.length).toBeLessThanOrEqual(graph.mock.calls.length);
-  expect(input).toHaveBeenCalledTimes(2); // certification plus one shared range-closing input
+  expect(input).toHaveBeenCalledTimes(1); // certification and shared range closure reuse one immutable graph input
   expect(graph.mock.calls.some(([p]) => p?.branch === "sibling" && p.headTurnId === later.id)).toBe(true);
   expect(ranges.every(r => a.store.dreamingRange(r.id) === null)).toBe(true);
   expect(a.store.dreamingRange(original.id)).not.toBeNull();
@@ -426,6 +426,27 @@ test("32: shared global remainder prevents independent over-cap certification", 
   a.store.completeDreaming(a.success(), [ca.commit], [ca.commit]);
   expect(() => a.store.completeDreaming(b.success(), [cb.commit], [cb.commit])).toThrow(/global.*exceeds 4000/);
   expect(a.store.isKnowledgeProcessed(cb.commit)).toBe(false);
+});
+
+test("audited completion exposes a rejected receipt only after authority has denied certification", () => {
+  const a = fixture(), b = fixture(a.store, "B");
+  const first = a.create("一".repeat(3400), "global"), blocked = b.create("一".repeat(3400), "global");
+  a.store.completeDreaming(a.success(), [first.commit], [first.commit]);
+  const run = b.success();
+  let audit: DreamingScopeAudit | undefined;
+  try {
+    a.store.completeDreamingWithScopeAudit(run, [blocked.commit], [blocked.commit]);
+  } catch (error) {
+    expect(error).toBeInstanceOf(DreamingScopeAuditError);
+    audit = (error as DreamingScopeAuditError).audit;
+  }
+  expect(audit?.check.problems).toHaveLength(1);
+  audit!.check.problems.length = 0; // A mutable/forged audit is reporting data, never approval input.
+  audit!.budgets.global = Number.MAX_SAFE_INTEGER;
+  expect(a.store.isKnowledgeProcessed(blocked.commit)).toBe(false);
+  expect(a.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(run)).toEqual([]);
+  expect(a.store.checkProcessedScopes([blocked.commit]).problems).toHaveLength(1);
+  expect(() => a.store.completeDreaming(run, [blocked.commit], [blocked.commit])).toThrow(/global.*exceeds 4000/);
 });
 
 test("32: existing CHECK constraints migrate without certifying legacy knowledge; placement audit survives reopen", () => {
