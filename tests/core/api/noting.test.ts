@@ -30,7 +30,11 @@ function open(config: ConfigOverride = {}) {
     if (!next) throw new Error("unexpected model call");
     const result = await next(input);
     if (result.request !== undefined) input.reportRequest(result.request);
-    if (result.noteInput !== undefined) input.tools.find((t) => t.name === "note")!.execute(result.noteInput);
+    if (result.noteInput !== undefined) {
+      const note = input.tools.find((t) => t.name === "note")!;
+      const receipt = note.execute(result.noteInput);
+      if (input.reviewFeedback(receipt)) { input.reportRequest(result.request); note.execute(result.noteInput); }
+    }
     return result;
   }, config);
 }

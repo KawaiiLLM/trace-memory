@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
 import { TraceMemory, noVisibility, renderEntry, toolDefinitions, tokens, type EntryProfile } from "../../src/core/api/index.ts";
 import { freezeNoting } from "../../src/core/noting/index.ts";
+import { captureNotingNear, notingNearFeedback } from "../../src/core/noting/review.ts";
 import { freezeConsolidation } from "../../src/core/consolidation/index.ts";
 import { freezeDreaming } from "../../src/core/dreaming/index.ts";
 import { Store } from "../../src/core/store/index.ts";
@@ -450,6 +451,48 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
   } finally { memory.close(); rmSync(copy, { force: true }); }
 }
 
+function notingNearScale(fixture: Fixture, size: string, factCount: number): Sample {
+  const copy = join(cache, `${size}-noting-near-${factCount}.db`);
+  rmSync(copy, { force: true });
+  copyFileSync(fixture.dbPath, copy);
+  const store = new Store(copy);
+  try {
+    const seed = store.db.prepare("SELECT run_id, turn_id, category, actor, quote, status, source, source_time FROM facts WHERE turn_id IN (SELECT id FROM turns WHERE session_id = ?) LIMIT 1")
+      .get(fixture.sessionId) as Record<string, unknown>;
+    const existing = Number((store.db.prepare("SELECT COUNT(*) count FROM facts f JOIN turns t ON t.id = f.turn_id WHERE t.session_id = ?").get(fixture.sessionId) as { count: number }).count);
+    const insert = store.db.prepare("INSERT INTO facts (run_id, turn_id, category, actor, text, quote, status, source, source_time) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const relation = store.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, 1, 'support', 'weak')");
+    store.db.exec("BEGIN");
+    try {
+      for (let i = existing; i < factCount; i++) {
+        const added = insert.run(Number(seed.run_id), Number(seed.turn_id), String(seed.category), String(seed.actor),
+          `NEAR scale package trace memory candidate ${i}`, seed.quote === null ? null : String(seed.quote),
+          seed.status === null ? null : String(seed.status), String(seed.source), String(seed.source_time));
+        relation.run(Number(added.lastInsertRowid));
+      }
+      store.db.exec("COMMIT");
+    } catch (error) { store.db.exec("ROLLBACK"); throw error; }
+    const path = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: fixture.headTurnId };
+    const snapshot = store.pathSnapshot(path);
+    const proposed = Array.from({ length: 15 }, (_, i) => ({ turnId: fixture.headTurnId, category: "observation" as const,
+      actor: "agent" as const, text: `NEAR scale package trace memory candidate ${i}`, source: [`T${fixture.headTurnId}#assistant`],
+      createdAt: "2026-09-13T00:00:00Z" }));
+    let queryCount = 0, counting = false;
+    const original = store.db.prepare.bind(store.db);
+    (store.db as unknown as { prepare(sql: string): unknown }).prepare = ((sql: string) => { if (counting) queryCount++; return original(sql); }) as never;
+    const sample = measure(`noting NEAR whole chain (${factCount} facts)`, () => {
+      queryCount = 0; counting = true;
+      try {
+        const held = captureNotingNear(store, fixture.sessionId, path, snapshot, proposed, { facts: proposed }, 0.40);
+        if (held.candidates.length !== factCount || held.shown.length !== proposed.length) throw new Error("invalid Noting NEAR performance fixture");
+        notingNearFeedback(held);
+      } finally { counting = false; }
+    }, `${factCount} applicable facts × 15 proposed; path filter + similarity + relation read + feedback; constant queries measured below`);
+    sample.note += `; ${queryCount} pool queries`;
+    return sample;
+  } finally { store.close(); rmSync(copy, { force: true }); }
+}
+
 async function runSize(size: string) {
   const options = SIZES[size];
   if (!options) throw new Error(`unknown size ${size}; use ${Object.keys(SIZES).join(" | ")}`);
@@ -493,7 +536,14 @@ async function runSize(size: string) {
     `(heaviest T${fixture.heavyTurnId} with ${heavy.n} tool calls), ${fixture.factCount} facts (${fixture.pathFactCount} on this branch), ` +
     `${fixture.knowledgeCount} knowledge revisions, ${fixture.pendingEntryCount} pending entries`);
 
+  const nearPath = { sessionId: fixture.sessionId, branch: fixture.branch, headTurnId: head };
+  const nearSnapshot = store.pathSnapshot(nearPath);
+  const nearFact = { turnId: head, category: "observation" as const, actor: "agent" as const,
+    text: "deterministic performance candidate", source: [`T${head}#assistant`], createdAt: "2026-09-13T00:00:00Z" };
   const samples: Sample[] = [
+    ...(size === "baseline" ? [notingNearScale(fixture, size, 2_000), notingNearScale(fixture, size, 20_000)] : []),
+    measure("noting NEAR capture (one proposed fact)", () => captureNotingNear(store, fixture.sessionId, nearPath, nearSnapshot,
+      [nearFact], { facts: [nearFact] }, memory.config.noting.nearThreshold)),
     measure("listBranchFacts", () => store.listBranchFacts(fixture.sessionId, fixture.branch, head)),
     measure("consolidationBatch", () => store.consolidationBatch(fixture.sessionId, fixture.branch, head)),
     measure("branchSummary", () => memory.branchSummary(fixture.sessionId, fixture.branch, head)),

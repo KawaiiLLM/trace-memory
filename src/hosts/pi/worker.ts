@@ -138,7 +138,7 @@ export async function runWorker(task: Task, binding: WorkerBinding): Promise<Run
       // (26d): a fork's request prefix has to stay the captured parent's.
       thinkingLevel: task.thinkingLevel as ThinkingLevel | undefined,
       tools: binding.tools, maxToolRounds: binding.maxToolRounds,
-      signal: task.signal, feedback: task.kind === "consolidation" ? task.reviewFeedback : undefined,
+      signal: task.signal, feedback: task.kind === "dreaming" ? undefined : task.reviewFeedback,
       ...(task.kind === "dreaming" ? { passEnd: task.passEnd, reportRounds: task.reportRounds } : {}),
       onRequest: (body: unknown, contextTokens: number | undefined) => { binding.checkCapacity!(contextTokens); request = body; task.reportRequest(body); },
       onProgress: (state: { usage: unknown; retries: { attempt: number; error: string }[]; thinking?: RunAgentResult["thinking"] }) => {

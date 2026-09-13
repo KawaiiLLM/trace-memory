@@ -3,6 +3,7 @@ import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import { DEFAULT_READ_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
+import { captureNotingNear, notingNearAudit, notingNearFeedback, type NotingNearSnapshot } from "../noting/review.ts";
 
 export interface ToolDefinition {
   name: "trace" | "search" | "note" | "memory" | "check";
@@ -40,7 +41,7 @@ const memoryOperationSchema = { ...object({ op: { enum: ["create", "update", "me
 export const toolDefinitions: Omit<ToolDefinition, "execute">[] = [
   { name: "trace", description: "Read evidence by address. For a complete knowledge version use trace({address:'K12@57',itemBudget:null}); pageBudget still applies. Follow every cursor before an exact write handle is granted. Complete K versions already supplied internally need no reread. T792 is a Turn; T792#E2 is its stable native entry; T792#E2@text, @thinking or @toolCallId select stored blocks. T792@user/@assistant/@toolResult selects complete role messages; @text collects text (including result text), never arguments or thinking. T792@F* selects Turn-owned facts. T792#E2..E7 is inclusive (gaps allowed); T792#E2,E7 keeps written order and repeats, with a trailing @selector applying to the whole selection. A new complete T/F/K target starts another component. Tool IDs containing delimiters or reserved selector names use a JSON-quoted selector. No other globbing or chained @. Legacy #user/#assistant/#tN remain readable; new citations use exact E addresses. itemBudget caps EACH child of the selected container (Turn: entries; one entry: blocks), default 2000; toolCallBudget and toolResultBudget default 100 as additional ceilings. null disables each content ceiling independently; to remove all compression set ALL THREE to null. pageBudget independently defaults to 2000 for every trace read. Knowledge identity or global integer commit: K1, K1@57, K1@57..K1@61, K1.. (all branches). Reads are unrestricted. F<n>.. navigates later strong negations, never a current conclusion. One address may list several, comma separated, in the order asked and repeats kept: F81,F90,F95, kinds mixable. F81-F90 is the inclusive fact-id interval (ascending endpoints), combinable as F81-F90,F95; it reads the facts that exist in the range and is empty when none do. Each page is at most 2000 estimated tokens by default, including receipts; cap counts output lines (default 100). full removes content compression, not pagination. Oversized lines continue in lossless fragments (see receipts). cursor continues that same frozen read alone, retaining its token budget.", parameters: object({ address: string, ...budgets, tool: { type: "integer", minimum: 1 }, full: { type: "boolean" }, ...pagination }, ["address"]) },
   { name: "search", description: `Use unrestricted literal substring search over facts, raw and knowledge commits. layer selects facts, knowledge, raw or all; no hit does not mean absent. maxTokens defaults to ${DEFAULT_READ_TOKENS} estimated tokens for the entire response; cap still limits output lines (default 100). Continue with cursor and an empty query; omit maxTokens or repeat the original budget (changes are rejected). Oversized hits continue in lossless fragments (see receipts). Very small budgets are rejected. Search previews never count as complete knowledge reads.`, parameters: object({ maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: DEFAULT_READ_TOKENS }, query: string, layer: { enum: ["facts", "knowledge", "raw", "all"] }, ...pagination }, ["query"]) },
-  { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. Thinking is readable, not evidence for new facts: @thinking and thinking-only entries are invalid sources; whole mixed entries cite only text/call/result blocks. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
+  { name: "note", description: "Write one atomic facts batch. Noting runs are the normal writers; main agents may write but have no memory duty. Rejections write nothing; correct and resubmit the whole batch. A valid first Noting batch with lexical neighbours returns NEAR without committing; read it and resubmit the complete batch to commit. With no neighbours, and for manual calls, the first valid batch commits. Lexical nearness is not relation evidence. Thinking is readable, not evidence for new facts: @thinking and thinking-only entries are invalid sources; whole mixed entries cite only text/call/result blocks. No timestamps; event status is required. $n references an earlier item in this batch.", parameters: object({ facts: { type: "array", items: factSchema } }, ["facts"]) },
   { name: "memory", description: "Write one atomic ordinary knowledge batch. Consolidation runs are the normal writers and may create, update or archive; main agents may also make a fact-backed binary merge but have no memory duty. Operations carry non-empty change supports and a reason (the commit message, never evidence). Create/update submit the complete resulting text/category/scope and topics (subject labels; the complete replacement set, empty when unclassified); archive records archival state while inheriting its parent's category, scope and topics. Automatic merge/split maintenance belongs to Dreamer; split is unavailable to manual callers. First valid Consolidation batch returns review guidance; resubmit the whole batch to commit. Manual calls commit immediately. Base-commit rejection is atomic; re-read and resubmit. Update/archive and every manual merge parent require an explicit complete-body K1@57 read. Bare K1 and search previews grant no write handle.", parameters: object({ operations: { type: "array", items: memoryOperationSchema }, skipped: { type: "array", items: object({ fact: factId, because: { type: "string", minLength: 1 } }, ["fact", "because"]) } }, ["operations", "skipped"]) },
 ];
 
@@ -92,8 +93,14 @@ export function toolRejected(name: string, content: string): boolean {
   } catch { return false; }
 }
 
+/** Core's reader for the existing user-role review receipt used by both writer protocols. */
+export function reviewFeedback(toolResult: string): string | undefined {
+  try { const value = JSON.parse(toolResult); return value?.feedback?.role === "user" ? String(value.feedback.content) : undefined; }
+  catch { return undefined; }
+}
+
 export function bindTools(store: Store, read: Reads, supplied: ToolContext, metadata?: RunInput, review?: MemoryReview,
-  reads = new Map<number, KnowledgeWithRevision>(), dreaming?: { path: KnowledgePath; check(): string }) {
+  reads = new Map<number, KnowledgeWithRevision>(), dreaming?: { path: KnowledgePath; check(): string }, notingNearThreshold = 0.40) {
   const context = structuredClone(supplied);
   const session = store.getSession(context.sessionId);
   if (!session || !context.branch) throw new Error("tools require an existing session and a non-empty branch");
@@ -126,6 +133,9 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
   const sourceTurns = store.pathTurns(path);
   const initialPath = context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
+  // Candidate applicability uses the same binding-time membership as source resolution. The pool is
+  // read later, after the first valid submission, but a tree move cannot replace this snapshot.
+  const initialPathSnapshot = context.kind === "noting" ? store.pathSnapshot(path) : undefined;
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
   const frozenIds = new Set(frozenEntries), frozenPath = new Set(initialPath.map(e => e.id));
   if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
@@ -136,12 +146,16 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
-  let problems: string[] = [];
+  let problems: string[] = [], requests = 0, reviewRequest = -1;
+  let nearSnapshot: NotingNearSnapshot | undefined, committedFacts: FactCommitInput[] | undefined;
+  const nearAudit = () => notingNearAudit(nearSnapshot);
   // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
   // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
   const existingFact = (id: number) => !!store.getFact(id);
   const note = (input: Record<string, unknown>): string => {
     if (context.kind === "consolidation" || context.kind === "dreaming") return "rejected: note is not available to this knowledge worker";
+    if (context.kind === "noting" && nearSnapshot?.shown.length && requests === reviewRequest)
+      return "rejected: the review feedback has not been read yet; resubmit after the feedback message";
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
@@ -206,6 +220,16 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     });
     problems = results.filter((r) => r.startsWith("rejected:"));
     if (problems.length) return JSON.stringify({ results });
+    // The pool is first read only after the ordinary whole batch has validated. It is then held for
+    // this binding, whether the review is empty or shown, so later facts cannot enlarge the attempt.
+    if (context.kind === "noting" && !nearSnapshot) {
+      nearSnapshot = captureNotingNear(store, session.id, path, initialPathSnapshot!, commits, input as { facts: unknown[] }, notingNearThreshold);
+      if (nearSnapshot.shown.length) {
+        reviewRequest = requests;
+        problems = ["first batch requires a second submission"];
+        return JSON.stringify({ results, feedback: { role: "user", content: notingNearFeedback(nearSnapshot) } });
+      }
+    }
     // 26a: an explicit `note({facts: []})` is how a Noter completes a genuinely empty batch, so its
     // receipt says the batch committed instead of returning two empty arrays and nothing else.
     const receipt = (ids: number[]) => JSON.stringify(ids.length ? { results: ids.map((id) => `ok: F${id}`), factIds: ids }
@@ -213,14 +237,15 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     const committedRun = store.commitNotingRun({ run: { ...run,
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "noting" ? context.readKnowledgeCommits : [] }) }, facts: commits,
-      responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits }),
+      responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits,
+        ...(nearAudit() ? { notingNearReview: nearAudit() } : {}) }),
       ...(context.kind === "noting" ? { entryIds: frozenEntries } : {}) });
     // 26a: an empty submission has no per-item slot to carry a refused commit, so it is refused as a
     // plain `rejected:` receipt — the same refusal the reader and `toolRejected` already classify.
     if (!committedRun.ok) { problems = committedRun.problems;
       return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
     const result = receipt(committedRun.facts.map((f) => f.id));
-    if (context.kind === "noting") committed = committedRun;
+    if (context.kind === "noting") { committed = committedRun; committedFacts = structuredClone(commits); }
     return result;
   };
   // Exceptions outside memory's batch validator must also block Dreamer completion until
@@ -246,7 +271,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
-      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}) }) });
+      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}),
+        ...(nearAudit() ? { notingNearReview: nearAudit() } : {}) }) });
       return result;
     } });
   const tools = [
@@ -262,6 +288,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
-  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; }, close: () => { closed = true; },
-    reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); memory.requestSeen(); run.request = JSON.stringify(request); } };
+  return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; },
+    get notingNear() { return { snapshot: nearSnapshot, committedFacts }; }, get notingNearAudit() { return nearAudit(); }, close: () => { closed = true; },
+    reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); requests++; memory.requestSeen(); run.request = JSON.stringify(request); } };
 }
