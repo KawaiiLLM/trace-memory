@@ -27,6 +27,7 @@ export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
 export { compareTriggerOrigins } from "../model/index.ts";
 export type { TriggerOrigin, TriggerOriginRelation } from "../model/index.ts";
 export type { NotingInput, NotingResult, NotingAgentInput, NotingMaterial, EntryAudit } from "../noting/index.ts";
+export type { NotingDiagnostic, NotingNearAudit, NotingUnansweredNearPair } from "../noting/review.ts";
 export { NOTING_CAPACITY, NOTING_INCOMPLETE, NOTING_MEMBERSHIP } from "../noting/index.ts";
 import { Store, type SourceInput, type SourceEntry, type KnowledgePath, type Phase, type TaskClaim, type TaskTarget, type ClosedSessionScope } from "../store/index.ts";
 

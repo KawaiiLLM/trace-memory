@@ -173,6 +173,46 @@ test("27b 2026-09-10: a provider context-overflow rejection with nothing committ
   } finally { await f.dispose(); }
 }, 30000);
 
+test("38b: a Noter review overflow fallback isolates different held pools and diagnoses only the committing attempt", async () => {
+  const f = await fixture({ notingModel: "fake/test-mini" });
+  try {
+    const oldText = "Package trace-memory moved from beta.1 to beta.2";
+    const finalText = "Package trace-memory moved from beta.2 to beta.3";
+    f.script((body: Body) => {
+      if (!worker(body)) return say("Seeded.");
+      return submitted(body) ? say("Done.") : call("seed", "note", { facts: [{ ...noteBatch.facts[0], text: oldText }] });
+    });
+    await f.turn("seed source " + "word ".repeat(100));
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual([oldText]);
+
+    let inserted = false;
+    const finalBatch = { facts: [{ ...noteBatch.facts[0], text: finalText, source: ["T2#user"] }] };
+    f.script((body: Body) => {
+      if (!worker(body)) return say("Target recorded.");
+      if (!fresh(body)) {
+        if (!toolResults(body)) return call("candidate", "note", finalBatch);
+        if (!inserted) {
+          inserted = true;
+          const note = f.h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(tool => tool.name === "note")!;
+          for (let i = 0; i < 3; i++) note.execute({ facts: [{ ...noteBatch.facts[0], text: finalText }] });
+        }
+        return rejected(OVERFLOW);
+      }
+      return toolResults(body) >= 2 ? say("Done.") : call(`fresh-${toolResults(body)}`, "note", finalBatch);
+    });
+    await f.turn("target source " + "word ".repeat(100));
+    const [, attempt, run] = await records(f, 3);
+    const first = JSON.parse(attempt!.response!), second = JSON.parse(run!.response!);
+    expect([attempt!.mode, attempt!.outcome, run!.mode, run!.outcome]).toEqual(["fork", "failure", "subagent", "success"]);
+    expect(first.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([1]);
+    expect(first.diagnostics).toBeUndefined();
+    expect(second.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([2, 3, 4]);
+    expect(second.diagnostics[0].pairs.map((pair: { neighbour: string }) => pair.neighbour)).toEqual(["F2", "F3", "F4"]);
+    expect(second.diagnostics[0].pairs.every((pair: { fact: string }) => pair.fact === "F5")).toBe(true);
+    expect(second.fallbackReason).toContain(`R${attempt!.id}`);
+  } finally { await f.dispose(); }
+}, 30000);
+
 test.each([
   ["an authentication", "invalid api key: check your credentials"],
   ["a rate-limit", "rate limit exceeded: too many requests, please slow down"],

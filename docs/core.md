@@ -299,9 +299,24 @@ empty batch returns `results: []`, `factIds: []` and `committed: "zero facts; th
 a refused one, having no item slot to carry the reason, returns a plain `rejected: <reason>`. A Noting
 binding commits at most one batch. Candidate facts, applicability bindings and relations use a bounded
 batched read; rejected submissions do not read the pool. The shown first batch, pairs and effective
-threshold remain in the run audit, while the complete historical pool remains binding-local as the
-handoff for later ticket 38b; this review stage produces no unanswered-neighbour diagnostic. The batch,
-run record and frozen entry progress commit in one transaction.
+threshold remain unchanged in `notingNearReview`, while the complete historical pool remains
+binding-local. On commit, `diagnostics` compares every actual final fact with every unique held fact ID
+shown anywhere in that attempt. The same bigram similarity and captured threshold apply, without
+pairing by original position or selecting another top three. An explicit final `support` or `negate` of
+either strength answers the identity pair; otherwise a still-near pair is recorded as
+`{kind: "unanswered_near", pairs: [{fact: "F…", neighbour: "F…", score: …}]}`. Dropped and
+rewritten-below-threshold facts contribute no pair, while inserted final facts may contribute pairs only
+for IDs that were actually shown. Duplicate identity pairs collapse. Empty diagnostics are `[]` on a
+successful automatic Noting commit; no-review, empty-batch and answered reviews therefore add no
+placeholder problem. Manual notes remain outside this automatic diagnostic.
+
+The diagnostic is audit output only: it derives no relation or state and never gates the commit. It is
+computed from the binding's held pool and actual committed identities inside the commit response path,
+without rereading current facts. A pre-commit failure has no committed diagnostic. Ordinary finalization
+and provider failure, overflow or cancellation after commit retain it beside the provider problem and
+business-success outcome. A fork fallback creates a new binding; failed and committing attempts retain
+their own shown evidence and cannot share diagnostic inputs. The batch, run record and frozen entry
+progress commit in one transaction.
 Manual writes commit immediately as a `manual` run with the tool input/result
 as request/response and enter only that branch's Consolidation range. They do not
 advance Noting. `memory` writes knowledge with the uniform batch contract below.

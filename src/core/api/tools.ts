@@ -3,7 +3,7 @@ import { bindMemory, type MemoryReview } from "../consolidation/memory.ts";
 import { ACTORS, FACT_CATEGORIES, EVENT_STATUSES, KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, validateNotingFact, type Fact } from "../model/index.ts";
 import type { Store, RunInput, FactCommitInput, KnowledgeWithRevision, KnowledgePath } from "../store/index.ts";
 import { DEFAULT_READ_TOKENS, validateBudgets, type ListingOptions, type SearchScope, type TraceRead } from "./read.ts";
-import { captureNotingNear, notingNearAudit, notingNearFeedback, type NotingNearSnapshot } from "../noting/review.ts";
+import { captureNotingNear, notingNearAudit, notingNearFeedback, unansweredNotingNear, type NotingDiagnostic, type NotingNearSnapshot } from "../noting/review.ts";
 
 export interface ToolDefinition {
   name: "trace" | "search" | "note" | "memory" | "check";
@@ -145,7 +145,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const memory = bindMemory(store, session.id, run, review, path, reads);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
-  let closed = false, committed: { runId: number; facts: Fact[] } | undefined;
+  let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
   let problems: string[] = [], requests = 0, reviewRequest = -1;
   let nearSnapshot: NotingNearSnapshot | undefined, committedFacts: FactCommitInput[] | undefined;
   const nearAudit = () => notingNearAudit(nearSnapshot);
@@ -234,18 +234,23 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     // receipt says the batch committed instead of returning two empty arrays and nothing else.
     const receipt = (ids: number[]) => JSON.stringify(ids.length ? { results: ids.map((id) => `ok: F${id}`), factIds: ids }
       : { results: [], factIds: [], committed: "zero facts; this batch is complete" });
+    let diagnostics: NotingDiagnostic[] = [];
     const committedRun = store.commitNotingRun({ run: { ...run,
       ...(context.kind === "manual" ? { request: JSON.stringify(input) } : {}),
       response: JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: "ok" }], readKnowledgeCommits: context.kind === "noting" ? context.readKnowledgeCommits : [] }) }, facts: commits,
-      responseForFacts: (ids) => context.kind === "manual" ? receipt(ids) : JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, problems: [], readKnowledgeCommits: context.readKnowledgeCommits,
-        ...(nearAudit() ? { notingNearReview: nearAudit() } : {}) }),
+      responseForFacts: (ids) => {
+        if (context.kind === "manual") return receipt(ids);
+        diagnostics = unansweredNotingNear(nearSnapshot, commits, ids);
+        return JSON.stringify({ toolCalls: [...sequence, { name: "note", input, result: receipt(ids) }], fetched, diagnostics, problems: [], readKnowledgeCommits: context.readKnowledgeCommits,
+          ...(nearAudit() ? { notingNearReview: nearAudit() } : {}) });
+      },
       ...(context.kind === "noting" ? { entryIds: frozenEntries } : {}) });
     // 26a: an empty submission has no per-item slot to carry a refused commit, so it is refused as a
     // plain `rejected:` receipt — the same refusal the reader and `toolRejected` already classify.
     if (!committedRun.ok) { problems = committedRun.problems;
       return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
     const result = receipt(committedRun.facts.map((f) => f.id));
-    if (context.kind === "noting") { committed = committedRun; committedFacts = structuredClone(commits); }
+    if (context.kind === "noting") { committed = { ...committedRun, diagnostics }; committedFacts = structuredClone(commits); }
     return result;
   };
   // Exceptions outside memory's batch validator must also block Dreamer completion until
@@ -271,7 +276,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
         if (name === "note" && !committed) problems = [result]; }
       sequence.push({ name, input: structuredClone(raw), result });
       if (context.kind === "manual" && (name === "note" || name === "memory") && result.includes("rejected:")) store.recordRun({ ...run, request: JSON.stringify(raw), response: result, outcome: "bounced" });
-      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}),
+      if (committed) store.updateRun(committed.runId, { ...run, outcome: "success", response: JSON.stringify({ toolCalls: sequence, fetched, diagnostics: committed.diagnostics, problems: [], ...(context.kind === "noting" ? { readKnowledgeCommits: context.readKnowledgeCommits } : {}),
         ...(nearAudit() ? { notingNearReview: nearAudit() } : {}) }) });
       return result;
     } });

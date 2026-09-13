@@ -227,9 +227,15 @@ test("a failure before correction advances nothing and a fresh attempt reviews a
   expect(attempts).toBe(2);
   expect(memory.store.listSessionFacts(sessionId)).toHaveLength(1);
   expect(memory.progress(sessionId, "main", target.id).entries).toBeGreaterThan(0);
+  for (const run of memory.store.listRuns(sessionId).filter(run => run.kind === "noting" && run.outcome === "failure"))
+    expect(JSON.parse(run.response!).diagnostics).toBeUndefined();
 });
 
-test("a provider failure after the reviewed correction preserves business success and the audit", async () => {
+test.each([
+  ["error", "failure", "provider failed after commit"],
+  ["overflow", "failure", "prompt is too long after commit"],
+  ["cancellation", "cancelled", "cancelled after commit"],
+] as const)("a provider %s after the reviewed correction preserves business success and the audit", async (_label, outcome, output) => {
   const target = appendTarget(oldFact().text);
   agent = async input => {
     input.reportRequest({ round: 1 });
@@ -237,14 +243,191 @@ test("a provider failure after the reviewed correction preserves business succes
     expect(input.reviewFeedback(note.execute({ facts: [newFact(target.id, oldFact().text)] }))).toContain("NEAR:");
     input.reportRequest({ round: 2 });
     expect(JSON.parse(note.execute({ facts: [newFact(target.id, oldFact().text)] })).factIds).toEqual([2]);
-    return { outcome: "failure", output: "provider failed after commit", request: { round: 2 } };
+    return { outcome, output, request: { round: 2 } };
   };
   const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
   expect(result.outcome).toBe("success");
   const response = JSON.parse(memory.store.getRun(result.outcome === "success" ? result.runId : 0)!.response!);
-  expect(JSON.stringify(response.problems)).toContain("provider failed after commit");
+  expect(JSON.stringify(response.problems)).toContain(output);
   expect(response.notingNearReview.firstSubmission.facts[0].text).toBe(oldFact().text);
+  expect(response.toolCalls).toHaveLength(2);
   expect(response.toolCalls.at(-1).result).toContain("F2");
+  expect(response.diagnostics).toEqual([{ kind: "unanswered_near", pairs: [{ fact: "F2", neighbour: "F1", score: 1 }] }]);
+  expect(memory.progress(sessionId, "main", target.id).entries).toBe(0);
+});
+
+test.each([
+  ["with its explicit relation", true],
+  ["without a relation", false],
+] as const)("38b binds reordered final facts by identity %s", async (_label, related) => {
+  const a = oldFact().text;
+  const b = "Database trace-memory moved from schema.2 to schema.3";
+  const bId = addOld(b);
+  memory.config.noting.nearThreshold = 1;
+  const target = appendTarget(`${a}\n${b}`);
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    note.execute({ facts: [newFact(target.id, a), newFact(target.id, b)] });
+    input.reportRequest({ round: 2 });
+    const final = newFact(target.id, b, related ? { negate: [[`F${bId}`, "weak"]] } : {});
+    expect(JSON.parse(note.execute({ facts: [final] })).factIds).toEqual([3]);
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
+  expect(audit.notingNearReview.shown.map((item: { handle: string }) => item.handle)).toEqual(["$1", "$2"]);
+  expect(audit.notingNearReview.firstSubmission.facts.map((fact: { text: string }) => fact.text)).toEqual([a, b]);
+  expect(audit.factIds).toEqual([3]);
+  expect(audit.toolCalls).toHaveLength(2);
+  expect(result.diagnostics).toEqual(related ? [] : [{ kind: "unanswered_near", pairs: [{ fact: "F3", neighbour: `F${bId}`, score: 1 }] }]);
+  expect(audit.diagnostics).toEqual(result.diagnostics);
+});
+
+test("38b dropped and rewritten-below-threshold facts produce no positional or replacement pair", async () => {
+  const a = oldFact().text;
+  const target = appendTarget(a);
+  memory.config.noting.nearThreshold = 1;
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    note.execute({ facts: [newFact(target.id, a)] });
+    input.reportRequest({ round: 2 });
+    note.execute({ facts: [newFact(target.id, "A wholly rewritten final claim")] });
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
+  expect(audit.notingNearReview.shown[0].text).toBe(a);
+  expect(memory.store.getFact(result.facts[0]!.id)?.text).toBe("A wholly rewritten final claim");
+  expect(audit.diagnostics).toEqual([]);
+});
+
+test("38b audits an inserted fact against all unique shown ids without a second top-three or current-pool read", async () => {
+  const a = "Alpha package state";
+  const b = "Beta database state";
+  const c = "Inserted unrelated wording";
+  addOld(a); addOld(a);
+  addOld(b); addOld(b); addOld(b);
+  const neverShown = addOld(c);
+  memory.config.noting.nearThreshold = 0;
+  const target = appendTarget(`${a}\n${b}\n${c}`);
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    note.execute({ facts: [newFact(target.id, a), newFact(target.id, b)] });
+    input.reportRequest({ round: 2 });
+    note.execute({ facts: [newFact(target.id, c)] });
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
+  const shown = audit.notingNearReview.shown.flatMap((item: { neighbours: { factId: number }[] }) => item.neighbours.map(n => n.factId));
+  expect(new Set(shown).size).toBeGreaterThan(3);
+  expect(shown).not.toContain(neverShown);
+  const pairs = audit.diagnostics[0].pairs as { fact: string; neighbour: string }[];
+  expect(pairs).toHaveLength(new Set(shown).size);
+  expect(new Set(pairs.map(pair => `${pair.fact}/${pair.neighbour}`)).size).toBe(pairs.length);
+  expect(pairs.map(pair => pair.neighbour)).not.toContain(`F${neverShown}`);
+});
+
+test("38b duplicate displays collapse to one final identity pair and threshold equality is included", async () => {
+  const a = oldFact().text;
+  memory.config.noting.nearThreshold = 1;
+  const target = appendTarget(a);
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    note.execute({ facts: [newFact(target.id, a), newFact(target.id, a)] });
+    input.reportRequest({ round: 2 });
+    note.execute({ facts: [newFact(target.id, a)] });
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(result.diagnostics).toEqual([{ kind: "unanswered_near", pairs: [{ fact: "F2", neighbour: "F1", score: 1 }] }]);
+});
+
+test.each([["support", "strong"], ["support", "weak"], ["negate", "strong"], ["negate", "weak"]] as const)(
+  "38b an explicit %s relation of %s strength answers the pair", async (kind, strength) => {
+    const a = oldFact().text;
+    memory.config.noting.nearThreshold = 1;
+    const target = appendTarget(a);
+    agent = async input => {
+      input.reportRequest({ round: 1 });
+      const note = input.tools.find(tool => tool.name === "note")!;
+      note.execute({ facts: [newFact(target.id, a)] });
+      input.reportRequest({ round: 2 });
+      note.execute({ facts: [newFact(target.id, a, { [kind]: [["F1", strength]] })] });
+      return { outcome: "success", output: "done", request: { round: 2 } };
+    };
+    const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+    if (result.outcome !== "success") throw new Error("expected success");
+    expect(result.diagnostics).toEqual([]);
+  });
+
+test("38b a rejected committing submission can be corrected and only the actual commit gets diagnostics", async () => {
+  const target = appendTarget(oldFact().text);
+  const commit = memory.store.commitNotingRun.bind(memory.store);
+  let rejectCommit = true;
+  memory.store.commitNotingRun = input => {
+    if (!rejectCommit || input.run.kind !== "noting" || !input.facts.length) return commit(input);
+    rejectCommit = false;
+    const failed = memory.store.recordRun({ ...input.run, outcome: "failure", response: JSON.stringify({ problems: ["forced commit-time refusal"] }) });
+    return { ok: false, runId: failed.id, problems: ["forced commit-time refusal"] };
+  };
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    note.execute({ facts: [newFact(target.id, oldFact().text)] });
+    input.reportRequest({ round: 2 });
+    expect(note.execute({ facts: [newFact(target.id, oldFact().text)] })).toContain("forced commit-time refusal");
+    expect(JSON.parse(note.execute({ facts: [newFact(target.id, oldFact().text, { support: [["F1", "weak"]] })] })).factIds).toEqual([2]);
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error(`expected success: ${JSON.stringify(result)}`);
+  const audit = JSON.parse(memory.store.getRun(result.runId)!.response!);
+  expect(audit.toolCalls).toHaveLength(3);
+  expect(audit.toolCalls[1].result).toContain("forced commit-time refusal");
+  expect(audit.diagnostics).toEqual([]);
+  const refused = memory.store.listRuns(sessionId).find(run => run.id !== result.runId && run.outcome === "failure"
+    && run.response?.includes("forced commit-time refusal"));
+  expect(refused?.outcome).toBe("failure");
+});
+
+test("38b fallback attempts keep separate review pools and only the committing attempt has diagnostics", async () => {
+  const text = "Package trace-memory moved from beta.2 to beta.3";
+  const target = appendTarget(text);
+  let attempt = 0;
+  agent = async input => {
+    attempt++;
+    input.reportRequest({ attempt });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    const first = note.execute({ facts: [newFact(target.id, text)] });
+    expect(input.reviewFeedback(first)).toContain("NEAR:");
+    if (attempt === 1) return { outcome: "failure", output: "context overflow", request: { attempt },
+      refused: { reason: "context overflow", boundary: { exactEntryIds: input.entryIds } } } as RunAgentResult;
+    input.reportRequest({ attempt, round: 2 });
+    note.execute({ facts: [newFact(target.id, text)] });
+    return { outcome: "success", output: "done", request: { attempt, round: 2 }, mode: "subagent" };
+  };
+  const first = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "fork" });
+  expect(first.outcome).toBe("dropped");
+  addOld(text); addOld(text); addOld(text);
+  const second = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "fork", effectiveMode: "subagent", fallbackReason: "context overflow" });
+  if (second.outcome !== "success") throw new Error("expected fallback success");
+  const runs = memory.store.listRuns(sessionId).filter(run => run.kind === "noting" && run.id !== 2);
+  const failed = runs.find(run => run.outcome === "failure")!;
+  const failedAudit = JSON.parse(failed.response!);
+  const committedAudit = JSON.parse(memory.store.getRun(second.runId)!.response!);
+  expect(failedAudit.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([1]);
+  expect(failedAudit.diagnostics).toBeUndefined();
+  expect(committedAudit.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([2, 3, 4]);
+  expect(committedAudit.diagnostics[0].pairs.map((pair: { neighbour: string }) => pair.neighbour)).toEqual(["F2", "F3", "F4"]);
 });
 
 test("no-neighbour, explicit empty, and manual notes commit immediately", async () => {
@@ -257,7 +440,11 @@ test("no-neighbour, explicit empty, and manual notes commit immediately", async 
     expect(input.reviewFeedback(receipt)).toBeUndefined();
     return { outcome: "success", output: "done", request: { round: 1 } };
   };
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" })).outcome).toBe("success");
+  const unrelated = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  expect(unrelated.outcome).toBe("success");
+  if (unrelated.outcome !== "success") throw new Error("expected success");
+  expect(unrelated.diagnostics).toEqual([]);
+  expect(JSON.parse(memory.store.getRun(unrelated.runId)!.response!).notingNearReview).toBeUndefined();
 
   const emptyTurn = memory.store.appendTurn({ sessionId, parentTurnId: target.id, kind: "turn", assistantText: "nothing", startedAt: "third" });
   agent = async input => {
@@ -265,10 +452,14 @@ test("no-neighbour, explicit empty, and manual notes commit immediately", async 
     expect(JSON.parse(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).committed).toContain("zero facts");
     return { outcome: "success", output: "done", request: { round: 1 } };
   };
-  expect((await memory.noting({ sessionId, branch: "main", headTurnId: emptyTurn.id, mode: "subagent" })).outcome).toBe("success");
+  const empty = await memory.noting({ sessionId, branch: "main", headTurnId: emptyTurn.id, mode: "subagent" });
+  expect(empty.outcome).toBe("success");
+  if (empty.outcome !== "success") throw new Error("expected success");
+  expect(empty.diagnostics).toEqual([]);
 
   const manual = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: emptyTurn.id })
     .find(tool => tool.name === "note")!.execute({ facts: [newFact(emptyTurn.id, oldFact().text)] });
   expect(JSON.parse(manual).factIds).toEqual([3]);
   expect(JSON.parse(manual).feedback).toBeUndefined();
+  expect(JSON.parse(memory.store.listRuns(sessionId).at(-1)!.response!).diagnostics).toBeUndefined();
 });

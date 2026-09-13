@@ -9,6 +9,7 @@ import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskBoundary, TaskOpt
 import { renderFact, renderEntryIndex, renderEntry, rawResultText, ENTRY_VIEW_VERSION, tokens, charge, type ResultExtractor, type FactTurns } from "../render/index.ts";
 import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITLE, type NotingMaterial } from "../render/material.ts";
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
+import type { NotingDiagnostic } from "./review.ts";
 
 const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
@@ -80,7 +81,7 @@ export type NotingResult = { executionId?: string; automaticOff?: string } & (
    * says why a task that never ran dropped — cancelled before the fallback, or evidence another
    * executor already processed. */
   | { outcome: "dropped"; refused?: unknown; runId?: number; reason?: string }
-  | { outcome: "success"; runId: number; facts: Fact[]; problems?: string[] }
+  | { outcome: "success"; runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[]; problems?: string[] }
   | { outcome: "failure" | "cancelled" | "bounced"; runId: number; problems: string[];
       /** 26a: the oldest frozen entry of an incomplete batch — the run ended normally, committed
        * nothing and had nothing rejected. Retained as diagnostic metadata; persisted logical-task
@@ -391,6 +392,7 @@ export async function runNoting(
     : requestMissing(result) ? ["runAgent must return the exact provider request"]
     : incomplete ? [NOTING_INCOMPLETE] : binding.problems;
   recordAttempt(run, result, mode, { readKnowledgeCommits, toolCalls: binding.sequence, fetched: binding.fetched,
+    ...(binding.committed ? { diagnostics: binding.committed.diagnostics } : {}),
     ...(binding.notingNearAudit ? { notingNearReview: binding.notingNearAudit } : {}), problems });
   if (binding.committed) {
     const after = updateCommitted(store, binding.committed.runId, run, problems);

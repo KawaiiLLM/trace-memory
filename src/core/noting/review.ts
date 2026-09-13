@@ -16,6 +16,12 @@ export interface NotingNearAudit {
   firstSubmission: { facts: unknown[] };
   shown: NotingNearShown[];
 }
+export interface NotingUnansweredNearPair {
+  fact: string;
+  neighbour: string;
+  score: number;
+}
+export type NotingDiagnostic = { kind: "unanswered_near"; pairs: NotingUnansweredNearPair[] };
 export interface NotingNearCandidate {
   fact: Fact;
   relations: FactRelation[];
@@ -65,4 +71,24 @@ export function notingNearFeedback(snapshot: NotingNearSnapshot): string {
 export function notingNearAudit(snapshot: NotingNearSnapshot | undefined): NotingNearAudit | undefined {
   if (!snapshot?.shown.length) return undefined;
   return { threshold: snapshot.threshold, firstSubmission: structuredClone(snapshot.firstSubmission), shown: structuredClone([...snapshot.shown]) };
+}
+
+/** Compare committed identities with every unique held fact that appeared anywhere in the review.
+ * This deliberately does not reuse first-submission positions or select another top three. */
+export function unansweredNotingNear(snapshot: NotingNearSnapshot | undefined, facts: readonly FactCommitInput[], ids: readonly number[]): NotingDiagnostic[] {
+  if (!snapshot?.shown.length) return [];
+  const shownIds = [...new Set(snapshot.shown.flatMap(item => item.neighbours.map(neighbour => neighbour.factId)))];
+  const candidates = new Map(snapshot.candidates.map(candidate => [candidate.fact.id, candidate]));
+  const pairs: NotingUnansweredNearPair[] = [];
+  facts.forEach((fact, index) => {
+    const answered = new Set([...fact.support ?? [], ...fact.negate ?? []].map(relation => relation.target));
+    const grams = characterBigrams(fact.text);
+    for (const neighbourId of shownIds) {
+      const candidate = candidates.get(neighbourId)!;
+      const score = jaccardBigrams(grams, candidate.grams);
+      if (score >= snapshot.threshold && !answered.has(`F${neighbourId}`))
+        pairs.push({ fact: `F${ids[index]}`, neighbour: `F${neighbourId}`, score });
+    }
+  });
+  return pairs.length ? [{ kind: "unanswered_near", pairs }] : [];
 }
