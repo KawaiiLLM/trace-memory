@@ -29,19 +29,37 @@ function base64(chars: number) {
 /** The run this host recorded, with its problems joined — where a refused last check lands. */
 const problemsOf = (h: ReturnType<typeof host>) => h.memory.store.listRuns(1).map(r => r.response ?? "").join("\n");
 
+/** A Noting audit is terminal once its final response has `problems`: a successful tool write can
+ * precreate the run, but Noting adds this field only after the worker itself has returned. */
+async function terminalNotingAudit(h: ReturnType<typeof host>) {
+  await expect.poll(() => {
+    const run = h.memory.store.listRuns(1).find(r => r.kind === "noting");
+    if (!run?.response) return false;
+    try { return Array.isArray(JSON.parse(run.response).problems); } catch { return false; }
+  }, { timeout: 5_000 }).toBe(true);
+  return h.memory.store.listRuns(1).find(r => r.kind === "noting")!;
+}
+
 /** A subagent Noting run whose child takes a second round: its first reply reports a 50,000-token
  * prompt and calls a read-only memory tool, so the round after it is measured on that real usage plus
  * the tool result — the synthetic later round the last check has to decide. Returns the measure it was
  * refused on, or undefined when the round went out. */
-async function laterRound(contextWindow: number) {
+async function laterRound(contextWindow: number, control?: {
+  firstReply: Promise<void>; afterDrain: (h: ReturnType<typeof host>) => void;
+}) {
   const h = host({ "noting.triggerTokens": 30, "noting.forkModeDefault": false, contextWindow });
   try {
     h.ctx.model = { ...h.ctx.model!, contextWindow };
-    h.provider(async conversation => conversation.messages.some(m => m.role === "toolResult") ? reply("Done.")
-      : { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "t1", name: "search", arguments: { query: "pnpm" } }],
-          usage: { ...usage, input: 50_000, totalTokens: 50_002 } });
+    h.provider(async conversation => {
+      if (conversation.messages.some(m => m.role === "toolResult")) return reply("Done.");
+      await control?.firstReply;
+      return { ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "t1", name: "search", arguments: { query: "pnpm" } }],
+        usage: { ...usage, input: 50_000, totalTokens: 50_002 } };
+    });
     await h.prompt("word ".repeat(50)); await h.answer("word ".repeat(50));
     await h.emit("agent_settled"); await h.drain();
+    control?.afterDrain(h);
+    await terminalNotingAudit(h);
     const measured = /context of (\d+) tokens/.exec(problemsOf(h))?.[1];
     return { measure: measured === undefined ? undefined : Number(measured), requests: h.requests.length,
       outcomes: h.memory.store.listRuns(1).map(r => r.outcome), pending: h.memory.pendingEntries(1, "main", 1).length };
@@ -74,6 +92,21 @@ test("27a 2026-09-10: the input allowance is the context window minus the 10,000
   } finally { await h.dispose(); }
 });
 
+test("27a test host: a held request makes generic drain return before the later-round audit is terminal", async () => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const result = await laterRound(55_000, { firstReply: held, afterDrain: h => {
+    try {
+      expect(h.requests).toHaveLength(1);
+      expect(h.memory.store.listRuns(1)).toEqual([]);
+      expect(problemsOf(h)).not.toContain("context of");
+      expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
+    } finally { release(); }
+  } });
+  expect(result.measure).toBeGreaterThan(50_000);
+  expect(result).toMatchObject({ requests: 1, outcomes: ["failure"], pending: 2 });
+});
+
 test("27a 2026-09-10: the last check admits a later round the headroom exactly fits and refuses one token more", async () => {
   // The same run under three windows. The first is wide enough for admission and for the child's first
   // round and too narrow for its second; it reports the measure, and the other two windows are derived
@@ -86,13 +119,11 @@ test("27a 2026-09-10: the last check admits a later round the headroom exactly f
 
   const equal = await laterRound(measure + CONTEXT_HEADROOM); // measure + 10,000 == window: admitted
   expect(equal.measure).toBeUndefined();
-  expect(equal.requests).toBe(2); // the later round went out
+  expect(equal).toMatchObject({ requests: 2, outcomes: ["failure"], pending: 2 }); // the later round went out; the deliberately incomplete worker advanced nothing
 
   const over = await laterRound(measure + CONTEXT_HEADROOM - 1); // one token more than the rule allows
   expect(over.measure).toBe(measure);
-  expect(over.requests).toBe(1);
-  expect(over.outcomes).toEqual(["failure"]);
-  expect(over.pending).toBe(2); // nothing advanced
+  expect(over).toMatchObject({ requests: 1, outcomes: ["failure"], pending: 2 }); // the later round was refused and nothing advanced
 });
 
 test("27a 2026-09-10: a fork's inherited prefix is Pi's context measure, and image data in the captured parent request changes neither the number nor the verdict", async () => {
