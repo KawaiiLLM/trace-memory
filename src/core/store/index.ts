@@ -476,12 +476,13 @@ export interface DreamingScopeAudit {
   budgets: KnowledgeBudgets;
 }
 
-/** Carries the authoritative rejected projection for failure audit only; retry always recomputes it. */
+/** Carries an authoritative projection when audited completion fails; retry always recomputes it. */
 export class DreamingScopeAuditError extends Error {
   readonly audit: DreamingScopeAudit;
-  constructor(audit: DreamingScopeAudit) {
-    super(audit.check.problems.join("; "));
-    this.name = "DreamingScopeAuditError";
+  constructor(audit: DreamingScopeAudit, cause?: unknown) {
+    super(cause === undefined ? audit.check.problems.join("; ") : cause instanceof Error ? cause.message : String(cause),
+      cause === undefined ? undefined : { cause });
+    this.name = cause instanceof Error ? cause.name : "DreamingScopeAuditError";
     this.audit = audit;
   }
 }
@@ -2236,23 +2237,28 @@ export class Store {
       const check = checkProcessedProjection(projection, affected, budgets);
       const audit = { check, budgets };
       if (check.problems.length) throw new DreamingScopeAuditError(audit);
-      this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
-      for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
-      for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
-      this.completeExecution(runId);
-      // Shared certification may finish another session's retained work too. Settlement alone
-      // cannot close it: every applicable current result, including derived K, must be processed.
-      const ranges = this.db.prepare(`SELECT session_id, branch FROM dreaming_ranges WHERE completed_run IS NULL
-        AND NOT EXISTS (SELECT 1 FROM dreaming_range_events e WHERE e.range_id = dreaming_ranges.id
-          AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).all();
-      const input = ranges.length ? graphInput ?? this.commitGraphInput() : undefined;
-      for (const row of ranges) {
-        const path = { sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: null };
-        const range = this.openDreamingRange(path.sessionId, path.branch);
-        if (range && !this.dreamingRangePending(range, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
-          WHERE session_id = ? AND branch = ? AND completed_run IS NULL`).run(runId, path.sessionId, path.branch);
+      try {
+        this.db.prepare("INSERT INTO dreaming_completions VALUES (?,?,?)").run(runId, JSON.stringify(events), JSON.stringify(results));
+        for (const id of events) this.db.prepare("INSERT OR IGNORE INTO settled_knowledge_events VALUES (?,?)").run(id, runId);
+        for (const id of results) this.db.prepare("INSERT OR IGNORE INTO processed_knowledge_versions VALUES (?,?)").run(id, runId);
+        this.completeExecution(runId);
+        // Shared certification may finish another session's retained work too. Settlement alone
+        // cannot close it: every applicable current result, including derived K, must be processed.
+        const ranges = this.db.prepare(`SELECT session_id, branch FROM dreaming_ranges WHERE completed_run IS NULL
+          AND NOT EXISTS (SELECT 1 FROM dreaming_range_events e WHERE e.range_id = dreaming_ranges.id
+            AND NOT EXISTS (SELECT 1 FROM settled_knowledge_events s WHERE s.event_id = e.event_id))`).all();
+        const input = ranges.length ? graphInput ?? this.commitGraphInput() : undefined;
+        for (const row of ranges) {
+          const path = { sessionId: Number(row.session_id), branch: String(row.branch), headTurnId: null };
+          const range = this.openDreamingRange(path.sessionId, path.branch);
+          if (range && !this.dreamingRangePending(range, input)) this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?
+            WHERE session_id = ? AND branch = ? AND completed_run IS NULL`).run(runId, path.sessionId, path.branch);
+        }
+        return audit;
+      } catch (error) {
+        if (!fullAudit) throw error;
+        throw new DreamingScopeAuditError(audit, error);
       }
-      return audit;
     });
   }
 

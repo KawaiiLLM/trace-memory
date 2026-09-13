@@ -446,14 +446,46 @@ test("final completion reuses its one authoritative processed projection for aud
   expect(finalGraphInputs).toBe(2);
 });
 
-test("35 a downstream settlement failure keeps the successful final check distinct and rolls back certification", async () => {
+test("a post-race completion insert failure retains the exact final audit and original cause", async () => {
+  let completionError: unknown;
   const f = fixture(async () => {
-    const original = f.store.updateRun.bind(f.store);
-    let successfulUpdates = 0;
-    vi.spyOn(f.store, "updateRun").mockImplementation((...args) => {
-      if (args[1].outcome === "success" && ++successfulUpdates === 2) throw new Error("injected settlement failure");
-      return original(...args);
+    const complete = f.store.completeDreamingWithScopeAudit.bind(f.store);
+    vi.spyOn(f.store, "completeDreamingWithScopeAudit").mockImplementation((...args) => {
+      try { return complete(...args); }
+      catch (error) { completionError = error; throw error; }
     });
+    const transaction = f.store.transaction.bind(f.store);
+    vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
+      const moved = f.store.commitConsolidationRun({ path: f.target,
+        run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" },
+        operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
+          ...f.content, text: "consumer before failing completion" }] });
+      expect(moved.ok).toBe(true);
+      f.store.db.exec(`CREATE TRIGGER reject_dreaming_completion BEFORE INSERT ON dreaming_completions
+        BEGIN SELECT RAISE(ABORT, 'injected completion insert failure'); END`);
+      return transaction(fn);
+    });
+    return success;
+  });
+  const result = await f.memory.dream(f.target);
+  expect(result.outcome).toBe("failure");
+  if (!(completionError instanceof Error) || !("cause" in completionError) || !(completionError.cause instanceof Error))
+    throw new Error("completion error did not retain its original cause");
+  expect(completionError.message).toBe(completionError.cause.message);
+  if (!("runId" in result)) throw new Error("missing run id");
+  const response = JSON.parse(f.store.getRun(result.runId)!.response!);
+  expect(response.check.resultIds).toEqual([]);
+  expect(response.check.versions).toEqual([{ knowledgeId: f.item.knowledgeId, commit: f.item.commit,
+    processed: false, successorCommits: [2] }]);
+  expect(response.finalization).toEqual({ stage: "settlement", error: expect.stringContaining("injected completion insert failure") });
+  expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
+  expect(f.store.db.prepare("SELECT * FROM processed_knowledge_versions").all()).toEqual([]);
+});
+
+test("35 a downstream range-closure failure keeps the successful final check distinct and rolls back certification", async () => {
+  const f = fixture(async () => {
+    f.store.db.exec(`CREATE TRIGGER reject_dreaming_range_closure BEFORE UPDATE OF completed_run ON dreaming_ranges
+      BEGIN SELECT RAISE(ABORT, 'injected range closure failure'); END`);
     return success;
   });
   const result = await f.memory.dream(f.target);
@@ -461,7 +493,7 @@ test("35 a downstream settlement failure keeps the successful final check distin
   if (!("runId" in result)) throw new Error("missing run id");
   const response = JSON.parse(f.store.getRun(result.runId)!.response!);
   expect(response.check.failures).toEqual([]);
-  expect(response.finalization).toMatchObject({ stage: "settlement", error: expect.stringContaining("injected settlement failure") });
+  expect(response.finalization).toMatchObject({ stage: "settlement", error: expect.stringContaining("injected range closure failure") });
   expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
   expect(f.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(result.runId)).toEqual([]);
 });
