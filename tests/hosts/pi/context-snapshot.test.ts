@@ -1,7 +1,7 @@
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { expect, test, vi } from "vitest";
-import { requestCurrentContextSnapshot, CURRENT_CONTEXT_SNAPSHOT_EVENT, CURRENT_CONTEXT_SNAPSHOT_VERSION,
-  type CurrentContextSnapshotProviderResult } from "../../../src/hosts/pi/context-snapshot.ts";
+import { requestCurrentContextSnapshot, CURRENT_CONTEXT_SNAPSHOT_EVENT,
+  type CurrentContextSnapshotResult } from "../../../src/hosts/pi/context-snapshot.ts";
 import { fixture, say } from "./native-fixture.ts";
 import { host } from "./test-host.ts";
 import { tokens } from "../../../src/core/api/index.ts";
@@ -69,7 +69,6 @@ test("current snapshot is the existing empty-coverage compact at the exact persi
     expect(first.composition.knowledge).toBeGreaterThan(0);
     expect(first.composition.facts).toBeGreaterThan(0);
     expect(first.composition.raw).toBeGreaterThan(0);
-    expect(first.charged).toEqual(expected.charged);
     expect(first.supplied).toEqual(expected.supplied);
     expect(first.text).toContain("SNAPSHOT_KNOWLEDGE");
     expect(first.text).toContain("SNAPSHOT_PENDING_FACT");
@@ -77,9 +76,7 @@ test("current snapshot is the existing empty-coverage compact at the exact persi
     expect(first.text).toContain("SNAPSHOT_RAW_REPLY");
     expect(first.supplied.factIds).toContain(ids.pendingFactId);
     expect(first.supplied.knowledgeCommitIds).toContain(ids.knowledgeCommitId);
-    expect(first.node).toMatchObject({ nativeSessionId: f.manager().getSessionId(), nativeLeafId: f.manager().getLeafId(),
-      memorySessionId: 1, projectId: 1, branch: "main", headTurnId: 1 });
-    expect(first.node.sourceEntries.map(entry => entry.nativeId)).toEqual(store.sourcePath(1, "main", 1).map(entry => entry.nativeId));
+    expect(first.node).toEqual({ nativeSessionId: f.manager().getSessionId(), nativeLeafId: f.manager().getLeafId() });
 
     expect(request(f.h)).toEqual(first);
     expect(f.manager().getEntries()).toEqual(stateBefore.nativeEntries);
@@ -128,8 +125,7 @@ test("persisted source not yet ingested is refused, while non-source metadata af
     expect(ready.available).toBe(true);
     if (ready.available) {
       expect(ready.text).toContain("SAME_TURN_LATEST");
-      expect(ready.node.sourceEntries.at(-1)?.nativeId).toBe(
-        f.manager().getBranch().filter(entry => entry.type === "message").at(-1)?.id);
+      expect(ready.node.nativeLeafId).toBe(f.manager().getLeafId());
     }
   } finally { await f.dispose(); }
 }, 30_000);
@@ -188,13 +184,10 @@ test("allocator refusal is capacity, never a worker or native-compaction fallbac
 
 test("data errors remain explicit and duplicate providers are rejected", async () => {
   const bus = createEventBus();
-  const reply: CurrentContextSnapshotProviderResult = { available: false, reason: "not-initialized", message: "fake" };
-  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, raw => {
-    const request = raw as { version: number; reply(value: CurrentContextSnapshotProviderResult): void };
-    expect(request.version).toBe(CURRENT_CONTEXT_SNAPSHOT_VERSION);
-    request.reply(reply);
-  });
-  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, raw => (raw as { reply(value: CurrentContextSnapshotProviderResult): void }).reply(reply));
+  const result: CurrentContextSnapshotResult = { available: false, reason: "not-initialized", message: "fake" };
+  const respond = (reply: unknown) => (reply as (value: CurrentContextSnapshotResult) => void)(result);
+  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, respond);
+  bus.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, respond);
   expect(requestCurrentContextSnapshot(bus)).toMatchObject({ available: false, reason: "provider-conflict" });
 
   const f = await fixture(quiet);

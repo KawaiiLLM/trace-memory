@@ -1,42 +1,15 @@
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { SourceNormalizationError, type SourceNormalizer, type SourceBlock } from "../../core/model/source.ts";
 
-interface PiContentBlock {
-  type?: string;
-  text?: unknown;
-  thinking?: unknown;
-  id?: unknown;
-  name?: unknown;
-  arguments?: unknown;
-}
-interface PiSourceMessage {
-  role: "user" | "assistant" | "toolResult";
-  content: string | PiContentBlock[];
-  toolCallId?: string;
-  details?: unknown;
-  isError?: boolean;
-}
-export interface PiPersistedSource {
-  id: string;
-  message: PiSourceMessage;
-  text: string;
-  calls: { type: "toolCall"; id: string; name: string; arguments: unknown }[];
-}
-
-/** The single Pi source-entry classifier used by ingestion and current-node readiness checks. */
-export function piPersistedSource(value: unknown): PiPersistedSource | undefined {
-  if (!value || typeof value !== "object") return;
-  const entry = value as { id?: unknown; type?: unknown; message?: unknown };
-  if (entry.type !== "message" || typeof entry.id !== "string" || !entry.message || typeof entry.message !== "object") return;
-  const message = entry.message as PiSourceMessage;
+/** Shared by ingestion and snapshot readiness; Pi owns the persisted entry schema. */
+export function piPersistedSource(entry: SessionEntry) {
+  if (entry.type !== "message") return;
+  const message = entry.message;
   if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult") return;
-  const blocks = Array.isArray(message.content) ? message.content : [];
   const natural = message.role === "toolResult" ? "" : typeof message.content === "string" ? message.content
-    : blocks.filter(block => block?.type === "text").map(block => String(block.text ?? "")).join("\n");
-  const calls = message.role === "assistant" ? blocks.filter((block): block is PiContentBlock & { type: "toolCall"; id: string; name: string; arguments: unknown } =>
-    block?.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string" && Object.hasOwn(block, "arguments")) : [];
-  // User and tool-result messages are source boundaries even without text. An assistant needs text,
-  // a call or persisted thinking, exactly as the ingestion walk has always required.
-  if (message.role === "assistant" && !natural && !calls.length && !blocks.some(block => block?.type === "thinking")) return;
+    : message.content.filter(block => block.type === "text").map(block => block.text).join("\n");
+  const calls = message.role === "assistant" ? message.content.filter(block => block.type === "toolCall") : [];
+  if (message.role === "assistant" && !natural && !calls.length && !message.content.some(block => block.type === "thinking")) return;
   return { id: entry.id, message, text: natural, calls };
 }
 

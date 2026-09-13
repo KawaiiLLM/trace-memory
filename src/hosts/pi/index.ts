@@ -11,7 +11,7 @@ import { checkpointReadiness } from "./native.ts";
 import { agentDirectory, configuration, configuredMode, parseKnowledgeBudgetInput, preferenceLine, preferenceValue, preferences, shownValue, tag, thinkingChoices, writeGlobal, type Preference } from "./settings.ts";
 import { runWorker, type ForkLaunch, type ForkRefusal, type WorkerModel } from "./worker.ts";
 import { TraceMemory, enrollmentDefault, tokens, validateConfig, validateReadInput, toolDefinitions, toolRejected, visibleView, CANCELLED_BEFORE_FALLBACK, CONSOLIDATION_CAPACITY, NOTING_CAPACITY, type ConsolidateResult, type ContextEntry, type NotingAgentInput, type NotingResult, type ConsolidationAgentInput, type DreamingAgentInput, type DreamingResult, type Enrollment, type ResultExtractor, type SuppliedMaterial, type TaskBoundary, type TaskTarget, type VisibleBinding, type VisibleView } from "../../core/api/index.ts";
-import { CURRENT_CONTEXT_SNAPSHOT_EVENT, isCurrentContextSnapshotRequest, type CurrentContextSnapshotProviderResult } from "./context-snapshot.ts";
+import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -757,78 +757,48 @@ export default function (pi: ExtensionAPI) {
     reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
   });
 
-  const unavailable = (reason: Exclude<CurrentContextSnapshotProviderResult, { available: true }>["reason"], message: string,
-      over?: { knowledge: boolean; facts: boolean; raw: boolean }): CurrentContextSnapshotProviderResult =>
-    ({ available: false, reason, message, ...(over ? { over } : {}) });
-  /** A model-free, write-free compact allocation at the exact persisted native node already imported
-   * by normal host ingestion. This function deliberately calls neither reconcile nor flush. */
-  const currentContextSnapshot = (): CurrentContextSnapshotProviderResult => {
+  const unavailable = (reason: Extract<CurrentContextSnapshotResult, { available: false }>["reason"], message: string): CurrentContextSnapshotResult =>
+    ({ available: false, reason, message });
+  /** Read the already-ingested node. Never reconcile, publish, or run compact recovery here. */
+  const currentContextSnapshot = (): CurrentContextSnapshotResult => {
     if (closed) return unavailable("closed", "Trace Memory executor is closed");
-    if (!ctx || !state) return unavailable("not-initialized", "Trace Memory has not received session_start");
-    if (!state.sessionId || !state.head) return unavailable("not-initialized", "Trace Memory has no memory session at the current native node");
-    if (!enabled()) return unavailable("disabled", "Trace Memory is disabled for the current memory session");
+    if (!ctx || !state?.sessionId || !state.head)
+      return unavailable("not-initialized", "Trace Memory has no current memory session");
+    if (!enabled()) return unavailable("disabled", "Trace Memory is disabled");
     const nativeSessionId = ctx.sessionManager.getSessionId();
     const nativeLeafId = ctx.sessionManager.getLeafId();
-    if (!ctx.sessionManager.getSessionFile?.() || !nativeLeafId)
-      return unavailable("node-not-ready", "The current native session or leaf is not persisted");
-    if (nativeSessionId !== state.piId)
-      return unavailable("node-not-ready", "Trace Memory is not bound to the current native session");
-
-    const ancestry = ctx.sessionManager.getBranch() as { id: string }[];
-    const ancestryIds = ancestry.map(entry => entry.id);
-    if (!reconciled || reconciled.ids.length > ancestryIds.length
-        || !reconciled.ids.every((id, index) => ancestryIds[index] === id))
-      return unavailable("node-not-ready", "The current native ancestry is not the ancestry Trace Memory has ingested");
-    // Metadata after the last ingestion boundary changes neither source membership nor material. A
-    // persisted source in that tail is different: returning the preceding database head would be stale.
-    if (ancestry.slice(reconciled.ids.length).some(entry => piPersistedSource(entry)))
-      return unavailable("node-not-ready", "The current native ancestry contains source entries Trace Memory has not ingested");
-    const nativeSources = ancestry.map(entry => piPersistedSource(entry)).filter((entry): entry is NonNullable<typeof entry> => !!entry);
-    const target = { sessionId: state.sessionId, projectId: state.projectId, branch: state.branch, headTurnId: state.head };
-
+    if (!ctx.sessionManager.getSessionFile() || !nativeLeafId || nativeSessionId !== state.piId)
+      return unavailable("node-not-ready", "The current native node is not persisted or bound");
+    const ancestry = ctx.sessionManager.getBranch();
+    if (!reconciled || reconciled.ids.length > ancestry.length
+        || !reconciled.ids.every((id, index) => ancestry[index]!.id === id))
+      return unavailable("node-not-ready", "The current native ancestry has not been ingested");
+    const nativeSources = ancestry.map(piPersistedSource).filter(source => source !== undefined);
+    const { sessionId, projectId, branch, head } = state;
+    const selected = reconciled.selected;
     return memory.store.transaction(() => {
-      const storedSession = memory.store.getSession(target.sessionId);
-      if (!storedSession || storedSession.projectId !== target.projectId)
-        return unavailable("node-not-ready", "Trace Memory's current memory binding changed");
-      if (!memory.store.enabled(target.sessionId))
-        return unavailable("disabled", "Trace Memory is disabled for the current memory session");
-      const sources = memory.store.sourcePath(target.sessionId, target.branch, target.headTurnId);
-      const storedIds = sources.map(entry => entry.id);
-      if (storedIds.length !== reconciled!.selected.length || storedIds.some((id, index) => reconciled!.selected[index] !== id)
-          || sources.length !== nativeSources.length
-          || sources.some((entry, index) => entry.nativeId !== nativeSources[index]!.id
+      if (memory.store.getSession(sessionId)?.projectId !== projectId)
+        return unavailable("node-not-ready", "The memory binding changed");
+      if (!memory.store.enabled(sessionId)) return unavailable("disabled", "Trace Memory is disabled");
+      const sources = memory.store.sourcePath(sessionId, branch, head);
+      // Compare the full source membership, including same-Turn entries; metadata needs no ingestion.
+      if (sources.length !== selected.length || sources.length !== nativeSources.length
+          || sources.some((entry, index) => entry.id !== selected[index] || entry.nativeId !== nativeSources[index]!.id
             || entry.raw !== JSON.stringify(nativeSources[index]!.message)))
-        return unavailable("node-not-ready", "The current native source path is not completely reconciled with Trace Memory");
-      const compact = memory.compact(target.sessionId, target.branch, target.headTurnId, []);
-      if ("native" in compact) return unavailable("capacity", compact.reason, compact.over);
-      if (!compact.composition || !compact.charged)
-        return unavailable("data-error", "The compact allocator returned incomplete accounting");
-      return {
-        available: true,
-        node: {
-          nativeSessionId,
-          nativeLeafId,
-          memorySessionId: target.sessionId,
-          projectId: target.projectId,
-          branch: target.branch,
-          headTurnId: target.headTurnId,
-          sourceEntries: sources.map(entry => ({ id: entry.id, nativeLineage: entry.nativeLineage,
-            nativeId: entry.nativeId, turnId: entry.turnId })),
-        },
-        text: compact.text,
-        estimatedTokens: tokens(compact.text),
-        composition: compact.composition,
-        charged: compact.charged,
-        supplied: compact.supplied,
-      };
+        return unavailable("node-not-ready", "The current native source path is not completely reconciled");
+      const compact = memory.compact(sessionId, branch, head, []);
+      if ("native" in compact) return unavailable("capacity", compact.reason);
+      if (!compact.composition) return unavailable("data-error", "The compact allocator returned no composition");
+      return { available: true, node: { nativeSessionId, nativeLeafId }, text: compact.text,
+        estimatedTokens: tokens(compact.text), composition: compact.composition, supplied: compact.supplied };
     });
   };
-  const unsubscribeCurrentContextSnapshot = pi.events.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, request => {
-    if (!isCurrentContextSnapshotRequest(request)) return;
-    let result: CurrentContextSnapshotProviderResult;
+  const unsubscribeCurrentContextSnapshot = pi.events.on(CURRENT_CONTEXT_SNAPSHOT_EVENT, reply => {
+    if (typeof reply !== "function") return;
+    let result: CurrentContextSnapshotResult;
     try { result = currentContextSnapshot(); }
     catch (error) { result = unavailable("data-error", error instanceof Error ? error.message : String(error)); }
-    request.reply(result);
+    reply(result);
   });
 
   const persistState = () => { reconcile(); if (state.sessionId && state.sourceHead !== savedSourceHead) save(); };
