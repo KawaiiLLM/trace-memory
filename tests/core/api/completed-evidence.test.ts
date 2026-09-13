@@ -51,7 +51,7 @@ for (const kind of ["manual", "noting"] as const) for (const exact of [false, tr
         // A valid earlier item must not leak into facts or settle any entry/run on rejection.
         const response = writer.execute({ facts: [{ category: "observation", actor: "agent", text: "An explanation was supplied.", source: [`T${dispatch.turnId}#E${dispatch.entryOrdinal}@text`] }, event(sources)] });
         expect(response).toContain(scenario === "sibling" ? "invalid source" : "requires result evidence");
-        expect(scan).toHaveBeenCalledTimes(1);
+        expect(scan).toHaveBeenCalledTimes(kind === "manual" ? 1 : 0);
         expect(f.m.store.db.prepare("SELECT COUNT(*) AS n FROM facts").get()!.n).toBe(0);
         expect(f.m.store.db.prepare("SELECT COUNT(*) AS n FROM noted_entries").get()!.n).toBe(0);
         expect(f.m.store.listRuns(f.sessionId).every(run => run.outcome === "bounced")).toBe(true);
@@ -68,7 +68,7 @@ for (const kind of ["manual", "noting"] as const) for (const exact of [false, tr
       const scan = vi.spyOn(f.m.store, "sourcePath");
       const response = JSON.parse(writer.execute({ facts: [event([address(result, exact), address(dispatch, exact)])] }));
       expect(response.factIds).toHaveLength(1);
-      expect(scan).toHaveBeenCalledTimes(1);
+      expect(scan).toHaveBeenCalledTimes(kind === "manual" ? 1 : 0);
       expect(new Set(f.m.store.factEntries(response.factIds[0]))).toEqual(new Set([dispatch.id, result.id]));
       expect(f.m.store.getFact(response.factIds[0])!.status).toBe("completed");
     } finally { f.m.close(); }
@@ -113,7 +113,7 @@ test.each(["already present", "arrives later"])("completion: Noter cannot borrow
     const scan = vi.spyOn(f.m.store, "sourcePath");
     const response = writer.execute({ facts: [event([address(dispatch, true), address(result, true)])] });
     expect(response).toContain("invalid source");
-    expect(scan).toHaveBeenCalledTimes(1);
+    expect(scan).toHaveBeenCalledTimes(0);
     expect(f.m.store.entryNoted(dispatch.id)).toBe(false);
     expect(f.m.store.listRuns(f.sessionId)).toEqual([]);
   } finally { f.m.close(); }

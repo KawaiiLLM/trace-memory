@@ -297,8 +297,10 @@ neighbour commits on the first valid call. Manual notes bypass review. Success r
 order (`ok: F<id>`) plus `factIds`; rejection results are `ok` or `rejected: <reason>`. An accepted
 empty batch returns `results: []`, `factIds: []` and `committed: "zero facts; this batch is complete"`;
 a refused one, having no item slot to carry the reason, returns a plain `rejected: <reason>`. A Noting
-binding commits at most one batch. Candidate facts, applicability bindings and relations use a bounded
-batched read; rejected submissions do not read the pool. The shown first batch, pairs and effective
+binding commits at most one batch. Candidate facts, applicability bindings and relations use three
+batched queries in one database snapshot; rejected submissions do not read the pool. The synthetic
+scale method, executable bounds and recorded measurements are in [Ticket 38 performance](perf-38.md).
+The shown first batch, pairs and effective
 threshold remain unchanged in `notingNearReview`, while the complete historical pool remains
 binding-local. On commit, `diagnostics` compares every actual final fact with every unique held fact ID
 shown anywhere in that attempt. The same bigram similarity and captured threshold apply, without

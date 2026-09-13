@@ -6,6 +6,8 @@ Traceable cross-session memory for Pi. A background Noter extracts facts from co
 
 ## Unreleased
 
+- **Noter NEAR review:** A valid automatic Noting batch with lexically similar earlier facts now receives one system-generated comparison round before commit. The candidate pool and source membership are frozen at binding time; batches with no neighbours and all manual notes still commit immediately. NEAR is only a prompt to judge `support` or `negate`, never relation evidence or a commit authority.
+- **Noter NEAR audit:** Successful reviewed runs retain the originally shown pairs and record any still-near final fact/neighbour pairs without an explicit relation as the non-gating `unanswered_near` diagnostic. Reordering, dropping or rewriting the final batch is assessed by committed fact identity rather than original position; an absent diagnostic does not prove the comparison was understood.
 - **Colored context composition:** Current session presents the existing local census as a 200-cell category-colored partition when local totals, SDK occupancy and model window are numerically coherent. Difference reconciles the two estimates and Free shows the remaining window. Compact fallback states cover unavailable inputs, local totals above SDK occupancy and occupancy above the window. Memory's Knowledge/Facts/Raw/Unclassified detail now stays inline in its top-level legend row.
 
 ## Beta.7 changes — September 13, 2026

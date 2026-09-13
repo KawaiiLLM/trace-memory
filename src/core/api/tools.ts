@@ -131,13 +131,15 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     rangeTo: context.kind === "manual" ? `S${session.id}/T${context.currentTurnId}` : context.range.to, createdAt: new Date().toISOString() };
   const run = metadata ?? store.bindRunOrigin(plain, store.triggerOrigin(path, context.triggerEntryId));
   if (context.kind === "dreaming" && (!dreaming || !store.isDreamingRun(run))) throw new Error("Dreamer tools require an admitted trusted run binding");
-  const sourceTurns = store.pathTurns(path);
-  const initialPath = context.kind === "noting" ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
-  // Candidate applicability uses the same binding-time membership as source resolution. The pool is
-  // read later, after the first valid submission, but a tree move cannot replace this snapshot.
-  const initialPathSnapshot = context.kind === "noting" ? store.pathSnapshot(path) : undefined;
+  // Source resolution, range checks and candidate applicability share one binding-time database/path
+  // membership. Later tree movement and same-Turn entry ingestion cannot change any half of the run.
+  const initial = context.kind === "noting" ? store.transaction(() => ({
+    path: store.sourcePath(session.id, context.branch, path.headTurnId!), snapshot: store.pathSnapshot(path),
+  })) : undefined;
+  const initialPath = initial?.path ?? [], initialPathSnapshot = initial?.snapshot;
+  const sourceTurns = initialPathSnapshot?.turns ?? store.pathTurns(path);
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
-  const frozenIds = new Set(frozenEntries), frozenPath = new Set(initialPath.map(e => e.id));
+  const frozenIds = new Set(frozenEntries);
   if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
     if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
@@ -147,7 +149,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
   let problems: string[] = [], requests = 0, reviewRequest = -1;
-  let nearSnapshot: NotingNearSnapshot | undefined, committedFacts: FactCommitInput[] | undefined;
+  let nearSnapshot: NotingNearSnapshot | undefined;
   const nearAudit = () => notingNearAudit(nearSnapshot);
   // Reads resolve any existing address (user ruling 2026-09-07: no visibility limits on reads);
   // injection and Consolidation keep their scope rules elsewhere. Writes still bind sources to the run.
@@ -159,19 +161,17 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (!Array.isArray(input.facts) || Object.keys(input).some((k) => k !== "facts")) {
       problems = ["note expects {facts: [...]} only"]; return `rejected: ${problems[0]}`;
     }
-    // One live path scan per submission, not per citation or validation phase. A later legacy
-    // occurrence outside the admitted path still invalidates an ambiguous frozen citation.
-    const currentPath = store.sourcePath(session.id, context.branch, path.headTurnId!);
-    const candidates = context.kind === "noting" ? initialPath.filter(entry => frozenIds.has(entry.id)) : currentPath;
+    // Manual writers resolve against the path at their call. An automatic run resolves only against
+    // its binding snapshot, then narrows authority to the admitted range; no later matching legacy
+    // occurrence can retroactively make a frozen source ambiguous.
+    const sourcePath = context.kind === "noting" ? initialPath : store.sourcePath(session.id, context.branch, path.headTurnId!);
+    const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
-    const currentIds = new Set(currentPath.map(entry => entry.id));
-    const authority = [...currentPath, ...candidates.filter(entry => !currentIds.has(entry.id))];
     const resolution = new Map<string, SourceResolution[]>();
     const resolve = (source: string) => {
       if (!resolution.has(source)) {
-        const matches = resolveFactSource(authority, source);
-        resolution.set(source, context.kind !== "noting" ? matches : matches.some(hit => !frozenPath.has(hit.entry.id))
-          ? [] : matches.filter(hit => frozenIds.has(hit.entry.id)));
+        const matches = resolveFactSource(sourcePath, source);
+        resolution.set(source, context.kind === "noting" ? matches.filter(hit => frozenIds.has(hit.entry.id)) : matches);
       }
       return resolution.get(source)!;
     };
@@ -250,7 +250,7 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     if (!committedRun.ok) { problems = committedRun.problems;
       return results.length ? JSON.stringify({ results: results.map(() => `rejected: ${problems.join("; ")}`) }) : `rejected: ${problems.join("; ")}`; }
     const result = receipt(committedRun.facts.map((f) => f.id));
-    if (context.kind === "noting") { committed = { ...committedRun, diagnostics }; committedFacts = structuredClone(commits); }
+    if (context.kind === "noting") committed = { ...committedRun, diagnostics };
     return result;
   };
   // Exceptions outside memory's batch validator must also block Dreamer completion until
@@ -294,6 +294,6 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
   return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; },
-    get notingNear() { return { snapshot: nearSnapshot, committedFacts }; }, get notingNearAudit() { return nearAudit(); }, close: () => { closed = true; },
+    get notingNearAudit() { return nearAudit(); }, close: () => { closed = true; },
     reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); requests++; memory.requestSeen(); run.request = JSON.stringify(request); } };
 }

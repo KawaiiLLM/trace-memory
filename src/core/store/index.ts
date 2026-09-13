@@ -1119,21 +1119,23 @@ export class Store {
   }
 
   /** One immutable Noting NEAR pool read. Facts, source bindings and rendered relations use three
-   * batched queries regardless of pool size; applicability reuses factOnPath and the binding's path
-   * snapshot rather than consulting the mutable branch tip. */
+   * batched queries in one database snapshot regardless of pool size; applicability reuses
+   * factOnPath and the binding's path snapshot rather than consulting the mutable branch tip. */
   notingNearPool(sessionId: number, path: KnowledgePath, snapshot: PathSnapshot): { facts: Fact[]; relations: Map<number, FactRelation[]> } {
-    const rows = this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
-      WHERE t.session_id = ? ORDER BY f.id`).all(sessionId);
-    const projected: ApplicabilityInput = { runs: new Map(), projects: new Map(), facts: new Map() };
-    for (const row of rows) {
-      const fact = toFact(row);
-      projected.facts.set(fact.id, { fact, sessionId: Number(row.session_id), runId: Number(row.run_id), entries: [] });
-    }
-    const ids = JSON.stringify([...projected.facts.keys()]);
-    for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(ids))
-      projected.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
-    const facts = [...projected.facts.values()].map(value => value.fact).filter(fact => this.factOnPath(fact, path, snapshot, projected));
-    return { facts, relations: this.listFactRelationsOf(facts.map(fact => fact.id)) };
+    return this.transaction(() => {
+      const rows = this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
+        WHERE t.session_id = ? ORDER BY f.id`).all(sessionId);
+      const projected: ApplicabilityInput = { runs: new Map(), projects: new Map(), facts: new Map() };
+      for (const row of rows) {
+        const fact = toFact(row);
+        projected.facts.set(fact.id, { fact, sessionId: Number(row.session_id), runId: Number(row.run_id), entries: [] });
+      }
+      const ids = JSON.stringify([...projected.facts.keys()]);
+      for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(ids))
+        projected.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
+      const facts = [...projected.facts.values()].map(value => value.fact).filter(fact => this.factOnPath(fact, path, snapshot, projected));
+      return { facts, relations: this.listFactRelationsOf(facts.map(fact => fact.id)) };
+    });
   }
 
   listProjectFacts(projectId: number): Fact[] {

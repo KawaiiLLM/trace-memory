@@ -397,7 +397,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const seen = viewed.join("\n"), squashed = seen.replace(/\s+/g, "");
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
       "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
-      "Estimated usage by category", "Difference ~42.7k (4.3%)", "Free ~955.5k (95.5%)"])
+      "Estimated usage by category", "Difference ~42.6k (4.3%)", "Free ~955.5k (95.5%)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Memory ~0");
     s.key("\x1b"); await command;

@@ -451,7 +451,8 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
   } finally { memory.close(); rmSync(copy, { force: true }); }
 }
 
-function notingNearScale(fixture: Fixture, size: string, factCount: number): Sample {
+function notingNearScale(fixture: Fixture, size: string, factCount: 2_000 | 20_000): Sample {
+  const warmBound = factCount === 2_000 ? 100 : 1_000;
   const copy = join(cache, `${size}-noting-near-${factCount}.db`);
   rmSync(copy, { force: true });
   copyFileSync(fixture.dbPath, copy);
@@ -488,7 +489,9 @@ function notingNearScale(fixture: Fixture, size: string, factCount: number): Sam
         notingNearFeedback(held);
       } finally { counting = false; }
     }, `${factCount} applicable facts × 15 proposed; path filter + similarity + relation read + feedback; constant queries measured below`);
-    sample.note += `; ${queryCount} pool queries`;
+    sample.note += `; ${queryCount} pool queries; warm median < ${warmBound} ms acceptance`;
+    if (queryCount !== 3) throw new Error(`Noting NEAR ${factCount}-fact pool used ${queryCount} queries; expected exactly 3`);
+    if (!(sample.warm < warmBound)) throw new Error(`Noting NEAR ${factCount}-fact warm median ${sample.warm.toFixed(1)} ms exceeds < ${warmBound} ms`);
     return sample;
   } finally { store.close(); rmSync(copy, { force: true }); }
 }

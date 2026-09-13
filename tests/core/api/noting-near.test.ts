@@ -1,10 +1,16 @@
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { sourceSeededMemory, recorded, toolRejected, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
 import { similarity } from "../../../src/core/consolidation/similarity.ts";
+import { Store } from "../../../src/core/store/index.ts";
 
 let memory: ReturnType<typeof sourceSeededMemory>;
 let sessionId: number;
 let firstTurnId: number;
+let directory: string;
+let dbPath: string;
 let agent: (input: NotingAgentInput) => Promise<RunAgentResult>;
 
 const oldFact = (text = "Package trace-memory moved from beta.1 to beta.2") => ({
@@ -16,7 +22,9 @@ const newFact = (turnId: number, text = "Package trace-memory moved from beta.2 
 
 beforeEach(() => {
   agent = async () => { throw new Error("agent not installed"); };
-  memory = sourceSeededMemory(":memory:", raw => agent(raw as NotingAgentInput));
+  directory = mkdtempSync(join(tmpdir(), "trace-memory-noting-near-"));
+  dbPath = join(directory, "test.sqlite");
+  memory = sourceSeededMemory(dbPath, raw => agent(raw as NotingAgentInput));
   const project = memory.store.createProject({ name: "noting-near", declaredBy: "mark" });
   sessionId = memory.store.createSession({ enrollmentChoice: true, host: "fake", projectId: project.id, startedAt: "now", firstReplyAt: "now" }).id;
   firstTurnId = memory.store.appendTurn({ sessionId, kind: "turn", assistantText: "Package trace-memory moved from beta.1 to beta.2", startedAt: "first" }).id;
@@ -24,7 +32,7 @@ beforeEach(() => {
     .find(tool => tool.name === "note")!.execute({ facts: [oldFact()] })).toContain("F1");
   recorded(memory, sessionId, "main", firstTurnId);
 });
-afterEach(() => memory.close());
+afterEach(() => { memory.close(); rmSync(directory, { recursive: true, force: true }); });
 
 function appendTarget(text: string) {
   return memory.store.appendTurn({ sessionId, parentTurnId: firstTurnId, kind: "turn", assistantText: text, startedAt: "second" });
@@ -174,6 +182,69 @@ test("rejected input does not read the pool; the first valid submission reads it
   expect(response.notingNearReview.shown[0].neighbours.map((n: { factId: number }) => n.factId)).toEqual([1]);
   expect(response.toolCalls).toHaveLength(5);
   expect(response.factIds).toEqual([3]);
+});
+
+test("a later same-Turn legacy-address occurrence cannot invalidate the binding's frozen source", async () => {
+  const target = appendTarget(oldFact().text);
+  let frozenSourceId = 0, lateSourceId = 0;
+  agent = async input => {
+    input.reportRequest({ round: 1 });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    const first = note.execute({ facts: [newFact(target.id, oldFact().text)] });
+    expect(input.reviewFeedback(first)).toContain("NEAR:");
+    const before = memory.store.sourcePath(sessionId, "main", target.id);
+    frozenSourceId = before.find(entry => entry.turnId === target.id && entry.role === "assistant")!.id;
+    const late = memory.appendEntry({ sessionId, nativeLineage: "fixture", nativeId: "late-same-turn", turnId: target.id,
+      role: "assistant", text: oldFact().text, raw: JSON.stringify({ role: "assistant", text: oldFact().text }), calls: [] });
+    lateSourceId = late.id;
+    memory.store.selectSourcePath(sessionId, "main", [...before.map(entry => entry.id), late.id]);
+    input.reportRequest({ round: 2 });
+    expect(note.execute({ facts: [newFact(target.id, oldFact().text)] })).toContain("F2");
+    return { outcome: "success", output: "done", request: { round: 2 } };
+  };
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: target.id, mode: "subagent" });
+  expect(result.outcome).toBe("success");
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(memory.store.factEntries(result.facts[0]!.id)).toContain(frozenSourceId);
+  expect(memory.store.factEntries(result.facts[0]!.id)).not.toContain(lateSourceId);
+});
+
+test("the three-query candidate pool is one cross-connection database snapshot", () => {
+  const secondId = addOld("A second earlier fact");
+  const other = new Store(dbPath);
+  other.db.exec("PRAGMA busy_timeout = 0");
+  const sql = "INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)";
+  let attempted = false, wroteDuringRead = false;
+  const originalPrepare = memory.store.db.prepare.bind(memory.store.db);
+  const prepare = vi.spyOn(memory.store.db, "prepare").mockImplementation(((statementSql: string) => {
+    const statement = originalPrepare(statementSql);
+    if (!String(statementSql).includes("SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id")) return statement;
+    return new Proxy(statement, { get(target, property) {
+      if (property !== "all") {
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      }
+      return (...params: unknown[]) => {
+        const rows = (target.all as (...values: unknown[]) => unknown[])(...params);
+        attempted = true;
+        try { other.db.prepare(sql).run(secondId, 1, "support", "weak"); wroteDuringRead = true; }
+        catch (error) { expect(String(error)).toMatch(/locked/); }
+        return rows;
+      };
+    } });
+  }) as typeof memory.store.db.prepare);
+  try {
+    const path = { sessionId, branch: "main", headTurnId: firstTurnId };
+    const pool = memory.store.notingNearPool(sessionId, path, memory.store.pathSnapshot(path));
+    expect(attempted).toBe(true);
+    expect(wroteDuringRead).toBe(false);
+    expect(pool.relations.get(1)).toEqual([]);
+  } finally {
+    prepare.mockRestore();
+    if (!wroteDuringRead) other.db.prepare(sql).run(secondId, 1, "support", "weak");
+    expect(other.listFactRelations(1)).toContainEqual({ fromFact: secondId, toFact: 1, kind: "support", strength: "weak" });
+    other.close();
+  }
 });
 
 test("an invalid correction can be retried, and the changed valid batch commits without another review", async () => {

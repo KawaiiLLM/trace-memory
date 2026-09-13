@@ -127,10 +127,19 @@ function releaseAgentDir(agentDir: string) {
  * is now incomplete). Every other conversation, Consolidation included, keeps the old text reply. */
 export const emptyNoteReply = (): Reply => ({ ...reply(""), stopReason: "toolUse",
   content: [{ type: "toolCall", id: "note-empty", name: "note", arguments: { facts: [] } }] });
+const latestNoteResult = (conversation: Conversation) => conversation.messages
+  .filter(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note").at(-1) as Message | undefined;
+const parsedNoteResult = (conversation: Conversation): Record<string, unknown> | undefined => {
+  const result = latestNoteResult(conversation);
+  if (!result) return undefined;
+  try { const value = JSON.parse(partsText((result as { content: unknown }).content));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : undefined;
+  } catch { return undefined; }
+};
+/** A NEAR review receipt is a successful tool result but not a business commit. */
+export const noteCommitted = (conversation: Conversation): boolean => Array.isArray(parsedNoteResult(conversation)?.factIds);
 export const emptyNote = (conversation: Conversation): Reply | undefined =>
-  conversation.systemPrompt?.startsWith("# Noting")
-    && !conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note")
-    ? emptyNoteReply() : undefined;
+  conversation.systemPrompt?.startsWith("# Noting") && !latestNoteResult(conversation) ? emptyNoteReply() : undefined;
 
 export function host(config: Record<string, unknown> = {}, options: { native?: NativeSource; fetch?: boolean; extension?: typeof extension; inflight?: () => number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "trace-memory-host-"));
@@ -217,7 +226,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
     requests.push(structuredClone(body));
     inflight++; activity++;
     try {
-      if (autoStop && conversation.tools?.some(t => t.name === "note") && conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "note")) return responseOf(reply("Done."));
+      if (autoStop && conversation.tools?.some(t => t.name === "note") && noteCommitted(conversation)) return responseOf(reply("Done."));
       if (autoStop && conversation.messages.some(m => m.role === "toolResult" && (m as { toolName?: string }).toolName === "memory" && ((m as { content: { text: string }[] }).content[0]!.text.includes('"committed"')))) return responseOf(reply("Done."));
       // A held reply is a request in flight: cancelling the child must end it, as a real one would.
       const signal = init.signal as AbortSignal | undefined;
@@ -359,10 +368,12 @@ export function notingFact(conversation: Conversation) {
   const input = String(conversation.messages[0]!.content);
   const address = /S(\d+)\/T(\d+)/.exec(input)!;
   const source = /\[(T\d+#E\d+@text)\] (?:user|assistant):/.exec(input)?.[1] ?? `T${address[2]}#user`;
-  if (conversation.messages.some((m) => m.role === "toolResult" && m.toolName === "note")) return reply("Done.");
-  return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const, id: "note-1", name: "note", arguments: { facts: [
-    { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [source] },
-  ] } }] };
+  const previous = latestNoteResult(conversation), review = parsedNoteResult(conversation)?.feedback;
+  if (previous && (!review || typeof review !== "object")) return reply("Done.");
+  return { ...reply(""), stopReason: "toolUse" as const, content: [{ type: "toolCall" as const,
+    id: previous ? "note-2" : "note-1", name: "note", arguments: { facts: [
+      { category: "observation", actor: "user", text: "用 pnpm，不要 npm", source: [source] },
+    ] } }] };
 }
 
 export const consolidationBatch = { operations: [], skipped: [{ fact: "F1", because: "Not durable." }] };

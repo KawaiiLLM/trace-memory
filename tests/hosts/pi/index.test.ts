@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { host as createHost, reply, notingFact, consolidationReply, usage, type Reply } from "./test-host.ts";
+import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, usage, type Reply } from "./test-host.ts";
 import { compacted } from "../../source-fixture.ts";
 
 const disposers: (() => Promise<void>)[] = [];
@@ -557,10 +557,10 @@ test.each([true, false])("29d: a fork note (%s) waits for no receipt; both modes
   expect(h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE name = 'pending_deliveries'").all()).toEqual([]);
   h.provider(async c => notingFact(c));
   await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(4);
+  expect(h.requests).toHaveLength(5); // the second worker uses one NEAR review round
   expect(String((await h.prompt("third"))?.message?.content ?? "").includes("noted")).toBe(false);
   await h.answer(); await h.emit("agent_settled"); await h.answer("tick"); await h.drain();
-  expect(h.requests).toHaveLength(6);
+  expect(h.requests).toHaveLength(8); // the third worker reviews too; neither adds a foreground receipt
   expect(h.memory.store.listRuns(1).at(-1)).toMatchObject({ rangeFrom: "S1/T3", rangeTo: "S1/T3" });
 });
 
@@ -725,7 +725,7 @@ test("29d: a queued user message mid-run finds no receipt to carry and no confir
 
 test("a run that committed and then hit a provider failure is reported as a warning, not an error, and stays success", async () => {
   const h = host({ "noting.triggerTokens": 30 });
-  h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
+  h.provider(async c => { if (noteCommitted(c)) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
   await h.turn(); await h.drain();
   const run = h.memory.store.listRuns(1)[0]!;
   expect(run.outcome).toBe("success"); expect(h.memory.store.listSessionFacts(1)).toHaveLength(1);
@@ -843,7 +843,7 @@ test("the footer indicator follows activity: accent while noting runs, error aft
   h.provider(async () => { throw new Error("offline"); });
   await h.turn(); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
-  h.provider(async c => { if (c.messages.some(m => m.role === "toolResult")) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
+  h.provider(async c => { if (noteCommitted(c)) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
   await h.turn(); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
 });
@@ -896,7 +896,7 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
-  h.provider(async c => c.messages.some(m => m.role === "toolResult") ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
+  h.provider(async c => noteCommitted(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
   await h.turn(); await h.drain();
   run = h.memory.store.listRuns(1).at(-1)!;
   expect(run.outcome).toBe("success");

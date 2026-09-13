@@ -69,7 +69,7 @@ test("17a 2026-09-08: attach surfaces missing native ancestry without manufactur
   } finally { await h.dispose(); }
 });
 
-test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and reject their citations despite unrestricted reads", async () => {
+test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and keep legacy citations bound to the frozen occurrence", async () => {
   const h = host(quiet);
   let release!: () => void;
   let input!: NotingAgentInput;
@@ -89,12 +89,12 @@ test("17a 2026-09-08: frozen entries leave late same-Turn sources pending and re
     await h.answer("late assistant");
     const read = input.tools.find(t => t.name === "trace")!.execute({ address: "T1#t1", full: true });
     expect(read).toContain("late result");
-    for (const address of ["T1#assistant", "T1#t1"]) {
-      expect(JSON.parse(input.tools.find(t => t.name === "note")!.execute({ facts: [{ category: "observation", actor: "agent", text: "Late evidence", source: [address] }] })).results[0]).toMatch(/^rejected:/);
-    }
-    // Correct the rejected batch to zero facts: success covers only the exact frozen entries.
-    input.reportRequest({ frozen: true });
-    expect(JSON.parse(input.tools.find(t => t.name === "note")!.execute({ facts: [] })).results).toEqual([]);
+    const note = input.tools.find(t => t.name === "note")!;
+    const lateResult = h.memory.store.sourcePath(1, "main", 1).find(entry => entry.role === "toolResult")!;
+    expect(JSON.parse(note.execute({ facts: [{ category: "observation", actor: "agent", text: "Late evidence", source: [`T1#E${lateResult.entryOrdinal}`] }] })).results[0]).toMatch(/^rejected:/);
+    const committed = JSON.parse(note.execute({ facts: [{ category: "observation", actor: "agent", text: "The first response was produced.", source: ["T1#assistant"] }] }));
+    expect(committed.results).toEqual([`ok: F${committed.factIds[0]}`]);
+    expect(h.memory.store.factEntries(committed.factIds[0])).toEqual([before[1]!.id]);
     release();
     expect((await pending).outcome).toBe("success");
     expect(h.memory.pendingEntries(1, "main", 1)).toHaveLength(2);
