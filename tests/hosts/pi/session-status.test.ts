@@ -169,7 +169,7 @@ test("reopening replaces unavailable SDK capacity with the current valid estimat
   h.setContextUsage({ tokens: 60237, contextWindow: 512000, percent: 0 });
   const available = await open(h);
   expect(available).toContain("~60.2k / 512k tokens (11.8%)");
-  expect(available).toContain("Free ~451.8k (88.2%)");
+  expect(available).toContain("Free ~451.8k (88.2% window)");
   expect(available).toContain("Estimated usage by category");
   expect(h.requests).toEqual([]);
 });
@@ -321,8 +321,10 @@ test("headless and UI read the same composition once per opening without writes 
   expect(composition(headless)).toBe(composition(title));
   for (const text of [headless, title]) {
     expect(text).toContain("~1 / 1k tokens (0.1%)");
-    expect(text).toContain("Local text exceeds SDK total; grid uses SDK.");
-    expect(text).toContain("Free ~999 (99.9%)");
+    expect(text).toContain("grid colors project");
+    expect(text).toContain("proportions to SDK occupancy.");
+    expect(text).toContain("Free ~999 (99.9% window)");
+    expect(text).not.toContain("Difference");
     expect(text).not.toContain("?".repeat(20));
     expect(text).toContain("Fork: suppressed");
   }

@@ -1,6 +1,27 @@
-import type { ExtensionContext, KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
+import { Theme, type ExtensionContext, type KeybindingsManager, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { SelectList, truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import type { Paint } from "./session-status.ts";
+import { CONTEXT_PALETTE, type Paint, type PaletteColor } from "./session-status.ts";
+
+const paletteToken: Record<PaletteColor, ThemeColor> = {
+  system: "syntaxKeyword", tools: "syntaxFunction", skills: "syntaxString",
+  knowledge: "syntaxVariable", facts: "syntaxNumber", raw: "syntaxOperator",
+  conversation: "syntaxType", other: "syntaxComment", free: "dim",
+};
+
+/** Use Pi's public Theme encoder so the fixed data palette follows host truecolor/256-color mode. */
+export function createSessionPaint(theme: Pick<Theme, "fg" | "getFgAnsi" | "getColorMode">): Paint {
+  const palette = new Theme({
+    syntaxKeyword: CONTEXT_PALETTE.system, syntaxFunction: CONTEXT_PALETTE.tools,
+    syntaxString: CONTEXT_PALETTE.skills, syntaxVariable: CONTEXT_PALETTE.knowledge,
+    syntaxNumber: CONTEXT_PALETTE.facts, syntaxOperator: CONTEXT_PALETTE.raw,
+    syntaxType: CONTEXT_PALETTE.conversation, syntaxComment: CONTEXT_PALETTE.other,
+    dim: CONTEXT_PALETTE.free, muted: CONTEXT_PALETTE.free, text: CONTEXT_PALETTE.free,
+    thinkingXhigh: CONTEXT_PALETTE.free,
+  } as ConstructorParameters<typeof Theme>[0], { selectedBg: "" } as ConstructorParameters<typeof Theme>[1], theme.getColorMode());
+  return (color, text) => color in CONTEXT_PALETTE
+    ? `${palette.getFgAnsi(paletteToken[color as PaletteColor])}${text}${theme.getFgAnsi("dim")}`
+    : theme.fg(color as ThemeColor, text);
+}
 
 /** One read-only snapshot. Reflow and paging never go back to the database. */
 export type SessionBody = (width: number, paint?: Paint) => string;
@@ -24,12 +45,12 @@ export class SessionPanel implements Component {
   private body: SessionBody;
   private actions: string[];
   private height: () => number;
-  private theme: Pick<Theme, "fg">;
+  private theme: Pick<Theme, "fg" | "getFgAnsi" | "getColorMode">;
   private kb: KeybindingsManager;
   private done: (value: string | undefined) => void;
   private refresh: () => void;
   constructor(body: SessionBody, actions: string[], height: () => number,
-    theme: Pick<Theme, "fg">, kb: KeybindingsManager,
+    theme: Pick<Theme, "fg" | "getFgAnsi" | "getColorMode">, kb: KeybindingsManager,
     done: (value: string | undefined) => void, refresh: () => void) {
     this.body = body; this.actions = actions; this.height = height; this.theme = theme;
     this.kb = kb; this.done = done; this.refresh = refresh;
@@ -59,7 +80,7 @@ export class SessionPanel implements Component {
       return [...lines, ...Array(height - lines.length).fill("")];
     }
     const help = wrapTextWithAnsi(`${hint("tui.select.up")}/${hint("tui.select.down")} Select | ${hint("tui.select.confirm")} Open | ${hint("tui.select.cancel")} Back`, width);
-    const lines = this.body(width, (color, text) => this.theme.fg(color, text)).split("\n");
+    const lines = this.body(width, createSessionPaint(this.theme)).split("\n");
     if (height >= 10 && lines.length > height - 1 - help.length - this.actions.length)
       help.push(...wrapTextWithAnsi(`${hint("tui.select.pageUp")}/${hint("tui.select.pageDown")} Scroll`, width));
     // Keep a body row and the selected action even in very short terminals. At 24 rows

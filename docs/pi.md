@@ -505,36 +505,41 @@ immediately, so stop can be invoked while it runs.
 
 #### Current session measurements
 
-The context panel estimates **Pi's current rebuilt text**, not final provider wire
-or an exact tokenizer bill. It reads one selected `buildContextEntries()` snapshot,
-projects entries with Pi's public message APIs, and uses the core text estimator. The
-census includes the current system prompt and active tool definitions. It remains
-separate from `getContextUsage()`; the display never scales local categories to match the
-SDK estimate or interprets their numerical difference as image or other non-text usage.
-An incomplete census keeps its measured values and adds `(partial)` to the category
-heading.
+The context panel combines two independent measurements. Pi's `getContextUsage()` value
+and the model window determine occupied and free capacity. A selected
+`buildContextEntries()` snapshot supplies only the occupied region's color proportions,
+using Pi's public message APIs and the core text estimator. This local census covers the
+current system prompt and active tool definitions, but it is not final provider wire or
+an exact tokenizer bill. Its legend always reports the actual, unscaled local estimates;
+an incomplete census adds `(partial)` to the heading.
 
-When local category sum is no greater than SDK occupancy and occupancy is within the
-model window, one 200-cell partition shows System, Tools, Skill catalog, Memory,
-Conversation, Other, a positive neutral Difference and Free in that fixed order.
-Largest-remainder allocation runs once across the complete vector, so each cell is 0.5%
-of the window, ties follow category order and a nonzero category can receive no cell.
-Legend values remain the unscaled estimates rather than values derived from cell counts.
+A nominal full cell is 0.5% of the model window. The renderer projects each positive local
+leaf into the SDK-reported occupied capacity, gives that leaf its own full cells plus one
+`⛀` partial glyph for any positive sub-cell remainder, and rounds free capacity up with
+`⛶`. Because partial remainders are represented separately instead of competing for 200
+slots, a truthful grid can contain more than 200 glyphs and automatically grows beyond ten
+20-cell rows. The legend states the projected occupancy rule, full/partial/free glyph
+counts and the nominal tokens per full cell.
 
-The raw values select exceptional displays before rounding. Missing SDK usage or window
-omits the grid and names the missing input. Occupancy above the window fills all 200 cells
-with the accent color and reports the numeric overage while retaining percentages above
-100%. Local text above an in-window SDK total uses the SDK's single-color occupied/free
-grid, including at most one partial cell, and reports the discrepancy without a negative
-Difference. Both valid exceptional states retain the local category rows. Reopening takes
-a new snapshot, so later valid SDK data replaces an unavailable display without reloading
-the extension.
+The grid has no Difference category and never treats an SDK/local mismatch as image or
+other non-text usage. System, Tools, Skill catalog, Knowledge, Facts, Raw, Unclassified,
+Conversation and Other retain their fixed order and colors even when the local sum is
+above or below SDK usage. When SDK usage is positive but every local estimate is zero, a
+neutral `Unclassified occupied` segment represents the known footprint without inventing
+a local category estimate.
+
+Raw values select capacity states before formatting or floating-point rounding. Missing
+SDK usage or window omits the grid and names the missing input; exact cell boundaries do
+not gain a spurious partial glyph. Usage above the window preserves the projected category
+colors, caps only the occupied footprint at 200 nominal units, reports the numeric overage
+and shows zero free capacity. Reopening takes a new snapshot, so later valid SDK data
+replaces an unavailable display without reloading the extension.
 
 - **Memory:** every retained initial injection, on/project supplement and marked custom
   compaction, including Pi's summary framing. Repeated occurrences count repeatedly;
-  changing project or disabling enrollment does not subtract text still retained. A
-  positive Memory legend row appends nonzero Knowledge, Facts, Raw and Unclassified
-  values as ordinary text in that order, with no second allocation or percentages.
+  changing project or disabling enrollment does not subtract text still retained. Memory
+  remains one local aggregate in the legend, while its positive Knowledge, Facts, Raw and
+  Unclassified leaves receive separate grid segments and detail rows in that order.
 - **Memory metadata:** Knowledge, Facts and Raw estimates come from the same assembled
   material and require a matching body hash, nonnegative safe-integer parts and a sum no
   larger than the body estimate. Titles, receipts and other framing remain Unclassified.
@@ -547,10 +552,11 @@ the extension.
 - **Conversation / Other:** retained ordinary messages and native summaries / other
   extensions' custom messages. Pi-excluded bash executions contribute nothing.
 
-At 80 columns or wider, the panel uses a 39-column spaced 20-by-10 grid, a three-column
-gap and the wrapped legend beside it. From 20 through 79 columns, the unspaced grid and
-complete wrapped legend stack. Below 20 columns the text stays width-safe without
-manufacturing a one-cell-per-row grid. Pi's ANSI-aware display-width utilities wrap the
+At 80 columns or wider, the panel uses a 39-column spaced, 20-cell-wide grid, a
+three-column gap and the wrapped legend beside it. From 20 through 79 columns, the
+unspaced 20-cell-wide grid and complete wrapped legend stack. Grid height follows the
+actual glyph count. Below 20 columns the text stays width-safe without manufacturing a
+one-cell-per-row grid. Pi's ANSI-aware display-width utilities wrap the
 complete section before pagination. In the TUI, this panel alone uses the
 public `ui.custom` overlay API, not an oversized native selector title. The overlay
 uses the terminal's available screen rather than the fullscreen editor dock. Its

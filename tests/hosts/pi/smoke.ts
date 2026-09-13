@@ -44,8 +44,10 @@ try {
   h.setContextUsage({ tokens: 1, contextWindow: 200000, percent: 0 });
   await trace("");
   assert.ok(h.notices.at(-1)!.includes("~1 / 200k tokens (<0.1%)"));
-  assert.ok(h.notices.at(-1)!.includes("Local text exceeds SDK total; grid uses SDK."));
-  assert.ok(h.notices.at(-1)!.includes("Free ~200k (<100%)"));
+  assert.ok(h.notices.at(-1)!.includes("grid colors project"));
+  assert.ok(h.notices.at(-1)!.includes("proportions to SDK occupancy."));
+  assert.ok(h.notices.at(-1)!.includes("Free ~200k (<100% window)"));
+  assert.ok(!h.notices.at(-1)!.includes("Difference"));
   assert.ok(h.notices.at(-1)!.includes("Estimated usage by category"));
   assert.ok(!h.notices.at(-1)!.includes("?".repeat(20)));
   assert.ok(!h.notices.at(-1)!.includes("Pi rebuilt text estimate"));
@@ -55,7 +57,7 @@ try {
   tui.requestRender = () => {};
   h.ctx.ui.custom = async (factory, options) => {
     assert.equal(options?.overlay, true, "installed panel must escape the editor dock");
-    const theme = { fg: (_color: string, text: string) => text };
+    const theme = { fg: (_color: string, text: string) => text, getFgAnsi: () => "", getColorMode: () => "truecolor" };
     let cancelled = false;
     const component = await factory(tui, theme as never, getKeybindings() as never, value => {
       assert.equal(value, undefined); cancelled = true;

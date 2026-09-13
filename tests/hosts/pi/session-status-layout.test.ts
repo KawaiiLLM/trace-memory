@@ -55,7 +55,11 @@ function screenHarness(width: number, height: number, mode: "fullscreen" | "regu
   const terminal = { columns: width, rows: height, write() {}, hideCursor() {}, showCursor() {} };
   const tui: any = mode === "fullscreen" ? new TuiAltScreen(terminal as any, false) : new TuiMainScreen(terminal as any, false);
   tui.requestRender = () => {}; tui.requestImmediateRender = () => {};
-  const theme = { fg: (color: string, text: string) => `\u001b[${color === "accent" ? 36 : 90}m${text}\u001b[39m` };
+  const theme = {
+    fg: (color: string, text: string) => `\u001b[${color === "accent" ? 36 : 90}m${text}\u001b[39m`,
+    getFgAnsi: (color: string) => `\u001b[${color === "accent" ? 36 : 90}m`,
+    getColorMode: () => "truecolor" as const,
+  };
   const kb = new KeybindingsManager();
   const ctx: any = { ui: { custom: async (factory: any, options: any) => new Promise(resolve => {
     const component = factory(tui, theme, kb, (value: any) => { handle.hide(); resolve(value); });
@@ -147,20 +151,21 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => [24, 60].map(height => ({ 
   const s = screenHarness(width, height);
   const result = showSessionPanel(s.ctx, panelBody, actions);
   const seen: string[] = [];
-  for (let page = 0; page < 80; page++) {
+  for (let page = 0; page < 200; page++) {
     const frame = s.frame(); seen.push(...frame);
     expect(frame.every(line => visibleWidth(line) <= width)).toBe(true);
     for (const label of actions) expect(frame.some(line => line.trim().replace(/^→ /, "") === label)).toBe(true);
     s.key("\x1b[6~");
   }
-  const text = seen.join(" ").replace(/\s+/g, " ");
+  const text = seen.join(" ").replace(/\s+/g, " "), squashed = text.replaceAll(" ", "");
   expect(text).toContain("long-provider-");
   expect(text).toContain("long-model-");
-  expect(text.replaceAll(" ", "")).toContain("MODEL-END");
-  for (const phrase of ["Estimated usage by category (partial)", "Skill catalog ~1.2k",
-    "Memory ~30.3k", "Knowledge 10.5k", "Facts 9.9k", "Raw 9.6k", "Unclassified 279", "Difference ~13.5k",
+  expect(squashed).toContain("MODEL-END");
+  for (const phrase of ["Skill catalog ~1.2k",
+    "Memory ~30.3k", "Knowledge ~10.5k", "Facts ~9.9k", "Raw ~9.6k", "Unclassified ~279",
     "Free ~305k", "Use /trace on to resume.", "Final detail: paging complete"])
-    expect(text).toContain(phrase);
+    expect(squashed).toContain(phrase.replaceAll(" ", ""));
+  expect(text).not.toContain("Difference");
   s.key("\x1b"); expect(await result).toBeUndefined();
 });
 
@@ -199,7 +204,7 @@ test("resize reflows wide/narrow and very short views without rescanning; cancel
 test("injected remapped keys and legacy j/k navigation are honored", () => {
   const selected: unknown[] = [];
   const kb = new KeybindingsManager({ "tui.select.down": "ctrl+n", "tui.select.confirm": "ctrl+y", "tui.select.cancel": "ctrl+x" });
-  const panel = new SessionPanel(overview, actions, () => 24, { fg: (_color, text) => text }, kb, value => selected.push(value), () => {});
+  const panel = new SessionPanel(overview, actions, () => 24, { fg: (_color, text) => text, getFgAnsi: () => "", getColorMode: () => "truecolor" }, kb, value => selected.push(value), () => {});
   panel.render(40); panel.handleInput("\x0e"); panel.handleInput("j"); panel.handleInput("k"); panel.handleInput("\x19");
   expect(selected).toEqual(["Runs"]); panel.handleInput("\x18"); expect(selected).toEqual(["Runs", undefined]);
 });
@@ -211,7 +216,7 @@ test.each([{ binding: "ctrl+y" }, { binding: [] }])("confirm override $binding r
   const kb = new KeybindingsManager({ "tui.select.confirm": binding });
   for (const action of ["Off", "Retry fork"]) {
     const done = vi.fn();
-    const panel = new SessionPanel(overview, [action], () => 24, { fg: (_color, text) => text }, kb, done, () => {});
+    const panel = new SessionPanel(overview, [action], () => 24, { fg: (_color, text) => text, getFgAnsi: () => "", getColorMode: () => "truecolor" }, kb, done, () => {});
     const help = panel.render(80).join("\n");
     expect(help).toContain(binding === "ctrl+y" ? "ctrl+y Open" : "disabled Open");
     expect(help).not.toContain("enter Open");
@@ -232,7 +237,7 @@ test("default confirmation follows Pi manager for legacy CR/LF and encoded Ctrl+
   for (const [key, confirms] of [["\r", true], ["\n", true], ["\x1b[106;5u", false]] as const) {
     const done = vi.fn();
     let height = 3;
-    const panel = new SessionPanel(overview, ["Off"], () => height, { fg: (_color, text) => text }, kb, done, () => {});
+    const panel = new SessionPanel(overview, ["Off"], () => height, { fg: (_color, text) => text, getFgAnsi: () => "", getColorMode: () => "truecolor" }, kb, done, () => {});
     panel.render(40);
     expect(kb.matches(key, "tui.select.confirm")).toBe(confirms);
     panel.handleInput(key);
@@ -390,15 +395,14 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     expect(compactFirst).toContain("~44.5k / 1M tokens (4.5%)");
     expect(first).toContain("fake/test");
     expect(first).not.toMatch(/100 cells|Pi estimate|worker readiness|Forks or clones/);
-    s.key("\x1b[6~");
-    const second = s.frame().map(line => line.trimEnd()).join("\n");
-    const viewed = [first, second];
-    for (let page = 0; page < 2; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
+    const viewed = [first];
+    for (let page = 0; page < 20; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
     const seen = viewed.join("\n"), squashed = seen.replace(/\s+/g, "");
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
       "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
-      "Estimated usage by category", "Difference ~42.6k (4.3%)", "Free ~955.5k (95.5%)"])
+      "Estimated usage by category", "Tools ~1.9k (99.4% local)", "Conversation ~12 (0.6% local)", "Free ~955.5k (95.5% window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
+    expect(seen).not.toContain("Difference");
     expect(seen).not.toContain("Memory ~0");
     s.key("\x1b"); await command;
   } finally { await h.dispose(); }

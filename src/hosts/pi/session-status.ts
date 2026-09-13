@@ -3,7 +3,14 @@ import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 import type { TraceMemory } from "../../core/api/index.ts";
 import type { ContextComposition } from "./context-composition.ts";
 
-export type Paint = (color: "dim" | "accent" | "syntaxKeyword" | "syntaxFunction" | "syntaxString" | "syntaxNumber" | "syntaxType" | "muted", text: string) => string;
+export const CONTEXT_PALETTE = {
+  system: "#ee80af", tools: "#70c4a5", skills: "#b3a4f4",
+  knowledge: "#f08b48", facts: "#f4b552", raw: "#ebd873",
+  conversation: "#79ade8", other: "#a7adb6", free: "#63707b",
+} as const;
+export type PaletteColor = keyof typeof CONTEXT_PALETTE;
+export type PaintColor = "dim" | "accent" | "syntaxKeyword" | "syntaxFunction" | "syntaxString" | "syntaxNumber" | "syntaxType" | "muted" | PaletteColor;
+export type Paint = (color: PaintColor, text: string) => string;
 const plain: Paint = (_color, text) => text;
 const number = (value: number) => value.toLocaleString("en-US");
 const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
@@ -47,17 +54,8 @@ export function contextMap(usage: ContextUsage | undefined, model: string, width
   return [...grid, ...summary.map(line => paint("dim", line))];
 }
 
-/** Largest remainders, one shared rounding; a nonzero category has no guaranteed cell. */
-export function allocateCells(values: readonly number[], cells: number): number[] {
-  const total = values.reduce((sum, value) => sum + value, 0);
-  if (!total) return values.map(() => 0);
-  const shares = values.map(value => value / total * cells), counts = shares.map(Math.floor);
-  const order = shares.map((value, i) => ({ i, remainder: value - counts[i]! }))
-    .sort((a, b) => b.remainder - a.remainder || a.i - b.i);
-  for (let i = 0, left = cells - counts.reduce((sum, count) => sum + count, 0); i < left; i++) counts[order[i]!.i]!++;
-  return counts;
-}
 const estimate = (n: number) => n > 0 && n < 0.001 ? "<0.001"
+  : n >= 1e15 ? n.toExponential(1).replace(/\.0e/, "e")
   : n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`
   : n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : compactNumber(n);
 const approximate = (n: number) => {
@@ -66,11 +64,125 @@ const approximate = (n: number) => {
 };
 const share = (value: number, total: number) => total ? (value < total / 100 && percent(value / total) === "1.0%" ? "<1%" : percent(value / total)) : "0.0%";
 const categoryOrder = ["System", "Tools", "Skills", "Memory", "Conversation", "Other"] as const;
-const colors: Record<(typeof categoryOrder)[number] | "Difference", Parameters<Paint>[0]> = {
-  System: "syntaxKeyword", Tools: "syntaxFunction", Skills: "syntaxString", Memory: "accent",
-  Conversation: "syntaxNumber", Other: "syntaxType", Difference: "muted",
-};
 const memoryOrder = ["Knowledge", "Facts", "Raw", "Unclassified"] as const;
+const topColors = { System: "system", Tools: "tools", Skills: "skills", Conversation: "conversation", Other: "other" } as const;
+const memoryColors = { Knowledge: "knowledge", Facts: "facts", Raw: "raw", Unclassified: "other" } as const;
+const GRID_COLUMNS = 20;
+const NOMINAL_CELLS = 200;
+
+type Rational = { numerator: bigint; denominator: bigint };
+const gcd = (a: bigint, b: bigint): bigint => {
+  while (b) [a, b] = [b, a % b];
+  return a;
+};
+const rational = (numerator: bigint, denominator = 1n): Rational => {
+  if (numerator === 0n) return { numerator: 0n, denominator: 1n };
+  const divisor = gcd(numerator < 0n ? -numerator : numerator, denominator);
+  return { numerator: numerator / divisor, denominator: denominator / divisor };
+};
+/** Exact decimal rational for the finite Number value as exposed by its stable JS spelling. */
+const numberRational = (value: number): Rational => {
+  const [coefficient, exponentText] = value.toString().toLowerCase().split("e");
+  const exponent = Number(exponentText ?? 0);
+  const [whole, fraction = ""] = coefficient!.split(".");
+  const digits = `${whole}${fraction}`;
+  const scale = fraction.length - exponent;
+  return scale >= 0 ? rational(BigInt(digits), 10n ** BigInt(scale))
+    : rational(BigInt(digits) * 10n ** BigInt(-scale));
+};
+const addRational = (a: Rational, b: Rational) => rational(
+  a.numerator * b.denominator + b.numerator * a.denominator,
+  a.denominator * b.denominator,
+);
+const subtractRational = (a: Rational, b: Rational) => rational(
+  a.numerator * b.denominator - b.numerator * a.denominator,
+  a.denominator * b.denominator,
+);
+const multiplyRational = (a: Rational, b: Rational) => rational(a.numerator * b.numerator, a.denominator * b.denominator);
+const divideRational = (a: Rational, b: Rational) => rational(a.numerator * b.denominator, a.denominator * b.numerator);
+const rationalNumber = (value: Rational) => {
+  const whole = value.numerator / value.denominator;
+  const remainder = value.numerator % value.denominator;
+  const precision = 10n ** 15n;
+  return Number(whole) + Number(remainder * precision / value.denominator) / 1e15;
+};
+const sumRational = (values: readonly number[]) => values.reduce((sum, value) => addRational(sum, numberRational(value)), rational(0n));
+const splitUnits = (units: Rational) => ({
+  fullCells: Number(units.numerator / units.denominator),
+  partial: units.numerator % units.denominator > 0n,
+});
+const ceilUnits = (units: Rational) => Number((units.numerator + units.denominator - 1n) / units.denominator);
+
+export interface ProjectedContextSegment {
+  name: "System" | "Tools" | "Skills" | "Knowledge" | "Facts" | "Raw" | "Unclassified" | "Conversation" | "Other" | "Unclassified occupied";
+  estimate: number;
+  color: PaletteColor;
+  projectedTokens: number;
+  units: number;
+  fullCells: number;
+  partial: boolean;
+}
+export interface ContextProjection {
+  displayedUsed: number;
+  occupiedUnits: number;
+  nominalUnit: number;
+  segments: ProjectedContextSegment[];
+  freeTokens: number;
+  freeGlyphs: number;
+  glyphs: number;
+  rows: number;
+  overWindow: boolean;
+  unclassifiedOccupied: boolean;
+}
+
+/** SDK/window owns capacity; exact decimal ratios only decide full versus remainder glyphs. */
+export function projectComposition(value: ContextComposition): ContextProjection | undefined {
+  const window = valid(value.window) && value.window > 0 ? value.window : undefined;
+  const sdkTokens = valid(value.sdkTokens) ? value.sdkTokens : undefined;
+  if (window === undefined || sdkTokens === undefined) return;
+  const overWindow = sdkTokens > window;
+  const displayedUsed = overWindow ? window : sdkTokens;
+  const windowExact = numberRational(window);
+  const usedExact = numberRational(displayedUsed);
+  const occupiedExact = divideRational(multiplyRational(usedExact, rational(BigInt(NOMINAL_CELLS))), windowExact);
+  const occupiedUnits = rationalNumber(occupiedExact);
+
+  const leafInputs = ([
+    { name: "System", estimate: value.amounts.System, color: "system" },
+    { name: "Tools", estimate: value.amounts.Tools, color: "tools" },
+    { name: "Skills", estimate: value.amounts.Skills, color: "skills" },
+    ...memoryOrder.map((name): { name: ProjectedContextSegment["name"]; estimate: number; color: PaletteColor } =>
+      ({ name, estimate: value.memory[name], color: memoryColors[name] })),
+    { name: "Conversation", estimate: value.amounts.Conversation, color: "conversation" },
+    { name: "Other", estimate: value.amounts.Other, color: "other" },
+  ] as { name: ProjectedContextSegment["name"]; estimate: number; color: PaletteColor }[])
+    .filter(segment => segment.estimate > 0);
+  const localExact = sumRational(leafInputs.map(segment => segment.estimate));
+  const unclassifiedOccupied = localExact.numerator === 0n && displayedUsed > 0;
+  if (unclassifiedOccupied) leafInputs.push({ name: "Unclassified occupied", estimate: displayedUsed, color: "other" });
+  const projectionTotal = unclassifiedOccupied ? numberRational(displayedUsed) : localExact;
+
+  const exactUnits = leafInputs.map(segment => projectionTotal.numerator === 0n ? rational(0n)
+    : multiplyRational(divideRational(numberRational(segment.estimate), projectionTotal), occupiedExact));
+  const shares = leafInputs.map(segment => projectionTotal.numerator === 0n ? 0
+    : rationalNumber(divideRational(numberRational(segment.estimate), projectionTotal)));
+  const projectedTokens = shares.map(part => part * displayedUsed);
+  // Give the final positive segment the floating residual. Exact rational cell parts above remain
+  // authoritative; this adjustment only makes the exposed numeric projection sum stably to SDK use.
+  if (projectedTokens.length) projectedTokens[projectedTokens.length - 1] = displayedUsed
+    - projectedTokens.slice(0, -1).reduce((sum, amount) => sum + amount, 0);
+  const segments = leafInputs.map((segment, index): ProjectedContextSegment => ({
+    ...segment, projectedTokens: projectedTokens[index]!, units: rationalNumber(exactUnits[index]!), ...splitUnits(exactUnits[index]!),
+  }));
+  const freeTokens = overWindow ? 0 : Math.max(0, window - sdkTokens);
+  const freeExact = overWindow ? rational(0n) : divideRational(
+    multiplyRational(subtractRational(windowExact, numberRational(sdkTokens)), rational(BigInt(NOMINAL_CELLS))), windowExact,
+  );
+  const freeGlyphs = ceilUnits(freeExact);
+  const glyphs = segments.reduce((sum, segment) => sum + segment.fullCells + Number(segment.partial), 0) + freeGlyphs;
+  return { displayedUsed, occupiedUnits, nominalUnit: window / NOMINAL_CELLS, segments, freeTokens, freeGlyphs,
+    glyphs, rows: Math.ceil(glyphs / GRID_COLUMNS), overWindow, unclassifiedOccupied };
+}
 
 export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
   const window = valid(value.window) && value.window > 0 ? value.window : undefined;
@@ -79,56 +191,53 @@ export function compositionMap(value: ContextComposition, model: string, width: 
   const preferred = ["⛁", "⛶", "⛀"] as const;
   const [usedGlyph, freeGlyph, partialGlyph] = preferred.every(glyph => visibleWidth(glyph) === 1)
     ? preferred : ["#", ".", "+"] as const;
-  const local = categoryOrder.map(name => value.amounts[name]);
-  const localTotal = local.reduce((sum, amount) => sum + amount, 0);
-  const coherent = capacityKnown && localTotal <= sdkTokens && sdkTokens <= window;
-  const overWindow = capacityKnown && sdkTokens > window;
-  let cells: string[] = [];
-
-  if (coherent) {
-    const difference = sdkTokens - localTotal;
-    const free = window - sdkTokens;
-    const segments = [...local, difference, free];
-    const counts = allocateCells(segments, 200);
-    const segmentColors = [...categoryOrder.map(name => colors[name]), colors.Difference, "dim"] as const;
-    cells = counts.flatMap((count, index) => Array(count).fill(
-      paint(segmentColors[index]!, index === counts.length - 1 ? freeGlyph : usedGlyph),
-    ));
-  } else if (capacityKnown) {
-    if (overWindow) cells = Array(200).fill(paint("accent", usedGlyph));
-    else {
-      const occupied = sdkTokens / window * 200;
-      const full = Math.floor(occupied);
-      cells = Array.from({ length: 200 }, (_, index) => index < full
-        ? paint("accent", usedGlyph) : index < occupied ? paint("accent", partialGlyph) : paint("dim", freeGlyph));
-    }
-  }
+  const projection = projectComposition(value);
+  const localTotal = categoryOrder.reduce((sum, name) => sum + value.amounts[name], 0);
+  const segment = (name: ProjectedContextSegment["name"]) => projection?.segments.find(part => part.name === name);
+  const key = (part: ProjectedContextSegment | undefined) => !projection ? usedGlyph
+    : part?.fullCells ? usedGlyph : part?.partial ? partialGlyph : " ";
+  const cells = projection ? [
+    ...projection.segments.flatMap(part => [
+      ...Array(part.fullCells).fill(paint(part.color, usedGlyph)),
+      ...(part.partial ? [paint(part.color, partialGlyph)] : []),
+    ]),
+    ...Array(projection.freeGlyphs).fill(paint("free", freeGlyph)),
+  ] : [];
 
   const headline = capacityKnown ? `${approximate(sdkTokens)} / ${estimate(window)} tokens (${percent(sdkTokens / window)})`
     : sdkTokens !== undefined ? `${approximate(sdkTokens)} tokens`
     : window !== undefined ? `Context window ${approximate(window)} tokens` : undefined;
-  const state = !capacityKnown
-    ? sdkTokens === undefined && window === undefined ? "SDK usage and context window unavailable."
-      : sdkTokens === undefined ? "SDK usage unavailable." : "Context window unavailable."
-    : overWindow ? `Context exceeds window by ${approximate(sdkTokens - window)} tokens; grid capped.`
-    : localTotal > sdkTokens ? "Local text exceeds SDK total; grid uses SDK." : undefined;
-
-  const legend: string[] = [model, ...(headline ? [headline] : []), ...(state ? [state] : []), "",
+  const missing = !capacityKnown ? sdkTokens === undefined && window === undefined ? "SDK usage and context window unavailable."
+    : sdkTokens === undefined ? "SDK usage unavailable." : "Context window unavailable." : undefined;
+  const state = projection?.overWindow ? `Context exceeds window by ${approximate(sdkTokens! - window!)} tokens; grid caps occupied footprint at the window.`
+    : projection?.unclassifiedOccupied ? "Local category total is zero; occupied capacity is unclassified." : missing;
+  const projectionNote = projection
+    ? `Local estimates${value.complete ? "" : " (partial)"} total ${approximate(localTotal)}; grid colors project proportions to SDK occupancy.`
+    : `Local estimates${value.complete ? "" : " (partial)"} total ${approximate(localTotal)}. Grid unavailable; no quota was inferred from local estimates.`;
+  const legend: string[] = [model, ...(headline ? [headline] : []), ...(state ? [state] : []), projectionNote, "",
     `Estimated usage by category${value.complete ? "" : " (partial)"}`];
-  for (const name of categoryOrder) {
+
+  const topRow = (name: "System" | "Tools" | "Skills" | "Conversation" | "Other") => {
     const amount = value.amounts[name];
-    if (amount <= 0) continue;
+    if (amount <= 0) return;
     const label = name === "Skills" ? "Skill catalog" : name;
-    const amountText = `${approximate(amount)}${window !== undefined ? ` (${share(amount, window)})` : ""}`;
-    const details = name === "Memory" ? memoryOrder.filter(part => value.memory[part] > 0)
-      .map(part => `${part} ${estimate(value.memory[part])}`).join(", ") : "";
-    legend.push(paint(colors[name], `${usedGlyph} ${label} ${amountText}`) + (details ? ` — ${details}` : ""));
+    legend.push(paint(topColors[name], `${key(segment(name))} ${label} ${approximate(amount)} (${share(amount, localTotal)} local)`));
+  };
+  topRow("System"); topRow("Tools"); topRow("Skills");
+  if (value.amounts.Memory > 0) {
+    legend.push(`  Memory ${approximate(value.amounts.Memory)} (${share(value.amounts.Memory, localTotal)} local)`);
+    for (const name of memoryOrder) if (value.memory[name] > 0)
+      legend.push(paint(memoryColors[name], `    ${key(segment(name))} ${name} ${approximate(value.memory[name])}`));
   }
-  if (coherent && sdkTokens > localTotal)
-    legend.push(paint(colors.Difference, `${usedGlyph} Difference ${approximate(sdkTokens - localTotal)} (${share(sdkTokens - localTotal, window)})`));
-  if (capacityKnown) {
-    const free = Math.max(0, window - sdkTokens);
-    legend.push(paint("dim", `${freeGlyph} Free ${approximate(free)} (${share(free, window)})`));
+  topRow("Conversation"); topRow("Other");
+  if (projection?.unclassifiedOccupied)
+    legend.push(paint("other", `${key(segment("Unclassified occupied"))} Unclassified occupied (SDK, not a local estimate) ${approximate(projection.displayedUsed)}`));
+  if (projection) {
+    legend.push(paint("free", `${freeGlyph} Free ${approximate(projection.freeTokens)} (${share(projection.freeTokens, window!)} window)`));
+    const full = projection.segments.reduce((sum, part) => sum + part.fullCells, 0);
+    const partial = projection.segments.filter(part => part.partial).length;
+    legend.push(`${full} full + ${partial} partial occupied; ${projection.freeGlyphs} free glyphs`);
+    legend.push(`Nominal full cell ${approximate(projection.nominalUnit)} tokens (window / 200); partial is any positive remainder <1 cell; free glyphs round up.`);
   }
 
   const legendWidth = width >= 80 && cells.length ? width - 42 : width;
@@ -137,13 +246,14 @@ export function compositionMap(value: ContextComposition, model: string, width: 
   // without manufacturing a one-cell-per-row composition.
   if (width < 20 || cells.length === 0) return wrappedLegend;
   const spaced = width >= 80;
-  const grid = Array.from({ length: 10 }, (_, row) => cells.slice(row * 20, row * 20 + 20).join(spaced ? " " : ""));
+  const grid = Array.from({ length: projection!.rows }, (_, row) => cells.slice(row * GRID_COLUMNS, row * GRID_COLUMNS + GRID_COLUMNS).join(spaced ? " " : ""));
   if (!spaced) return [...grid, ...wrappedLegend];
   const gridWidth = 39;
   return Array.from({ length: Math.max(grid.length, wrappedLegend.length) }, (_, index) => {
+    const row = grid[index] ?? "";
+    const left = row + " ".repeat(Math.max(0, gridWidth - visibleWidth(row)));
     const right = wrappedLegend[index];
-    if (!right) return grid[index] ?? "";
-    return `${grid[index] ?? " ".repeat(gridWidth)}   ${right}`;
+    return right ? `${left}   ${right}` : left;
   });
 }
 
