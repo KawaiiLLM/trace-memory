@@ -865,6 +865,9 @@ export default function (pi: ExtensionAPI) {
   };
   pi.on("message_update", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
   pi.on("message_end", (event, context) => { if (event.message.role === "assistant") assistant(event.message, context); });
+  // Pi persists the assistant after message_end, before tools start. Ingest without scheduling;
+  // a tool's snapshot request must remain read-only and refer to this node, not the previous one.
+  pi.on("tool_execution_start", (_event, context) => { ensure(context); reconcile(false); });
   // 24a: a tool result, the end of an agent run and the settle are the existing boundaries at which
   // this turn's evidence became importable, so they are where the footer's counts are re-read. A
   // streaming update is not one of them: `message_update` fires per delta and refreshes nothing.

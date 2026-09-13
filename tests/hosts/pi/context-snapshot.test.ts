@@ -1,8 +1,12 @@
-import { createEventBus } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createEventBus, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { expect, test, vi } from "vitest";
 import { requestCurrentContextSnapshot, CURRENT_CONTEXT_SNAPSHOT_EVENT,
   type CurrentContextSnapshotResult } from "../../../src/hosts/pi/context-snapshot.ts";
-import { fixture, say } from "./native-fixture.ts";
+import { call, fixture, piSession, say, toolResults } from "./native-fixture.ts";
+import extension from "../../../src/hosts/pi/index.ts";
 import { host } from "./test-host.ts";
 import { tokens } from "../../../src/core/api/index.ts";
 
@@ -11,6 +15,41 @@ const quiet = { "noting.triggerTokens": 1_000_000_000, "consolidation.triggerTok
 function request(h: ReturnType<typeof host>) {
   return requestCurrentContextSnapshot(h.eventBus);
 }
+
+// Real extension hooks and tool execution: do not replay ingestion after session.prompt() returns.
+test("a real Pi tool can request its current-node snapshot before its first result", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "trace-memory-tool-snapshot-"));
+  let events: ExtensionAPI["events"];
+  const captured: { snapshot: CurrentContextSnapshotResult; leaf: string | null; unchanged: boolean }[] = [];
+  const f = await piSession({ extensions: [extension, pi => { events = pi.events; }],
+    env: { TRACE_MEMORY_CONFIG: JSON.stringify({ ...quiet, dbPath: join(dir, "trace.db") }) },
+    prepare: ({ agentDir }) => writeFileSync(join(agentDir, "trace-memory-baseline.json"), JSON.stringify("2000-01-01T00:00:00.000Z")),
+    tools: [{ name: "snapshot_probe", description: "Read current memory", parameters: { type: "object", properties: {} },
+      execute: async () => {
+        const before = JSON.stringify(f.manager.getEntries());
+        const leaf = f.manager.getLeafId();
+        const snapshot = requestCurrentContextSnapshot(events);
+        captured.push({ snapshot, leaf, unchanged: before === JSON.stringify(f.manager.getEntries()) });
+        return { content: [{ type: "text", text: "PROBE_RESULT" }], details: {} };
+      } }] });
+  try {
+    f.script(body => toolResults(body) < 2
+      ? call(`probe_${toolResults(body)}`, "snapshot_probe", {}) : say("finished"));
+    await f.session.prompt("CURRENT_NODE_PROBE");
+    expect(captured).toHaveLength(2);
+    for (const [index, { snapshot, leaf, unchanged }] of captured.entries()) {
+      expect(snapshot.available, JSON.stringify(snapshot)).toBe(true);
+      if (!snapshot.available) throw new Error(snapshot.message);
+      expect(snapshot.node).toEqual({ nativeSessionId: f.manager.getSessionId(), nativeLeafId: leaf });
+      expect(snapshot.text).toContain("CURRENT_NODE_PROBE");
+      expect(snapshot.text).toContain(`probe_${index}`);
+      expect(unchanged).toBe(true);
+    }
+    // The second call also sees the preceding tool result in the same Turn.
+    expect(captured[1]!.snapshot.available && captured[1]!.snapshot.text).toContain("PROBE_RESULT");
+    expect(f.sent).toHaveLength(3); // only the scripted parent requests; no memory worker/model call
+  } finally { f.dispose(); rmSync(dir, { recursive: true, force: true }); }
+}, 30_000);
 
 function databaseSnapshot(h: ReturnType<typeof host>) {
   const tables = h.memory.store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
