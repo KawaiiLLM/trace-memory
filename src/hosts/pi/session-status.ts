@@ -100,12 +100,6 @@ const subtractRational = (a: Rational, b: Rational) => rational(
 );
 const multiplyRational = (a: Rational, b: Rational) => rational(a.numerator * b.numerator, a.denominator * b.denominator);
 const divideRational = (a: Rational, b: Rational) => rational(a.numerator * b.denominator, a.denominator * b.numerator);
-const rationalNumber = (value: Rational) => {
-  const whole = value.numerator / value.denominator;
-  const remainder = value.numerator % value.denominator;
-  const precision = 10n ** 15n;
-  return Number(whole) + Number(remainder * precision / value.denominator) / 1e15;
-};
 const sumRational = (values: readonly number[]) => values.reduce((sum, value) => addRational(sum, numberRational(value)), rational(0n));
 const splitUnits = (units: Rational) => ({
   fullCells: Number(units.numerator / units.denominator),
@@ -117,15 +111,11 @@ export interface ProjectedContextSegment {
   name: "System" | "Tools" | "Skills" | "Knowledge" | "Facts" | "Raw" | "Unclassified" | "Conversation" | "Other" | "Unclassified occupied";
   estimate: number;
   color: PaletteColor;
-  projectedTokens: number;
-  units: number;
   fullCells: number;
   partial: boolean;
 }
 export interface ContextProjection {
   displayedUsed: number;
-  occupiedUnits: number;
-  nominalUnit: number;
   segments: ProjectedContextSegment[];
   freeTokens: number;
   freeGlyphs: number;
@@ -145,7 +135,6 @@ export function projectComposition(value: ContextComposition): ContextProjection
   const windowExact = numberRational(window);
   const usedExact = numberRational(displayedUsed);
   const occupiedExact = divideRational(multiplyRational(usedExact, rational(BigInt(NOMINAL_CELLS))), windowExact);
-  const occupiedUnits = rationalNumber(occupiedExact);
 
   const leafInputs = ([
     { name: "System", estimate: value.amounts.System, color: "system" },
@@ -164,15 +153,8 @@ export function projectComposition(value: ContextComposition): ContextProjection
 
   const exactUnits = leafInputs.map(segment => projectionTotal.numerator === 0n ? rational(0n)
     : multiplyRational(divideRational(numberRational(segment.estimate), projectionTotal), occupiedExact));
-  const shares = leafInputs.map(segment => projectionTotal.numerator === 0n ? 0
-    : rationalNumber(divideRational(numberRational(segment.estimate), projectionTotal)));
-  const projectedTokens = shares.map(part => part * displayedUsed);
-  // Give the final positive segment the floating residual. Exact rational cell parts above remain
-  // authoritative; this adjustment only makes the exposed numeric projection sum stably to SDK use.
-  if (projectedTokens.length) projectedTokens[projectedTokens.length - 1] = displayedUsed
-    - projectedTokens.slice(0, -1).reduce((sum, amount) => sum + amount, 0);
   const segments = leafInputs.map((segment, index): ProjectedContextSegment => ({
-    ...segment, projectedTokens: projectedTokens[index]!, units: rationalNumber(exactUnits[index]!), ...splitUnits(exactUnits[index]!),
+    ...segment, ...splitUnits(exactUnits[index]!),
   }));
   const freeTokens = overWindow ? 0 : Math.max(0, window - sdkTokens);
   const freeExact = overWindow ? rational(0n) : divideRational(
@@ -180,8 +162,8 @@ export function projectComposition(value: ContextComposition): ContextProjection
   );
   const freeGlyphs = ceilUnits(freeExact);
   const glyphs = segments.reduce((sum, segment) => sum + segment.fullCells + Number(segment.partial), 0) + freeGlyphs;
-  return { displayedUsed, occupiedUnits, nominalUnit: window / NOMINAL_CELLS, segments, freeTokens, freeGlyphs,
-    glyphs, rows: Math.ceil(glyphs / GRID_COLUMNS), overWindow, unclassifiedOccupied };
+  return { displayedUsed, segments, freeTokens, freeGlyphs, glyphs,
+    rows: Math.ceil(glyphs / GRID_COLUMNS), overWindow, unclassifiedOccupied };
 }
 
 export function compositionMap(value: ContextComposition, model: string, width: number, paint: Paint = plain): string[] {
@@ -237,7 +219,8 @@ export function compositionMap(value: ContextComposition, model: string, width: 
     const full = projection.segments.reduce((sum, part) => sum + part.fullCells, 0);
     const partial = projection.segments.filter(part => part.partial).length;
     legend.push(`${full} full + ${partial} partial occupied; ${projection.freeGlyphs} free glyphs`);
-    legend.push(`Nominal full cell ${approximate(projection.nominalUnit)} tokens (window / 200); partial is any positive remainder <1 cell; free glyphs round up.`);
+    const nominalCell = window! < NOMINAL_CELLS / 1000 ? "<0.001" : approximate(window! / NOMINAL_CELLS);
+    legend.push(`Nominal full cell ${nominalCell} tokens (window / 200); partial is any positive remainder <1 cell; free glyphs round up.`);
   }
 
   const legendWidth = width >= 80 && cells.length ? width - 42 : width;

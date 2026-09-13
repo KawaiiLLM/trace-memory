@@ -7,20 +7,37 @@ const paletteToken: Record<PaletteColor, ThemeColor> = {
   knowledge: "syntaxVariable", facts: "syntaxNumber", raw: "syntaxOperator",
   conversation: "syntaxType", other: "syntaxComment", free: "dim",
 };
+const fallback = CONTEXT_PALETTE.free;
+const paletteForegrounds = {
+  accent: fallback, border: fallback, borderAccent: fallback, borderMuted: fallback,
+  success: fallback, error: fallback, warning: fallback, muted: fallback, dim: CONTEXT_PALETTE.free,
+  text: fallback, thinkingText: fallback, scrollbarTrack: fallback, scrollbarThumb: fallback,
+  searchMatchText: fallback, userMessageText: fallback, customMessageText: fallback,
+  customMessageLabel: fallback, toolTitle: fallback, toolOutput: fallback,
+  mdHeading: fallback, mdLink: fallback, mdLinkUrl: fallback, mdCode: fallback,
+  mdCodeBlock: fallback, mdCodeBlockBorder: fallback, mdQuote: fallback, mdQuoteBorder: fallback,
+  mdHr: fallback, mdListBullet: fallback, toolDiffAdded: fallback, toolDiffRemoved: fallback,
+  toolDiffContext: fallback, syntaxComment: CONTEXT_PALETTE.other,
+  syntaxKeyword: CONTEXT_PALETTE.system, syntaxFunction: CONTEXT_PALETTE.tools,
+  syntaxVariable: CONTEXT_PALETTE.knowledge, syntaxString: CONTEXT_PALETTE.skills,
+  syntaxNumber: CONTEXT_PALETTE.facts, syntaxType: CONTEXT_PALETTE.conversation,
+  syntaxOperator: CONTEXT_PALETTE.raw, syntaxPunctuation: fallback,
+  thinkingOff: fallback, thinkingMinimal: fallback, thinkingLow: fallback,
+  thinkingMedium: fallback, thinkingHigh: fallback, thinkingXhigh: fallback,
+  thinkingMax: fallback, bashMode: fallback,
+} satisfies ConstructorParameters<typeof Theme>[0];
+const paletteBackgrounds = {
+  selectedBg: "", searchMatchBg: "", userMessageBg: "", customMessageBg: "",
+  toolPendingBg: "", toolSuccessBg: "", toolErrorBg: "",
+} satisfies ConstructorParameters<typeof Theme>[1];
+const isPaletteColor = (color: Parameters<Paint>[0]): color is PaletteColor => color in CONTEXT_PALETTE;
 
 /** Use Pi's public Theme encoder so the fixed data palette follows host truecolor/256-color mode. */
 export function createSessionPaint(theme: Pick<Theme, "fg" | "getFgAnsi" | "getColorMode">): Paint {
-  const palette = new Theme({
-    syntaxKeyword: CONTEXT_PALETTE.system, syntaxFunction: CONTEXT_PALETTE.tools,
-    syntaxString: CONTEXT_PALETTE.skills, syntaxVariable: CONTEXT_PALETTE.knowledge,
-    syntaxNumber: CONTEXT_PALETTE.facts, syntaxOperator: CONTEXT_PALETTE.raw,
-    syntaxType: CONTEXT_PALETTE.conversation, syntaxComment: CONTEXT_PALETTE.other,
-    dim: CONTEXT_PALETTE.free, muted: CONTEXT_PALETTE.free, text: CONTEXT_PALETTE.free,
-    thinkingXhigh: CONTEXT_PALETTE.free,
-  } as ConstructorParameters<typeof Theme>[0], { selectedBg: "" } as ConstructorParameters<typeof Theme>[1], theme.getColorMode());
-  return (color, text) => color in CONTEXT_PALETTE
-    ? `${palette.getFgAnsi(paletteToken[color as PaletteColor])}${text}${theme.getFgAnsi("dim")}`
-    : theme.fg(color as ThemeColor, text);
+  const palette = new Theme(paletteForegrounds, paletteBackgrounds, theme.getColorMode());
+  return (color, text) => isPaletteColor(color)
+    ? `${palette.getFgAnsi(paletteToken[color])}${text}${theme.getFgAnsi("dim")}`
+    : theme.fg(color, text);
 }
 
 /** One read-only snapshot. Reflow and paging never go back to the database. */

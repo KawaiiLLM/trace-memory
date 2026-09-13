@@ -330,7 +330,8 @@ test("coherent composition projects every colored Memory leaf and keeps actual e
   const grid = lines.slice(0, projection.rows).join("");
   for (const color of ["system", "tools", "skills", "knowledge", "facts", "raw", "other", "conversation", "free"])
     expect(grid).toContain(`<${color}>`);
-  expect(projection.segments.reduce((sum, segment) => sum + segment.projectedTokens, 0)).toBe(207000);
+  expect(projection.segments.reduce((sum, segment) => sum + segment.fullCells + Number(segment.partial), 0)
+    + projection.freeGlyphs).toBe(projection.glyphs);
   expect(projection.glyphs).toBeGreaterThan(200);
   const text = lines.join("\n").replace(/<\/?[^>]+>/g, ""), compact = text.replace(/\s+/g, " ");
   expect(text.match(/~207k \/ 512k tokens \(40\.4%\)/g)).toHaveLength(1);
@@ -351,7 +352,6 @@ test("projection stays stable across varied finite category values", () => {
     amounts.Memory = Object.values(memory).reduce((sum, amount) => sum + amount, 0);
     const value: ContextComposition = { amounts, memory, total: Object.values(amounts).reduce((sum, amount) => sum + amount, 0), sdkTokens: 199, sdkDifference: 0, window: 200, complete: true };
     const projected = projectComposition(value)!;
-    expect(projected.segments.reduce((sum, segment) => sum + segment.projectedTokens, 0)).toBe(199);
     expect(projected.segments.every(segment => segment.fullCells >= 0 && (segment.estimate <= 0 || segment.fullCells > 0 || segment.partial))).toBe(true);
     expect(projected.glyphs).toBeLessThanOrEqual(209);
   }

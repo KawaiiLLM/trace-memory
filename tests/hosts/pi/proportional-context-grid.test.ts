@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { Theme } from "@earendil-works/pi-coding-agent";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
 import { compositionMap, projectComposition, statusBody } from "../../../src/hosts/pi/session-status.ts";
@@ -25,8 +25,8 @@ test("approved screenshot projects local shares onto SDK occupancy and lets rema
   const value = composition({ System: 1800, Tools: 3900, Skills: 1200, Memory: 40200, Conversation: 223700, Other: 19100 }, 284700, 512000,
     { Knowledge: 17200, Facts: 11000, Raw: 12000, Unclassified: 0 });
   const projected = projectComposition(value)!;
-  expect(projected.occupiedUnits).toBe(111.2109375);
-  expect(projected.segments.reduce((sum, segment) => sum + segment.projectedTokens, 0)).toBe(284700);
+  expect(projected).not.toHaveProperty("occupiedUnits");
+  expect(projected.segments.every(segment => !("projectedTokens" in segment) && !("units" in segment))).toBe(true);
   expect(projected.segments.reduce((sum, segment) => sum + segment.fullCells, 0)).toBe(107);
   expect(projected.segments.filter(segment => segment.partial).length).toBe(8);
   expect(projected.freeGlyphs).toBe(89);
@@ -78,8 +78,27 @@ test("decimal exact boundaries do not gain partials while genuinely tiny positiv
   expect(exactProjection.segments.map(segment => [segment.fullCells, segment.partial])).toEqual([[1, false], [2, false]]);
 
   const tiny = blank(); tiny.Skills = Number.MIN_VALUE; tiny.Conversation = 1;
-  const tinyProjection = projectComposition(composition(tiny, 100, 200))!;
-  expect(tinyProjection.segments.find(segment => segment.name === "Skills")).toMatchObject({ fullCells: 0, partial: true });
+  const tinyValue = composition(tiny, 100, 200);
+  const tinyProjection = projectComposition(tinyValue)!;
+  expect(tinyProjection.segments.find(segment => segment.name === "Skills")).toMatchObject({
+    estimate: Number.MIN_VALUE, fullCells: 0, partial: true,
+  });
+  expect(gridText(tinyValue, 40).startsWith("⛀")).toBe(true);
+});
+
+test("smallest positive windows and largest finite inputs keep display semantics honest", () => {
+  const smallest = blank(); smallest.Skills = Number.MIN_VALUE;
+  const smallestText = compositionMap(composition(smallest, Number.MIN_VALUE, Number.MIN_VALUE), "test/model", 40).join("\n");
+  expect(smallestText).toContain("Nominal full cell <0.001 tokens");
+  expect(smallestText).not.toMatch(/NaN|Infinity|Nominal full cell ~0 tokens/);
+
+  const largestLocal = 1.7976931348623155e308;
+  const largest = blank(); largest.System = largestLocal;
+  const largestValue = composition(largest, Number.MAX_VALUE, Number.MAX_VALUE);
+  const largestProjection = projectComposition(largestValue)!;
+  expect(largestProjection.segments[0]).toMatchObject({ estimate: largestLocal, fullCells: 200, partial: false });
+  expect(largestProjection.glyphs).toBe(200);
+  expect(compositionMap(largestValue, "test/model", 40).join("\n")).not.toMatch(/NaN|Infinity/);
 });
 
 test("many independent remainders near full capacity exceed 200 glyphs without clipping", () => {
@@ -126,11 +145,13 @@ test("positive SDK with zero local total uses explicit neutral unclassified occu
   expect(text.replace(/\s+/g, " ")).toContain("Unclassified occupied (SDK, not a local estimate) ~1");
 });
 
-test("Memory Unclassified remains a neutral leaf and projected token totals stay stable", () => {
+test("Memory Unclassified remains a neutral leaf with its exact proportional allocation", () => {
   const amounts = blank(); amounts.Memory = 10; amounts.System = 5;
   const value = composition(amounts, 11, 100, { Knowledge: 1, Facts: 2, Raw: 3, Unclassified: 4 }, false);
   const projected = projectComposition(value)!;
-  expect(projected.segments.reduce((sum, segment) => sum + segment.projectedTokens, 0)).toBe(11);
+  expect(projected.segments.map(segment => [segment.name, segment.fullCells, segment.partial])).toEqual([
+    ["System", 7, true], ["Knowledge", 1, true], ["Facts", 2, true], ["Raw", 4, true], ["Unclassified", 5, true],
+  ]);
   expect(projected.segments.find(segment => segment.name === "Unclassified")).toMatchObject({ estimate: 4, color: "other" });
   const text = compositionMap(value, "test/model", 40, ((color: string, rendered: string) => `<${color}>${rendered}</${color}>`) as never).join("\n");
   expect(text).toContain("<other>");
@@ -139,9 +160,12 @@ test("Memory Unclassified remains a neutral leaf and projected token totals stay
 });
 
 test("approved RGB palette uses Pi native truecolor and 256-color fallback and restores dim body color", () => {
-  const fg = { dim: "#909090", muted: "#909090", text: "#909090", thinkingXhigh: "#909090" } as unknown as ConstructorParameters<typeof Theme>[0];
-  const bg = { selectedBg: "" } as ConstructorParameters<typeof Theme>[1];
-  const truePaint = createSessionPaint(new Theme(fg, bg, "truecolor"));
+  const outerTheme = (mode: "truecolor" | "256color"): Pick<Theme, "fg" | "getFgAnsi" | "getColorMode"> => ({
+    fg: (_color, text) => text,
+    getFgAnsi: () => mode === "truecolor" ? "\x1b[38;2;144;144;144m" : "\x1b[38;5;245m",
+    getColorMode: () => mode,
+  });
+  const truePaint = createSessionPaint(outerTheme("truecolor"));
   const expected = {
     system: "238;128;175", tools: "112;196;165", skills: "179;164;244", knowledge: "240;139;72",
     facts: "244;181;82", raw: "235;216;115", conversation: "121;173;232", other: "167;173;182",
@@ -151,7 +175,7 @@ test("approved RGB palette uses Pi native truecolor and 256-color fallback and r
     expect(styled).toContain(`\x1b[38;2;${rgb}m`);
     expect(styled.endsWith("\x1b[38;2;144;144;144m")).toBe(true);
   }
-  const fallback = createSessionPaint(new Theme(fg, bg, "256color"));
+  const fallback = createSessionPaint(outerTheme("256color"));
   expect(new Set(Object.keys(expected).map(color => fallback(color as never, "x").match(/38;5;(\d+)/)![1])).size).toBeGreaterThanOrEqual(7);
   expect(fallback("knowledge", "x")).not.toBe(fallback("system", "x"));
   expect(fallback("tools", "x")).not.toBe(fallback("conversation", "x"));
