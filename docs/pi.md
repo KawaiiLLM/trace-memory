@@ -540,8 +540,14 @@ below. Pi's width utilities handle display width. In the TUI, this panel alone u
 public `ui.custom` overlay API, not an oversized native selector title. The overlay
 uses the terminal's available screen rather than the fullscreen editor dock. Its
 component supplies every allocated viewport row; Pi's public compositor supplies the
-horizontal padding, so no conversation, editor, footer or background output shows
-through and dismissal can restore the current underlying frame.
+horizontal padding, so ordinary conversation, editor, footer and background text do
+not show through. Dismissal restores the current underlying frame and focus.
+**Known host limitation:** Pi 0.85.1 bypasses overlay composition for Kitty/iTerm2
+inline-image protocol rows. Existing terminal graphics may therefore remain visible
+while the panel is open; complete image occlusion and restoration are not guaranteed.
+Beta.7 accepts this boundary rather than patching private host internals, replacing
+the compositor or deleting terminal images. Text coverage is tested through the real
+compositor; actual terminal-image appearance has not been manually verified.
 Recovery warnings lead the scrollable body; the action list stays visible. The
 usual arrows (or `j`/`k`), Enter and Escape retain selection/cancellation semantics;
 Page Up/Down scroll status without moving the selected action. Configured Pi
