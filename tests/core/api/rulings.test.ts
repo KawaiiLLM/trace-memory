@@ -2139,3 +2139,20 @@ test("40 N0: the verbatim span naming the object goes in quote, which the id che
   expect(accepted.results[0]).toMatch(/^ok:/);
   expect(memory.store.getFact(accepted.factIds[0])!.quote).toBe("K213@271");
 });
+
+/** Ticket 40 N5b (2026-09-14): the per-fact relation check, and its three limits: a negate needs the
+ * raw to state, or unambiguously establish, the replacement of the same object (the first N5 replay
+ * negated eight review findings from one summary count), only the superseded current state is
+ * negated, and a target that neither NEAR nor a fact search surfaces gets no relation. */
+test("40 N5b: a new-state fact negates the superseded current state only on a stated replacement of the same object; no fitting target means no relation", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("negates the fact that recorded the superseded current state, strong when the raw states the replacement");
+  expect(prompt).toContain("a fix report negates the finding it fixes");
+  expect(prompt).toContain("negates the truncation ruling weakly and supports the paging proposal");
+  expect(prompt).toContain("A `negate` is written only when the raw states, or by unambiguous reference establishes, that the new fact replaces the same object under the same scope");
+  expect(prompt).toContain("a summary count (\"7 fixes done\"), a shared ticket or topic proximity does not negate each member item");
+  expect(prompt).toContain("write no relation and do not substitute `weak` for missing evidence");
+  expect(prompt).toContain("Only the fact that recorded the superseded current state is negated");
+  expect(prompt).toContain("stays true after beta.5 is published");
+  expect(prompt).toContain("`search` the fact layer for the object by name, and when nothing fitting is found write no relation: never guess, never force");
+});
