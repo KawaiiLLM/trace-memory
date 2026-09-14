@@ -91,6 +91,7 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 - **Write in the language of the conversation the facts came from.** Field names and category names stay as given here.
 - One line; state the fact or pattern first, then the known reason or mechanism; operational present tense.
 - Drop session detail and commit hashes unless the hash is the point; no ids in the text.
+- The text carries no completion status or verification narrative of the work that produced the claim ("done", "tests passed", "27 files matched", "the assistant reports it complete"): a rule stands on its own, a state item states the state, and the event stays in the fact layer where the item's supports point at it. What is removed is the narrative, not the conditions: a qualifier that governs the next action or the evidence level stays ("installed on disk, loaded only after Pi restarts"; "reported by the subagent, not verified"), so that "installed" is not read as "running".
 - **One knowledge item, one claim that can be overturned on its own**. This overrides "few but valuable".
 - Typically under 50 tokens; over 200 is flagged as a diagnostic.
 

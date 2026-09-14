@@ -2184,3 +2184,13 @@ test("40 C1: one state item per persistent object is updated, finished work is a
   expect(prompt).toContain("A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite state.");
   expect(prompt).not.toContain("completed results that must not be redone");
 });
+
+/** Ticket 40 C2 (2026-09-14): no event narrative in knowledge text; the conditions and the
+ * evidence level stay, so "installed" is not read as "running". */
+test("40 C2: knowledge text carries no completion narrative but keeps the qualifiers", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("The text carries no completion status or verification narrative of the work that produced the claim");
+  expect(prompt).toContain("a rule stands on its own, a state item states the state, and the event stays in the fact layer where the item's supports point at it");
+  expect(prompt).toContain("a qualifier that governs the next action or the evidence level stays");
+  expect(prompt).toContain("so that \"installed\" is not read as \"running\"");
+});
