@@ -2168,3 +2168,19 @@ test("40 C4: the Consolidator traces addresses first and searches one literal wo
   expect(prompt).toContain("the `open`, `goal` and `reference` ones are traced before deciding what this range closes");
   expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
 });
+
+/** Ticket 40 C1 (2026-09-14): a persistent object's current state is one `reference` item updated
+ * on each new state; finished work is archived, never rewritten as an event chain. "completed
+ * results that must not be redone" admitted the event chains and is gone. A negated-support
+ * reminder or a CLOSER entry is a check target, never a conclusion: the first N5 replay wrote
+ * per-item status into seven `open` items on the strength of one summary fact. */
+test("40 C1: one state item per persistent object is updated, finished work is archived; a reminder is a check target", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("is one `reference` item per object that holds the state and nothing of the event that produced it; a new-state fact updates that item with itself as the only support");
+  expect(prompt).toContain("never a fresh create and never an archive while the object exists");
+  expect(prompt).toContain("A negated-support reminder or a CLOSER entry supplies a check target, never a conclusion");
+  expect(prompt).toContain("A summary report that does not prove per-item closure leaves the item unchanged; turning a wrong `update` into a wrong `archive` is not a fix.");
+  expect(prompt).toContain("A finished work item (fixes awaiting commit, a task awaiting results) is archived on the fact that ends it, never rewritten as a chain of completed events.");
+  expect(prompt).toContain("A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite state.");
+  expect(prompt).not.toContain("completed results that must not be redone");
+});

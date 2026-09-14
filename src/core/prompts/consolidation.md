@@ -67,7 +67,7 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 ### Procedure
 
 1. **The first question is action utility**: if a future assistant did not see this automatically, would it make a wrong decision, redo finished work, violate a user ruling, or treat something as a source of truth that is not? If yes, it is a candidate, whether it looks temporary or durable.
-2. Among candidates keep only durable orientation: user preferences and constraints, user rulings and corrections, adopted decisions with their reasons, invariants, completed results that must not be redone, preconditions and limits, long-lived blockers, open items.
+2. Among candidates keep only what passes two tests: still true and still needed in a week, and not answerable by an artifact (git, the files, the package registry, one command). User preferences and constraints, user rulings and corrections, adopted decisions with their reasons, invariants, preconditions and limits, long-lived blockers and open items pass. The current state of a persistent object the agent acts on (installed version, published version, pinned exclusion) is one `reference` item per object that holds the state and nothing of the event that produced it; a new-state fact updates that item with itself as the only support (the negate it carries against the old-state fact is how the item was surfaced, and the lineage records the history), never a fresh create and never an archive while the object exists. A finished work item (fixes awaiting commit, a task awaiting results) is archived on the fact that ends it, never rewritten as a chain of completed events. A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite state. Single review findings, explanations of code and unadopted proposals fail unless they establish a rule.
 3. What fails stays in the fact layer. Low-value work that ended normally may leave nothing; an unresolved question that would be re-investigated passes the first question and becomes an open knowledge.
 4. When unsure, do not write.
 5. **Compare against existing knowledge before adding.** If one K already expresses the claim under the same conditions and scope, retain it or make a justified fact-backed update instead of duplicating it. NEAR lists lexical neighbours for comparison; lexical nearness is not sameness and an unanswered NEAR is diagnostic only. A cross-identity restructuring belongs to Dreamer, not this review.
@@ -76,7 +76,7 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 ### Abstraction gate
 
 - Facts are evidence; knowledge items are compressed conclusions. Several facts may support one claim; **different new claims do not share one knowledge item**. Admit them independently; splitting an existing compound K is Dreamer's work.
-- A single fact becomes a knowledge item only if it is durable by itself: a user ruling or correction, a resolved root cause, a completed item that must not be redone, a precondition, an open item.
+- A single fact becomes a knowledge item only if it is durable by itself: a user ruling or correction, a resolved root cause, the current state of a persistent object, a precondition, an open item.
 - Do not duplicate one-off events as knowledge. A fact that is already durable and self-contained may keep its wording; rewording for its own sake adds distortion.
 
 ### Scope fidelity
@@ -120,6 +120,7 @@ The block's omission receipt names the items outside the budget; the `open`, `go
 
 - The initial input separately lists every visible active knowledge whose current supports include a fact negated by a new fact in this consolidation range, together with both facts and the recorded relation strength. Review all listed knowledge, not just the lexical nearest. Strong and weak negations are cues to inspect the evidence, not verdicts: judge whether a fact-backed single-item update, archive, or retention is justified. Listing it does not change its status or require a new acknowledgement field. Missing or incorrect relations and incomplete supports can still leave affected knowledge unlisted.
 - An open knowledge whose awaited event was closed by a completed event or user ruling is an edit candidate. The system lists new facts lexically near each open and goal knowledge (CLOSER); check each for closing evidence.
+- A negated-support reminder or a CLOSER entry supplies a check target, never a conclusion: edit the listed item only when the negating fact establishes the closure or replacement of that specific item. A summary report that does not prove per-item closure leaves the item unchanged; turning a wrong `update` into a wrong `archive` is not a fix.
 - Withdrawn content does not survive in another active knowledge; it stays in the revision log and in the negated fact.
 
 ## Responsibility boundary
