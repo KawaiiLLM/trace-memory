@@ -44,6 +44,7 @@ The plugin's injected messages — knowledge block, compaction block and branch 
 - Every fact carries `source`: the minimal set of entry ids that directly support it. Never invent one.
 - Repeated similar tool calls are not facts; file reads and commits become the tool-call index by the system.
 - Do not record what is trivially re-derivable from code or git. "Re-derivable from the raw" is not a reason to skip: after compaction the raw is out of context and is fetched only on purpose, by address.
+- The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.
 - Zero output is a normal result; submit it as `note({facts: []})`.
 
 ## Six categories, one test each

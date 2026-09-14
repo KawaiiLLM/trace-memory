@@ -2217,3 +2217,11 @@ test("40 N1: claims that could be acted on separately are split, one fact per fi
   expect(prompt).toContain("Conditions and exceptions travel with the claim they qualify and are never dropped to shorten it.");
   expect(prompt).not.toContain("comparison values are one claim");
 });
+
+/** Ticket 40 N4 (2026-09-14, D1 ruled yes): the deletion test alone dropped 11–12 of 34 user
+ * instructions once their work completed in the same batch; the instruction that starts work is
+ * recorded, because the answer and the event support it and the accounting checks it. */
+test("40 N4: the user's instruction, question or plan approval that starts work is recorded even when the work completes in the same batch", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.");
+});
