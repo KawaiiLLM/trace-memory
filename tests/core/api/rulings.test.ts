@@ -2194,3 +2194,14 @@ test("40 C2: knowledge text carries no completion narrative but keeps the qualif
   expect(prompt).toContain("a qualifier that governs the next action or the evidence level stays");
   expect(prompt).toContain("so that \"installed\" is not read as \"running\"");
 });
+
+/** Ticket 40 C5 (2026-09-14): a withdrawn ban becomes a `goal`; dispatch, pause and resume update
+ * the work item's `open`. Both replays skipped the 32a/32b dispatch as a one-off event and left no
+ * work state at all. */
+test("40 C5: approval to start work archives the ban and creates a goal; work in flight updates its open", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("A user's approval to start work archives the constraint that forbade it and creates a `goal` (intent, pinned baseline, staffing rules).");
+  expect(prompt).toContain("A dispatch, pause, resume or completion report stays in the fact layer unless it changes a work item's target, progress or next step, in which case it updates that work item's `open`");
+  expect(prompt).toContain("holding the minimum state and no agent ids, temporary paths or test counts");
+  expect(prompt).toContain("never dropped for lack of a user approval and never raised to a user constraint");
+});
