@@ -2156,3 +2156,15 @@ test("40 N5b: a new-state fact negates the superseded current state only on a st
   expect(prompt).toContain("stays true after beta.5 is published");
   expect(prompt).toContain("`search` the fact layer for the object by name, and when nothing fitting is found write no relation: never guess, never force");
 });
+
+/** Ticket 40 C4 (2026-09-14): how the Consolidator finds a target outside the supplied block. The
+ * Astra replay reached every outside target with three single-word searches; the Sol replay's
+ * phrase searches reached none, because `search` is one contiguous literal substring. */
+test("40 C4: the Consolidator traces addresses first and searches one literal word, never a phrase", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("`search` matches one contiguous literal substring over every version and every branch and does not combine keywords");
+  expect(prompt).toContain("No hit means change the word, never stack words.");
+  expect(prompt).toContain("Read the exact current version of a candidate before writing against it.");
+  expect(prompt).toContain("the `open`, `goal` and `reference` ones are traced before deciding what this range closes");
+  expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
+});

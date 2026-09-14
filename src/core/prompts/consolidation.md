@@ -107,6 +107,15 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 - When positions differ after alignment and no ruling or new evidence decides, the text states the conflict itself: "reported as A, later reported as B, no basis for the change, re-check X". **Cite both sides' own positions**; a fact that merely says "they conflict" proves only that someone said so.
 - Never pick the later one because it is later.
 
+### Finding what this range closes
+
+1. With an address — in a fact's `quote`, in the negated-support reminders, in the block's omission receipt — `trace` it first.
+2. Without one, `search` a single distinctive literal word taken from the old state: the object's name, the previous version number, "not committed", "awaiting". `search` matches one contiguous literal substring over every version and every branch and does not combine keywords, so a query of several words only matches text containing that exact sequence.
+3. No hit means change the word, never stack words.
+4. Read the exact current version of a candidate before writing against it.
+
+The block's omission receipt names the items outside the budget; the `open`, `goal` and `reference` ones are traced before deciding what this range closes.
+
 ### Correction-driven edits
 
 - The initial input separately lists every visible active knowledge whose current supports include a fact negated by a new fact in this consolidation range, together with both facts and the recorded relation strength. Review all listed knowledge, not just the lexical nearest. Strong and weak negations are cues to inspect the evidence, not verdicts: judge whether a fact-backed single-item update, archive, or retention is justified. Listing it does not change its status or require a new acknowledgement field. Missing or incorrect relations and incomplete supports can still leave affected knowledge unlisted.
