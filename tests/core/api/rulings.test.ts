@@ -2205,3 +2205,15 @@ test("40 C5: approval to start work archives the ban and creates a goal; work in
   expect(prompt).toContain("holding the minimum state and no agent ids, temporary paths or test counts");
   expect(prompt).toContain("never dropped for lack of a user approval and never raised to a user constraint");
 });
+
+/** Ticket 40 N1 (2026-09-14, D2 ruled per subject): the atomicity rule is an executable split check
+ * that runs before category selection; "comparison values are one claim" licensed the 28–46% merge
+ * rate and is narrowed to the before-and-after values of one measurement. */
+test("40 N1: claims that could be acted on separately are split, one fact per finding, plan element and compared subject", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("When one passage holds claims that could be approved, withdrawn, verified or completed separately, split them, each keeping its own conditions and exceptions.");
+  expect(prompt).toContain("a statistic yields one fact per compared subject when each subject's numbers could be wrong on their own");
+  expect(prompt).toContain("The before-and-after values of one measurement are one claim; a decision with its necessary reason is one claim.");
+  expect(prompt).toContain("Conditions and exceptions travel with the claim they qualify and are never dropped to shorten it.");
+  expect(prompt).not.toContain("comparison values are one claim");
+});
