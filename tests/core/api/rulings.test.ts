@@ -2118,3 +2118,24 @@ test("29/31 archived divergent tip is not superseded by the surviving same-K sib
     knowledgeCommitIds: new Set([2]), injection: true, suppliedGeneration: 0 };
   expect(memory.injection(selected, seen).text).toContain("K1@2 is archived");
 });
+
+/** Ticket 40 N0 (2026-09-14): a correction keeps the object's identity. The Sol replay read the
+ * id-in-text rejection as "delete" and dropped K213@271 and five other audited objects on
+ * resubmission; the prompt and the rejection reason now both say where the span goes. */
+test("40 N0: the verbatim span naming the object goes in quote, which the id check does not cover", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("goes in `quote`, which the id check does not cover");
+  expect(prompt).toContain("A resubmission after a rejection changes only what was rejected and never drops an object's identity, a condition, a negation or an evidence level.");
+  expect(prompt).toContain("A finding that names several independently maintainable objects is one fact per object.");
+  const { s, t } = session();
+  const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
+  const fact = (changes: Record<string, unknown>) => ({ category: "observation", actor: "agent",
+    text: "The audited knowledge item names its object in the text instead of the quote.", source: [`T${t.id}#user`], ...changes });
+  const rejected = JSON.parse(note.execute({ facts: [fact({ text: "K213@271 names its object in the text instead of the quote." })] }));
+  expect(rejected.results[0]).toContain("rejected:");
+  expect(rejected.results[0]).toContain("move the verbatim span to quote");
+  expect(memory.store.listSessionFacts(s.id)).toEqual([]);
+  const accepted = JSON.parse(note.execute({ facts: [fact({ quote: "K213@271" })] }));
+  expect(accepted.results[0]).toMatch(/^ok:/);
+  expect(memory.store.getFact(accepted.factIds[0])!.quote).toBe("K213@271");
+});

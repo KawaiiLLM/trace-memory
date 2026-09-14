@@ -267,7 +267,7 @@ export function validateNotingFact(path: string, raw: unknown, problems: string[
     problems.push(`${path}.text: expected a non-empty string`);
   } else {
     if (EMBEDDED_ID_RE.test(f.text)) {
-      problems.push(`${path}.text: must not embed a fact or knowledge id; ids live only in relation fields`);
+      problems.push(`${path}.text: must not embed a fact or knowledge id; move the verbatim span to quote, which this check does not cover, and keep the rest of the fact; ids live only in relation fields`);
     }
     if (EVENT_PREFIXES.some((p) => (f.text as string).startsWith(p))) {
       problems.push(`${path}.text: completion prefix belongs in status`);
