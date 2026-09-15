@@ -831,6 +831,38 @@ test("41b: search previews budget text independently of long fact evidence metad
   expect(tiny).toContain(`[F${factId}] [observation/user] [...`);
 });
 
+test("41 review: fact and knowledge previews are one physical line with head-only Unicode-safe cuts", () => {
+  const { c } = commitPaths();
+  const longFactText = "FACT-LONG-41 " + "alpha 😀 ".repeat(180) + "\nFACT-LONG-TAIL";
+  const factReceipt = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time },
+    facts: [{ turnId: c.headTurnId, category: "observation", actor: "user", text: longFactText,
+      source: [`T${c.headTurnId}#user`], createdAt: time }], entryIds: [] });
+  if (!factReceipt.ok) throw new Error(factReceipt.problems.join("; "));
+  const factId = factReceipt.facts[0]!.id;
+  const longKnowledgeText = "KNOWLEDGE-LONG-41 " + "beta 🚀 ".repeat(180) + "\nKNOWLEDGE-LONG-TAIL";
+  const created = c.write([{ op: "create", text: longKnowledgeText, category: "reference", scope: "project",
+    supports: [c.fact], topics: ["metadata\nline"], reason: "reason\nline" }]).committed[0];
+  const search = c.tools.find(tool => tool.name === "search")!;
+  const hit = (result: string) => result.split("\n\nReceipts:")[0]!;
+
+  const fact = hit(search.execute({ query: "FACT-LONG-41", layer: "facts" }));
+  expect(fact).not.toContain("\n"); expect(fact).toContain("characters truncated"); expect(fact).not.toContain("FACT-LONG-TAIL");
+  const knowledge = hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge" }));
+  expect(knowledge).not.toContain("\n"); expect(knowledge).toContain("characters truncated"); expect(knowledge).not.toContain("KNOWLEDGE-LONG-TAIL");
+
+  const fullFact = hit(search.execute({ query: "FACT-LONG-41", layer: "facts", itemBudget: null }));
+  expect(fullFact).not.toContain("\n"); expect(fullFact).toContain(" ⏎ FACT-LONG-TAIL"); expect(fullFact).toContain("😀");
+  const fullKnowledge = hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", versions: "history",
+    itemBudget: null, fields: ["text", "topics", "reason", "status"] }));
+  expect(fullKnowledge).not.toContain("\n"); expect(fullKnowledge).toContain(" ⏎ KNOWLEDGE-LONG-TAIL");
+  expect(fullKnowledge).toContain('topics: ["metadata\\nline"]'); expect(fullKnowledge).toContain("reason: reason ⏎ line");
+  expect(hit(search.execute({ query: "FACT-LONG-41", layer: "facts", itemBudget: 1 }))).toMatch(/^\[F\d+\] \[observation\/user\] \[\.\.\. \d+ characters truncated\]$/);
+  expect(hit(search.execute({ query: "KNOWLEDGE-LONG-41", layer: "knowledge", itemBudget: 1 }))).toMatch(/^\[K\d+@\d+\] \[reference\/project\] \[\.\.\. \d+ characters truncated\]$/);
+
+  expect(memory.trace(`F${factId}`, { itemBudget: null, pageBudget: null })).toContain(longFactText);
+  expect(memory.trace(`K${created.knowledgeId}@${created.commit}`, { itemBudget: null, pageBudget: null })).toContain(longKnowledgeText);
+});
+
 test("41b: fields control knowledge trace and only actual complete text delivery grants a handle", () => {
   const { root, peer, content } = commitPaths();
   const other = peer();
@@ -851,6 +883,95 @@ test("41b: fields control knowledge trace and only actual complete text delivery
   expect(committed.committed[0].commit).toBe(3);
   expect(root.tools[0]!.execute({ address: "K1@1", versions: "all", fields: ["reason"] })).not.toContain("reason:");
   expect(root.tools[0]!.execute({ address: "K1", versions: "history", fields: ["reason"] })).toContain("reason:");
+});
+
+test("41 review: search history defaults show existing statuses while current and explicit fields stay compact", () => {
+  const { c, d, edit } = commitPaths();
+  edit(c, "SEARCH-STATUS-C"); edit(d, "SEARCH-STATUS-D");
+  const path = { sessionId: c.sessionId, headTurnId: c.headTurnId, branch: c.branch };
+  const hits = (result: string) => result.split("\n\nReceipts:")[0]!;
+
+  const current = memory.search("", "knowledge", path);
+  expect(current).toContain("[K1@2]"); expect(current).not.toContain("status:");
+  expect(current).toContain("preview: text only");
+  const history = memory.search("", "knowledge", { ...path, versions: "history" });
+  expect(history).toContain("[K1@1]"); expect(history).toContain("status: superseded on this path by K1@2");
+  expect(history).toContain("[K1@2]"); expect(history).toContain("status: current on this path");
+  expect(history).toContain("preview: fields text, status");
+  const all = memory.search("", "knowledge", { ...path, versions: "all" });
+  expect(all).toContain("[K1@3]"); expect(all).toContain("status: another branch");
+
+  const textOnly = memory.search("", "knowledge", { ...path, versions: "all", fields: ["text"] });
+  expect(textOnly).not.toContain("status:"); expect(textOnly).toContain("preview: text only");
+  const identityOnly = memory.search("", "knowledge", { ...path, versions: "all", fields: [] });
+  expect(hits(identityOnly)).toMatch(/^\[K1@1\] \[constraint\/project\]\n\[K1@2\] \[constraint\/project\]\n\[K1@3\] \[constraint\/project\]$/);
+  expect(identityOnly).toContain("preview: identity only"); expect(identityOnly).toMatch(/omitted fields: .*status/);
+
+  const first = memory.search("", "knowledge", { ...path, versions: "all", cap: 1 });
+  const cursor = /cursor=(\S+)/.exec(first)![1]!;
+  expect(memory.search("", "knowledge", { ...path, cursor, fields: ["text", "status"], cap: 1 })).not.toContain("unknown or expired cursor");
+  const changed = memory.search("", "knowledge", { ...path, versions: "all", cap: 1 });
+  const changedCursor = /cursor=(\S+)/.exec(changed)![1]!;
+  expect(() => memory.search("", "knowledge", { ...path, cursor: changedCursor, fields: ["text"], cap: 1 })).toThrow("cursor fields is frozen");
+  expect(memory.search("", "knowledge", { ...path, cursor: changedCursor, cap: 1 })).not.toContain("unknown or expired cursor");
+
+  const factCurrent = hits(memory.search("C", "facts", path));
+  expect(hits(memory.search("C", "facts", { ...path, versions: "all" }))).toBe(factCurrent);
+  const rawCurrent = hits(memory.search("C", "raw", path));
+  expect(hits(memory.search("C", "raw", { ...path, versions: "all" }))).toBe(rawCurrent);
+
+  const archived = c.write([{ op: "create", text: "ARCHIVE-STATUS", category: "constraint", scope: "project",
+    supports: [c.fact], topics: [], reason: "Archive status fixture." }]).committed[0];
+  c.read(`K${archived.knowledgeId}@${archived.commit}`);
+  c.write([{ op: "archive", id: `K${archived.knowledgeId}@${archived.commit}`, supports: [c.fact], reason: "Archive status fixture." }]);
+  expect(memory.search("ARCHIVE-STATUS", "knowledge", { ...path, versions: "history" })).toContain("status: archived on this path");
+
+  const searchFields = (toolDefinitions.find(tool => tool.name === "search")!.parameters.properties as Record<string, any>).fields;
+  expect(searchFields).not.toHaveProperty("default");
+});
+
+test("41 review: history defaults include reasons and partition applicable from other branches", () => {
+  const { root, c, d, edit, content } = commitPaths();
+  edit(c, "HISTORY-C"); edit(d, "HISTORY-D");
+  const linear = root.write([{ op: "create", ...content(root.fact, "LINEAR-HISTORY"), topics: [], reason: "Linear reason." }]).committed[0];
+  const path = { sessionId: c.sessionId, headTurnId: c.headTurnId, branch: c.branch };
+
+  expect(memory.trace("K1", path)).not.toContain("reason:");
+  expect(memory.trace("K1@1", { ...path, versions: "history" })).not.toContain("reason:");
+  const history = memory.trace("K1", { ...path, versions: "history" });
+  expect(history.match(/^  K1@\d+ .* reason: /gm)).toHaveLength(2);
+  const all = memory.trace("K1", { ...path, versions: "all" });
+  expect(all).toContain("[K1@2] [constraint/project] HISTORY-C");
+  expect(all).not.toContain("All branch commits:");
+  expect(all).toContain("Other branches' commits:");
+  const applicableSection = all.split("Applicable history on this path:")[1]!.split("Other branches' tips:")[0]!;
+  const otherSection = all.split("Other branches' commits:")[1]!;
+  const commits = (section: string, knowledgeId = 1) => [...section.matchAll(new RegExp(`^  K${knowledgeId}@(\\d+)`, "gm"))].map(match => Number(match[1]));
+  const applicable = commits(applicableSection), other = commits(otherSection);
+  expect(applicable).toEqual([1, 2]); expect(other).toEqual([3]);
+  expect(new Set([...applicable, ...other])).toEqual(new Set([1, 2, 3]));
+  expect(applicable.some(commit => other.includes(commit))).toBe(false);
+
+  const noOtherBranch = memory.trace(`K${linear.knowledgeId}`, { ...path, versions: "all" });
+  expect(commits(noOtherBranch.split("Applicable history on this path:")[1]!.split("Other branches' tips:")[0]!, linear.knowledgeId)).toEqual([linear.commit]);
+  expect(commits(noOtherBranch.split("Other branches' commits:")[1]!, linear.knowledgeId)).toEqual([]);
+  expect(noOtherBranch.match(new RegExp(`^  K${linear.knowledgeId}@${linear.commit}`, "gm"))).toHaveLength(1);
+
+  expect(memory.trace("K1", { ...path, versions: "history", fields: ["text"] })).not.toContain("reason:");
+  expect(memory.trace("K1", { ...path, versions: "history", fields: ["reason"] })).toContain("reason:");
+  expect(memory.trace("K1..", { fields: ["text"] })).not.toContain("reason:");
+  expect(memory.trace("K1..").match(/^  K1@\d+ .* reason: /gm)).toHaveLength(3);
+
+  const first = memory.trace("K1", { ...path, versions: "history", cap: 1 });
+  const cursor = /cursor=(\S+)/.exec(first)![1]!;
+  const defaults = ["text", "supports", "topics", "status", "links", "marks", "reason"] as const;
+  expect(memory.trace(`cursor=${cursor}`, { ...path, versions: "history", fields: defaults, cap: 1 })).not.toContain("unknown or expired cursor");
+  const changed = memory.trace("K1", { ...path, versions: "history", cap: 1 });
+  const changedCursor = /cursor=(\S+)/.exec(changed)![1]!;
+  expect(() => memory.trace(`cursor=${changedCursor}`, { ...path, fields: defaults.slice(0, -1), cap: 1 })).toThrow("cursor fields is frozen");
+  expect(memory.trace(`cursor=${changedCursor}`, { ...path, cap: 1 })).not.toContain("unknown or expired cursor");
+  const traceFields = (toolDefinitions.find(tool => tool.name === "trace")!.parameters.properties as Record<string, any>).fields;
+  expect(traceFields).not.toHaveProperty("default");
 });
 
 test("41 repair: knowledge search shows requested reasons only for history and all previews", () => {

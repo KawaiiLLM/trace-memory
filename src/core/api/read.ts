@@ -20,7 +20,9 @@ export type ReadVersions = (typeof READ_VERSIONS)[number];
 export const READ_FIELDS = ["text", "supports", "topics", "status", "reason", "links", "marks"] as const;
 export type ReadField = (typeof READ_FIELDS)[number];
 export const TRACE_DEFAULT_FIELDS: readonly ReadField[] = ["text", "supports", "topics", "status", "links", "marks"];
+export const TRACE_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = [...TRACE_DEFAULT_FIELDS, "reason"];
 export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
+export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
 export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
@@ -420,9 +422,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     }
-    options = { ...effectiveOptions(options), fields: [...(options.fields ?? TRACE_DEFAULT_FIELDS)] };
+    options = effectiveOptions(options);
     const targets = traceTargets(address);
     if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
+    const historyFields = targets.some(target => /^K[1-9]\d*\.\.$/.test(target)
+      || options.versions !== "current" && /^K[1-9]\d*$/.test(target));
+    options = { ...options, fields: [...(options.fields ?? (historyFields ? TRACE_HISTORY_DEFAULT_FIELDS : TRACE_DEFAULT_FIELDS))] };
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const reads: KnowledgeRead[] = [];
@@ -692,7 +697,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if ((input.category !== undefined || input.scope !== undefined) && scope !== "knowledge")
         throw new Error("category and scope filters require layer knowledge");
       if (input.cursor) return page([], input, "", [], "search").text;
-      const options = { ...effectiveOptions(input), fields: [...(input.fields ?? SEARCH_DEFAULT_FIELDS)],
+      const effective = effectiveOptions(input);
+      const historyFields = (scope === "knowledge" || scope === "all") && effective.versions !== "current";
+      const options = { ...effective, fields: [...(input.fields ?? (historyFields ? SEARCH_HISTORY_DEFAULT_FIELDS : SEARCH_DEFAULT_FIELDS))],
         itemBudget: input.itemBudget === undefined ? input.full === true ? null : SEARCH_PREVIEW_TOKENS : input.itemBudget };
       const reader = options.sessionId === undefined ? undefined : session(options.sessionId);
       const sessionIds = options.where === "all" ? undefined : options.where === "session" ? [options.sessionId!]

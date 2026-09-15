@@ -601,18 +601,22 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
 }
 
 /** Search previews keep identity outside the optional field set. Unlike complete semantic records,
- * a preview never fails merely because its identity and marker exceed the requested text budget. */
+ * a preview never fails merely because its identity and marker exceed the requested text budget.
+ * Stored line breaks are escaped in the same visible form as every listing line before measuring,
+ * and a cut keeps only the head so one semantic hit always remains one physical line. */
 function renderPreview(prefix: string, body: string, suffix: string, cap: number, showText: boolean): string {
-  if (!showText) return prefix.trimEnd() + suffix;
-  const whole = prefix + body + suffix;
+  const inline = (text: string) => listingLine(text);
+  if (!showText) return inline(prefix.trimEnd() + suffix);
+  const whole = inline(prefix + body + suffix);
   if (tokens(whole) <= cap) return whole;
   const cut = cutUnits(body, false);
   const build = (kept: number) => {
-    const { head, tail, omitted } = halves(cut, kept);
-    return prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix;
+    const head = cut.list.slice(0, kept).join("");
+    const marker = truncated(cut.between(kept, 0));
+    return inline(prefix + (head ? `${head} ${marker}` : marker) + suffix);
   };
   return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
-    : `${prefix.trimEnd()} ${truncated(body.length)}${suffix}`;
+    : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
 }
 export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
   const prefix = `[F${fact.id}] [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
@@ -663,7 +667,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, marks: Know
 }
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
-  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>): string {
+  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   if (!fields) {
@@ -683,6 +687,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: Knowle
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
+    ...(historyLine ? [`\n${selectedCommitLine(r, fields)}`] : []),
   ].join("");
   if (!fields.has("text")) return prefix.trimEnd() + suffix;
   return renderSemantic(prefix, r.text, suffix, cap);

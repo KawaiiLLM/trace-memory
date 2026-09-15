@@ -500,14 +500,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const marks = store.listKnowledgeMarks(id!);
       const fields = new Set(display.fields ?? ["text", "supports", "topics", "status", "links", "marks"]);
       const descriptions = new Map<number, () => string>();
-      const capture = (revisions: typeof history) => {
+      const capture = (revisions: typeof history, historyLines = false) => {
         for (const r of revisions) {
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
             const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
-            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds, fields);
-            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds, fields);
+            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds, fields, historyLines);
+            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds, fields, historyLines);
             if (!fields.has("text") || text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
             return text;
           });
@@ -535,7 +535,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return () => describe(revision);
       }
       if (knowledgeMatch.history) {
-        capture(history);
+        capture(history, true);
         return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       }
       const where = display.where ?? (display.sessionId === undefined ? "all" : "project");
@@ -552,6 +552,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
       const applicable = history.filter(r => graph.applicable.has(r.id) && matches(r));
       const allHistory = history.filter(matches);
+      const otherHistory = allHistory.filter(r => !graph.applicable.has(r.id));
       const otherTips = path && versions === "all" ? store.commitGraph(null).current
         .filter(r => r.knowledgeId === id && !graph.applicable.has(r.id) && matches(r)) : [];
       const links = store.listKnowledgeLinks(id!);
@@ -563,7 +564,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         ...(fields.has("links") ? links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`) : []),
         ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields)]
           : ["Commit history:", renderCommitHistory(allHistory, fields)]),
-        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "All branch commits:", renderCommitHistory(allHistory, fields)] : [])].join("\n");
+        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "Other branches' commits:", renderCommitHistory(otherHistory, fields)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

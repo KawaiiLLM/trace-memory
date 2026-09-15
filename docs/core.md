@@ -420,17 +420,25 @@ existing selection semantics. Full rendering removes content compression, not
 pagination; its read scope stays unrestricted, so when a shared call has results
 on several forks, a full trace shows each original occurrence as its own entry.
 
-Trace uses search's shared paginator and token estimator: every response defaults
-to at most 2,000 estimated tokens, including pagination receipts, and `cap` also
-limits output lines (default 100). A long single line continues through the same
-cursor, split only at Unicode code-point boundaries; concatenate fragments without
-a newline as the receipt directs, before interpreting any JSON escapes. Nothing is
-permanently truncated by pagination. The query freezes its material, scope and
-rendering profile; later writes or branch changes cannot alter its continuation.
-Named components resolve once without child cursors; fact intervals retain lazy
-record rendering and batched relation snapshots. A knowledge read refreshes handles
-only after the entire expression's final page and only for complete semantic bodies. Finishing a truncated preview grants no exact write handle. Rejected continuation requests do
-not consume a valid cursor. Trace content parameters are `itemBudget`, `toolCallBudget` and `toolResultBudget`; `pageBudget` independently caps pages. All are frozen with the cursor; public pages cannot disable pagination.
+Trace uses search's shared paginator and token estimator. Every response defaults
+to at most 2,000 estimated tokens, including pagination receipts; public
+`pageBudget` values are capped at 8,000, and `cap` also limits output lines
+(default 100). A long line continues through the same cursor, split only at Unicode
+code-point boundaries; concatenate fragments without a newline as the receipt
+directs before interpreting JSON escapes. Transport pagination is lossless, but a
+page fragment is not a complete hit.
+
+The query freezes its material and effective options: page-budget aliases, line cap,
+content budgets, fields, session/version filters, and configured entry profile.
+Omitted continuation options and explicitly repeated equivalent effective values
+both succeed; a changed value is rejected without consuming the cursor. Named
+components resolve once without child cursors, and fact intervals retain lazy record
+rendering and batched relation snapshots. A knowledge read refreshes handles only
+after the entire expression's final page, only when `text` was selected, and only
+when the delivered semantic body equals its untruncated rendering. Search previews
+never grant a handle. Trace content parameters are `itemBudget`, `toolCallBudget`,
+and `toolResultBudget`; `pageBudget` independently caps pages and cannot be disabled
+by a public tool call.
 
 `renderEntry` is the one view, under one profile of three independent budgets (ticket 30,
 superseding 23c's single `B` split in half): a tool-call part is worth at most `C`
@@ -671,14 +679,20 @@ category is named in its own receipt.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
-`trace("K1")` renders the path current, its parents and children, applicable
-commit history, and the other branches' tips. Without context it labels tips
-newest-created and never calls one current. `K1@57` reads one immutable global
-commit, `K1@57..K1@61` compares any two commits of the same identity (including
-siblings and reverse order), and `K1..` shows the commit tree across branches.
-Commit metadata includes operation, stored time, the commit's `supports`
-fact addresses and its `reason` (the authored commit message).
-Supports expand through `trace("F1")`.
+`trace("K1")` defaults to the path-current tip and its parents, children, links,
+and marks. `versions: "history"` adds applicable commit history;
+`versions: "all"` also adds other-branch tips and a disjoint list of only those
+branches' commits. Without a bound session, tips are labelled newest-created and
+all history appears once. `K1@57` reads one immutable global commit,
+`K1@57..K1@61` compares any two commits of the same identity, and `K1..` shows the
+complete commit tree across branches. These explicit addresses ignore data filters.
+
+Trace fields are `text`, `supports`, `topics`, `status`, `reason`, `links`, and
+`marks`. Current and exact reads default to all except `reason`; history/all reads
+and `K1..` additionally default to `reason`, which appears on commit-history lines.
+An explicit `fields` list is authoritative. Commit metadata can include operation,
+stored time, supports, topics, and the authored reason. Supports expand through
+`trace("F1")`.
 
 Diff metadata lists commits unique to either endpoint ancestry, preserving
 changes later reverted. Equal endpoints have no transitions. Added/removed supports use set membership in stored order;
@@ -978,61 +992,72 @@ the token counters and `trace` use, and no view or summary
 becomes a source entry, a fact or a processing receipt. Pass `headTurnId` for precise ancestry; without it, the latest Turn selects one
 path. Sibling queues are never combined into an automatic Raw view.
 
-`search(query, scope = "all", { sessionId?, maxTokens?, cap?, cursor? })` uses literal
-substring matching over fact text, knowledge commits and original Raw. A knowledge
-hit matches the conclusion text or any of the revision's topic labels, under the
-same escaping; matching runs over the label values (SQLite `json_each`), so the
-serialized JSON's punctuation and escapes never match, and a commit whose text and
-several labels all match is still one result.
+`search(query, layer = "all", options)` uses literal substring matching over fact
+text, knowledge commits, and original Raw. The public form is
+`search({query, layer?, where?, versions?, category?, scope?, fields?, itemBudget?,
+maxTokens?, cursor?, cap?})`. A knowledge hit matches the conclusion text or any
+revision topic label. Matching runs over label values with SQLite `json_each`, so
+serialized JSON punctuation and escapes never match, and a commit whose text and
+several labels match is still one result.
 
 `topicGroups(sessionId, headTurnId?, branch?)` projects the same path-selected
 applicable knowledge as `{topics: [{topic, commits}], unclassified}`, where a commit
 is the `{knowledgeId, commit}` reference of the revision it was read from. A
 multi-topic commit appears in each of its groups, divergent applicable tips stay
 separate entries, and nothing is cloned or ranked: this is read organization, not a
-second injection order. Trace and
-search reads are unrestricted; source eligibility constrains writes only. Unbound
-facade reads remain available to hosts. Raw uses literal substring LIKE
-(including tool names, inputs and results); `%` and `_` are escaped. `all` in a
-bound search includes raw as well as facts and knowledge. Each hit is
-one flattened shared rendering line, with ` ⏎ ` preserving line boundaries.
-Results order facts by id, then knowledge id/revision; raw orders turns by id.
-Search defaults to **2000 estimated tokens per complete response**, including all
-content and receipts, under the shared `tokens` estimator. `maxTokens` must be a
-positive safe integer; budgets too small for pagination hints and progress are
-rejected. `cap` remains a second limit on output lines (default 100), not tokens.
-Whole hits are preferred; an oversized hit is split at Unicode code-point boundaries,
-with its remaining text carried by the existing cursor rather than truncated. A
-`Hit continues on next page` receipt means concatenate the next page's content
-without a newline; otherwise join page contents with a newline. Receipts are not
-part of the hit content. Search previews and fragments never grant a complete
-knowledge-read permission; use an explicit complete `trace` for that.
+second injection order. A session-bound read defaults to `where: "project"`; an unbound facade read defaults
+to `where: "all"`. For facts and Raw, `where` selects this session, project
+sessions, or every session. For knowledge, project/session reads use the bound
+path's applicable graph, while all reads use every branch. `versions` defaults to
+`current`; `history` adds applicable superseded or archived commits, and `all` adds
+other branches. Under `where: "all"`, current means newest-created branch tips and
+history/all both include every commit. `category` and `scope` filter knowledge,
+imply `layer: "knowledge"` when omitted, and reject another explicit layer. Exact
+trace addresses remain unrestricted; filters narrow listings, not read authority.
 
-Continue with `search({query: "", cursor: "…"})`. The original token budget is
-frozen: omit `maxTokens` or repeat the same value; a different value is rejected
-without consuming the cursor. The same budget applies through `trace` continuation;
-a trace-origin cursor cannot be continued through search. Continue a cursor alone,
-not inside a comma address list. Invalid parameters do not
-consume a valid cursor. Owner isolation and the shared 16-continuation cache remain
-unchanged. Trace shares the default 2,000 estimated-token response budget and line
-cap; `full` preserves uncompressed content through lossless cursor pagination.
+Fact and knowledge search hits are one-line previews. Identity is always present.
+For current searches `fields` defaults to `text`; knowledge-capable history/all
+searches default to `text` plus `status`, so branch and lifecycle state remain
+visible. Explicit `fields`, including `[]` or `["text"]`, is authoritative. Facts and
+Raw keep their current rendering when `versions` is named because that filter does
+not apply to those layers. `itemBudget` defaults to 80 estimated tokens. Long text
+keeps a Unicode-safe head followed inline by `[... N characters truncated]`;
+stored line breaks in text and selected metadata render as ` ⏎ `, including when
+`itemBudget: null` leaves preview text untruncated. Selected `supports`, `topics`,
+`status`, `reason`, `links`, and `marks` appear only when requested; `reason` is
+suppressed for current-only search. Raw hits retain the configured entry profile.
+Search never grants a knowledge write handle and emits no write handle in its
+receipts; use an exact, complete trace read.
 
-Every search page states that no hit does not mean absent. A `cursor` continues the
-query that issued it, not the database as it now stands: the hits, the commit labels,
-and the mutable annotations each line prints — a fact's relations, a commit's marks,
-and the Turn occurrences a raw hit assembles — are the ones that query saw. Writing
-any of them between two pages adds no hit, drops none and moves no label, and nothing
-is held between pages: no open transaction, no reserved connection.
+Raw matching includes tool names, inputs, and results; `%` and `_` are escaped.
+Results order facts by id, then knowledge id/revision; Raw orders turns by id. Every
+search page states its effective session/version filters, optional category/scope,
+selected and omitted preview fields, and that no hit does not mean absent.
+
+Search and trace pages default to 2,000 estimated tokens, including receipts.
+`maxTokens` and `pageBudget` are positive safe integers capped at 8,000; `cap`
+separately defaults to 100 output lines. Whole hits are preferred. An oversized
+transport hit is split at Unicode code-point boundaries and carried by the cursor,
+not semantically truncated. A `Hit continues on next page` receipt means concatenate
+the next page's content without a newline; otherwise join page contents with a
+newline. Receipts are not hit content, and a fragment need not contain a complete
+hit.
+
+Continue search with `search({query: "", cursor: "…"})` and trace with its cursor
+alone. The cursor freezes the hit snapshot and every effective filter, field,
+content budget, page-budget alias, and line cap. Omit them or repeat equivalent
+effective values; genuinely changed values reject without consuming the cursor. A
+search cursor may continue through trace, but a trace-origin cursor cannot continue
+through search. Owner isolation and the 16-continuation cache remain unchanged. No
+transaction or reserved connection is held between pages.
 
 `trace` additionally accepts session addresses, exact project names, comma lists,
-fact intervals (`F81-F90`, see **Batch trace** above) and `{ cap?, cursor? }`.
-Projects list global/project knowledge and project facts;
-sessions list turns. Listing caps count output lines, default 100 — the unit is
-lines, not facts and not tokens. Tool input is
-`trace({address, tool?, full?, cursor?, cap?})` or
-`search({query, layer?, maxTokens?, cursor?, cap?})`, with layer facts|knowledge|raw|all.
-Display options are parameters, never address flags. The per-output cap flag is
-removed; cap is the listing line budget. Expansion hints use the trace parameter form.
+and fact intervals (`F81-F90`; see **Batch trace**). Its public form is
+`trace({address, where?, versions?, category?, scope?, fields?, itemBudget?,
+toolCallBudget?, toolResultBudget?, pageBudget?, tool?, full?, cursor?, cap?})`.
+Projects list global/project knowledge and project facts; sessions list turns.
+Listing `cap` counts output lines, not facts or tokens. Display options are
+parameters, never address flags, and expansion hints use the trace parameter form.
 `F<n>..` is navigation through later strong negations, including every intermediate
 fact and branching; its terminal sentence is not a current-conclusion claim.
 Cursors freeze rendered output, are single-use, belong to this facade instance
