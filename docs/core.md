@@ -658,10 +658,11 @@ Raw ceiling is subtracted whether or not this batch fills it. A small Raw batch 
 fact slice, and a small fact slice never buys a larger Raw batch. No new configuration key expresses
 this; the cap is derived from the two that already exist.
 
-Fresh material is therefore at most 20,000 estimated tokens for the Noter and 20,000 for the
-Consolidator by default; system instructions, tool definitions, inherited native history and later
-tool/review messages are additional context costs, which is why the host's real-context capacity
-check stays independent of these domain limits.
+Fresh material is therefore at most 20,000 estimated tokens for the Noter and 30,000 for the
+Consolidator by default: the latter combines the frozen 20,000-token database-derived Knowledge
+capacity with its independent 10,000-token fact/range/cue allowance. System instructions, tool
+definitions, inherited native history and later tool/review messages are additional context costs,
+which is why the host's real-context capacity check stays independent of these domain limits.
 
 Selected evidence is never dropped to fit: the reducible unit is the task itself
 (`freezeNoting`/`freezeConsolidation` take a smaller oldest-first prefix), and a current block over
