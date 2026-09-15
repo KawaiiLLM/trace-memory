@@ -1,5 +1,5 @@
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type MemoryBatch } from "../model/index.ts";
-import type { CommittedKnowledgeOp, KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
+import type { KnowledgeOperationInput, RunInput, Store, KnowledgePath, KnowledgeWithRevision } from "../store/index.ts";
 import { tokens } from "../render/index.ts";
 import type { freezeConsolidation, NearPair } from "./index.ts";
 
@@ -137,17 +137,12 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   return { results, operations, batch, diagnostics };
 }
 
-/** Called after application inside the same immediate transaction. `committed` is this batch's applied
- * operations: 21a accounts a range fact cited by an archive that just applied as archival evidence, since
- * an archive leaves no active conclusion to cite it. Candidate-only or rejected archives are not here. */
-export function accounting(store: Store, sessionId: number, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath,
-  committed: CommittedKnowledgeOp[] = []): ConsolidationDiagnostic[] {
+/** Called after application inside the same immediate transaction. Accounts recursively grounded facts
+ * from the post-application active Knowledge set, including concurrent changes to untouched Knowledge,
+ * plus the batch's explicit skipped facts. */
+export function accounting(store: Store, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): ConsolidationDiagnostic[] {
   const lineageMemo = new Map<number, Set<number>>();
   const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => [...store.revisionGrounds(k.revision, lineageMemo)]));
-  for (const op of committed) if (op.op === "archive") {
-    const revision = store.getKnowledgeRevision(op.knowledgeId, op.commit);
-    for (const id of revision ? store.revisionGrounds(revision, lineageMemo) : []) cited.add(id);
-  }
   const skipped = new Set(batch.skipped.map(s => s.fact));
   const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));
   return uncited.length ? [{ kind: "uncited_facts", facts: uncited.map(f => `F${f.id}`) }] : [];

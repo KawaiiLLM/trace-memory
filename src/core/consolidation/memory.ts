@@ -52,7 +52,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     const result = store.commitConsolidationRun({ path, run: { ...run, response: JSON.stringify({ problems: [] }), ...(review ? {} : { request: JSON.stringify(input) }) }, operations: prepared.operations,
       ...(review ? { consolidated: review.frozen.rangeFacts.map(f => f.id) } : {}),
       finalizeResponse: ({ committed }) => {
-        if (review) diagnostics.push(...accounting(store, sessionId, prepared.batch, review.frozen.rangeFacts, path, committed));
+        if (review) diagnostics.push(...accounting(store, prepared.batch, review.frozen.rangeFacts, path));
         return review ? JSON.stringify({ toolCalls: [...sequence, { name: "memory", input, result: receipt(committed) }], candidate, committed, diagnostics, problems: [], readKnowledgeCommits: review.frozen.prepared?.readKnowledgeCommits ?? [] }) : receipt(committed); } });
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };

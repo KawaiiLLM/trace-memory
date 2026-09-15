@@ -857,11 +857,9 @@ that prompt's selected persisted context does not already hold the exact body or
 change evidence. A child receiving material does not mean the parent received it. Supports cite
 project facts available at start.
 
-Accounting runs on actual visible knowledge after applying the batch inside that
-transaction, including concurrent changes to untouched knowledge. It follows effective grounding
-through exact parent lineage. A range fact cited directly or inherited by an archive that applied
-in this batch counts as archival evidence and needs no duplicate skipped entry; a candidate-only or
-rejected archive does not. Uncited user
+Accounting runs on the post-application active knowledge set inside the same
+transaction, including concurrent changes to untouched knowledge. It recursively follows effective
+grounding through exact parent lineage; explicit skipped facts also count as accounted for. Uncited user
 facts and questions missing from skipped yield `uncited_facts`. Other diagnostics are
 `unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
 numeric lexemes against direct and inherited grounding facts' text and quotes; the reason is never read by
