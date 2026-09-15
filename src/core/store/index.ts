@@ -2311,6 +2311,10 @@ export class Store {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
   }
 
+  projectSessionIds(projectId: number): number[] {
+    return (this.db.prepare("SELECT id FROM sessions WHERE project_id = ? ORDER BY id").all(projectId) as { id: number }[]).map(row => row.id);
+  }
+
   listRuns(sessionId: number): Run[] {
     return this.db.prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY id").all(sessionId).map(toRun);
   }
@@ -2376,18 +2380,23 @@ export class Store {
     });
   }
 
-  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw"): string[] {
+  searchAddresses(query: string, scope: "facts" | "knowledge" | "all" | "raw", sessionIds?: readonly number[]): string[] {
     const pattern = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+    const owners = JSON.stringify(sessionIds ?? []), restricted = sessionIds !== undefined;
     const raw = () => (this.db.prepare(`SELECT t.id FROM turns t WHERE
+        (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND
         (t.user_prompt LIKE ? ESCAPE '\\' OR t.assistant_text LIKE ? ESCAPE '\\' OR EXISTS
         (SELECT 1 FROM tool_calls c WHERE c.turn_id = t.id AND
         (c.name LIKE ? ESCAPE '\\' OR c.input LIKE ? ESCAPE '\\' OR c.result LIKE ? ESCAPE '\\'))) ORDER BY t.id`)
-        .all(pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
+        .all(Number(restricted), owners, pattern, pattern, pattern, pattern, pattern) as { id: number }[]).map((r) => `T${r.id}`);
     if (scope === "raw") return raw();
-    const facts = scope === "knowledge" ? [] : (this.db.prepare("SELECT id FROM facts WHERE text LIKE ? ESCAPE '\\' ORDER BY id").all(pattern) as { id: number }[]).map((r) => `F${r.id}`);
+    const facts = scope === "knowledge" ? [] : (this.db.prepare(`SELECT f.id FROM facts f JOIN turns t ON t.id = f.turn_id
+      WHERE (? = 0 OR t.session_id IN (SELECT value FROM json_each(?))) AND f.text LIKE ? ESCAPE '\\' ORDER BY f.id`)
+      .all(Number(restricted), owners, pattern) as { id: number }[]).map((r) => `F${r.id}`);
     // 21b: a label matches under the same literal semantics and escaping as the text. EXISTS over
     // json_each reads label values, never the JSON punctuation around them, and returns one row per
-    // revision however many labels (or text and labels together) match.
+    // revision however many labels (or text and labels together) match. Knowledge membership is
+    // resolved by the caller's path and version filter rather than by its author's session here.
     const knowledge = scope === "facts" ? [] : (this.db.prepare(`SELECT knowledge_id, id FROM knowledge_revisions
       WHERE text LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM json_each(topics) WHERE value LIKE ? ESCAPE '\\')
       ORDER BY knowledge_id, id`)

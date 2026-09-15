@@ -537,21 +537,32 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         capture(history);
         return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       }
-      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
+      const where = display.where ?? (display.sessionId === undefined ? "all" : "project");
+      const versions = display.versions ?? "current";
+      const path = where === "all" ? null : store.knowledgePath(display.sessionId!, display.branch, display.headTurnId);
       const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
-      const tips = store.currentCommit(id!, path);
+      const graph = store.commitGraph(path, undefined, snapshot);
+      const authoredHere = (revision: typeof history[number]) => where !== "session"
+        || (revision.runId !== null && store.runSessionId(revision.runId) === display.sessionId);
+      const matches = (revision: typeof history[number]) => authoredHere(revision)
+        && (!display.category || revision.category === display.category)
+        && (!display.scope || revision.scope === display.scope);
+      const tips = graph.current.filter(r => r.knowledgeId === id && matches(r));
       reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
-      const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
-      const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path, snapshot)) : [];
+      const applicable = history.filter(r => graph.applicable.has(r.id) && matches(r));
+      const allHistory = history.filter(matches);
+      const otherTips = path && versions === "all" ? store.commitGraph(null).current
+        .filter(r => r.knowledgeId === id && !graph.applicable.has(r.id) && matches(r)) : [];
       const links = store.listKnowledgeLinks(id!);
-      capture([...(tips.length ? tips : history), ...otherTips]);
+      const described = versions === "current" ? tips : versions === "history" ? [...tips, ...applicable] : [...tips, ...allHistory, ...otherTips];
+      capture([...new Map(described.map(r => [r.id, r])).values()]);
       return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...(tips.length ? [] : history.map(describe)),
         ...links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
-        path ? "Applicable history on this path:" : "Commit history:", renderCommitHistory(applicable),
-        ...(path ? ["Other branches' tips:", ...otherTips.map(describe)] : [])].join("\n");
+        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable)]
+          : ["Commit history:", renderCommitHistory(allHistory)]),
+        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "All branch commits:", renderCommitHistory(allHistory)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

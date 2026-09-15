@@ -335,7 +335,7 @@ test("2026-09-07: merge atomic", () => {
   expect(memory.store.currentCommit(2)).toEqual([]);
   expect(memory.store.getKnowledge(2)).toMatchObject({ id: 2 });
   expect(memory.store.listKnowledgeLinks(2)).toEqual([{ fromKnowledge: 2, fromCommit: 2, kind: "merged_into", toKnowledge: 1, toCommit: 3 }]);
-  expect(memory.trace("K2")).toContain("Avoid npm"); expect(memory.trace("K2")).toContain("K1@3");
+  expect(memory.trace("K2@2")).toContain("Avoid npm"); expect(memory.trace("K2")).toContain("K1@3");
 });
 
 test("2026-09-07: second submission commits, first does not", async () => {
@@ -770,6 +770,50 @@ test.each(["K2", "K2@2", "K2,F1-F2,K1", "F1-F2,K2@2,K1,K2"])("paged %s records t
   expect(memory.store.getKnowledgeRevision(2, 4)?.parentId).toBe(3);
 });
 
+test("41a: project/current defaults, version expansion and exact addresses preserve read scope", () => {
+  const { c, d, edit } = commitPaths();
+  edit(c, "FILTER-C"); edit(d, "FILTER-D");
+  const current = memory.search("FILTER", "knowledge", c);
+  expect(current).toContain("[K1@2]");
+  expect(current).not.toContain("[K1@3]");
+  expect(current).toContain("searched: project sessions, current versions");
+  const history = memory.search("", "knowledge", { ...c, versions: "history" });
+  expect(history).toContain("[K1@1]"); expect(history).toContain("[K1@2]"); expect(history).not.toContain("[K1@3]");
+  const all = memory.search("", "knowledge", { ...c, versions: "all" });
+  for (const commit of [1, 2, 3]) expect(all).toContain(`[K1@${commit}]`);
+  const trace = memory.trace("K1", c);
+  expect(trace).toContain("K1 path current: K1@2");
+  expect(trace).not.toContain("Applicable history on this path:");
+  expect(memory.trace("K1", { ...c, versions: "history" })).toContain("Applicable history on this path:");
+  expect(memory.trace("K1", { ...c, versions: "all" })).toContain("Other branches' tips:");
+  expect(memory.trace("K1@3", c)).toContain("FILTER-D");
+  expect(memory.trace("K1@2..K1@3", c)).toContain("[-C-]{+D+}");
+});
+
+test("41a: where, category and scope filter candidates and cursor options are frozen", () => {
+  const { root, c, peer } = commitPaths();
+  const sameProject = peer(), foreign = peer(memory.store.createProject({ name: "foreign-41a", declaredBy: "mark" }).id);
+  const create = (who: typeof root, text: string, category: "open" | "reference", scope: "project" | "global") =>
+    who.write([{ op: "create", text, category, scope, supports: [who.fact], reason: "41a fixture", topics: [] }]).committed[0];
+  const shared = create(sameProject, "SAME-PROJECT-41A", "open", "project");
+  const global = create(foreign, "FOREIGN-GLOBAL-41A", "reference", "global");
+  const search = c.tools.find(tool => tool.name === "search")!;
+  const facts = search.execute({ query: "main", layer: "facts" });
+  expect(facts).toContain(`[F${sameProject.fact.slice(1)}]`);
+  expect(facts).not.toContain(`[F${foreign.fact.slice(1)}]`);
+  expect(search.execute({ query: "main", layer: "facts", where: "all" })).toContain(`[F${foreign.fact.slice(1)}]`);
+  expect(search.execute({ query: "41A", category: "open" })).toContain(`[K${shared.knowledgeId}@${shared.commit}]`);
+  expect(search.execute({ query: "41A", category: "open" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
+  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge" })).toContain(`[K${global.knowledgeId}@${global.commit}]`);
+  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", where: "session" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
+  expect(search.execute({ query: "41A", layer: "facts", category: "open" })).toContain("rejected: category and scope filters require layer knowledge");
+  let page = search.execute({ query: "", layer: "knowledge", versions: "all", cap: 1 });
+  const cursor = /cursor=(\S+)/.exec(page)![1]!;
+  expect(search.execute({ query: "", cursor, versions: "history" })).toContain("rejected: cursor versions is frozen");
+  page = search.execute({ query: "", cursor, versions: "all" });
+  expect(page).not.toContain("rejected:");
+});
+
 test("34a: recursive parent scope bounds first-prompt injection and path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Shared globally"), scope: "global" }]);
@@ -861,7 +905,7 @@ test("2026-09-07 B: stale absorbed bases name the surviving current commit acros
 test("16b: path trace separates applicable history, parents, children and sibling tips", () => {
   const { root, c, d, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  const trace = memory.trace("K1", c);
+  const trace = memory.trace("K1", { ...c, versions: "all" });
   expect(trace).toContain("K1 path current: K1@2");
   expect(trace).toContain("parents: K1@1");
   const [history, others] = trace.split("Applicable history on this path:")[1]!.split("Other branches' tips:");
@@ -871,7 +915,7 @@ test("16b: path trace separates applicable history, parents, children and siblin
   const tree = memory.trace("K1..");
   expect(tree).toContain("children: K1@2, K1@3");
   for (const id of [1, 2, 3]) expect(tree).toContain(`[K1@${id}]`);
-  expect(memory.trace("K1")).not.toMatch(/current/i);
+  expect(memory.trace("K1").split("\n")[0]).not.toMatch(/current/i);
   expect(memory.trace("K1@1")).toContain("children: K1@2, K1@3");
 });
 
@@ -898,14 +942,14 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
 test("16b: search notes describe the supplied path, including archives and unrestricted siblings", () => {
   const { root, c, d, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  const hits = memory.search("", "knowledge", c).split("\n");
+  const hits = memory.search("", "knowledge", { ...c, versions: "all" }).split("\n");
   expect(hits.find(l => l.startsWith("[K1@1]"))).toContain("superseded on this path by K1@2");
   expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("current on this path");
   expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("another branch");
-  expect(memory.search("C version", "knowledge", root)).toContain("another branch");
+  expect(memory.search("C version", "knowledge", { ...root, versions: "all" })).toContain("another branch");
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
   expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: c.read(), supports: [c.fact] }]).committed[0].commit).toBe(4);
-  expect(memory.search("C version", "knowledge", c)).toContain("archived on this path");
+  expect(memory.search("C version", "knowledge", { ...c, versions: "history" })).toContain("archived on this path");
   expect(memory.search("D version", "knowledge", d)).toContain("current on this path");
 });
 
@@ -1641,7 +1685,7 @@ test("21b 2026-09-08: a shared label alters no applicability, keeps its history 
   // An archive inherits the label; explicit search keeps its history labels, automatic material drops it.
   expect(third.write([{ op: "archive", id: "K1@2", supports: [third.fact], reason: "Retired on this path." }]).committed).toHaveLength(1);
   expect(memory.store.getKnowledgeRevision(1, 4)!.topics).toEqual(["tiling"]);
-  const hits = memory.search("tiling", "knowledge").split("\n").filter(l => l.startsWith("[K"));
+  const hits = memory.search("tiling", "knowledge", { versions: "all" }).split("\n").filter(l => l.startsWith("[K"));
   expect(hits).toHaveLength(3); // the two tips and the archive; the unlabelled root commit is not a hit
   expect(hits.find(l => l.startsWith("[K1@4]"))).toContain("note: archived");
   expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("note: archived"); // retired, not presented as a current rule

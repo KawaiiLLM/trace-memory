@@ -127,7 +127,7 @@ test("reads reach any project's evidence; write sources stay bound to the sessio
   memory.tools(manual(2, 2))[2]!.execute({ facts: [fact("T2#user", { text: "private evidence" })] });
   const tools = memory.tools(manual());
   for (const address of ["F1", "F1..", "T2", "S2", "S2/T2", "T1,T2"]) expect(tools[0]!.execute({ address })).not.toContain("rejected:");
-  expect(tools[1]!.execute({ query: "private", layer: "all" })).toContain("private evidence");
+  expect(tools[1]!.execute({ query: "private", layer: "all", where: "all" })).toContain("private evidence");
   expect(tools[2]!.execute({ facts: [fact("T2#user")] })).toContain("rejected:"); // a write may only cite its own session
   const page = memory.tools(manual(2, 2))[0]!.execute({ address: "T2", cap: 1 });
   expect(tools[0]!.execute({ address: "T1", cursor: /cursor=(\S+)/.exec(page)![1] })).toContain("rejected:");
@@ -157,8 +157,8 @@ test("reads return every knowledge item while injection still applies the scope 
       (["global", "project", "session"] as const).map((scope, i) => ({ op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", text: `knowledge owner ${sessionId} scope ${scope}`, category: "term" as const, scope, supports: [sessionId], createdAt: "now" })) });
   }
   const [trace, search] = memory.tools(manual());
-  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}` })).toContain(`[K${id}@${id}]`); // reads are unrestricted
-  const hits = search!.execute({ query: "knowledge", layer: "knowledge" });
+  for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(trace!.execute({ address: `K${id}@${id}` })).toContain(`[K${id}@${id}]`); // exact reads are unrestricted
+  const hits = search!.execute({ query: "knowledge", layer: "knowledge", where: "all", versions: "all" });
   for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9]) expect(hits).toContain(`[K${id}@`);
   // Injection keeps the scope rule: another session's session knowledge and another project's project knowledge stay out.
   for (const id of [6, 8, 9]) expect(memory.inject(1)).not.toContain(`[K${id}@`);

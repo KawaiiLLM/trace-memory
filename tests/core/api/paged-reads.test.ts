@@ -125,7 +125,7 @@ function knowledgeCorpus(knowledge: number, revisions: number) {
 
 test("22c: a search page formats its own hits and resolves the commit graph once for the query", () => {
   const small = knowledgeCorpus(3, 3), large = knowledgeCorpus(9, 3);
-  const options = { sessionId: large.sessionId, headTurnId: large.headTurnId };
+  const options = { sessionId: large.sessionId, headTurnId: large.headTurnId, versions: "all" as const };
   const graph = countGraphResolutions(), format = countFormattedHits();
   try {
     graph.reset();
@@ -146,7 +146,7 @@ test("22c: a search page formats its own hits and resolves the commit graph once
 
 test("22c: continuation is complete and stable, and a commit between pages moves no label", () => {
   const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const };
   const addresses = (text: string) => text.split("\n").filter(l => l.startsWith("[K")).map(l => l.slice(1, l.indexOf("]")));
   const whole = memory.search(corpus.query, "knowledge", options);
   const expected = addresses(whole);
@@ -188,7 +188,7 @@ test("22c: continuation is complete and stable, and a commit between pages moves
 
 test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", () => {
   const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const };
   const cursorOf = (page: string) => /cursor=(\S+)/.exec(page)![1]!;
   // Asking for page one and never asking for page two is ordinary use, so a remainder is a cache
   // entry with a bound, not an obligation held for the process's lifetime.
