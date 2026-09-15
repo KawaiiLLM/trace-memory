@@ -126,12 +126,40 @@ test("41 repair: trace accepts repeated effective defaults and freezes the confi
   expect(memory.trace(`cursor=${cursor}`, repeated)).not.toContain("unknown or expired cursor");
 
   const changed = memory.trace(`T${turn.id}`, { sessionId, cap: 1 }), changedCursor = tracePage(changed).cursor!;
+  expect(() => memory.trace(`cursor=${changedCursor}`, { sessionId, full: true })).toThrow("cursor itemBudget is frozen");
   expect(() => memory.trace(`cursor=${changedCursor}`, { ...repeated, itemBudget: repeated.itemBudget + 1 })).toThrow("cursor itemBudget is frozen");
   expect(memory.trace(`cursor=${changedCursor}`, repeated)).not.toContain("unknown or expired cursor");
 
   const unbounded = memory.trace(`T${turn.id}#t1`, { sessionId, full: true, pageBudget: null });
   expect(unbounded).not.toContain("cursor=");
   expect(unbounded).toBe(rendered(turn.id, true, "t1"));
+});
+
+test.each([
+  { direction: "three null ceilings to full:true", first: { itemBudget: null, toolCallBudget: null, toolResultBudget: null }, second: { full: true } },
+  { direction: "full:true to three null ceilings", first: { full: true }, second: { itemBudget: null, toolCallBudget: null, toolResultBudget: null } },
+])("raw Turn pagination treats $direction as one effective profile", ({ first, second }) => {
+  const { sessionId, turn } = corpus();
+  let page = memory.trace(`T${turn.id}`, { ...first, sessionId, pageBudget: 256 });
+  let joined = "", separator = "", pages = 0;
+  for (;;) {
+    const parsed = tracePage(page);
+    joined += separator + parsed.body;
+    pages++;
+    if (!parsed.cursor) break;
+    separator = parsed.fragment ? "" : "\n";
+    if (pages === 1) {
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, itemBudget: 64 })).toThrow("cursor itemBudget is frozen");
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, pageBudget: 257 })).toThrow("cursor pageBudget is frozen");
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, cap: 99 })).toThrow("cursor cap is frozen");
+      page = memory.trace(`cursor=${parsed.cursor}`, { ...second, sessionId, pageBudget: 256 });
+    } else {
+      // Once equivalence is established, every frozen option can be omitted.
+      page = memory.trace(`cursor=${parsed.cursor}`, { sessionId });
+    }
+  }
+  expect(pages).toBeGreaterThan(2);
+  expect(joined).toBe(rendered(turn.id));
 });
 
 test.each(["facade", "tool"])("%s preserves explicit-cursor address compatibility and priority", entry => {

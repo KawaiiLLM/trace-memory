@@ -177,7 +177,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
   type FrozenListing = {
     itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
-    full: boolean; tool?: number; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory;
+    tool?: number; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory;
     scope?: KnowledgeScope; fields?: readonly ReadField[];
   };
   type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
@@ -195,16 +195,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
     const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
       toolResultBudget: config.render.toolResultTokens };
-    const full = options.full ?? saved?.frozen.full ?? false;
     const content = (key: keyof typeof defaults): number | null => options[key] !== undefined ? options[key]!
-      : options.full === true ? null : saved ? saved.frozen[key] : full ? null : defaults[key];
+      : options.full === true ? null : saved ? saved.frozen[key] : defaults[key];
     const frozen: FrozenListing = {
-      itemBudget: content("itemBudget"), toolCallBudget: content("toolCallBudget"), toolResultBudget: content("toolResultBudget"), full,
+      itemBudget: content("itemBudget"), toolCallBudget: content("toolCallBudget"), toolResultBudget: content("toolResultBudget"),
       tool: options.tool ?? saved?.frozen.tool, where: options.where ?? saved?.frozen.where,
       versions: options.versions ?? saved?.frozen.versions, category: options.category ?? saved?.frozen.category,
       scope: options.scope ?? saved?.frozen.scope, fields: options.fields ?? saved?.frozen.fields,
     };
-    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "full", "tool", "where", "versions", "category", "scope", "fields"] as const) {
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "tool", "where", "versions", "category", "scope", "fields"] as const) {
       const same = key === "fields" ? JSON.stringify(frozen.fields) === JSON.stringify(saved?.frozen.fields)
         : frozen[key] === saved?.frozen[key];
       if (saved && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
