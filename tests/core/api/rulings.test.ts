@@ -853,6 +853,35 @@ test("41b: fields control knowledge trace and only actual complete text delivery
   expect(root.tools[0]!.execute({ address: "K1", versions: "history", fields: ["reason"] })).toContain("reason:");
 });
 
+test("41 repair: knowledge search shows requested reasons only for history and all previews", () => {
+  const { c, d, edit } = commitPaths();
+  edit(c, "REASON-TEXT-C"); edit(d, "REASON-TEXT-D");
+  const current = memory.search("", "knowledge", { ...c, fields: ["reason"] });
+  expect(current).not.toContain("reason:");
+  expect(current).toContain("preview: identity only");
+  expect(current).toMatch(/omitted fields: .*reason/);
+
+  const history = memory.search("", "knowledge", { ...c, versions: "history", fields: ["reason"] });
+  expect(history).toContain("reason: Initial admission of this conclusion.");
+  expect(history).toContain("reason: Substantive correction of the recorded conclusion.");
+  expect(history).not.toContain("REASON-TEXT-C");
+  expect(history).toContain("preview: fields reason; omitted fields:");
+  expect(history.match(/reason:/g)).toHaveLength(2);
+
+  const mixed = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "reason"] });
+  expect(mixed).toContain("REASON-TEXT-C");
+  expect(mixed).toContain("REASON-TEXT-D");
+  expect(mixed.match(/reason: Substantive correction of the recorded conclusion\./g)).toHaveLength(2);
+  expect(mixed).toContain("preview: fields text, reason; omitted fields:");
+
+  const longReason = "because ".repeat(200).trim();
+  c.write([{ op: "create", ...{ text: "LONG-REASON-TEXT", category: "constraint", scope: "project", supports: [c.fact] },
+    topics: [], reason: longReason }]);
+  const long = memory.search("LONG-REASON-TEXT", "knowledge", { ...c, versions: "history", fields: ["text", "reason"] });
+  expect(long).toContain("characters truncated");
+  expect(long).toContain(`reason: ${longReason}`);
+});
+
 test("41b: fields and budgets freeze across pages; public pages cap at 8000 while internal null remains", () => {
   const { c, content } = commitPaths();
   c.write(["SECOND-41B", "THIRD-41B"].map(text => ({ op: "create", ...content(c.fact, text), topics: [], reason: "41b fixture" })));

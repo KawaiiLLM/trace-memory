@@ -117,6 +117,23 @@ test("rejected continuations do not consume trace cursors or loosen frozen budge
   expect(drainTrace(memory, first, options).joined).toBe(rendered(turn.id, true, "t1"));
 });
 
+test("41 repair: trace accepts repeated effective defaults and freezes the configured entry profile", () => {
+  const { sessionId, turn } = corpus();
+  const first = memory.trace(`T${turn.id}`, { sessionId, cap: 1 });
+  const cursor = tracePage(first).cursor!;
+  const repeated = { sessionId, cap: 1, pageBudget: 2000, itemBudget: memory.config.render.entryTokens,
+    toolCallBudget: memory.config.render.toolInputTokens, toolResultBudget: memory.config.render.toolResultTokens };
+  expect(memory.trace(`cursor=${cursor}`, repeated)).not.toContain("unknown or expired cursor");
+
+  const changed = memory.trace(`T${turn.id}`, { sessionId, cap: 1 }), changedCursor = tracePage(changed).cursor!;
+  expect(() => memory.trace(`cursor=${changedCursor}`, { ...repeated, itemBudget: repeated.itemBudget + 1 })).toThrow("cursor itemBudget is frozen");
+  expect(memory.trace(`cursor=${changedCursor}`, repeated)).not.toContain("unknown or expired cursor");
+
+  const unbounded = memory.trace(`T${turn.id}#t1`, { sessionId, full: true, pageBudget: null });
+  expect(unbounded).not.toContain("cursor=");
+  expect(unbounded).toBe(rendered(turn.id, true, "t1"));
+});
+
 test.each(["facade", "tool"])("%s preserves explicit-cursor address compatibility and priority", entry => {
   const { sessionId, turn } = corpus();
   const address = `T${turn.id}#t1`;

@@ -169,12 +169,18 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     capture?: (deferred: readonly unknown[]) => readonly unknown[] }
   /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
    * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
-   * crossed the page edge — `cap` counts output lines. Every read freezes `maxTokens`; an
-   * oversized line leaves its unsent suffix in the same queue, without a second fragment cache.
+   * crossed the page edge — `cap` counts output lines. Every read freezes the effective page aliases,
+   * line cap, fields, filters and configured content profile; an oversized line leaves its unsent
+   * suffix in the same queue, without a second fragment cache.
    * `fragmented` prevents re-estimating a giant line's whole suffix on each continuation.
    * `reads` carries only named trace-origin K versions; search leaves it empty. Completion belongs
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; budgets?: ListingOptions };
+  type FrozenListing = {
+    itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
+    full: boolean; tool?: number; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory;
+    scope?: KnowledgeScope; fields?: readonly ReadField[];
+  };
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -187,21 +193,35 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
-    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget", "full", "tool", "where", "versions", "category", "scope", "fields"] as const) {
-      const same = key === "fields" ? JSON.stringify(options.fields) === JSON.stringify(saved?.budgets?.fields)
-        : options[key] === saved?.budgets?.[key];
-      if (saved && options[key] !== undefined && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
+    const defaults = { itemBudget: config.render.entryTokens, toolCallBudget: config.render.toolInputTokens,
+      toolResultBudget: config.render.toolResultTokens };
+    const full = options.full ?? saved?.frozen.full ?? false;
+    const content = (key: keyof typeof defaults): number | null => options[key] !== undefined ? options[key]!
+      : options.full === true ? null : saved ? saved.frozen[key] : full ? null : defaults[key];
+    const frozen: FrozenListing = {
+      itemBudget: content("itemBudget"), toolCallBudget: content("toolCallBudget"), toolResultBudget: content("toolResultBudget"), full,
+      tool: options.tool ?? saved?.frozen.tool, where: options.where ?? saved?.frozen.where,
+      versions: options.versions ?? saved?.frozen.versions, category: options.category ?? saved?.frozen.category,
+      scope: options.scope ?? saved?.frozen.scope, fields: options.fields ?? saved?.frozen.fields,
+    };
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "full", "tool", "where", "versions", "category", "scope", "fields"] as const) {
+      const same = key === "fields" ? JSON.stringify(frozen.fields) === JSON.stringify(saved?.frozen.fields)
+        : frozen[key] === saved?.frozen[key];
+      if (saved && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
     }
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
+    if (saved && cap !== saved.cap) throw new Error("cursor cap is frozen; omit it or use the original value");
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) { footer = saved.footer; reads = saved.reads; }
-    if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1))
-      throw new Error("listing maxTokens must be a positive safe integer");
-    if (saved && options.maxTokens !== undefined && options.maxTokens !== saved.maxTokens)
-      throw new Error("cursor maxTokens is frozen; omit it or use the original budget");
-    const maxTokens = saved?.maxTokens ?? options.maxTokens;
+    const namesPageBudget = options.pageBudget !== undefined || options.maxTokens !== undefined;
+    const requestedMaxTokens = options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens;
+    const maxTokens = namesPageBudget ? requestedMaxTokens : saved ? saved.maxTokens : DEFAULT_READ_TOKENS;
+    if (saved && namesPageBudget && maxTokens !== saved.maxTokens) {
+      const key = options.pageBudget !== undefined ? "pageBudget" : "maxTokens";
+      throw new Error(`cursor ${key} is frozen; omit it or use the original budget`);
+    }
     const cursor = randomUUID();
     const fragmentNote = "Hit continues on next page; concatenate without a newline.";
     const output = (lines: string[], more: boolean, fragment = false) => finish({ content: lines.join("\n"),
@@ -251,11 +271,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("listing maxTokens is too small for pagination hints");
     // Snapshot and validate first: a rejected request must leave the input cursor usable.
     const remainder = more ? saved ? { ...saved, offset: at, pending, fragmented }
-      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented }
-      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented } : undefined;
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented, frozen }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented, frozen } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
-      cursors.set(cursor, { ...remainder, budgets: saved?.budgets ?? { ...options } });
+      cursors.set(cursor, remainder);
       for (const oldest of cursors.keys()) { if (cursors.size <= CURSORS) break; cursors.delete(oldest); }
     }
     return { text: result, completed: more ? [] : reads.filter(read => read.complete !== false) };
@@ -275,7 +295,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
   const factGroups = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id), store.factTurnTimes(facts));
   const knowledgeLine = (value: KnowledgeWithRevision, marks: readonly KnowledgeMark[] = store.listKnowledgeMarks(value.knowledge.id)) =>
-    renderKnowledge(value, marks.filter((m) => m.commitId === value.revision.id));
+    renderKnowledge(value, [...marks]);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
   // under the existing scope and commit-graph rules. Its block layout lives in core/render/material.ts.
   const applicable = (projectId: number, sessionId = 0, headTurnId?: number | null, branch?: string) =>
@@ -674,7 +694,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         throw new Error("category and scope filters require layer knowledge");
       if (input.cursor) return page([], input, "", [], "search").text;
       const options = { ...effectiveOptions(input), fields: [...(input.fields ?? SEARCH_DEFAULT_FIELDS)],
-        itemBudget: input.itemBudget === undefined ? SEARCH_PREVIEW_TOKENS : input.itemBudget };
+        itemBudget: input.itemBudget === undefined ? input.full === true ? null : SEARCH_PREVIEW_TOKENS : input.itemBudget };
       const reader = options.sessionId === undefined ? undefined : session(options.sessionId);
       const sessionIds = options.where === "all" ? undefined : options.where === "session" ? [options.sessionId!]
         : store.projectSessionIds(reader!.projectId);
@@ -691,7 +711,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       for (const revision of graph?.revisions ?? []) for (const parent of graphInput!.parents.get(revision.id) ?? [])
         children.set(parent, [...(children.get(parent) ?? []), revision]);
       const revision = (address: string) => byCommit.get(Number(address.split("@")[1]))!;
-      const fields = new Set(options.fields!);
+      const fields = new Set(options.fields!.filter(field => field !== "reason"
+        || ((scope === "knowledge" || scope === "all") && options.versions !== "current")));
       const authorMatches = (r: KnowledgeRevision) => options.where !== "session"
         || (r.runId !== null && graphInput!.metadata.runs.get(r.runId) === options.sessionId);
       const valueMatches = (r: KnowledgeRevision) => authorMatches(r)
@@ -738,8 +759,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const where = options.where === "project" ? "project sessions" : options.where === "session" ? "this session" : "all sessions";
       const filters = [`searched: ${where}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
       const omitted = READ_FIELDS.filter(field => !fields.has(field));
-      const preview = `preview: ${fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ") || "identity only"}`}; omitted fields: ${omitted.join(", ") || "none"}`;
-      return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens },
+      const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
+      return page({ items: addresses, format, capture }, { ...options,
+        maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
         `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${preview}`, [], "search").text;
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {

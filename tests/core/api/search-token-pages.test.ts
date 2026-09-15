@@ -70,6 +70,23 @@ test("default multi-hit pages and explicit identical continuation budgets stay b
   expect(tokens(memory.search("absent", "all"))).toBeLessThanOrEqual(2000);
 });
 
+test("41 repair: cursors freeze effective page aliases and line cap without consuming rejected continuations", () => {
+  const { sessionId } = corpus(["first " + "x😀".repeat(3000), "second", "third"]);
+  const first = memory.search("needle", "raw", { sessionId, cap: 1, maxTokens: 320 });
+  const cursor = cursorOf(first)!;
+  expect(() => memory.search("", "raw", { sessionId, cursor, cap: 100 })).toThrow("cursor cap is frozen");
+  expect(() => memory.search("", "raw", { sessionId, cursor, pageBudget: 321 })).toThrow("cursor pageBudget is frozen");
+  const continued = memory.search("", "raw", { sessionId, cursor, cap: 1, pageBudget: 320 });
+  expect(continued).not.toContain("unknown or expired cursor");
+  expect(tokens(continued)).toBeLessThanOrEqual(320);
+
+  const defaultPage = memory.search("needle", "raw", { sessionId, cap: 1 });
+  expect(memory.search("", "raw", { sessionId, cursor: cursorOf(defaultPage)!, cap: 1, pageBudget: 2000 })).not.toContain("unknown or expired cursor");
+
+  const aliasPage = memory.search("needle", "raw", { sessionId, cap: 1, pageBudget: 320 });
+  expect(memory.search("", "raw", { sessionId, cursor: cursorOf(aliasPage)!, cap: 1, maxTokens: 320 })).not.toContain("unknown or expired cursor");
+});
+
 test("whole hits defer without fragments, and formatting never walks the remaining corpus", () => {
   const { turns } = corpus(Array.from({ length: 40 }, (_, i) => `${i} ${"中文".repeat(120)}`));
   const reads = vi.spyOn(memory.store, "getSourceEntry");

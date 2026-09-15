@@ -612,7 +612,7 @@ function renderPreview(prefix: string, body: string, suffix: string, cap: number
     return prefix + [head, truncated(omitted), tail].filter(Boolean).join("\n") + suffix;
   };
   return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
-    : `${prefix.trimEnd()} ${truncated(body.length)}`;
+    : `${prefix.trimEnd()} ${truncated(body.length)}${suffix}`;
 }
 export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
   const prefix = `[F${fact.id}] [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
@@ -623,9 +623,13 @@ export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap =
 // prose. One representation for every consumer, the knowledge budget and the search index.
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
+const revisionMarks = (revision: KnowledgeRevision, marks: readonly KnowledgeMark[]): KnowledgeMark[] =>
+  marks.filter(mark => mark.commitId === revision.id);
+
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  const shownMarks = revisionMarks(r, marks);
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${shownMarks.length ? ` · ${shownMarks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
@@ -645,12 +649,14 @@ export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: Rea
 export function renderKnowledgePreview(value: KnowledgeWithRevision, marks: KnowledgeMark[], status: string,
   fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = []): string {
   const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
+  const shownMarks = revisionMarks(r, marks);
   const suffix = [
     ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
     ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`status: ${status}`] : []),
+    ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
     ...(fields.has("links") ? [`parents: ${parents.map(parent => `K${parent.knowledgeId}@${parent.id}`).join(", ") || "none"}`, `children: ${children.map(child => `K${child.knowledgeId}@${child.id}`).join(", ") || "none"}`] : []),
-    ...(fields.has("marks") && marks.length ? [`marks: ${marks.map(mark => mark.kind).join(", ")}`] : []),
+    ...(fields.has("marks") && shownMarks.length ? [`marks: ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
   ];
   return renderPreview(`[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `, r.text,
     suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
@@ -669,7 +675,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: Knowle
     return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
   }
   const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `;
-  const shownMarks = marks.filter(mark => mark.commitId === r.id);
+  const shownMarks = revisionMarks(r, marks);
   const suffix = [
     ...(fields.has("marks") && shownMarks.length ? [` · ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
     ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
