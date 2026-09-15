@@ -192,8 +192,9 @@ test("32b review: archive supplies its exact predecessor, not latest", () => {
 test("32b review: cross-K chained successors are read without expanding frozen family", () => {
   const a = fixture(), c = a.create("absorbed"), b = a.create("middle"), d = a.create("final");
   const range = a.store.retainDreamingRange(a.target, [c.commit]);
-  const merge = a.write({ op: "merge", intoKnowledgeId: b.knowledgeId, intoBaseCommit: b.commit, absorb: [{ knowledgeId: c.knowledgeId, baseCommit: c.commit }], ...a.content, text: "merged middle" });
-  const final = a.write({ op: "merge", intoKnowledgeId: d.knowledgeId, intoBaseCommit: d.commit, absorb: [{ knowledgeId: b.knowledgeId, baseCommit: merge.commit }], ...a.content, text: "unique final body" });
+  // Ticket 44: these lineage fixtures keep the oldest K throughout; the chain shape is otherwise unchanged.
+  const merge = a.write({ op: "merge", intoKnowledgeId: c.knowledgeId, intoBaseCommit: c.commit, absorb: [{ knowledgeId: b.knowledgeId, baseCommit: b.commit }], ...a.content, text: "merged middle" });
+  const final = a.write({ op: "merge", intoKnowledgeId: c.knowledgeId, intoBaseCommit: merge.commit, absorb: [{ knowledgeId: d.knowledgeId, baseCommit: d.commit }], ...a.content, text: "unique final body" });
   const input = a.store.dreamingInput(a.target, [c.commit]);
   expect(input.versions.map(v => v.revision.id)).toEqual([final.commit]);
   expect(input.text.match(/unique final body/g)).toHaveLength(1);
@@ -232,12 +233,13 @@ test.each([false, true])("32b frozen path: head advance ignores later-only suppo
 });
 
 test("32b review: sibling-only merge cannot replace input on the original path", () => {
-  const a = fixture(), c = a.create("original branch body"), b = a.create("survivor");
+  const a = fixture(), c = a.create("original branch body"), b = a.create("duplicate");
   const turn = a.store.appendTurn({ sessionId: a.s.id, parentTurnId: a.t.id, kind: "turn", userPrompt: "sibling", startedAt: "now" });
   const noted = a.store.commitNotingRun({ run: { kind: "manual", sessionId: a.s.id, createdAt: "now" }, facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "sibling evidence", source: [`T${turn.id}#user`], createdAt: "now" }] });
   if (!noted.ok) throw Error(noted.problems.join());
   const sibling = { ...a.target, branch: "sibling", headTurnId: turn.id };
-  const merged = a.store.commitConsolidationRun({ path: sibling, run: { kind: "manual", sessionId: a.s.id, branch: "sibling", createdAt: "now" }, operations: [{ op: "merge", intoKnowledgeId: b.knowledgeId, intoBaseCommit: b.commit, absorb: [{ knowledgeId: c.knowledgeId, baseCommit: c.commit }], ...a.content, supports: [noted.facts[0]!.id], text: "sibling merged body" }] });
+  // Ticket 44: Kc is older and therefore survives this unrelated path-selection fixture.
+  const merged = a.store.commitConsolidationRun({ path: sibling, run: { kind: "manual", sessionId: a.s.id, branch: "sibling", createdAt: "now" }, operations: [{ op: "merge", intoKnowledgeId: c.knowledgeId, intoBaseCommit: c.commit, absorb: [{ knowledgeId: b.knowledgeId, baseCommit: b.commit }], ...a.content, supports: [noted.facts[0]!.id], text: "sibling merged body" }] });
   if (!merged.ok) throw Error(merged.problems.join());
   expect(a.store.dreamingInput(a.target, [c.commit]).versions.map(v => v.revision.id)).toEqual([c.commit]);
   expect(a.store.dreamingInput(sibling, [c.commit]).versions.map(v => v.revision.id)).toEqual([merged.committed[0]!.commit]);

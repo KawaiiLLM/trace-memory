@@ -131,8 +131,9 @@ test("own multi-step maintenance certifies only terminal update, split and archi
     intermediates.push(secondReference.commit);
     trace.execute({ address: `K${f.item.knowledgeId}@${formal.commit}`, itemBudget: null });
     trace.execute({ address: `K${reference.knowledgeId}@${secondReference.commit}`, itemBudget: null });
-    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${reference.knowledgeId}@${secondReference.commit}`,
-      absorb: [`K${f.item.knowledgeId}@${formal.commit}`], text: "merged formal and reference meaning", category: "constraint", scope: "project",
+    // Ticket 44: the formal item is the older identity and remains the merge survivor.
+    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${f.item.knowledgeId}@${formal.commit}`,
+      absorb: [`K${reference.knowledgeId}@${secondReference.commit}`], text: "merged formal and reference meaning", category: "constraint", scope: "project",
       supports: [], topics: [], reason: "Preserve both admitted parents" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number };
     intermediates.push(merged.commit);
     trace.execute({ address: `K${merged.knowledgeId}@${merged.commit}`, itemBudget: null });
@@ -327,10 +328,11 @@ test("32d: full reads outside the family cannot expand writes; split and merge s
       children: [{ text: "first split claim", category: "constraint", topics: [] }, { text: "second split claim", category: "constraint", topics: [] }] }], skipped: [] })).committed;
     expect(split).toHaveLength(2);
     for (const item of split) trace.execute({ address: `K${item.knowledgeId}` });
-    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${split[1].knowledgeId}@${split[1].commit}`, absorb: [`K${split[0].knowledgeId}@${split[0].commit}`], ...content }], skipped: [] })).committed;
+    // Ticket 44: split[0] has the older identity and therefore survives the scripted merge.
+    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${split[0].knowledgeId}@${split[0].commit}`, absorb: [`K${split[1].knowledgeId}@${split[1].commit}`], ...content }], skipped: [] })).committed;
     expect(merged).toHaveLength(1);
-    expect(f.store.listKnowledgeLinks(split[0].knowledgeId)[0]).toMatchObject({ kind: "merged_into", toCommit: merged[0].commit });
-    expect(f.store.listKnowledgeRevisions(split[0].knowledgeId)).toHaveLength(1);
+    expect(f.store.listKnowledgeLinks(split[1].knowledgeId)[0]).toMatchObject({ kind: "merged_into", toCommit: merged[0].commit });
+    expect(f.store.listKnowledgeRevisions(split[1].knowledgeId)).toHaveLength(1);
     expect(f.store.currentCommit(external.knowledgeId, f.target)[0]!.id).toBe(external.commit);
     return success;
   });
@@ -674,12 +676,13 @@ test("32d: own split/update/merge/archive outputs survive failure and reopen und
     const task = raw as DreamingAgentInput;
     expect(next.store.retryDreamingRange(f.target)).toEqual(retained);
     const current = next.store.commitGraph(f.target).current;
-    const survivor = current[0]!, child = current[1]!;
+    // Ticket 44: select by identity age, not graph iteration order, for this unrelated fixture.
+    const [survivor, child] = [...current].sort((a, b) => a.knowledgeId - b.knowledgeId);
     const memory = task.tools.find(t => t.name === "memory")!;
-    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${survivor.knowledgeId}@${survivor.id}`, absorb: [`K${child.knowledgeId}@${child.id}`], text: "combined exact claims", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Preserve both claims" }], skipped: [] })).committed;
+    const merged = JSON.parse(memory.execute({ operations: [{ op: "merge", id: `K${survivor!.knowledgeId}@${survivor!.id}`, absorb: [`K${child!.knowledgeId}@${child!.id}`], text: "combined exact claims", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "Preserve both claims" }], skipped: [] })).committed;
     expect(merged).toHaveLength(1); own.push(...merged);
-    task.tools.find(t => t.name === "trace")!.execute({ address: `K${survivor.knowledgeId}` });
-    const archived = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${survivor.knowledgeId}@${merged[0].commit}`, supports: [], reason: "Deliberate retirement with retained history" }], skipped: [] })).committed;
+    task.tools.find(t => t.name === "trace")!.execute({ address: `K${survivor!.knowledgeId}` });
+    const archived = JSON.parse(memory.execute({ operations: [{ op: "archive", id: `K${survivor!.knowledgeId}@${merged[0].commit}`, supports: [], reason: "Deliberate retirement with retained history" }], skipped: [] })).committed;
     expect(archived).toHaveLength(1); own.push(...archived);
     const receipt = task.tools.find(t => t.name === "check")!.execute({});
     expect(receipt).toContain("- successor-free results: 1");
@@ -697,29 +700,26 @@ test("32d: own split/update/merge/archive outputs survive failure and reopen und
   expect(next.store.retryDreamingRange(f.target)).toBeNull();
 });
 
-test("32d: a fully read external merge outside family cannot hide the selected result into empty success", async () => {
+test("44: a newer external identity cannot absorb the selected older result", async () => {
   const f = fixture(async task => {
     const external = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "create", handle: "$outside", author: "manual", ...f.content }] });
     if (!external.ok) throw Error(external.problems.join());
     const item = external.committed[0]!;
+    const before = f.store.listKnowledgeRevisions();
     const merged = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: item.commit, absorb: [{ knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit }], ...f.content }] });
-    expect(merged.ok).toBe(true);
-    task.tools.find(t => t.name === "trace")!.execute({ address: `K${item.knowledgeId}` });
+    expect(merged.ok).toBe(false);
+    if (!merged.ok) expect(merged.problems.join(" ")).toContain(`use K${f.item.knowledgeId}@${f.item.commit} as the survivor`);
+    expect(f.store.listKnowledgeRevisions()).toEqual(before);
     const receipt = task.tools.find(t => t.name === "check")!.execute({});
-    expect(receipt).toContain("- successor-free results: 0");
-    expect(receipt).toContain("Blockers: none");
-    expect(receipt).not.toContain(`K${item.knowledgeId}@${item.commit}`);
+    expect(receipt).toContain("- successor-free results: 1");
     return success;
   });
   const completed = await f.memory.dream(f.target);
   expect(completed.outcome).toBe("success");
   if (!("runId" in completed)) throw Error("missing run");
   const audited = JSON.parse(f.store.getRun(completed.runId)!.response!).check;
-  expect(audited.resultIds).toEqual([]);
-  expect(audited.family).not.toContain(f.store.listKnowledgeRevisions().at(-1)!.knowledgeId);
-  expect(f.store.listKnowledgeRevisions().every(r => !f.store.isKnowledgeProcessed(r.id))).toBe(true);
-  expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events").all().map(row => Number(row.event_id))).toEqual([f.item.commit]);
-  expect(f.store.pendingKnowledgeEvents(f.target)).toHaveLength(2);
+  expect(audited.resultIds).toEqual([f.item.commit]);
+  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(true);
 });
 
 test("32d: rereading a later external version permits a deliberate own update, not certifying the external base", async () => {

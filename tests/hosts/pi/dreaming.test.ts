@@ -276,8 +276,9 @@ test.each([false, true])("external merge=%s consumes the exact input without com
       const created = other.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$outside", author: "external", ...content }] });
       if (!created.ok) throw Error(created.problems.join());
       const outside = created.committed[0]!;
-      operations = [{ op: "merge", intoKnowledgeId: outside.knowledgeId, intoBaseCommit: outside.commit,
-        absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...content, text: "Merged external rule" }];
+      // Ticket 44: this unrelated consumption fixture keeps the older input identity as survivor.
+      operations = [{ op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: item.commit,
+        absorb: [{ knowledgeId: outside.knowledgeId, baseCommit: outside.commit }], ...content, text: "Merged external rule" }];
     } else operations = [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, ...content, text: "External updated rule" }];
     const written = other.commitConsolidationRun({ run, path, operations });
     if (!written.ok) throw Error(written.problems.join());

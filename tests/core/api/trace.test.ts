@@ -10,7 +10,7 @@ const admit = "Initial admission of this conclusion.", update = "Substantive cor
 const archived = "Retired: the cited evidence withdraws this conclusion.";
 type Operation = Parameters<ReturnType<typeof sourceSeededMemory>["store"]["commitConsolidationRun"]>[0]["operations"][number];
 function consolidation(...operations: Operation[]) {
-  const result = memory.store.commitConsolidationRun({ run: { kind: operations.some(op => op.op === "merge") ? "manual" : "consolidation", sessionId, createdAt: time }, operations });
+  const result = memory.store.commitConsolidationRun({ run: { kind: operations.some(op => op.op === "merge" || op.op === "archive") ? "manual" : "consolidation", sessionId, createdAt: time }, operations });
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.problems.join(", "));
   return result.committed;
@@ -78,17 +78,17 @@ test("Chinese token edits preserve surrounding characters from the simulation fi
 });
 
 test("merged knowledge retain their snapshot and frozen survivor revision; archives show the archive revision", () => {
-  const absorbed = create("absorbed"), survivor = create("survivor");
-  consolidation({ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: survivor, intoBaseCommit: 2, absorb: [{ knowledgeId: absorbed, baseCommit: 1 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time });
+  const survivor = create("survivor"), absorbed = create("absorbed");
+  consolidation({ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: survivor, intoBaseCommit: 1, absorb: [{ knowledgeId: absorbed, baseCommit: 2 }], text: "combined", category: "reference", scope: "project", supports: [1, 2], createdAt: time });
   edit(survivor, 3, "later survivor");
-  expect(memory.trace(`K${absorbed}`)).toContain("merged_into: K2@3 (from K1@1)");
-  expect(memory.trace(`K${absorbed}@1`)).toContain("children: K2@3");
-  expect(memory.trace(`K${absorbed}@1`)).not.toContain("later survivor");
+  expect(memory.trace(`K${absorbed}`)).toContain("merged_into: K1@3 (from K2@2)");
+  expect(memory.trace(`K${absorbed}@2`)).toContain("children: K1@3");
+  expect(memory.trace(`K${absorbed}@2`)).not.toContain("later survivor");
   consolidation({ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: survivor, baseCommit: 4, supports: [4], createdAt: time });
-  expect(memory.trace(`K${survivor}`)).not.toContain("[K2@5]");
-  expect(memory.trace(`K${survivor}`, { versions: "history" })).toContain("[K2@5] [reference/project] \n  change supports: F4"); // 21a: an archive keeps its own evidence
+  expect(memory.trace(`K${survivor}`)).not.toContain("[K1@5]");
+  expect(memory.trace(`K${survivor}`, { versions: "history" })).toContain("[K1@5] [reference/project] \n  change supports: F4"); // 21a: an archive keeps its own evidence
   expect(memory.trace(`K${survivor}@5`, { fields: ["text", "supports", "status", "reason"] })).toContain(`status: archive ${time}`);
-  expect(memory.trace(`K${survivor}`, { versions: "history", fields: ["reason"] })).toContain(`K2@5 reason: ${archived}`);
+  expect(memory.trace(`K${survivor}`, { versions: "history", fields: ["reason"] })).toContain(`K1@5 reason: ${archived}`);
 });
 
 test("negation walk branches, repeats shared descendants, excludes weak and support edges, and ends every branch", () => {
