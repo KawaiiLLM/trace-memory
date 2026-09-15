@@ -125,7 +125,7 @@ function knowledgeCorpus(knowledge: number, revisions: number) {
 
 test("22c: a search page formats its own hits and resolves the commit graph once for the query", () => {
   const small = knowledgeCorpus(3, 3), large = knowledgeCorpus(9, 3);
-  const options = { sessionId: large.sessionId, headTurnId: large.headTurnId };
+  const options = { sessionId: large.sessionId, headTurnId: large.headTurnId, versions: "all" as const };
   const graph = countGraphResolutions(), format = countFormattedHits();
   try {
     graph.reset();
@@ -146,16 +146,16 @@ test("22c: a search page formats its own hits and resolves the commit graph once
 
 test("22c: continuation is complete and stable, and a commit between pages moves no label", () => {
   const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, fields: ["text", "status"] as const };
   const addresses = (text: string) => text.split("\n").filter(l => l.startsWith("[K")).map(l => l.slice(1, l.indexOf("]")));
-  const whole = memory.search(corpus.query, "knowledge", options);
+  const whole = memory.search("", "knowledge", options);
   const expected = addresses(whole);
-  expect(expected).toHaveLength(12);
+  expect(expected).toHaveLength(4);
   // The last knowledge's tip is a current hit: the label a later page must keep.
   const last = corpus.tips.at(-1)!;
   expect(whole.split("\n").find(l => l.startsWith(`[K${last.knowledgeId}@${last.commit}]`))).toContain("current on this path");
 
-  let page = memory.search(corpus.query, "knowledge", { ...options, cap: 1 });
+  let page = memory.search("", "knowledge", { ...options, cap: 1 });
   const seen = [...addresses(page)], lines = [page.split("\n\nReceipts:")[0]!];
   let written = false;
   for (let cursor = /cursor=(\S+)/.exec(page)?.[1]; cursor; cursor = /cursor=(\S+)/.exec(page)?.[1]) {
@@ -181,14 +181,15 @@ test("22c: continuation is complete and stable, and a commit between pages moves
   expect(new Set(seen).size).toBe(seen.length);
   expect(lines.join("\n")).toBe(whole.split("\n\nReceipts:")[0]);
   // A fresh query sees the new commit and moves the label; the paged query does not.
-  const after = memory.search(corpus.query, "knowledge", options);
-  expect(after.split("\n").find(l => l.startsWith(`[K${last.knowledgeId}@${last.commit}]`))).toContain("superseded on this path");
-  expect(addresses(after)).toHaveLength(13);
+  const after = memory.search("", "knowledge", options);
+  expect(after).not.toContain(`[K${last.knowledgeId}@${last.commit}]`);
+  expect(after).toContain("SEARCHNEEDLE later conclusion");
+  expect(addresses(after)).toHaveLength(4);
 });
 
 test("a continuation nobody comes back for is dropped: sixteen are outstanding at once, the oldest expires", () => {
   const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const };
   const cursorOf = (page: string) => /cursor=(\S+)/.exec(page)![1]!;
   // Asking for page one and never asking for page two is ordinary use, so a remainder is a cache
   // entry with a bound, not an obligation held for the process's lifetime.

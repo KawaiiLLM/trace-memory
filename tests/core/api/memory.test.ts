@@ -117,7 +117,11 @@ test("manual memory reuses current revisions and refuses inactive or duplicate m
   expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: read("K1@3") }], skipped: [] })).committed[0].commit).toBe(4);
   write.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: read("K1@4"), supports: ["F1"] }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
-  expect(memory.trace("K1")).toContain("archive");
+  expect(memory.trace("K1")).not.toMatch(/^\[K1@/m); // current admits active bodies only
+  expect(memory.trace("K1")).toContain("archived; inspect trace(K1, versions:history)");
+  expect(memory.trace("K1", { versions: "history" })).toContain("archive");
+  expect(memory.trace("K2")).toContain("merged_into: K1@3");
+  expect(memory.search("", "knowledge", { versions: "history" })).toContain("archived");
 });
 
 test("accounting observes concurrent changes to untouched knowledge in the committing transaction", async () => {
@@ -231,8 +235,8 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   write.execute(batch);
   const receipt = JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: read("K1@1"), reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
   expect(receipt.diagnostics).toEqual([]); // the numeric-evidence diagnostic reads text, never the reason
-  expect(memory.trace("K1")).toContain("reason: Re-checked 42 files; wording unchanged.");
-  expect(memory.trace("K1@1..K1@2")).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1", { versions: "history", fields: ["reason"] })).toContain("reason: Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1@1..K1@2", { fields: ["reason"] })).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
   expect(memory.trace(`R${memory.store.listRuns(1).at(-1)!.id}`)).toContain("K1@2 (update: Re-checked 42 files; wording unchanged.)");
   const automatic = memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" });
   expect(automatic).toContain("Use pnpm"); expect(automatic).not.toContain("Re-checked 42 files");

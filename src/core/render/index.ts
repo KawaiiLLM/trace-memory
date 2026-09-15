@@ -600,32 +600,98 @@ export function renderFact(fact: Fact, relations: FactRelation[], cap = Infinity
       `  source: ${fact.source.join(", ")}`].join("\n"), cap, frame);
 }
 
+/** Search previews keep identity outside the optional field set. Unlike complete semantic records,
+ * a preview never fails merely because its identity and marker exceed the requested text budget.
+ * Stored line breaks are escaped in the same visible form as every listing line before measuring,
+ * and a cut keeps only the head so one semantic hit always remains one physical line. */
+function renderPreview(prefix: string, body: string, suffix: string, cap: number, showText: boolean): string {
+  const inline = (text: string) => listingLine(text);
+  if (!showText) return inline(prefix.trimEnd() + suffix);
+  const whole = inline(prefix + body + suffix);
+  if (tokens(whole) <= cap) return whole;
+  const cut = cutUnits(body, false);
+  const build = (kept: number) => {
+    const head = cut.list.slice(0, kept).join("");
+    const marker = truncated(cut.between(kept, 0));
+    return inline(prefix + (head ? `${head} ${marker}` : marker) + suffix);
+  };
+  return tokens(build(0)) <= cap ? build(fit(build, cut.list.length, cap))
+    : inline(`${prefix.trimEnd()} ${truncated(cut.characters)}${suffix}`);
+}
+export function renderFactPreview(fact: Fact, fields: ReadonlySet<string>, cap = 80): string {
+  const prefix = `[F${fact.id}] [${fact.category}/${fact.actor}] ${fact.category === "event" && fact.status ? `${fact.status}: ` : ""}`;
+  return renderPreview(prefix, fact.text, "", cap, fields.has("text"));
+}
+
 // 21b: the labels ride the metadata line, beside the evidence, so they are never read as conclusion
 // prose. One representation for every consumer, the knowledge budget and the search index.
 // Labels are shown as a JSON array (review 2026-09-08): a joined list cannot tell ["a, b"] from ["a", "b"].
 const topicList = (topics: string[]): string => topics.length ? ` · topics: ${JSON.stringify(topics)}` : "";
+const revisionMarks = (revision: KnowledgeRevision, marks: readonly KnowledgeMark[]): KnowledgeMark[] =>
+  marks.filter(mark => mark.commitId === revision.id);
+
 export function renderKnowledge({ knowledge, revision: r }: KnowledgeWithRevision, marks: KnowledgeMark[] = []): string {
   const supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
-  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${marks.length ? ` · ${marks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
+  const shownMarks = revisionMarks(r, marks);
+  return `[K${knowledge.id}@${r.id}] [${r.category}/${r.scope}] ${r.text}${shownMarks.length ? ` · ${shownMarks.map((m) => m.kind).join(", ")}` : ""}\n  ${supportLabel}: ${r.supports.map((id) => `F${id}`).join(", ") || "none"}${topicList(r.topics)}`;
 }
 
 const factAddresses = (ids: number[]): string => ids.map((id) => `F${id}`).join(", ") || "none";
 // 21a: commit history carries the authored message; the compact automatic knowledge line does not.
 const commitLine = (r: KnowledgeRevision): string =>
   `  K${r.knowledgeId}@${r.id} ${r.op} ${r.createdAt} ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)} reason: ${r.reason}`;
-export const renderCommitHistory = (revisions: KnowledgeRevision[]): string =>
-  revisions.length ? `Commits:\n${revisions.map(commitLine).join("\n")}` : "Commits: none";
+const selectedCommitLine = (r: KnowledgeRevision, fields: ReadonlySet<string>): string => [
+  `  K${r.knowledgeId}@${r.id}`,
+  ...(fields.has("status") ? [r.op, r.createdAt] : []),
+  ...(fields.has("supports") ? [`${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}`] : []),
+  ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
+  ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
+].join(" ");
+export const renderCommitHistory = (revisions: KnowledgeRevision[], fields?: ReadonlySet<string>): string =>
+  revisions.length ? `Commits:\n${revisions.map(r => fields ? selectedCommitLine(r, fields) : commitLine(r)).join("\n")}` : "Commits: none";
+
+export function renderKnowledgePreview(value: KnowledgeWithRevision, marks: KnowledgeMark[], status: string,
+  fields: ReadonlySet<string>, cap = 80, parents: KnowledgeRevision[] = [], children: KnowledgeRevision[] = []): string {
+  const r = value.revision, supportLabel = r.supportSemantics === "change" ? "change supports" : "supports";
+  const shownMarks = revisionMarks(r, marks);
+  const suffix = [
+    ...(fields.has("supports") ? [`${supportLabel}: ${factAddresses(r.supports)}`] : []),
+    ...(fields.has("topics") && r.topics.length ? [`topics: ${JSON.stringify(r.topics)}`] : []),
+    ...(fields.has("status") ? [`status: ${status}`] : []),
+    ...(fields.has("reason") ? [`reason: ${r.reason}`] : []),
+    ...(fields.has("links") ? [`parents: ${parents.map(parent => `K${parent.knowledgeId}@${parent.id}`).join(", ") || "none"}`, `children: ${children.map(child => `K${child.knowledgeId}@${child.id}`).join(", ") || "none"}`] : []),
+    ...(fields.has("marks") && shownMarks.length ? [`marks: ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
+  ];
+  return renderPreview(`[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `, r.text,
+    suffix.length ? ` · ${suffix.join(" · ")}` : "", cap, fields.has("text"));
+}
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
-  effectiveGrounds: number[] = value.revision.supports): string {
+  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
-  const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
-    ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
-    ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
-    `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
-  const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
-  return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
+  if (!fields) {
+    const whole = [renderKnowledge(value, marks.filter(m => m.commitId === value.revision.id)),
+      ...(value.revision.actorRole ? [`  actor: ${value.revision.actorRole}; run R${value.revision.runId}; ${!value.revision.supports.length ? "maintenance judgment; " : ""}reason: ${value.revision.reason}`] : []),
+      ...(value.revision.supportSemantics === "change" ? [`  inherited lineage supports: ${factAddresses(inherited)}`] : []),
+      `  parents: ${addresses(parents)}`, `  children: ${addresses(children)}`, commitLine(value.revision)].join("\n");
+    const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
+    return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), cap);
+  }
+  const r = value.revision, prefix = `[K${value.knowledge.id}@${r.id}] [${r.category}/${r.scope}] `;
+  const shownMarks = revisionMarks(r, marks);
+  const suffix = [
+    ...(fields.has("marks") && shownMarks.length ? [` · ${shownMarks.map(mark => mark.kind).join(", ")}`] : []),
+    ...(fields.has("supports") ? [`\n  ${r.supportSemantics === "change" ? "change supports" : "supports"}: ${factAddresses(r.supports)}${fields.has("topics") ? topicList(r.topics) : ""}`,
+      ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
+    ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
+    ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
+    ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),
+    ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
+    ...(historyLine ? [`\n${selectedCommitLine(r, fields)}`] : []),
+  ].join("");
+  if (!fields.has("text")) return prefix.trimEnd() + suffix;
+  return renderSemantic(prefix, r.text, suffix, cap);
 }
 
 // Lossless lexical tokens: Han characters, other words/numbers, whitespace runs, punctuation.
@@ -657,8 +723,25 @@ function diffText(before: string, after: string): string {
   return spans.map(({ kind, text }) => kind === "same" ? text : kind === "remove" ? `[-${text}-]` : `{+${text}+}`).join("");
 }
 
-export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity): string {
-  const text = diffText(a.text, b.text), prefix = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]\n  text: `;
+export function renderKnowledgeDiff(a: KnowledgeRevision, b: KnowledgeRevision, revisions: KnowledgeRevision[], cap = Infinity,
+  fields?: ReadonlySet<string>): string {
+  const text = diffText(a.text, b.text), identity = `[K${a.knowledgeId}@${a.id}..K${b.knowledgeId}@${b.id}]`;
+  if (fields) {
+    const prefix = fields.has("text") ? `${identity}\n  text: ` : identity;
+    const lines = [
+      ...(fields.has("supports") ? [`  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
+        `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`] : []),
+      ...(fields.has("status") && a.category !== b.category ? [`  category: ${a.category} -> ${b.category}`] : []),
+      ...(fields.has("status") && a.scope !== b.scope ? [`  scope: ${a.scope} -> ${b.scope}`] : []),
+      ...(fields.has("reason") && a.reason !== b.reason ? [`  reason: ${a.reason} -> ${b.reason}`] : []),
+      ...(fields.has("topics") && JSON.stringify(a.topics) !== JSON.stringify(b.topics) ? [`  topics: ${JSON.stringify(a.topics)} -> ${JSON.stringify(b.topics)}`] : []),
+      renderCommitHistory(revisions, fields),
+    ];
+    if (!fields.has("text")) return [prefix, ...lines].join("\n");
+    const whole = [prefix + text, ...lines].join("\n");
+    return renderSemantic(prefix, text, whole.slice(prefix.length + text.length), cap);
+  }
+  const prefix = `${identity}\n  text: `;
   const whole = [prefix + text,
     `  change supports added: ${factAddresses([...new Set(b.supports)].filter((id) => !a.supports.includes(id)))}`,
     `  change supports removed: ${factAddresses([...new Set(a.supports)].filter((id) => !b.supports.includes(id)))}`,

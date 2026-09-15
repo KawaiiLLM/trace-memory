@@ -23,8 +23,9 @@ function session() {
  * require the two pages to join into exactly what the same query printed whole. */
 function paged(scope: "facts" | "knowledge" | "raw", query: string, between: () => void) {
   const body = (text: string) => text.split("\n\nReceipts:")[0]!;
-  const whole = body(memory.search(query, scope, { cap: 100 }));
-  const first = memory.search(query, scope, { cap: 1 });
+  const fields = scope === "knowledge" ? { fields: ["text", "marks"] as const } : {};
+  const whole = body(memory.search(query, scope, { cap: 100, ...fields }));
+  const first = memory.search(query, scope, { cap: 1, ...fields });
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   expect(memory.store.db.isTransaction).toBe(false); // no transaction is held while the caller decides
   between();
@@ -60,7 +61,44 @@ test("22c: a knowledge commit marked between two pages does not carry the mark i
   expect(joined).toBe(whole);
   expect(whole).not.toContain("flagged");
   // The mark is real: a fresh query after the paging shows it.
-  expect(memory.search("needle", "knowledge", { cap: 100 })).toContain("flagged");
+  expect(memory.search("needle", "knowledge", { cap: 100, fields: ["text", "marks"] })).toContain("flagged");
+});
+
+test("41 repair: revision marks stay exact on first and continuation pages and freeze after the query", () => {
+  const { store, sessionId, turn } = session();
+  const path = { sessionId, headTurnId: turn.id, branch: "main" };
+  const run = { kind: "consolidation" as const, sessionId, branch: "main", createdAt: time };
+  const note = store.commitNotingRun({ run: { ...run, kind: "manual" },
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "evidence", source: [`T${turn.id}#user`], createdAt: time }] });
+  if (!note.ok) throw new Error(note.problems.join("; "));
+  const created = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: "h1", author: "fake", text: "needle old",
+    category: "mechanism", scope: "session", supports: [note.facts[0]!.id], reason: "old", topics: [], createdAt: time }] });
+  if (!created.ok) throw new Error(created.problems.join("; "));
+  const oldCommit = created.committed[0]!.commit, knowledgeId = created.committed[0]!.knowledgeId;
+  const updated = store.commitConsolidationRun({ path, run, operations: [{ op: "update", knowledgeId, baseCommit: oldCommit, text: "needle new",
+    category: "mechanism", scope: "session", supports: [note.facts[0]!.id], reason: "new", topics: [], createdAt: time }] });
+  if (!updated.ok) throw new Error(updated.problems.join("; "));
+  const newCommit = updated.committed[0]!.commit;
+  memory.mark(`K${knowledgeId}@${oldCommit}`, "flagged", path);
+
+  const options = { sessionId, headTurnId: turn.id, branch: "main", versions: "all" as const, fields: ["text", "marks"] as const };
+  expect(memory.search("needle old", "knowledge", options)).toContain("flagged");
+  const second = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: "h2", author: "fake", text: "needle second",
+    category: "mechanism", scope: "session", supports: [note.facts[0]!.id], reason: "second", topics: [], createdAt: time }] });
+  if (!second.ok) throw new Error(second.problems.join("; "));
+  const selected = second.committed[0]!;
+  const whole = memory.search("needle", "knowledge", options);
+  const first = memory.search("needle", "knowledge", { ...options, cap: 1 });
+  expect(first).toContain(`[K${knowledgeId}@${newCommit}]`);
+  expect(first).not.toContain("flagged");
+  const cursor = /cursor=(\S+)/.exec(first)![1]!;
+  memory.mark(`K${selected.knowledgeId}@${selected.commit}`, "verified", path);
+  const next = memory.search("", "knowledge", { cursor, sessionId });
+  expect(`${first.split("\n\nReceipts:")[0]}\n${next.split("\n\nReceipts:")[0]}`).toBe(whole.split("\n\nReceipts:")[0]);
+  expect(next).toContain(`[K${selected.knowledgeId}@${selected.commit}]`);
+  expect(next).not.toContain("flagged");
+  expect(next).not.toContain("verified");
+  expect(memory.search("needle second", "knowledge", options)).toContain("verified");
 });
 
 test("22c: a message completed between two pages does not join the established page's assembled trace", () => {

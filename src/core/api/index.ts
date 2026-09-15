@@ -1,5 +1,6 @@
 export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
+import { knowledgeReadSelection } from "./knowledge-read.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
@@ -498,16 +499,17 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return value;
       };
       const marks = store.listKnowledgeMarks(id!);
+      const fields = new Set(display.fields ?? ["text", "supports", "topics", "status", "links", "marks"]);
       const descriptions = new Map<number, () => string>();
-      const capture = (revisions: typeof history) => {
+      const capture = (revisions: typeof history, historyLines = false) => {
         for (const r of revisions) {
           if (descriptions.has(r.id)) continue;
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
             const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
-            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds);
-            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds);
-            if (text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
+            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds, fields, historyLines);
+            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds, fields, historyLines);
+            if (!fields.has("text") || text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
             return text;
           });
         }
@@ -525,7 +527,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           return ids;
         };
         const left = ancestors(a), right = ancestors(b);
-        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap);
+        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap, fields);
       }
       if (from !== undefined) {
         const revision = commit(from);
@@ -534,24 +536,33 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return () => describe(revision);
       }
       if (knowledgeMatch.history) {
-        capture(history);
+        capture(history, true);
         return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       }
-      const path = display.sessionId === undefined ? null : store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
-      const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
-      const tips = store.currentCommit(id!, path);
+      const versions = display.versions ?? "current";
+      const selection = knowledgeReadSelection(store, display);
+      const { path, graph, matches } = selection;
+      const tips = versions === "current" ? selection.representatives(history)
+        : graph.current.filter(r => r.knowledgeId === id && matches(r));
       reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
-      const applicable = history.filter(r => !path || store.commitApplies(r, path, snapshot));
-      const otherTips = path ? store.currentCommit(id!).filter(r => !store.commitApplies(r, path, snapshot)) : [];
+      const applicable = history.filter(r => graph.applicable.has(r.id) && matches(r));
+      const allHistory = history.filter(matches);
+      const otherHistory = allHistory.filter(r => !graph.applicable.has(r.id));
+      const otherTips = path && versions === "all" ? store.commitGraph(null, undefined, undefined, selection.input).current
+        .filter(r => r.knowledgeId === id && !graph.applicable.has(r.id) && matches(r)) : [];
       const links = store.listKnowledgeLinks(id!);
-      capture([...(tips.length ? tips : history), ...otherTips]);
+      const archived = versions === "current" && !tips.length && fields.has("status")
+        ? graph.current.filter(r => r.knowledgeId === id && r.op === "archive" && matches(r)) : [];
+      const described = versions === "current" ? tips : versions === "history" ? [...tips, ...applicable] : [...tips, ...allHistory, ...otherTips];
+      capture([...new Map(described.map(r => [r.id, r])).values()]);
       return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...(tips.length ? [] : history.map(describe)),
-        ...links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
-        path ? "Applicable history on this path:" : "Commit history:", renderCommitHistory(applicable),
-        ...(path ? ["Other branches' tips:", ...otherTips.map(describe)] : [])].join("\n");
+        ...archived.map(r => `  K${id}@${r.id}: ${selection.status(r)}; inspect trace(K${id}, versions:history)`),
+        ...(fields.has("links") ? links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`) : []),
+        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields)]
+          : ["Commit history:", renderCommitHistory(allHistory, fields)]),
+        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "Other branches' commits:", renderCommitHistory(otherHistory, fields)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

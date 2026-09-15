@@ -117,6 +117,51 @@ test("rejected continuations do not consume trace cursors or loosen frozen budge
   expect(drainTrace(memory, first, options).joined).toBe(rendered(turn.id, true, "t1"));
 });
 
+test("41 repair: trace accepts repeated effective defaults and freezes the configured entry profile", () => {
+  const { sessionId, turn } = corpus();
+  const first = memory.trace(`T${turn.id}`, { sessionId, cap: 1 });
+  const cursor = tracePage(first).cursor!;
+  const repeated = { sessionId, cap: 1, pageBudget: 2000, itemBudget: memory.config.render.entryTokens,
+    toolCallBudget: memory.config.render.toolInputTokens, toolResultBudget: memory.config.render.toolResultTokens };
+  expect(memory.trace(`cursor=${cursor}`, repeated)).not.toContain("unknown or expired cursor");
+
+  const changed = memory.trace(`T${turn.id}`, { sessionId, cap: 1 }), changedCursor = tracePage(changed).cursor!;
+  expect(() => memory.trace(`cursor=${changedCursor}`, { sessionId, full: true })).toThrow("cursor itemBudget is frozen");
+  expect(() => memory.trace(`cursor=${changedCursor}`, { ...repeated, itemBudget: repeated.itemBudget + 1 })).toThrow("cursor itemBudget is frozen");
+  expect(memory.trace(`cursor=${changedCursor}`, repeated)).not.toContain("unknown or expired cursor");
+
+  const unbounded = memory.trace(`T${turn.id}#t1`, { sessionId, full: true, pageBudget: null });
+  expect(unbounded).not.toContain("cursor=");
+  expect(unbounded).toBe(rendered(turn.id, true, "t1"));
+});
+
+test.each([
+  { direction: "three null ceilings to full:true", first: { itemBudget: null, toolCallBudget: null, toolResultBudget: null }, second: { full: true } },
+  { direction: "full:true to three null ceilings", first: { full: true }, second: { itemBudget: null, toolCallBudget: null, toolResultBudget: null } },
+])("raw Turn pagination treats $direction as one effective profile", ({ first, second }) => {
+  const { sessionId, turn } = corpus();
+  let page = memory.trace(`T${turn.id}`, { ...first, sessionId, pageBudget: 256 });
+  let joined = "", separator = "", pages = 0;
+  for (;;) {
+    const parsed = tracePage(page);
+    joined += separator + parsed.body;
+    pages++;
+    if (!parsed.cursor) break;
+    separator = parsed.fragment ? "" : "\n";
+    if (pages === 1) {
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, itemBudget: 64 })).toThrow("cursor itemBudget is frozen");
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, pageBudget: 257 })).toThrow("cursor pageBudget is frozen");
+      expect(() => memory.trace(`cursor=${parsed.cursor}`, { sessionId, cap: 99 })).toThrow("cursor cap is frozen");
+      page = memory.trace(`cursor=${parsed.cursor}`, { ...second, sessionId, pageBudget: 256 });
+    } else {
+      // Once equivalence is established, every frozen option can be omitted.
+      page = memory.trace(`cursor=${parsed.cursor}`, { sessionId });
+    }
+  }
+  expect(pages).toBeGreaterThan(2);
+  expect(joined).toBe(rendered(turn.id));
+});
+
 test.each(["facade", "tool"])("%s preserves explicit-cursor address compatibility and priority", entry => {
   const { sessionId, turn } = corpus();
   const address = `T${turn.id}#t1`;
@@ -205,7 +250,7 @@ test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page whe
   expect(tokens("😀".repeat(128) + "a")).toBe(37);
   const expected = `[T${t.id}#E1@text] user: ${text}`;
   expect(memory.trace(`T${t.id}#user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
-  const search = memory.search("needle", "raw", { maxTokens: 1_000_000 });
+  const search = memory.search("needle", "raw", { maxTokens: 8000 });
   expect(search).not.toContain("cursor=");
   expect(memory.search("needle", "raw", { maxTokens: Math.max(128, tokens(search)) })).toBe(search);
 });
@@ -220,7 +265,7 @@ test("named multi-address values freeze under the transaction, but rendering and
     category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
   const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1-F1`;
   const expected = wholeTrace(memory, address);
-  const spies = (["renderTrace", "renderFact", "renderKnowledge", "renderKnowledgeTrace", "renderCommitHistory", "tokens"] as const).map(name => {
+  const spies = (["renderTrace", "renderFact", "renderKnowledgeTrace", "tokens"] as const).map(name => {
     const original = rendering[name];
     return vi.spyOn(rendering, name).mockImplementation(((...args: never[]) => {
       expect(store.db.isTransaction, name).toBe(false);

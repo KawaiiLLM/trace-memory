@@ -474,12 +474,12 @@ test("literal search finds facts, historical knowledge and raw across projects",
   const e = knowledge(s.id, n.facts[0]!.id, "goal", "project", "needle knowledge");
   expect(memory.search("needle", "facts")).toContain("[F1]"); expect(memory.search("needle", "facts")).not.toContain("[K");
   expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`); expect(memory.search("needle", "knowledge")).not.toContain("[F1]");
-  const all = memory.search("needle", "all"); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
+  const all = memory.search("needle", "all", { versions: "all" }); expect(all).toContain("[F1]"); expect(all).toContain(`[K${e}@${e}]`); expect(all).toContain(`[S${s.id}/T${t.id}]`);
   expect(all.split("\n").filter((l) => l.startsWith("["))).toHaveLength(3);
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, kind: "consolidation", createdAt: time }, operations: [{
     op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: e, baseCommit: 1, text: "replacement knowledge", category: "goal", scope: "project", supports: [1], createdAt: time }] });
-  expect(memory.search("needle", "knowledge")).toContain(`[K${e}@${e}]`);
-  expect(memory.search("needle", "knowledge")).not.toContain(`[K${e}@2]`);
+  expect(memory.search("needle", "knowledge", { versions: "all" })).toContain(`[K${e}@${e}]`);
+  expect(memory.search("needle", "knowledge", { versions: "all" })).not.toContain(`[K${e}@2]`);
   const other = session(), foreign = turn(other.id, "needle foreign");
   memory.store.appendToolCall({ turnId: t.id, name: "Bash", input: "toolonly", result: "literal%_", status: "success" });
   const raw = memory.search("toolonly", "raw");
@@ -525,7 +525,7 @@ test.each([
     const found: string[] = [];
     let cursor: string | undefined;
     do {
-      const page = search.execute({ query, layer, cap: 1, ...(cursor ? { cursor } : {}) });
+      const page = memory.search(query, layer, { versions: "all", cap: 1, ...(cursor ? { cursor } : {}) });
       const addresses = [...page.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0]);
       expect(addresses).toHaveLength(1);
       expect(page).toContain("literal substring search");
@@ -557,7 +557,7 @@ test("opaque cursors continue search snapshots and trace session, comma, revisio
       if (!next) break;
       part = memory.trace(`cursor=${next}`);
     }
-    expect(chunks.join("\n")).toBe(full);
+    expect(chunks.join("\n")).toBe(full.split("\n\nReceipts:")[0]);
   }
   expect(() => memory.trace(`S${s.id}`, { cap: 0 })).toThrow("positive integer");
 });
@@ -595,7 +595,7 @@ test("listing line caps still apply with an explicit large search token budget",
     facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
       actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
   expect(result.ok).toBe(true);
-  const first = memory.search("needle", "all", { maxTokens: 10000 });
+  const first = memory.search("needle", "all", { maxTokens: 8000 });
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   noting(s.id, t.id, "needle added later");
@@ -625,12 +625,12 @@ test("search marks historical, merged and archived knowledge hits so they do not
   memory.store.commitConsolidationRun({ run, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
   memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
   memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: b, baseCommit: 5, supports: [1], createdAt: time }] });
-  const hits = memory.search("pnpm", "knowledge");
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
-  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("note: archived");
-  expect(hits).toContain("note: archived");
-  const current = memory.search("for installs", "knowledge").split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
-  expect(current).toContain("note: tip"); // unbound reads label tips without claiming current
+  const hits = memory.search("pnpm", "knowledge", { versions: "all", fields: ["text", "status"] });
+  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@4`);
+  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("status: archived");
+  expect(hits).toContain("status: archived");
+  const current = memory.search("for installs", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
+  expect(current).toContain("status: tip"); // unbound reads label tips without claiming current
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {

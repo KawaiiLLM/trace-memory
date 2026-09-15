@@ -70,6 +70,23 @@ test("default multi-hit pages and explicit identical continuation budgets stay b
   expect(tokens(memory.search("absent", "all"))).toBeLessThanOrEqual(2000);
 });
 
+test("41 repair: cursors freeze effective page aliases and line cap without consuming rejected continuations", () => {
+  const { sessionId } = corpus(["first " + "x😀".repeat(3000), "second", "third"]);
+  const first = memory.search("needle", "raw", { sessionId, cap: 1, maxTokens: 320 });
+  const cursor = cursorOf(first)!;
+  expect(() => memory.search("", "raw", { sessionId, cursor, cap: 100 })).toThrow("cursor cap is frozen");
+  expect(() => memory.search("", "raw", { sessionId, cursor, pageBudget: 321 })).toThrow("cursor pageBudget is frozen");
+  const continued = memory.search("", "raw", { sessionId, cursor, cap: 1, pageBudget: 320 });
+  expect(continued).not.toContain("unknown or expired cursor");
+  expect(tokens(continued)).toBeLessThanOrEqual(320);
+
+  const defaultPage = memory.search("needle", "raw", { sessionId, cap: 1 });
+  expect(memory.search("", "raw", { sessionId, cursor: cursorOf(defaultPage)!, cap: 1, pageBudget: 2000 })).not.toContain("unknown or expired cursor");
+
+  const aliasPage = memory.search("needle", "raw", { sessionId, cap: 1, pageBudget: 320 });
+  expect(memory.search("", "raw", { sessionId, cursor: cursorOf(aliasPage)!, cap: 1, maxTokens: 320 })).not.toContain("unknown or expired cursor");
+});
+
 test("whole hits defer without fragments, and formatting never walks the remaining corpus", () => {
   const { turns } = corpus(Array.from({ length: 40 }, (_, i) => `${i} ${"中文".repeat(120)}`));
   const reads = vi.spyOn(memory.store, "getSourceEntry");
@@ -89,7 +106,7 @@ test("invalid budgets and cap do not consume a valid cursor; budgets cannot chan
   for (const maxTokens of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "300", 1, 301]) {
     expect(() => memory.search("", "raw", { sessionId, cursor, maxTokens: maxTokens as number })).toThrow(/maxTokens/);
   }
-  expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: 10000 })).toThrow(/frozen/);
+  expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: 10000 })).toThrow(/at most 8000/);
   expect(() => memory.trace(`K1,cursor=${cursor}`, { sessionId })).toThrow(/alone/);
   expect(() => memory.search("", "raw", { sessionId, cursor, cap: 0 })).toThrow(/cap/);
   expect(() => memory.search("", "bogus" as never, { sessionId, cursor })).toThrow("invalid search scope");
@@ -123,7 +140,7 @@ test.each([64, 80, 96, 128])("tiny budget %s either rejects explicitly or keeps 
 test("model-facing schema and execution expose only search's token budget", () => {
   const { sessionId, turns } = corpus(["中文😀".repeat(2000)]);
   const [trace, search] = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turns[0]!.id });
-  expect(search!.parameters.properties).toHaveProperty("maxTokens", { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 2000 });
+  expect(search!.parameters.properties).toHaveProperty("maxTokens", { type: "integer", minimum: 1, maximum: 8000, default: 2000 });
   expect(trace!.parameters.properties).not.toHaveProperty("maxTokens");
   const first = search!.execute({ query: "needle", layer: "raw", maxTokens: 256 });
   expect(tokens(first)).toBeLessThanOrEqual(256);

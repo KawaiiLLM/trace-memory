@@ -4,7 +4,7 @@ import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
 import { renderEntry, renderEntryIndex, renderFact, renderNegationWalk } from "../../../src/core/render/index.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { noVisibility } from "../../../src/core/api/visible.ts";
-import { wholeTrace } from "../../trace-pages.ts";
+import { tracePage, wholeTrace } from "../../trace-pages.ts";
 
 const time = "2026-09-01T00:00:00Z";
 function setup(normalized = true) {
@@ -171,10 +171,13 @@ test("Sol 5: semantic groups and walks budget complete framing; automatic facts 
     const writer = f.m.tools({ kind: "manual", sessionId: f.sessionId, currentTurnId: later.id, branch: "main" }).find(t => t.name === "note")!;
     expect(writer.execute({ facts: [{ ...fact, source: ["T2#E1"] }] })).not.toContain("rejected:");
     for (const address of ["F1-F3", "F3-F3,F1-F1", "sol"]) {
-      const grouped = f.m.trace(address, { itemBudget: 100, pageBudget: null });
+      const assembled = f.m.trace(address, { itemBudget: 100, pageBudget: null });
+      const grouped = tracePage(assembled).body; // collection receipts spend the page budget, not a fact's item budget
       expect(grouped).toContain("[T2]");
       grouped.split(/(?=\n\[(?:T\d+|F2)\])/).forEach(item => expect(tokens(item)).toBeLessThanOrEqual(100));
-      expect(wholeTrace(f.m, address, { itemBudget: 100, pageBudget: 150 })).toBe(grouped);
+      if (address === "sol") expect(assembled).toContain("One representative per K");
+      // drainTrace measures every whole response including receipts against maxTokens.
+      expect(wholeTrace(f.m, address, { itemBudget: 100, pageBudget: 150, maxTokens: 150 })).toBe(grouped);
     }
   } finally { f.m.close(); }
 });
