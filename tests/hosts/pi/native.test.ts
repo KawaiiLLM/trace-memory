@@ -196,14 +196,31 @@ test("19a 2026-09-08: a source entry outside the frozen range is rejected althou
 
 test("19a 2026-09-08: a provider error after the commit keeps the commit and records the problem", async () => {
   const f = await fixture();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
   try {
-    f.script(body => !worker(body) ? say("好的。") : toolResults(body) ? broken() : call("t1", "note", noteBatch));
+    f.script(async body => {
+      if (!worker(body)) return say("Done.");
+      if (!toolResults(body)) return call("t1", "note", noteBatch);
+      await held;
+      return broken();
+    });
     await f.turn();
-    const run = await settled(f);
+    // A committed response exists before the held provider reply completes: settled is not a terminal-audit wait.
+    const interim = await settled(f);
+    expect(interim.outcome).toBe("success");
+    expect(JSON.parse(interim.response!).problems).toEqual([]);
+    expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(noteBatch.facts.map(fact => fact.text));
+    release();
+    const run = await vi.waitFor(() => {
+      const final = f.h.memory.store.getRun(interim.id)!;
+      expect(JSON.parse(final.response!).problems.join(" ")).toContain("provider failed after commit");
+      return final;
+    }, { timeout: 5000 });
     expect(f.h.memory.store.listSessionFacts(1).map(fact => fact.text)).toEqual(["用 pnpm，不要 npm"]);
     expect(run.outcome).toBe("success");
     expect(JSON.parse(run.response!).problems.join(" ")).toContain("provider failed after commit");
-  } finally { await f.dispose(); }
+  } finally { release(); await f.dispose(); }
 });
 
 test("19a/29e (case 16): Consolidation's two submissions and its review round run natively in a fork", async () => {
