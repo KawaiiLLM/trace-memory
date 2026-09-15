@@ -822,7 +822,14 @@ export function budgetKnowledge(knowledge: KnowledgeWithRevision[], cap: number,
     const omitted = optional.slice(kept).filter((item) => item.category === category);
     return omitted.length ? [`omitted ${omitted.length} ${category} knowledge; expand: ${expandList(omitted.map((item) => `K${item.id}`))}`] : [];
   });
-  const bodyCost = (kept: number) => knowledgeBody(selected(kept)).cost;
+  // Prefix trials need only scalar costs; build grouped text and commit lists after selection.
+  const outerCost = tokens(xmlBlock("knowledge", ""));
+  const categoryCosts = new Map(KNOWLEDGE_CATEGORIES.map(category => [category, charge([xmlBlock(category, "")])]));
+  const bodyCost = (kept: number) => {
+    const items = selected(kept);
+    return items.length ? outerCost + items.reduce((sum, item) => sum + item.size, 0)
+      + [...new Set(items.map(item => item.category))].reduce((sum, category) => sum + categoryCosts.get(category)!, 0) : 0;
+  };
   // Optional omission framing cannot spend required overflow. If it cannot fit, omit it too.
   const emittedReceipts = (kept: number) => required && bodyCost(kept) + charge(receipts(kept))
     + (receipts(kept).length ? charge(["Receipts:"]) : 0) > cap ? [] : receipts(kept);
