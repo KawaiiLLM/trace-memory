@@ -42,6 +42,7 @@ import { createHash } from "node:crypto";
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
 import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, type FactTurns } from "./index.ts";
+import { budgetRelevantKnowledge } from "./knowledge-selection.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -147,7 +148,9 @@ export interface MaterialBudget {
   knowledge?: KnowledgeWithRevision[];
   /** How one knowledge item renders; the read facade adds its marks. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
-  /** The owning configuration key, used only in capacity diagnostics and omission receipts. */
+  /** A worker query opts into the shared relevance-bounded selection used by Consolidation and Dreaming. */
+  knowledgeQuery?: string;
+  /** The owning capacity, used only in capacity diagnostics and omission receipts. */
   knowledgeBudget?: string;
   /** 29b: the status lines of inherited commits that are no longer current. They are reserved out of
    * `caps.knowledge` before the block fills what is left, because a stale-authority warning is worth
@@ -199,8 +202,15 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   }
   const noteReceipts = (input.knowledgeNotes ?? []).length > notes.length
     ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
-  const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine, input.knowledgeBudget)
-    : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
+  const knowledgeCap = Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts));
+  const stable = input.knowledge ? budgetKnowledge(input.knowledge, Infinity, input.knowledgeLine, input.knowledgeBudget) : undefined;
+  // As in Dreaming, relevance changes retention only when the complete stable block is over capacity.
+  // A fitting pool keeps its existing category/time/id presentation and has no omission receipt.
+  const active = !stable ? { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] }
+    : stable.cost <= knowledgeCap ? stable
+    : input.knowledgeQuery !== undefined
+      ? budgetRelevantKnowledge(input.knowledge!, knowledgeCap, input.knowledgeQuery, input.knowledgeLine, input.knowledgeBudget)
+      : budgetKnowledge(input.knowledge!, knowledgeCap, input.knowledgeLine, input.knowledgeBudget);
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
   const ceiling = input.caps.current; // absent: this consumer's current material has no inner cap (25c)

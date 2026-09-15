@@ -5,7 +5,7 @@ import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
-import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
+import { renderKnowledge, renderFact, renderFactGroups, tokens, type FactTurns } from "../render/index.ts";
 import { consolidationToolDefinitions, reviewFeedback } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { knowledgeStatusNotes } from "../api/read.ts";
@@ -135,6 +135,9 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
       + ` already cost ${mandatory} of the ${capacity.inputTokens} tokens allowed for input; left pending`);
   const path = store.knowledgePath(session.id, input.branch, input.headTurnId);
   const knowledge = store.listCurrentKnowledge(path);
+  // Ticket 45: the database policy is part of this admission's frozen material snapshot. The façade
+  // wraps this freeze in the claim transaction, so a later Settings edit affects only later tasks.
+  const knowledgeCapacity = store.knowledgeBudgets().injection;
   // 29b "Same builder, different initial state", the twin of the Noting freeze: the host supplies the
   // view only for a task it will really fork; an explicit subagent and a fork re-admitted as one (27c)
   // arrive without it and get the fresh child's empty start.
@@ -205,7 +208,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   let optionalKnowledge = true;
   while (rangeFacts.length) {
     const frozen = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts: [...rangeFacts], facts, factTurns,
-      knowledge, knowledgeNotes, lines, ...remindersFor(rangeFacts),
+      knowledge, knowledgeCapacity, knowledgeNotes, lines, ...remindersFor(rangeFacts),
       model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
     const prepared = consolidationMaterial(frozen, config, initial, optionalKnowledge);
     // Priced by the mode that runs (29b's one line, as in Noting): the subagent's instructions, tools
@@ -234,7 +237,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   if (applicable.length) throw new Error(CONSOLIDATION_CAPACITY
     + `${last!.episodic ? `it is ${last!.episodic} tokens over consolidation.batchTokens (${config.consolidation.batchTokens})` : `it costs ${last!.priced} tokens`}`
     + `${capacity ? ` against the ${capacity.inputTokens} tokens allowed for input` : ""}; left pending`);
-  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, knowledgeNotes, lines, factTurns, reminders: [] as string[], reminderCommits: new Set<number>(),
+  const empty = { path, projectId: session.projectId, sessionId: session.id, branch: input.branch, rangeFacts, facts, knowledge, knowledgeCapacity, knowledgeNotes, lines, factTurns, reminders: [] as string[], reminderCommits: new Set<number>(),
     model: input.model ?? "session", mode, threshold: config.consolidation.nearThreshold };
   return { ...empty, prepared: undefined };
 }
@@ -245,13 +248,12 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
  * is the target minus the fact bodies the view holds by id, plus the current knowledge it does not
  * hold at that exact commit (a visible predecessor covers nothing), and only then the budgets.
  *
- * The two allowances are unchanged (ticket 20, as 25a corrected it): the knowledge within
- * `consolidation.knowledgeTokens` — which 29b's status lines are charged inside — and the pending facts
- * within `consolidation.batchTokens`, which also carries their review cues, the titles and the range,
- * because required framing belongs to the allowance of the material it frames. There is no automatic
+ * The two allowances are independent (ticket 20, as tickets 25a and 45 corrected it): knowledge and
+ * inherited status use the database-derived injection capacity frozen with this task; pending facts
+ * use `consolidation.batchTokens`, including their review cues, titles and range. There is no automatic
  * Raw block and, since 25a, no already-consolidated history block: both are reached by explicit read. */
-function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns; reminders: string[]; reminderCommits: Set<number> }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
-  const { rangeFacts, knowledge: applicable, knowledgeNotes, lines, factTurns, reminders } = frozen;
+function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnType<Store["listCurrentKnowledge"]>; knowledgeCapacity: number; knowledgeNotes: string[]; lines: Map<number, string>; factTurns: FactTurns; reminders: string[]; reminderCommits: Set<number> }, config: TraceMemoryConfig, initial: InitialContext = { visible: noVisibility(), inheritedTokens: 0 }, optionalKnowledge = true) {
+  const { rangeFacts, knowledge: applicable, knowledgeCapacity, knowledgeNotes, lines, factTurns, reminders } = frozen;
   const range = { from: `F${rangeFacts[0]!.id}`, to: `F${rangeFacts.at(-1)!.id}`, facts: rangeFacts };
   // The addresses name the whole frozen target — that is what this run must integrate — while the
   // bodies are only the facts the child cannot already read in its own context.
@@ -265,8 +267,11 @@ function consolidationMaterial(frozen: { rangeFacts: Fact[]; knowledge: ReturnTy
     ? [`omitted all ${knowledge.length} current knowledge items; the model context left no room for the knowledge block; expand: trace K<n>`] : [];
   const budgeted = budgetMaterial({ ...(optionalKnowledge ? { knowledge } : {}), knowledgeNotes, current: grouped.join("\n"),
     framing: [RANGE_FACTS_TITLE, REMINDER_TITLE, ...reminders], range, label: "range",
-    knowledgeBudget: "consolidation.knowledgeTokens",
-    caps: { knowledge: config.consolidation.knowledgeTokens, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
+    // Recomputed for every capacity-negotiation candidate: if the range shrinks, relevance and the
+    // exact kept commits shrink coherently with it. Candidate eligibility remains Consolidation's.
+    knowledgeQuery: rangeFacts.map(fact => fact.text).join("\n"),
+    knowledgeBudget: "database-derived Consolidator knowledge capacity",
+    caps: { knowledge: knowledgeCapacity, episodic: config.consolidation.batchTokens, current: config.consolidation.batchTokens } });
   const material: ConsolidationMaterial = {
     factAddresses: rangeFacts.map((f) => `F${f.id}`),
     rangeFacts: grouped,

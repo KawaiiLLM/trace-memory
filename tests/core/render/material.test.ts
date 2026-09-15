@@ -156,11 +156,16 @@ test("20a 2026-09-08 scenario 2: budget receipts follow the dynamic material in 
   expect(noting.material.receipts).toEqual([factReceipt]);
   expect(noting.text.endsWith(`Raw:\n\n${raw}\n\nReceipts:\n${factReceipt}`)).toBe(true);
   memory.config.render.episodicBlockTokens = 20_000;
-  // The Consolidator still leads with knowledge, so its receipt is still the knowledge one.
+  // The Consolidator still leads with knowledge, so its receipt is still the knowledge one. Ticket
+  // 45 retired its tiny synthetic cap; use the minimum database-derived capacity and an oversized item.
   const receipt = "omitted 1 constraint knowledge; expand: K1";
-  memory.config.consolidation.knowledgeTokens = tokens(receipt) + 1 + tokens("Receipts:") + 1; // the receipt, its separator and the heading `finish` adds
-  memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
-    .find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
+  const tools = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id });
+  tools.find(tool => tool.name === "trace")!.execute({ address: "K1@1", itemBudget: null });
+  tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: "K1@1", topics: [],
+    reason: "Exercise a database-derived omission boundary.", text: "The project uses pnpm " + "word ".repeat(5_200),
+    category: "constraint", scope: "project", supports: ["F1"] }], skipped: [] });
+  setKnowledgeInjection(memory, 5_000);
+  tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "decision", actor: "user", text: "Keep pnpm", source: [`T${t.id}#user`] }] });
   await memory.consolidate({ sessionId: s.id, branch: "main", mode: "subagent" });
   const consolidation = calls.at(-1)! as ConsolidationAgentInput;
   expect(consolidation.material.receipts).toEqual([receipt]);
@@ -250,14 +255,15 @@ test("25a 2026-09-09: at the default limits the Noter sends history within 10,00
   expect(tokens(calls.at(-1)!.text)).toBeLessThanOrEqual(20_000);
 });
 
-test("25a 2026-09-09: at the default limits the Consolidator sends knowledge within 10,000 and its facts, cues and framing within 10,000", async () => {
+test("25a/45: the Consolidator sends knowledge within the database-derived capacity and facts within 10,000", async () => {
   const { s, t } = overloaded();
+  setKnowledgeInjection(memory, 10_000);
   await memory.consolidate({ sessionId: s.id, branch: "main", headTurnId: t.id, mode: "subagent" });
   const input = calls.at(-1)! as ConsolidationAgentInput;
   const material = input.material;
   const knowledgeReceipts = material.receipts.filter(r => r.includes(" knowledge; expand: "));
   expect(knowledgeReceipts.length).toBeGreaterThan(0); // the knowledge cap really binds
-  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(memory.config.consolidation.knowledgeTokens);
+  expect(tokens(knowledgeBlockOf(material)) + charge(knowledgeReceipts)).toBeLessThanOrEqual(memory.knowledgeBudgets().injection);
   // The pending facts, their review cues and the framing around them share one allowance; there is
   // no episodic budget beside it any more, and no historical-fact block inside it.
   expect(charge([`Range: ${input.range.from}..${input.range.to}`, "Range facts:", ...material.rangeFacts,
@@ -315,6 +321,9 @@ test("21b 2026-09-08: rendered labels are charged to the knowledge cap, and the 
   expect(memory.inject(s.id)).toBe(""); // 34c emits no omission-only foreground block
   setKnowledgeInjection(memory, exactForeground);
   expect(memory.inject(s.id)).toContain("[K1@2]");
+  // Foreground uses exact deterministic rendering, while worker selection uses the existing pool
+  // accounting. Ticket 45 derives both from the same policy but does not replace either accountant.
+  setKnowledgeInjection(memory, budgetKnowledge([value], Infinity).cost);
   // Identical selected revisions and topics render the same leading bytes when only the range and the
   // pending facts change. Pinned on the Consolidator since 25a removed the Noter's knowledge block.
   const note = (text: string) => memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id })
@@ -581,11 +590,11 @@ test("29b 2026-09-10 (case 15): the knowledge block is the commit delta, and sta
   tools[0]!.execute({ address: `K1@${current}` });
   memoryTool().execute({ operations: [{ op: "archive", id: `K1@${current}`, reason: "Withdrawn by the user.", supports: ["F1"] }], skipped: [] });
   expect(freeze([current]).prepared!.material.knowledgeNotes).toEqual([`K1@${current} is archived`]);
-  // Charged inside the knowledge allowance: an allowance that the status line fills leaves the block
-  // nothing, and the omission is receipted rather than emitted over budget.
+  // Ticket 45 keeps 29b's status reservation inside the frozen database-derived allowance.
   const note = `K1@${current} is archived`;
-  const tight = { ...memory.config, consolidation: { ...memory.config.consolidation, knowledgeTokens: charge([KNOWLEDGE_STATUS_TITLE, note]) } };
-  const squeezed = freeze([current], tight);
+  setKnowledgeInjection(memory, 5_000);
+  const squeezed = freeze([current]);
+  expect(squeezed.knowledgeCapacity).toBe(5_000);
   expect(squeezed.prepared!.material.knowledgeNotes).toEqual([note]);
   expect(squeezed.prepared!.material.knowledge.map(g => g.text).join("")).toBe("");
 });
@@ -642,9 +651,9 @@ test("32de: required-only, priority-only and ordinary callers preserve their dis
 
 test("32a: omitted inherited status names and stays inside the owning knowledge budget", () => {
   const budgeted = budgetMaterial({ knowledge: [], knowledgeNotes: ["word ".repeat(200)],
-    knowledgeBudget: "consolidation.knowledgeTokens", current: "", framing: [], caps: { knowledge: 100, episodic: 100 } });
+    knowledgeBudget: "database-derived Consolidator knowledge capacity", current: "", framing: [], caps: { knowledge: 100, episodic: 100 } });
   expect(budgeted.knowledgeNotes).toEqual([]);
-  expect(budgeted.receipts).toEqual(["omitted 1 inherited knowledge status lines; consolidation.knowledgeTokens is full"]);
+  expect(budgeted.receipts).toEqual(["omitted 1 inherited knowledge status lines; database-derived Consolidator knowledge capacity is full"]);
   expect(charge(["Receipts:", ...budgeted.receipts])).toBeLessThanOrEqual(100);
 });
 

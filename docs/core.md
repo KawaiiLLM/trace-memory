@@ -552,8 +552,8 @@ The allowance is a ceiling, never a target — fewer needed facts make a smaller
 - **Consolidation.** Target fact bodies the view does not hold by id, with `factAddresses` still naming
   the whole target. Optional: the current applicable knowledge the view does not hold at that exact
   commit — a visible predecessor covers nothing — plus one status line per inherited commit that is no
-  longer current (superseded, archived or merged), charged inside `consolidation.knowledgeTokens` with
-  the block it corrects. No historical-fact block and no automatic Raw block.
+  longer current (superseded, archived or merged), charged inside the task's frozen database-derived
+  Knowledge injection capacity with the block it corrects. No historical-fact block and no automatic Raw block.
 
 Both builders return `supplied: SuppliedMaterial` beside the text: what the text really carries, after
 budgeting, for the carrier a host persists with it (29a). Later tool rounds add nothing — the child
@@ -609,7 +609,7 @@ charged once, to the block that emits it:
 | Component | Budget | Default |
 | --- | --- | ---: |
 | main knowledge block, category tags, state notices and omission receipts (ordinary-prompt delivery and compact window) | database-derived Knowledge injection capacity | 20,000 |
-| Consolidator knowledge references, category tags, inherited status lines and omission receipts | `consolidation.knowledgeTokens` | 10,000 |
+| Consolidator knowledge references, category tags, inherited status lines and omission receipts | frozen database-derived Knowledge injection capacity | 20,000 |
 | Noter's selected Raw / Consolidator's pending fact lines — views with their own source labels, omission markers and joining separators | `noting.batchTokens` / `consolidation.batchTokens` | 10,000 |
 | Noter: block titles, the range line, block receipts and the historical facts beside them | `render.episodicBlockTokens` | 20,000 |
 | compact's facts window — the pending facts, then the consolidated refill, with the `<episodic>` tag, the facts title and their receipts | `compaction.factsTokens` | 10,000 |
@@ -639,8 +639,8 @@ Single-field edits are separate ordinary database transactions. A reduction vali
 processed owner pools and applicable session paths in that same transaction; any overage or write/commit
 failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
 or Pi settings. Every new selection, placement, completion, certification, compact allocation and
-ordinary injection reads current database policy. Dreamer alone freezes its derived processed-input
-ceiling at admission so a running provider request cannot change shape; its checks show that frozen
+ordinary injection reads current database policy. Dreamer and Consolidator freeze their derived input
+ceiling at admission so a running provider request cannot change shape; Dreamer's checks show that frozen
 ceiling beside current capacities, and a later retry uses current policy. Safe-integer overflow is an
 explicit error. The retired `render.knowledgeBlockTokens` file/environment key is always a named
 configuration error.
@@ -672,10 +672,11 @@ then says how many more it covers, so a long omitted list cannot defeat the cap 
 against. Nothing is deleted; omitted knowledge and facts remain stored, readable and traceable, and
 no omission advances knowledge lifecycle or processing progress.
 
-The knowledge cap is hard (user confirmation 2026-09-08): category priority and the deterministic
-within-category order are unchanged, but constraints, open items and disputes no longer bypass the
-budget. Retained items are whole — a claim is never rewritten to make it fit — and each omitted
-category is named in its own receipt.
+The knowledge cap is hard (user confirmation 2026-09-08): constraints, open items and disputes do
+not bypass it. Retained items are whole — a claim is never rewritten to make it fit — and each omitted
+category is named in its own receipt. Foreground delivery remains deterministic. For over-cap worker
+input only, Dreamer and Consolidator select by lexical relevance, with category/time/id as stable ties;
+category grouping remains presentation rather than a globally relevance-sorted block.
 
 ## Knowledge trace and negation walks (ticket 03a)
 
@@ -777,10 +778,13 @@ in allocation-id order; the rest stays pending for the next batch. An oldest fac
 alone is a capacity problem and stays pending: it is never clipped, skipped for a smaller later fact
 or marked consolidated unpresented. The range freezes those facts, the visible active knowledge
 revisions (including budget omissions), relation lines and reminders before the
-candidate call. Since 25a the automatic material is exactly two blocks: the active knowledge within
-`consolidation.knowledgeTokens` (default 10,000), and the pending facts within `consolidation.batchTokens`, which also
-carries their review cues, the titles and the range line — required framing is charged to the
-allowance of the material it frames, never to a second budget. **There is no already-consolidated
+candidate call. Since tickets 25a and 45 the automatic material is exactly two blocks: active knowledge
+within the database-derived injection capacity frozen in the same admission transaction (20,000 by default),
+and pending facts within `consolidation.batchTokens`, which also carry their review cues, titles and range line.
+Required framing is charged to the allowance of the material it frames, never to a second budget. A fitting
+knowledge pool retains the stable category/time/id presentation with no omission receipt. An over-cap pool
+uses the Dreamer's shared lexical selection seam, queried by this final range's fact text; whole retained
+versions render in category groups and bounded receipts name the omitted IDs. **There is no already-consolidated
 history block and no automatic Raw block**; both are reached by explicit `trace`. All range facts are
 retained: a batch whose facts and mandatory cues cannot fit that allowance is reduced oldest-first and
 re-frozen, and one that cannot fit its smallest admissible unit stays pending with the capacity
@@ -911,8 +915,8 @@ fit is accepted; zero or negative remainder and a single unfit item emit nothing
 alone never create a message. Archive/supersede/merge/split notices have
 stable carrier identities separate from exact body visibility, so persisting a notice never grants a
 replacement body. Fact, Raw, command-generation state and processed/unprocessed status are absent from
-foreground publication. Consolidator references keep their separate
-`consolidation.knowledgeTokens` allowance (default 10,000). The reproducible synthetic method and
+foreground publication. Consolidator references use the same database-derived capacity but their
+worker-only relevance selection does not alter this deterministic foreground order. The reproducible synthetic method and
 250/1,000-candidate measurements are recorded in [perf-34c.md](perf-34c.md).
 
 Successful noting commits record `factIds` in the

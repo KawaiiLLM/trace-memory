@@ -74,8 +74,6 @@ export interface TraceMemoryConfig {
     triggerTokens: number;
     /** Ticket 20: the most rendered fact tokens one batch may select. */
     batchTokens: number;
-    /** Knowledge references and inherited status lines, independent of the main-agent allowance. */
-    knowledgeTokens: number;
     nearThreshold: number;
     maxToolRounds: number;
   };
@@ -115,7 +113,6 @@ export const DEFAULT_CONFIG: TraceMemoryConfig = {
     forkModeDefault: false,
     triggerTokens: 5_000,
     batchTokens: 10_000,
-    knowledgeTokens: 10_000,
     nearThreshold: 0.28,
     maxToolRounds: 0,
   },
@@ -157,6 +154,7 @@ export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value
   // silently. No file is rewritten and no request is normalized.
   "consolidation.subagentModeDefault": "use consolidation.forkModeDefault (the inverse boolean: true means fork)",
+  "consolidation.knowledgeTokens": "remove it and use Settings to edit the bound database's Global, Project and Session Knowledge budgets",
   // Ticket 23: the stdout/stderr branch they budgeted reads a result shape Pi never produces, so they
   // were never effective on any Pi run; the uniform entry rule replaces them. Ticket 30 renamed the
   // budget they were pointed at, so the guidance names the two independent ones.
