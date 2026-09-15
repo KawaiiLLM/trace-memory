@@ -1798,6 +1798,8 @@ export class Store {
           const parents = input.operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(a => a.knowledgeId)] : [op.knowledgeId]);
           if (parents.some(id => !range.knowledgeIds.includes(id))) throw new Error("knowledge outside the frozen Dreamer family is read-only");
           if (input.operations.some(op => op.op === "create")) throw new Error("Dreamer cannot create knowledge without an explicit split parent");
+        } else if (input.run.kind === "consolidation" && input.operations.some(op => op.op === "archive")) {
+          throw new Error("archive requires trusted Dreamer authority; update a continuing item or leave retirement to Dreamer");
         } else if (input.operations.some(op => op.op === "split" || (op.op === "merge" && input.run.kind === "consolidation"))) {
           throw new Error("structural operation requires trusted Dreamer authority");
         }
@@ -1833,6 +1835,8 @@ export class Store {
     if (path && path.sessionId !== sessionId) return { ok: false, reason: "writer path must belong to the run session" };
     if (op.op === "merge" && (op.absorb.length !== 1 || op.absorb[0]!.baseCommit === op.intoBaseCommit))
       return { ok: false, reason: "merge requires exactly two distinct parents" };
+    if (op.op === "merge" && op.intoKnowledgeId > op.absorb[0]!.knowledgeId)
+      return { ok: false, reason: `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0]!.knowledgeId}; swap them: use K${op.absorb[0]!.knowledgeId}@${op.absorb[0]!.baseCommit} as the survivor and absorb K${op.intoKnowledgeId}@${op.intoBaseCommit}` };
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];

@@ -12,6 +12,7 @@ import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
+import { consolidationToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
@@ -2289,7 +2290,7 @@ test("29e (parent 27 amendment 6, case 19): a Consolidation fork's exact fact ta
   const instructions = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
   const priced = (exactFactIds: number[]) => {
     const frozen = freezeConsolidation(memory.store, { ...target, boundary: { exactFactIds } }, memory.config);
-    return tokens(instructions) + tokens(JSON.stringify(toolDefinitions)) + tokens(frozen.prepared!.text);
+    return tokens(instructions) + tokens(JSON.stringify(consolidationToolDefinitions())) + tokens(frozen.prepared!.text);
   };
   const capacity = { inputTokens: priced([f1!]), prefixTokens: 0 };
   expect(priced([f1!, f2!])).toBeGreaterThan(capacity.inputTokens);
@@ -2356,12 +2357,13 @@ test("29e (27d repair 4, case 20): a Consolidation task cancelled between refusa
 test("29/31 stale status follows the selected path, not a later sibling merge", () => {
   const { root, c, d, content } = commitPaths();
   expect(c.write([{ op: "archive", id: "K1@1", reason: "Withdraw this path's rule.", supports: [c.fact] }]).committed[0].commit).toBe(2);
-  expect(d.write([{ op: "create", topics: [], reason: "Separate survivor.", ...content(d.fact, "Survivor") }]).committed[0].commit).toBe(3);
-  expect(d.write([{ op: "merge", topics: [], id: d.read("K2@3"), absorb: ["K1@1"], reason: "Merge on D only.", ...content(d.fact, "Merged rule") }]).committed[0].commit).toBe(4);
-  const status = (path: typeof root) => knowledgeStatusNotes(memory.store, memory.store.listCurrentKnowledge(path), [1], path);
-  expect(status(c)).toEqual(["K1@1 is archived"]);
-  expect(status(d)).toEqual(["K1@1 is merged into K2@4"]);
-  expect(status(root)).toEqual([]); // the predecessor is still current at the common ancestor
+  expect(d.write([{ op: "create", topics: [], reason: "Separate duplicate.", ...content(d.fact, "Duplicate") }]).committed[0].commit).toBe(3);
+  // Ticket 44: the older K1 address survives; K2 is the absorbed duplicate.
+  expect(d.write([{ op: "merge", topics: [], id: d.read("K1@1"), absorb: [d.read("K2@3")], reason: "Merge on D only.", ...content(d.fact, "Merged rule") }]).committed[0].commit).toBe(4);
+  const status = (path: typeof root, commits: number[]) => knowledgeStatusNotes(memory.store, memory.store.listCurrentKnowledge(path), commits, path);
+  expect(status(c, [1])).toEqual(["K1@1 is archived"]);
+  expect(status(d, [3])).toEqual(["K2@3 is merged into K1@4"]);
+  expect(status(root, [1])).toEqual([]); // the predecessor is still current at the common ancestor
 });
 
 test("29/31 archived divergent tip is not superseded by the surviving same-K sibling", () => {
@@ -2430,20 +2432,18 @@ test("40 C4: the Consolidator traces addresses first and searches one literal wo
   expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
 });
 
-/** Ticket 40 C1 (2026-09-14): a persistent object's current state is one `reference` item updated
- * on each new state; finished work is archived, never rewritten as an event chain. "completed
- * results that must not be redone" admitted the event chains and is gone. A negated-support
- * reminder or a CLOSER entry is a check target, never a conclusion: the first N5 replay wrote
- * per-item status into seven `open` items on the strength of one summary fact. */
-test("40 C1: one state item per persistent object is updated, finished work is archived; a reminder is a check target", () => {
+/** Ticket 40 C1 as reversed by ticket 44: a persistent object's current state remains one
+ * `reference` item, and finished work now closes by updating the same identity rather than archive. */
+test("44 C6 reverses 40 C1: state and finished-work arcs update one identity", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
-  expect(prompt).toContain("is one `reference` item per object that holds the state and nothing of the event that produced it; a new-state fact updates that item with itself as the only support");
+  expect(prompt).toContain("as the v1.2 persistent-object state exception, a new-state fact updates that item with itself as the only support");
   expect(prompt).toContain("never a fresh create and never an archive while the object exists");
   expect(prompt).toContain("A negated-support reminder or a CLOSER entry supplies a check target, never a conclusion");
-  expect(prompt).toContain("A summary report that does not prove per-item closure leaves the item unchanged; turning a wrong `update` into a wrong `archive` is not a fix.");
-  expect(prompt).toContain("A finished work item (fixes awaiting commit, a task awaiting results) is archived on the fact that ends it, never rewritten as a chain of completed events.");
+  expect(prompt).toContain("A summary report that does not prove per-item closure leaves the item unchanged; retirement is not a substitute for a justified update.");
+  expect(prompt).toContain("A finished work item (fixes awaiting commit, a task awaiting results) is updated on the fact that ends it to state concisely that it ended and on what, holding no chain of completed events.");
   expect(prompt).toContain("A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite state.");
   expect(prompt).not.toContain("completed results that must not be redone");
+  expect(prompt).not.toContain("is archived on the fact that ends it");
 });
 
 /** Ticket 40 C2 (2026-09-14): no event narrative in knowledge text; the conditions and the
@@ -2456,15 +2456,32 @@ test("40 C2: knowledge text carries no completion narrative but keeps the qualif
   expect(prompt).toContain("so that \"installed\" is not read as \"running\"");
 });
 
-/** Ticket 40 C5 (2026-09-14): a withdrawn ban becomes a `goal`; dispatch, pause and resume update
- * the work item's `open`. Both replays skipped the 32a/32b dispatch as a one-off event and left no
- * work state at all. */
-test("40 C5: approval to start work archives the ban and creates a goal; work in flight updates its open", () => {
+/** Ticket 40 C5 as reversed by ticket 44: approval changes the ban's category on the same K;
+ * intent, baseline and each role's staffing are independently maintainable claims. */
+test("44 C6 reverses 40 C5: approval updates same K and atomizes intent, baseline and staffing", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
-  expect(prompt).toContain("A user's approval to start work archives the constraint that forbade it and creates a `goal` (intent, pinned baseline, staffing rules).");
+  expect(prompt).toContain("approval to start work updates the constraint that forbade it into the `goal` on the same id, changing category from `constraint` to `goal`");
+  expect(prompt).toContain("the goal text holds the intent alone and nothing is archived");
+  expect(prompt).toContain("The pinned development baseline is its own `reference` state item, updated as it moves.");
+  expect(prompt).toContain("Each staffing choice is its own item with the role named first");
+  expect(prompt).toContain("create one only if no corresponding identity exists");
   expect(prompt).toContain("A dispatch, pause, resume or completion report stays in the fact layer unless it changes a work item's target, progress or next step, in which case it updates that work item's `open`");
-  expect(prompt).toContain("holding the minimum state and no agent ids, temporary paths or test counts");
-  expect(prompt).toContain("never dropped for lack of a user approval and never raised to a user constraint");
+  expect(prompt).not.toContain("archives the constraint that forbade it and creates a `goal`");
+});
+
+test("44 C6 pins one-K identity continuity, causal supports and role/default separation", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("A knowledge item is the versioned arc of one object.");
+  expect(prompt).toContain("its state, its category, or its wording — is an update of the same id; retiring it belongs to the Dreamer");
+  expect(prompt).toContain("the same object's same independently maintainable conclusion or state, whether the item is in the block or in the omission receipt");
+  expect(prompt).toContain("a second item for it is never created");
+  expect(prompt).toContain("an implementation-subagent default of Sol high, then Astra high, then Sol medium continues as versions of the same K");
+  expect(prompt).toContain("A ticket-specific staffing override is separate and must not replace a broader global or project default; implementation and review roles are separate claims.");
+  expect(prompt).toContain("`supports` names every fact of this range that moved the item to the submitted version");
+  expect(prompt).toContain("Earlier versions' supports are inherited, not copied.");
+  expect(prompt).toContain("The v1.2 persistent-object state exception above still cites the new-state fact alone.");
+  expect(prompt).not.toContain("`supports` contains only the facts explicitly grounding this change");
+  expect(prompt).not.toContain("List only facts that establish this admission/correction/withdrawal");
 });
 
 /** Ticket 40 N1 (2026-09-14, D2 ruled per subject): the atomicity rule is an executable split check

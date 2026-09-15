@@ -12,7 +12,7 @@ afterEach(() => {
 const at = "2026-09-12T00:00:00.000Z";
 const success = { outcome: "success", output: "reviewed", request: { exact: "offline" } } as const;
 
-function pathFixture(agent: (task: DreamingAgentInput) => Promise<typeof success> = async () => success) {
+function pathFixture(agent: (task: DreamingAgentInput) => Promise<typeof success> = async () => success, seedOlderSurvivor = false) {
   const dir = mkdtempSync(join(tmpdir(), "tm-34b-path-")); dirs.push(dir);
   const db = join(dir, "memory.sqlite");
   let runAgent = agent;
@@ -38,10 +38,13 @@ function pathFixture(agent: (task: DreamingAgentInput) => Promise<typeof success
     const tools = memory.tools(path(branch, triggerEntryId));
     return { trace: tools.find(tool => tool.name === "trace")!, memory: tools.find(tool => tool.name === "memory")!, input };
   };
-  const initial = write("root", root.id, {}).memory.execute({ operations: [{ op: "create", text: "base", category: "constraint", scope: "project",
+  const writer = write("root", root.id, {}).memory;
+  const older = seedOlderSurvivor ? JSON.parse(writer.execute({ operations: [{ op: "create", text: "older survivor", category: "constraint", scope: "project",
+    supports: [`F${fact}`], topics: [], reason: "older identity" }], skipped: [] })).committed[0] as { knowledgeId: number; commit: number } : undefined;
+  const initial = writer.execute({ operations: [{ op: "create", text: "base", category: "constraint", scope: "project",
     supports: [`F${fact}`], topics: [], reason: "initial" }], skipped: [] });
   const base = JSON.parse(initial).committed[0] as { knowledgeId: number; commit: number };
-  return { memory, store, db, project, session, turn, root, left, right, fact, base, path, write,
+  return { memory, store, db, project, session, turn, root, left, right, fact, older, base, path, write,
     setAgent: (next: typeof agent) => { runAgent = next; } };
 }
 
@@ -67,7 +70,7 @@ test("34b: shared-evidence sibling origins may consume one base, while equal and
 
 test.each(["update", "archive", "split", "merge-into", "merge-absorb"] as const)(
   "34b: %s consumption blocks a comparable base but permits a divergent sibling", async operation => {
-    const f = pathFixture();
+    const f = pathFixture(undefined, operation === "merge-absorb");
     const origin = f.store.triggerOrigin({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }, f.left.id);
     const run = () => f.store.bindRunOrigin({ kind: "manual" as const, sessionId: f.session.id, branch: "left", createdAt: at }, origin);
     const content = { text: `${operation} result`, category: "constraint" as const, scope: "project" as const,
@@ -90,9 +93,10 @@ test.each(["update", "archive", "split", "merge-into", "merge-absorb"] as const)
       result = { ok: true, problems: [] };
     }
     else {
-      const survivor = f.store.commitConsolidationRun({ run: run(), operations: [{ op: "create", handle: "$survivor", author: "test", ...content }] });
-      if (!survivor.ok) throw new Error(survivor.problems.join("; "));
-      const other = survivor.committed[0]!;
+      const created = operation === "merge-into" ? f.store.commitConsolidationRun({ run: run(), operations: [{ op: "create", handle: "$absorbed", author: "test", ...content }] }) : undefined;
+      if (created && !created.ok) throw new Error(created.problems.join("; "));
+      const other = operation === "merge-into" ? created!.committed[0]! : f.older!;
+      // Ticket 44: merge-absorb seeds an older survivor before the target base; no reverse merge fixture bypasses the store rule.
       result = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id }, run: run(), operations: [{ op: "merge",
         intoKnowledgeId: operation === "merge-into" ? f.base.knowledgeId : other.knowledgeId,
         intoBaseCommit: operation === "merge-into" ? f.base.commit : other.commit,

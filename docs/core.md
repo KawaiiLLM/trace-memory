@@ -59,8 +59,8 @@ range, claim token, execution and one run record. Tool arguments and role string
 it; other database connections cannot reuse it. Dreamer may update, binary-merge, binary-split and
 archive inside that family, but cannot create parentless Knowledge. Split is one operation with one
 fully read exact parent and two complete child bodies; the transaction creates both identities and
-`split_from` links or none. Merge accepts exactly two distinct parents. Consolidator remains limited
-to fact-backed create/update/archive with candidate review and accounting.
+`split_from` links or none. Merge accepts exactly two distinct parents and keeps the older Knowledge identity as the survivor.
+Consolidator remains limited to fact-backed create/update with candidate review and accounting.
 
 Every new revision stores a complete body or archival state while `supports` stores only this
 change's facts. `support_semantics='complete_result'` preserves historical interpretation;
@@ -808,16 +808,17 @@ The host receives one `ConsolidationAgentInput` with frozen `input`, the four bo
 until the provider stops. `reportRequest` captures each exact provider request before
 execution; the final returned request is the last one sent.
 
-Consolidator's `memory({operations, skipped})` accepts only create/update/archive. Every operation
-requires non-empty change `supports` and a non-empty `reason`; reason is a commit message and grants
-no evidence, scope, applicability or accounting. Create/update require the complete resulting text,
-category, scope and topics. Archive accepts only op/id/supports/reason and inherits its parent body.
-Earlier grounding is reached through lineage, never copied into the new support list. Labels remain
+Consolidator's `memory({operations, skipped})` accepts only create/update. Every operation requires
+non-empty change `supports` and a non-empty `reason`; reason is a commit message and grants no
+evidence, scope, applicability or accounting. Create/update require the complete resulting text,
+category, scope and topics. Manual callers retain fact-backed archive, whose archival state inherits
+its parent body; Dreamer retains archive with its trusted maintenance-support exception. Earlier
+grounding is reached through lineage, never copied into the new support list. Labels remain
 trimmed, deduplicated complete replacement sets. Inapplicable fields and commit-level `because` are
 rejected. Skipped items remain `{fact, because}`.
 
 Dreamer's immediate form accepts update/merge/split/archive. It alone may use empty supports. Merge
-has one `id`, exactly one `absorb` and one complete result. Split has `id`, supports, reason and exactly
+has one `id`, exactly one `absorb` and one complete result, and the lower Knowledge id must survive. Split has `id`, supports, reason and exactly
 two `{text, category, topics}` children; both inherit parent scope. Every parent is an exact complete
 read. Parentless create and the historical create-plus-update/archive decomposition workaround are
 rejected atomically.
@@ -835,7 +836,7 @@ Lexical matching uses Unicode character bigram Jaccard after removing punctuatio
 and whitespace. NEAR includes all visible active neighbours at or above
 `consolidation.nearThreshold` (default 0.28); targets exclude themselves. CLOSER lists
 range facts near each open/goal item. Budget omissions do not limit either search.
-Update answers NEAR; archiving a neighbour does not. Initial create review
+Update answers NEAR; retirement remains outside Consolidation. Initial create review
 obligations remain conservatively while creates remain in the final batch, so
 reordering operations cannot silently discard a warning. No acknowledgement field
 or third review round exists.
@@ -856,11 +857,9 @@ that prompt's selected persisted context does not already hold the exact body or
 change evidence. A child receiving material does not mean the parent received it. Supports cite
 project facts available at start.
 
-Accounting runs on actual visible knowledge after applying the batch inside that
-transaction, including concurrent changes to untouched knowledge. It follows effective grounding
-through exact parent lineage. A range fact cited directly or inherited by an archive that applied
-in this batch counts as archival evidence and needs no duplicate skipped entry; a candidate-only or
-rejected archive does not. Uncited user
+Accounting runs on the post-application active knowledge set inside the same
+transaction, including concurrent changes to untouched knowledge. It recursively follows effective
+grounding through exact parent lineage; explicit skipped facts also count as accounted for. Uncited user
 facts and questions missing from skipped yield `uncited_facts`. Other diagnostics are
 `unanswered_near`, `unsupported_numbers`, and `over_200_tokens`. Numbers compare exact
 numeric lexemes against direct and inherited grounding facts' text and quotes; the reason is never read by

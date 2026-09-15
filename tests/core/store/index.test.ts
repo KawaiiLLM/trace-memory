@@ -536,6 +536,71 @@ describe("commit boundaries (ticket 01 review repairs)", () => {
     expect(store.db.prepare("SELECT COUNT(*) AS n FROM knowledge_links WHERE from_knowledge = ?").get(bId)).toEqual({ n: 0 });
   });
 
+  test("44: a merge keeps the older identity and reverse or mixed batches roll back with swap guidance", () => {
+    const { s, factId } = seed();
+    const run = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
+    const create = (text: string) => {
+      const result = store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$e1", author: "test",
+        text, category: "term", scope: "project", supports: [factId], reason: "admit identity", topics: [], createdAt: consolidationAt }] });
+      if (!result.ok) throw new Error(result.problems.join("; "));
+      return result.committed[0]!;
+    };
+    const older = create("older"), newer = create("newer");
+    const olderUpdate = store.commitConsolidationRun({ run, operations: [{ op: "update", knowledgeId: older.knowledgeId,
+      baseCommit: older.commit, text: "older revised", category: "reference", scope: "project", supports: [factId],
+      reason: "change category", topics: ["identity"], createdAt: consolidationAt }] });
+    if (!olderUpdate.ok) throw new Error(olderUpdate.problems.join("; "));
+    const merged = store.commitConsolidationRun({ run, operations: [{ op: "merge", intoKnowledgeId: older.knowledgeId,
+      intoBaseCommit: olderUpdate.committed[0]!.commit, absorb: [{ knowledgeId: newer.knowledgeId, baseCommit: newer.commit }],
+      text: "combined", category: "reference", scope: "project", supports: [factId], reason: "merge duplicate",
+      topics: ["identity"], createdAt: consolidationAt }] });
+    expect(merged.ok).toBe(true);
+    if (!merged.ok) return;
+    const revision = store.knowledgeRevision(merged.committed[0]!.commit)!;
+    expect(revision).toMatchObject({ knowledgeId: older.knowledgeId, parentId: olderUpdate.committed[0]!.commit, category: "reference" });
+    expect(store.listKnowledgeLinks(newer.knowledgeId)).toContainEqual({ fromKnowledge: newer.knowledgeId,
+      fromCommit: newer.commit, kind: "merged_into", toKnowledge: older.knowledgeId, toCommit: revision.id });
+    expect(store.revisionGrounds(revision)).toEqual(new Set([factId]));
+
+    const older2 = create("older second pair"), newer2 = create("newer second pair"), independent = create("independent");
+    const before = store.listKnowledgeRevisions();
+    const rejected = store.commitConsolidationRun({ run, operations: [
+      { op: "create", handle: "$partial", author: "test", text: "must roll back", category: "term", scope: "project",
+        supports: [factId], reason: "independent batch item", topics: [], createdAt: consolidationAt },
+      { op: "merge", intoKnowledgeId: newer2.knowledgeId, intoBaseCommit: newer2.commit,
+        absorb: [{ knowledgeId: older2.knowledgeId, baseCommit: older2.commit }], text: "wrong survivor", category: "term",
+        scope: "project", supports: [factId], reason: "reverse merge", topics: [], createdAt: consolidationAt },
+    ] });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain(`swap them: use K${older2.knowledgeId}@${older2.commit} as the survivor and absorb K${newer2.knowledgeId}@${newer2.commit}`);
+    expect(store.listKnowledgeRevisions()).toEqual(before);
+    expect(store.getKnowledge(independent.knowledgeId + 1)).toBeNull();
+    expect(store.listKnowledgeLinks(older2.knowledgeId)).toEqual([]);
+  });
+
+  test("44: Store rejects Consolidator archive atomically while manual archive remains fact-backed", () => {
+    const { s, factId } = seed();
+    const manual = { kind: "manual" as const, sessionId: s.id, createdAt: consolidationAt };
+    const created = store.commitConsolidationRun({ run: manual, operations: [{ op: "create", handle: "$base", author: "test",
+      text: "continuing rule", category: "constraint", scope: "project", supports: [factId], reason: "admit rule",
+      topics: [], createdAt: consolidationAt }] });
+    if (!created.ok) throw new Error(created.problems.join("; "));
+    const item = created.committed[0]!;
+    const archive = { op: "archive" as const, knowledgeId: item.knowledgeId, baseCommit: item.commit,
+      supports: [factId], reason: "retire rule", createdAt: consolidationAt };
+    const before = store.listKnowledgeRevisions();
+    const rejected = store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: s.id, createdAt: consolidationAt },
+      operations: [{ op: "create", handle: "$partial", author: "test", text: "must roll back", category: "term",
+        scope: "project", supports: [factId], reason: "mixed item", topics: [], createdAt: consolidationAt }, archive] });
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.problems.join(" ")).toContain("Dreamer");
+    expect(store.listKnowledgeRevisions()).toEqual(before);
+    expect(store.getKnowledge(item.knowledgeId + 1)).toBeNull();
+    const accepted = store.commitConsolidationRun({ run: manual, operations: [archive] });
+    expect(accepted.ok).toBe(true);
+    expect(store.currentCommit(item.knowledgeId)[0]).toMatchObject({ op: "archive", actorRole: "manual" });
+  });
+
   test("a noting commit rejects turns and watermarks outside its own session and branch", () => {
     const { s, t } = seed();
     const p2 = store.createProject({ name: "other", declaredBy: "mark" });

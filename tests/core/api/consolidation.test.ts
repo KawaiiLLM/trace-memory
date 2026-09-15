@@ -141,7 +141,7 @@ test("reminder lists every visible supporting knowledge for both strengths and i
   excluded.push(knowledge([fact(memories.base, { sessionId: foreignSession })], { sessionId: foreignSession }));
   ids.push(knowledge([cited], { scope: "global", sessionId: foreignSession }));
   const archived = knowledge([cited]);
-  memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived,
+  memory.store.commitConsolidationRun({ run: { kind: "manual", sessionId, createdAt: time }, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: archived,
     baseCommit: archived, supports: [unrelatedFact], createdAt: time }] }); excluded.push(archived);
   watermark(unrelatedFact);
   const strong = fact(memories.observation, { negate: [{ target: `F${cited}`, strength: "strong" }] });
@@ -196,7 +196,7 @@ for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"]
   if (resolution === "archive") output = { ...final, operations: [...final.operations, { op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${f}`] }] };
   const before = memory.trace(`K${e}`); queue(candidate, output);
   const result = await consolidation();
-  if (resolution === "merge") {
+  if (resolution === "merge" || resolution === "archive") {
     expect(result.outcome).toBe("bounced");
     expect("problems" in result && result.problems?.join()).toContain("Dreamer");
     expect(memory.trace(`K${e}`)).toBe(before);
@@ -204,8 +204,8 @@ for (const resolution of ["update", "merge", "unchanged", "withdraw", "archive"]
     return;
   }
   if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.unansweredNear).toHaveLength(["unchanged", "archive"].includes(resolution) ? 1 : 0);
-  expect(memory.store.currentCommit(e)[0]?.id).toBe(["update", "archive"].includes(resolution) ? 4 : 1);
+  expect(result.unansweredNear).toHaveLength(resolution === "unchanged" ? 1 : 0);
+  expect(memory.store.currentCommit(e)[0]?.id).toBe(resolution === "update" ? 4 : 1);
   expect(consolidated(f)).toBe(true);
   expect(calls).toHaveLength(2);
 });
@@ -341,7 +341,7 @@ for (const operation of ["update", "archive", "merge"] as const) test(`accountin
     ? { ...empty, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: `K${e}`, supports: [`F${other}`] }] }
     : { ...empty, operations: [{ ...updateOutput(survivor, other).operations[0], op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", id: `K${survivor}`, absorb: [`K${e}`] }] };
   queue(output, output); const result = await consolidation();
-  if (operation === "merge") {
+  if (operation === "merge" || operation === "archive") {
     expect(result.outcome).toBe("bounced");
     expect("problems" in result && result.problems?.join()).toContain("Dreamer");
     expect(consolidated(f)).toBe(false);
@@ -349,7 +349,7 @@ for (const operation of ["update", "archive", "merge"] as const) test(`accountin
   }
   if (result.outcome !== "success") throw new Error("expected diagnostic success");
   expect(result.diagnostics).toEqual([]);
-  expect(memory.store.currentCommit(e)[0]?.op).toBe(operation === "archive" ? "archive" : "update");
+  expect(memory.store.currentCommit(e)[0]?.op).toBe("update");
 });
 
 test("a target that moved on bounces the whole batch, audits the rejection and preserves the watermark", async () => {
@@ -399,6 +399,23 @@ test("34b: Consolidator can completely read the legal successor and resubmit aga
   expect(result.outcome).toBe("success");
   expect(memory.store.currentCommit(knowledgeId)[0]).toMatchObject({ text: memories.editedKnowledge, parentId: 2 });
   expect(consolidated(correction)).toBe(true);
+});
+
+test("44: bound Consolidator schema exposes create/update and a category-changing update keeps the same K", async () => {
+  const original = fact(), id = knowledge([original], { category: "constraint", text: "Do not start ticket 44" });
+  watermark(original);
+  const approval = fact("Start ticket 44", { category: "observation" });
+  const output = { ...empty, operations: [{ op: "update", id: `K${id}`, text: "Implement ticket 44",
+    category: "goal", scope: "project", supports: [`F${approval}`], reason: "Approval lifts the prohibition",
+    topics: ["ticket 44"] }] };
+  queue(output, output);
+  const result = await consolidation();
+  if (result.outcome !== "success") throw new Error("expected successful category-changing update");
+  const schema = (calls[0]!.tools.find(tool => tool.name === "memory")!.parameters.properties as any).operations.items;
+  expect(schema.properties.op.enum).toEqual(["create", "update"]);
+  expect(result.committed[0]).toMatchObject({ op: "update", knowledgeId: id });
+  expect(memory.store.currentCommit(id)[0]).toMatchObject({ category: "goal", parentId: id });
+  expect(memory.store.getKnowledge(id + 1)).toBeNull();
 });
 
 test("32d: Consolidator merge cannot create a survivor revision or absorbed links", async () => {
@@ -501,7 +518,7 @@ test("an archived target bounces the whole batch and preserves the watermark and
   queue(output); const resolve = deferred(), pending = consolidation();
   await new Promise((r) => setTimeout(r, 0));
   const path = memory.store.knowledgePath(sessionId, "main");
-  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "consolidation", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: e,
+  memory.store.commitConsolidationRun({ path, run: memory.store.bindRunOrigin({ kind: "manual", sessionId, branch: "main", createdAt: time }, memory.store.triggerOrigin(path)), operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: e,
     baseCommit: 1, supports: [old], createdAt: time }] });
   resolve(output); const result = await pending;
   if (result.outcome !== "failure") throw new Error("expected ordinary failure");
@@ -675,28 +692,29 @@ test("20b 2026-09-08 scenario 8: an oldest fact over the batch ceiling stays pen
   expect(memory.trace(`F${huge}`)).toContain("word word"); // the evidence text is untouched
 });
 
-// ---- 21a 2026-09-08: archival accounting and batch atomicity for the unified evidence ----
+// ---- 21a / ticket 44: accounting remains, while Consolidator retirement is rejected atomically ----
 
-test("21a 2026-09-08: a range fact cited by a committed archive is accounted for without a skipped entry", async () => {
+test("44: a Consolidator archive is rejected atomically and advances no fact accounting", async () => {
   const withdrawal = fact("The user withdrew the packaging rule"), agent = fact(memories.observation, { actor: "agent" });
   const e = knowledge([agent]);
-  const output = { ...empty, operations: [{ op: "archive", id: `K${e}`, supports: [`F${withdrawal}`],
-    reason: "The user withdrew the rule this knowledge stated." }] };
-  queue(output, output);
+  const output = { ...empty, operations: [...createOutput(agent).operations, { op: "archive", id: `K${e}`,
+    supports: [`F${withdrawal}`], reason: "The user withdrew the rule this knowledge stated." }] };
+  queue(output);
   const result = await consolidation();
-  if (result.outcome !== "success") throw new Error("expected success");
-  expect(result.diagnostics).toEqual([]); // archival evidence, though the archive has no active conclusion
-  expect(memory.store.currentCommit(e)[0]?.op).toBe("archive");
-  expect(memory.store.currentCommit(e)[0]?.supports).toEqual([withdrawal]);
+  expect(result.outcome).toBe("bounced");
+  if (result.outcome !== "bounced") throw new Error("expected bounce");
+  expect(result.problems.join(" ")).toContain("Dreamer");
+  expect(memory.store.currentCommit(e)[0]?.op).toBe("create");
+  expect(memory.store.getKnowledge(e + 1)).toBeNull();
+  expect(consolidated(withdrawal)).toBe(false);
 });
 
-test("21a 2026-09-08: a candidate-only archive and an address inside a reason give no accounting coverage", async () => {
+test("21a 2026-09-08: an address inside a reason gives no accounting coverage", async () => {
   const withdrawal = fact("The user withdrew the packaging rule"), agent = fact(memories.observation, { actor: "agent" });
   const e = knowledge([agent]);
-  const candidate = { ...empty, operations: [{ op: "archive", id: `K${e}`, supports: [`F${withdrawal}`], reason: "Withdrawn." }] };
-  const final = { ...empty, operations: [{ ...createOutput(agent).operations[0],
-    reason: `Kept rather than archived; the user's withdrawal is F${withdrawal}.` }] };
-  queue(candidate, final); // only the second submission commits, so the archive never applied
+  const output = { ...empty, operations: [{ ...createOutput(agent).operations[0],
+    reason: `The user's withdrawal is F${withdrawal}.` }] };
+  queue(output, output);
   const result = await consolidation();
   if (result.outcome !== "success") throw new Error("expected success");
   expect(result.diagnostics).toContainEqual({ kind: "uncited_facts", facts: [`F${withdrawal}`] });

@@ -133,6 +133,27 @@ test("32d: create plus merge is not a split; rejection has zero batch side effec
   expect(f.store.commitConsolidationRun({ run, path: f.target, operations: [merge] }).ok).toBe(true);
 });
 
+test("44: trusted Dreamer is bound by the older merge-survivor rule", () => {
+  const f = fixture();
+  const newer = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" },
+    operations: [{ op: "create", handle: "$2", author: "test", ...f.content, text: "duplicate" }] });
+  if (!newer.ok) throw Error(newer.problems.join());
+  const item = newer.committed[0]!;
+  f.store.db.prepare("INSERT INTO dreaming_family VALUES (?, ?)").run(f.run.dreamingRangeId!, item.knowledgeId);
+  const run = f.store.bindDreamingRun(f.run);
+  const reverse = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "merge",
+    intoKnowledgeId: item.knowledgeId, intoBaseCommit: item.commit,
+    absorb: [{ knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit }], ...f.content }] });
+  expect(reverse.ok).toBe(false);
+  if (!reverse.ok) expect(reverse.problems.join(" ")).toContain(`use K${f.item.knowledgeId}@${f.item.commit} as the survivor`);
+  expect(f.store.currentCommit(f.item.knowledgeId, f.target)[0]!.id).toBe(f.item.commit);
+  expect(f.store.currentCommit(item.knowledgeId, f.target)[0]!.id).toBe(item.commit);
+  const accepted = f.store.commitConsolidationRun({ run, path: f.target, operations: [{ op: "merge",
+    intoKnowledgeId: f.item.knowledgeId, intoBaseCommit: f.item.commit,
+    absorb: [{ knowledgeId: item.knowledgeId, baseCommit: item.commit }], ...f.content }] });
+  expect(accepted.ok).toBe(true);
+});
+
 test.each(["update", "archive"] as const)("34a: create plus authorized family %s cannot impersonate an explicit split", op => {
   const f = fixture(), run = f.store.bindDreamingRun(f.run);
   const result = f.store.commitConsolidationRun({ run, path: f.target, operations: [

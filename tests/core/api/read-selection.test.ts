@@ -186,7 +186,8 @@ test("41 all candidates retain ownership but do not erase historical parent appl
 
 test("41 archives and merged-away identities have no current body but remain historical candidates", () => {
   const who = owner("lifecycle");
-  const absorbed = who.put("needle absorbed"), survivor = who.put("needle survivor");
+  // Ticket 44: the survivor is created first so its older address remains live.
+  const survivor = who.put("needle survivor"), absorbed = who.put("needle absorbed");
   const merged = memory.store.commitConsolidationRun({ path: who, run: who.run, operations: [{ op: "merge",
     intoKnowledgeId: survivor.knowledgeId, intoBaseCommit: survivor.commit,
     absorb: [{ knowledgeId: absorbed.knowledgeId, baseCommit: absorbed.commit }], text: "needle combined", scope: "project", category: "reference",

@@ -42,7 +42,8 @@ function fixture(body = "durable rule") {
       const created = other.store.commitConsolidationRun({ run, operations: [{ op: "create", handle: "$outside", author: "external", ...content, text: "outside survivor" }] });
       if (!created.ok) throw Error(created.problems.join());
       const outside = created.committed[0]!;
-      operations = [{ op: "merge", intoKnowledgeId: outside.knowledgeId, intoBaseCommit: outside.commit, absorb: [{ knowledgeId: item.knowledgeId, baseCommit: base.id }], ...content, text: "external merged result" }];
+      // Ticket 44: retain the older input identity; the conflict shape is otherwise unchanged.
+      operations = [{ op: "merge", intoKnowledgeId: item.knowledgeId, intoBaseCommit: base.id, absorb: [{ knowledgeId: outside.knowledgeId, baseCommit: outside.commit }], ...content, text: "external merged result" }];
     } else operations = [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: base.id, ...content, text: `external update after ${base.id}` }];
     const result = other.store.commitConsolidationRun({ run, path: otherPath, operations });
     if (!result.ok) throw Error(result.problems.join());
@@ -171,8 +172,9 @@ test.each([false, true])("a successor of processed read-only material does not e
     const survivor = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
       operations: [{ op: "create", handle: "$survivor", author: "external", ...f.content, text: "survivor" }] });
     if (!survivor.ok) throw Error(survivor.problems.join());
-    operations = [{ op: "merge", intoKnowledgeId: survivor.committed[0]!.knowledgeId, intoBaseCommit: survivor.committed[0]!.commit,
-      absorb: [{ knowledgeId: processed.knowledgeId, baseCommit: base.id }], ...f.content, text: "successor ".repeat(4500) }];
+    // Ticket 44: processed is the older identity and therefore survives this successor fixture.
+    operations = [{ op: "merge", intoKnowledgeId: processed.knowledgeId, intoBaseCommit: base.id,
+      absorb: [{ knowledgeId: survivor.committed[0]!.knowledgeId, baseCommit: survivor.committed[0]!.commit }], ...f.content, text: "successor ".repeat(4500) }];
   } else operations = [{ op: "update", knowledgeId: processed.knowledgeId, baseCommit: base.id, ...f.content, text: "successor ".repeat(4500) }];
   const successor = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" }, path: f.otherPath, operations });
   if (!successor.ok) throw Error(successor.problems.join());
@@ -314,8 +316,9 @@ test.each([false, true])("an oversized consumer of a legal own output does not p
         operations: [{ op: "create", handle: "$survivor", author: "external", ...f.content, text: "outside survivor" }] });
       if (!survivor.ok) throw Error(survivor.problems.join());
       outsideEvent = survivor.committed[0]!.commit;
-      operation = { op: "merge", intoKnowledgeId: survivor.committed[0]!.knowledgeId, intoBaseCommit: survivor.committed[0]!.commit,
-        absorb: [{ knowledgeId: f.item.knowledgeId, baseCommit: own }], ...f.content, text: "oversized ".repeat(11000) };
+      // Ticket 44: the maintained input K is older than the outside duplicate and remains survivor.
+      operation = { op: "merge", intoKnowledgeId: f.item.knowledgeId, intoBaseCommit: own,
+        absorb: [{ knowledgeId: survivor.committed[0]!.knowledgeId, baseCommit: survivor.committed[0]!.commit }], ...f.content, text: "oversized ".repeat(11000) };
     } else operation = { op: "update", knowledgeId: f.item.knowledgeId, baseCommit: own, ...f.content, text: "oversized ".repeat(11000) };
     const external = f.other.store.commitConsolidationRun({ path: f.otherPath,
       run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" }, operations: [operation] });
@@ -471,17 +474,18 @@ test.each([false, true])("another target's Dreamer may finish shared events (mer
   f.setAgent(async () => { frozen.release(); await finished.wait; return success; });
   const pending = f.memory.dream(f.target);
   await frozen.wait;
-  let survivor = f.item;
+  let absorbed: typeof f.item | undefined;
   if (merge) {
     const created = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
       operations: [{ op: "create", handle: "$outside", author: "external", ...f.content }] });
     if (!created.ok) throw Error(created.problems.join());
-    survivor = created.committed[0]!;
+    absorbed = created.committed[0]!;
   }
   const other = TraceMemory(f.db, async raw => {
     const task = raw as DreamingAgentInput;
-    expect(tool(task, "memory").execute({ operations: [{ op: merge ? "merge" : "update", id: `K${survivor.knowledgeId}@${survivor.commit}`,
-      ...(merge ? { absorb: [`K${f.item.knowledgeId}@${f.item.commit}`] } : {}),
+    // Ticket 44: the older shared item survives; the outside duplicate is absorbed.
+    expect(tool(task, "memory").execute({ operations: [{ op: merge ? "merge" : "update", id: `K${f.item.knowledgeId}@${f.item.commit}`,
+      ...(merge ? { absorb: [`K${absorbed!.knowledgeId}@${absorbed!.commit}`] } : {}),
       text: "Maintained by the other Dreamer", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "legal shared maintenance" }], skipped: [] })).toContain('"committed"');
     return success;
   }, { dreaming: { triggerTokens: 1 } }); memories.push(other);

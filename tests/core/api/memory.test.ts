@@ -140,10 +140,10 @@ test("accounting observes concurrent changes to untouched knowledge in the commi
   expect(memory.store.getKnowledgeRevision(2, 3)?.supports).toEqual([2]);
 });
 
-test("inserting an archive before a retained create cannot erase its unanswered NEAR", async () => {
+test("inserting an independent update before a retained create cannot erase its unanswered NEAR", async () => {
   const manual = setup(async input => {
     input.tools[3]!.execute(batch); input.reportRequest({ second: true });
-    input.tools[3]!.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: "K2@2", supports: ["F1"] }, create], skipped: [] });
+    input.tools[3]!.execute({ operations: [{ ...create, op: "update", id: "K2@2", text: "Unrelated subject revised", reason: "Revise the independent item." }, create], skipped: [] });
     return success();
   });
   manual.execute({ operations: [create, { ...create, text: "Unrelated subject" }], skipped: [] });
