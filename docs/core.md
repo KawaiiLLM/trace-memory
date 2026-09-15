@@ -994,7 +994,7 @@ path. Sibling queues are never combined into an automatic Raw view.
 
 `search(query, layer = "all", options)` uses literal substring matching over fact
 text, knowledge commits, and original Raw. The public form is
-`search({query, layer?, where?, versions?, category?, scope?, fields?, itemBudget?,
+`search({query, layer?, versions?, category?, scope?, fields?, itemBudget?,
 maxTokens?, cursor?, cap?})`. A knowledge hit matches the conclusion text or any
 revision topic label. Matching runs over label values with SQLite `json_each`, so
 serialized JSON punctuation and escapes never match, and a commit whose text and
@@ -1005,15 +1005,38 @@ applicable knowledge as `{topics: [{topic, commits}], unclassified}`, where a co
 is the `{knowledgeId, commit}` reference of the revision it was read from. A
 multi-topic commit appears in each of its groups, divergent applicable tips stay
 separate entries, and nothing is cloned or ranked: this is read organization, not a
-second injection order. A session-bound read defaults to `where: "project"`; an unbound facade read defaults
-to `where: "all"`. For facts and Raw, `where` selects this session, project
-sessions, or every session. For knowledge, project/session reads use the bound
-path's applicable graph, while all reads use every branch. `versions` defaults to
-`current`; `history` adds applicable superseded or archived commits, and `all` adds
-other branches. Under `where: "all"`, current means newest-created branch tips and
-history/all both include every commit. `category` and `scope` filter knowledge,
-imply `layer: "knowledge"` when omitted, and reject another explicit layer. Exact
-trace addresses remain unrestricted; filters narrow listings, not read authority.
+second injection order. This reference projection is distinct from search results.
+
+`scope` is the only material-range parameter; obsolete `where` is rejected, including
+on continuations. Search selects material as follows:
+
+| Scope | Facts and Raw | Knowledge |
+|---|---|---|
+| omitted, bound | current project's sessions | global + current project's project-scoped + current session's session-scoped |
+| session | current session | this session's session-scoped |
+| project | current project's sessions | this project's project-scoped |
+| global | every session | global-scoped, regardless of author project |
+
+An unbound omitted scope discovers all owners. Explicit project/session scope requires
+that context; a missing context is an error, never an inferred project or session.
+Only `category` implies `layer: "knowledge"` and rejects another explicit layer.
+Scope works across all layers and does not imply a layer. Exact trace evidence remains
+unrestricted; selection grants no source or write authority.
+
+`versions` defaults to `current`: active current DAG tips inside the selected owner
+scope. `history` also admits applicable superseded and archived revisions; `all` also
+admits nonapplicable branch revisions inside that same scope. Historical parent
+conditions still constrain path applicability. Without a path, current uses graph
+tips and history/all include the graph history. Versions are candidates inside a K,
+not separate knowledge identities.
+
+Search and project collections filter candidates first, choose one exact representative
+per K, then paginate. For a nonempty literal search, the representative maximizes the
+existing lexical similarity to its text or any one topic. Ties prefer a path-current
+candidate, then the larger commit ID. Empty queries and queryless collections use
+only that tie order. Nonmatching revisions never enter through similarity, and scores
+never reorder different K identities. Selected headers, bodies and lifecycle/path
+statuses belong to the same exact revision; historical text never masquerades as current.
 
 Fact and knowledge search hits are one-line previews. Identity is always present.
 For current searches `fields` defaults to `text`; knowledge-capable history/all
@@ -1030,9 +1053,10 @@ Search never grants a knowledge write handle and emits no write handle in its
 receipts; use an exact, complete trace read.
 
 Raw matching includes tool names, inputs, and results; `%` and `_` are escaped.
-Results order facts by id, then knowledge id/revision; Raw orders turns by id. Every
-search page states its effective session/version filters, optional category/scope,
-selected and omitted preview fields, and that no hit does not mean absent.
+Results order facts by id, then knowledge by K id; Raw orders turns by id. Every
+search page states effective material scope, version candidates, one representative
+per K, the explicit trace-history route, selected and omitted preview fields, and
+that no hit does not mean absent.
 
 Search and trace pages default to 2,000 estimated tokens, including receipts.
 `maxTokens` and `pageBudget` are positive safe integers capped at 8,000; `cap`
@@ -1044,8 +1068,8 @@ newline. Receipts are not hit content, and a fragment need not contain a complet
 hit.
 
 Continue search with `search({query: "", cursor: "…"})` and trace with its cursor
-alone. The cursor freezes the hit snapshot and every effective filter, field,
-content budget, page-budget alias, and line cap. Omit them or repeat equivalent
+alone. The cursor freezes owner selection, exact representatives, statuses, marks and
+every effective filter, field, content budget, page-budget alias, and line cap. Omit them or repeat equivalent
 effective values; genuinely changed values reject without consuming the cursor. A
 search cursor may continue through trace, but a trace-origin cursor cannot continue
 through search. Owner isolation and the 16-continuation cache remain unchanged. No
@@ -1053,9 +1077,21 @@ transaction or reserved connection is held between pages.
 
 `trace` additionally accepts session addresses, exact project names, comma lists,
 and fact intervals (`F81-F90`; see **Batch trace**). Its public form is
-`trace({address, where?, versions?, category?, scope?, fields?, itemBudget?,
+`trace({address, versions?, category?, scope?, fields?, itemBudget?,
 toolCallBudget?, toolResultBudget?, pageBudget?, tool?, full?, cursor?, cap?})`.
-Projects list global/project knowledge and project facts; sessions list turns.
+Named projects keep that project's facts and applicable global/project knowledge by
+default. Explicit project/global scope narrows knowledge to that scope; neither expands
+the addressed project's facts. Project plus session scope is rejected, even for a
+bound caller: the address did not name a session. Named `S1` keeps only S1 Raw under
+every scope and gains no other material. Receipts describe these actual intersections.
+
+Bare `K1` defaults to one current representative. Explicit `K1` with history/all, or
+`K1..`, requests that K's expanded history; a comma list preserves caller order and
+repeats. Exact versions, diffs, F/T selectors and run/lineage references remain intact.
+Collection traces grant no complete-read handles. Named reads certify only delivered
+complete bodies after the final page; suppressed alternative tips and historical
+commit-reference lines certify nothing. Explicit K histories retain default reasons;
+queryless collections do not expand histories or acquire that default.
 Listing `cap` counts output lines, not facts or tokens. Display options are
 parameters, never address flags, and expansion hints use the trace parameter form.
 `F<n>..` is navigation through later strong negations, including every intermediate

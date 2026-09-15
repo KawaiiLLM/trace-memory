@@ -327,29 +327,47 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 - Main-agent registration and subagent requests use the exact same four definition
   objects, with façade descriptions and schema objects. Pi execution fields are
   non-enumerable, so provider serialization includes only shared metadata. The read
-  forms are `trace({address, where?, versions?, category?, scope?, fields?,
+  forms are `trace({address, versions?, category?, scope?, fields?,
   itemBudget?, toolCallBudget?, toolResultBudget?, pageBudget?, tool?, full?,
-  cursor?, cap?})` and `search({query, layer?, where?, versions?, category?, scope?,
+  cursor?, cap?})` and `search({query, layer?, versions?, category?, scope?,
   fields?, itemBudget?, maxTokens?, cursor?, cap?})`.
 
-  Bound reads default to project sessions and current knowledge; explicit exact
-  trace addresses remain unrestricted. `where` selects project/session/all, while
-  `versions` selects current/history/all. Category or scope filters imply the
-  knowledge layer. Current search defaults to text-only one-line fact and knowledge
+  `scope` alone controls material selection; obsolete `where` is rejected. Omitted
+  search scope selects project facts/Raw and applicable global/project/session
+  knowledge. Session/project/global selects that scope's knowledge and respectively
+  session/project/all-session facts and Raw. Global knowledge is shared regardless
+  of author project. Only category implies the knowledge layer; scope does not.
+  Explicit project/session scope requires context; unbound omission discovers all owners.
+
+  `versions` selects current/history/all candidates within each K. Every search or
+  project collection returns one representative per K, chosen before pagination.
+  Literal admission is unchanged; lexical text/topic similarity chooses only among
+  matching revisions of the same K. Ties prefer current, then newer commit; empty
+  queries and collections use that tie order without scoring. K-ID ordering remains.
+  Explicit K history/all or K.. expands the named identity's history. Exact evidence
+  and comma-list order/repeats remain unrestricted.
+
+  Named session trace remains only that session's Raw under every scope. Named
+  projects retain their own facts; scope narrows only their global/project knowledge
+  and never widens those facts. Project plus session scope rejects rather than
+  borrowing the caller's session. Collection receipts describe the actual selection.
+  Collections grant no handles, and omitted alternative versions or history reference
+  lines never certify a full-body read. Current search defaults to text-only one-line fact and knowledge
   previews; knowledge history/all defaults to text plus the existing computed status.
   Explicit fields, including text-only or none, remain authoritative. The item budget
   defaults to 80 tokens; embedded line breaks render as ` ⏎ ` and long bodies keep a
   head plus the inline character-truncation marker. Raw search
   hits keep their entry profile. Search returns no knowledge write handle. Trace
-  defaults to full semantic fields except reason for current/exact reads; history,
-  all, and `K1..` also default to commit reasons. Explicit fields remain authoritative.
+  defaults to full semantic fields except reason for current/exact reads; explicit K
+  history/all and `K1..` also default to commit reasons. Explicit fields remain authoritative.
 
   One trace address may carry a comma list (`F81,F90,F95`, preserving order and
   repeats) and inclusive fact-id intervals (`F81-F90`, combinable as
   `F81-F90,F95`). Both tools default to 2,000 estimated tokens per response, and
   public `maxTokens`/`pageBudget` values are capped at 8,000; `cap` separately
   counts output lines. Every search receipt names the effective filters and preview
-  fields. Cursors freeze effective filters, fields, content budgets, page-budget
+  fields and the one-representative/history route. Cursors freeze exact representatives,
+  owner selection, statuses, marks, effective filters, fields, content budgets, page-budget
   aliases, and line cap; omitted or equivalent repeated values continue, while a
   changed value rejects without consuming the cursor. Oversized transport content
   continues in lossless Unicode-safe fragments, but a fragment is not a complete

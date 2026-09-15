@@ -85,7 +85,8 @@ test("merged knowledge retain their snapshot and frozen survivor revision; archi
   expect(memory.trace(`K${absorbed}@1`)).toContain("children: K2@3");
   expect(memory.trace(`K${absorbed}@1`)).not.toContain("later survivor");
   consolidation({ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: survivor, baseCommit: 4, supports: [4], createdAt: time });
-  expect(memory.trace(`K${survivor}`)).toContain("[K2@5] [reference/project] \n  change supports: F4"); // 21a: an archive keeps its own evidence
+  expect(memory.trace(`K${survivor}`)).not.toContain("[K2@5]");
+  expect(memory.trace(`K${survivor}`, { versions: "history" })).toContain("[K2@5] [reference/project] \n  change supports: F4"); // 21a: an archive keeps its own evidence
   expect(memory.trace(`K${survivor}@5`, { fields: ["text", "supports", "status", "reason"] })).toContain(`status: archive ${time}`);
   expect(memory.trace(`K${survivor}`, { versions: "history", fields: ["reason"] })).toContain(`K2@5 reason: ${archived}`);
 });

@@ -117,7 +117,11 @@ test("manual memory reuses current revisions and refuses inactive or duplicate m
   expect(JSON.parse(write.execute({ operations: [{ ...create, op: "update", reason: "Substantive correction of the recorded conclusion.", id: read("K1@3") }], skipped: [] })).committed[0].commit).toBe(4);
   write.execute({ operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: read("K1@4"), supports: ["F1"] }], skipped: [] });
   expect(memory.store.currentCommit(1)[0]?.op).toBe("archive");
-  expect(memory.trace("K1")).toContain("archive");
+  expect(memory.trace("K1")).not.toMatch(/^\[K1@/m); // current admits active bodies only
+  expect(memory.trace("K1")).toContain("archived; inspect trace(K1, versions:history)");
+  expect(memory.trace("K1", { versions: "history" })).toContain("archive");
+  expect(memory.trace("K2")).toContain("merged_into: K1@3");
+  expect(memory.search("", "knowledge", { versions: "history" })).toContain("archived");
 });
 
 test("accounting observes concurrent changes to untouched knowledge in the committing transaction", async () => {

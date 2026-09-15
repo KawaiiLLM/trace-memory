@@ -82,19 +82,23 @@ test("41 repair: revision marks stay exact on first and continuation pages and f
   memory.mark(`K${knowledgeId}@${oldCommit}`, "flagged", path);
 
   const options = { sessionId, headTurnId: turn.id, branch: "main", versions: "all" as const, fields: ["text", "marks"] as const };
+  expect(memory.search("needle old", "knowledge", options)).toContain("flagged");
+  const second = store.commitConsolidationRun({ path, run, operations: [{ op: "create", handle: "h2", author: "fake", text: "needle second",
+    category: "mechanism", scope: "session", supports: [note.facts[0]!.id], reason: "second", topics: [], createdAt: time }] });
+  if (!second.ok) throw new Error(second.problems.join("; "));
+  const selected = second.committed[0]!;
   const whole = memory.search("needle", "knowledge", options);
   const first = memory.search("needle", "knowledge", { ...options, cap: 1 });
-  expect(first).toContain(`[K${knowledgeId}@${oldCommit}]`);
-  expect(first).toContain("flagged");
-  expect(whole.split("\n").find(line => line.startsWith(`[K${knowledgeId}@${newCommit}]`))).not.toContain("flagged");
+  expect(first).toContain(`[K${knowledgeId}@${newCommit}]`);
+  expect(first).not.toContain("flagged");
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
-  memory.mark(`K${knowledgeId}@${newCommit}`, "verified", path);
+  memory.mark(`K${selected.knowledgeId}@${selected.commit}`, "verified", path);
   const next = memory.search("", "knowledge", { cursor, sessionId });
   expect(`${first.split("\n\nReceipts:")[0]}\n${next.split("\n\nReceipts:")[0]}`).toBe(whole.split("\n\nReceipts:")[0]);
-  expect(next).toContain(`[K${knowledgeId}@${newCommit}]`);
+  expect(next).toContain(`[K${selected.knowledgeId}@${selected.commit}]`);
   expect(next).not.toContain("flagged");
   expect(next).not.toContain("verified");
-  expect(memory.search("needle new", "knowledge", options)).toContain("verified");
+  expect(memory.search("needle second", "knowledge", options)).toContain("verified");
 });
 
 test("22c: a message completed between two pages does not join the established page's assembled trace", () => {

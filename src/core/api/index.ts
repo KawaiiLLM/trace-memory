@@ -1,5 +1,6 @@
 export { toolDefinitions, toolRejected, reviewFeedback, validateReadInput } from "./tools.ts";
 import { bindTools, type ToolContext, type ToolDefinition } from "./tools.ts";
+import { knowledgeReadSelection } from "./knowledge-read.ts";
 export type { ToolContext, ToolDefinition } from "./tools.ts";
 import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
@@ -538,29 +539,26 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         capture(history, true);
         return () => `K${id} commit tree (all branches):\n` + history.map(describe).join("\n");
       }
-      const where = display.where ?? (display.sessionId === undefined ? "all" : "project");
       const versions = display.versions ?? "current";
-      const path = where === "all" ? null : store.knowledgePath(display.sessionId!, display.branch, display.headTurnId);
-      const snapshot = path ? store.pathSnapshot(path) : undefined; // 22c: one membership for the whole read
-      const graph = store.commitGraph(path, undefined, snapshot);
-      const authoredHere = (revision: typeof history[number]) => where !== "session"
-        || (revision.runId !== null && store.runSessionId(revision.runId) === display.sessionId);
-      const matches = (revision: typeof history[number]) => authoredHere(revision)
-        && (!display.category || revision.category === display.category)
-        && (!display.scope || revision.scope === display.scope);
-      const tips = graph.current.filter(r => r.knowledgeId === id && matches(r));
+      const selection = knowledgeReadSelection(store, display);
+      const { path, graph, matches } = selection;
+      const tips = versions === "current" ? selection.representatives(history)
+        : graph.current.filter(r => r.knowledgeId === id && matches(r));
       reads?.push({ knowledgeId: id!, commits: tips.filter(r => r.op !== "archive").map(r => r.id), replace: true });
       const applicable = history.filter(r => graph.applicable.has(r.id) && matches(r));
       const allHistory = history.filter(matches);
       const otherHistory = allHistory.filter(r => !graph.applicable.has(r.id));
-      const otherTips = path && versions === "all" ? store.commitGraph(null).current
+      const otherTips = path && versions === "all" ? store.commitGraph(null, undefined, undefined, selection.input).current
         .filter(r => r.knowledgeId === id && !graph.applicable.has(r.id) && matches(r)) : [];
       const links = store.listKnowledgeLinks(id!);
+      const archived = versions === "current" && !tips.length && fields.has("status")
+        ? graph.current.filter(r => r.knowledgeId === id && r.op === "archive" && matches(r)) : [];
       const described = versions === "current" ? tips : versions === "history" ? [...tips, ...applicable] : [...tips, ...allHistory, ...otherTips];
       capture([...new Map(described.map(r => [r.id, r])).values()]);
       return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
+        ...archived.map(r => `  K${id}@${r.id}: ${selection.status(r)}; inspect trace(K${id}, versions:history)`),
         ...(fields.has("links") ? links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`) : []),
         ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields)]
           : ["Commit history:", renderCommitHistory(allHistory, fields)]),

@@ -525,7 +525,7 @@ test.each([
     const found: string[] = [];
     let cursor: string | undefined;
     do {
-      const page = search.execute({ query, layer, where: "all", versions: "all", cap: 1, ...(cursor ? { cursor } : {}) });
+      const page = memory.search(query, layer, { versions: "all", cap: 1, ...(cursor ? { cursor } : {}) });
       const addresses = [...page.matchAll(/^\[[^\]]+\]/gm)].map(m => m[0]);
       expect(addresses).toHaveLength(1);
       expect(page).toContain("literal substring search");

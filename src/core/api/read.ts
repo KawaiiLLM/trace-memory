@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { knowledgeReadSelection, KNOWLEDGE_REPRESENTATIVE_RECEIPT } from "./knowledge-read.ts";
 import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeMark, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactPreview, renderKnowledgePreview, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderFact, renderFactPreview, renderKnowledgePreview, renderKnowledgeTrace, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -13,8 +14,6 @@ import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type Suppl
  * unrestricted, as it always was. A Turn's occurrences are selected by `branch`, or — when a paged
  * read froze them at query time (22c) — by the `entryIds` that query kept; like the path, neither is
  * reachable from a model's tool arguments. */
-export const READ_WHERE = ["project", "session", "all"] as const;
-export type ReadWhere = (typeof READ_WHERE)[number];
 export const READ_VERSIONS = ["current", "history", "all"] as const;
 export type ReadVersions = (typeof READ_VERSIONS)[number];
 export const READ_FIELDS = ["text", "supports", "topics", "status", "reason", "links", "marks"] as const;
@@ -25,7 +24,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -38,7 +37,7 @@ export function validateBudgets(options: ListingOptions): void {
   if (options.full === true && [options.itemBudget, options.toolCallBudget, options.toolResultBudget].some(v => v !== undefined && v !== null)) throw new Error("full:true conflicts with finite content budgets; use null for all content ceilings");
   if (options.pageBudget !== undefined && options.maxTokens !== undefined && options.pageBudget !== options.maxTokens) throw new Error("pageBudget conflicts with maxTokens");
   if (options.tool !== undefined && (!Number.isSafeInteger(options.tool) || options.tool < 1)) throw new Error("tool must be a positive ordinal");
-  if (options.where !== undefined && !READ_WHERE.includes(options.where)) throw new Error("where must be project, session or all");
+  if ("where" in options) throw new Error("where is removed; use scope");
   if (options.versions !== undefined && !READ_VERSIONS.includes(options.versions)) throw new Error("versions must be current, history or all");
   if (options.category !== undefined && !KNOWLEDGE_CATEGORIES.includes(options.category)) throw new Error("invalid knowledge category filter");
   if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
@@ -179,7 +178,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
    * to the whole requested expression, not a rendered child or an unconsumed/evicted remainder. */
   type FrozenListing = {
     itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
-    tool?: number; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory;
+    tool?: number; versions?: ReadVersions; category?: KnowledgeCategory;
     scope?: KnowledgeScope; fields?: readonly ReadField[];
   };
   type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
@@ -201,11 +200,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       : options.full === true ? null : saved ? saved.frozen[key] : defaults[key];
     const frozen: FrozenListing = {
       itemBudget: content("itemBudget"), toolCallBudget: content("toolCallBudget"), toolResultBudget: content("toolResultBudget"),
-      tool: options.tool ?? saved?.frozen.tool, where: options.where ?? saved?.frozen.where,
+      tool: options.tool ?? saved?.frozen.tool,
       versions: options.versions ?? saved?.frozen.versions, category: options.category ?? saved?.frozen.category,
       scope: options.scope ?? saved?.frozen.scope, fields: options.fields ?? saved?.frozen.fields,
     };
-    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "tool", "where", "versions", "category", "scope", "fields"] as const) {
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "tool", "versions", "category", "scope", "fields"] as const) {
       const same = key === "fields" ? JSON.stringify(frozen.fields) === JSON.stringify(saved?.frozen.fields)
         : frozen[key] === saved?.frozen[key];
       if (saved && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
@@ -286,11 +285,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     if (!value) throw new Error(`session S${id} does not exist`);
     return value;
   };
-  const effectiveOptions = (options: ListingOptions): ListingOptions => {
-    const where = options.where ?? (options.sessionId === undefined ? "all" : "project");
-    if (options.sessionId === undefined && where !== "all") throw new Error(`where:${where} requires a session-bound read`);
-    return { ...options, where, versions: options.versions ?? "current" };
-  };
+  const effectiveOptions = (options: ListingOptions): ListingOptions => ({ ...options, versions: options.versions ?? "current" });
   // Both read one mutable annotation of an otherwise immutable record. A caller that froze it at
   // query time (22c) supplies it; everyone else reads it now, exactly as before.
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
@@ -431,6 +426,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
       ...(options.pageBudget === null ? { cap: Number.MAX_SAFE_INTEGER } : {}) };
     const reads: KnowledgeRead[] = [];
+    const collectionReceipts: string[] = [];
     const profile = readProfile(options, config.render);
     const items = store.transaction(() => {
       const intervals = targets.map(factInterval);
@@ -438,21 +434,34 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const named = (target: string): (() => string) => {
         const s = /^S([1-9]\d*)$/.exec(target);
         if (s) {
-          session(Number(s[1]));
-          const turns = store.listTurns(Number(s[1])).map(t => prepare(`T${t.id}`, { ...options, profile }));
+          const id = Number(s[1]);
+          session(id);
+          collectionReceipts.push(`selected: S${id} Raw only (named collection; scope=${options.scope ?? "omitted"})`);
+          const turns = store.listTurns(id).map(t => prepare(`T${t.id}`, { ...options, profile,
+            ...(options.sessionId === id ? {} : { sessionId: id, branch: undefined, headTurnId: undefined }) }));
           return () => turns.map(render => listingLine(render())).join("\n");
         }
         let project = store.findProjectByName(target);
         while (project?.mergedInto != null) project = store.getProject(project.mergedInto);
         if (project) {
-          const knowledge = store.listVisibleKnowledge(0, project.id).map(value => ({ value, marks: store.listKnowledgeMarks(value.knowledge.id) }));
+          const selection = knowledgeReadSelection(store, options, project.id);
+          const revisions = selection.representatives(selection.graph.revisions);
+          const marks = store.listKnowledgeMarksOf(revisions.map(r => r.id));
+          const records = store.knowledgeRecords(revisions.map(r => r.knowledgeId));
+          const fields = new Set(options.fields!);
+          const knowledge = revisions.map(revision => {
+            const parents = (selection.input.parents.get(revision.id) ?? []).map(id => selection.byCommit.get(id)!);
+            const children = selection.graph.revisions.filter(r => selection.input.parents.get(r.id)?.includes(revision.id));
+            const grounds = [...store.revisionGrounds(revision)].sort((a, b) => a - b);
+            const status = selection.status(revision);
+            return () => renderKnowledgeTrace({ knowledge: records.get(revision.knowledgeId)!, revision }, marks.get(revision.id) ?? [],
+              parents, children, profile.entryTokens, grounds, fields, false, status);
+          });
           const facts = store.listProjectFacts(project.id).map(fact => ({ fact, relations: store.listFactRelations(fact.id) }));
           const times = store.factTurnTimes(facts.map(f => f.fact)), relations = new Map(facts.map(f => [f.fact.id, f.relations]));
-          return () => [renderKnowledgeBlock(budgetKnowledge(knowledge.map(k => k.value), Infinity, value => {
-            const whole = knowledgeLine(value, knowledge.find(k => k.value.revision.id === value.revision.id)!.marks);
-            const prefix = `[K${value.knowledge.id}@${value.revision.id}] [${value.revision.category}/${value.revision.scope}] `;
-            return renderSemantic(prefix, value.revision.text, whole.slice(prefix.length + value.revision.text.length), profile.entryTokens);
-          }).groups), ...renderFactGroups(facts.map(f => f.fact), (fact, frame) => renderFact(fact, relations.get(fact.id)!, profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
+          collectionReceipts.push(`selected: project ${project.name} facts; ${options.scope ?? "global/project"} knowledge; ${options.versions} versions`, KNOWLEDGE_REPRESENTATIVE_RECEIPT);
+          return () => [...knowledge.map(render => render()), ...renderFactGroups(facts.map(f => f.fact),
+            (fact, frame) => renderFact(fact, relations.get(fact.id)!, profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
         }
         return prepare(target, { ...options, profile }, reads);
       };
@@ -471,7 +480,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
       .flatMap(unit => ("fact" in unit ? renderFact(store.getFact(unit.fact)!, unit.relations, profile.entryTokens, text => "\n" + (unit.header ?? "") + text).slice(1) : unit.render()).split("\n"));
-    const footer = targets.some(target => /^K[1-9]\d*$/.test(target)) ? `versions: ${options.versions}` : "";
+    const footer = [...collectionReceipts, ...(targets.some(target => /^K[1-9]\d*(?:\.\.)?$/.test(target))
+      ? [`versions: ${targets.every(target => /^K[1-9]\d*\.\.$/.test(target)) ? "all" : options.versions}${historyFields ? "; explicit K history" : ""}`,
+        ...(targets.some(target => /^K[1-9]\d*\.\.$/.test(target)) ? ["selected: explicit K.. histories use all branches"] : [])] : [])].join("\n");
     return page({ items, format }, options, footer, reads);
   };
   // Model spend of this session's runs, from the usage each run recorded (summed over its rounds).
@@ -691,45 +702,36 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     search: (query: string, requestedScope?: SearchScope, input: ListingOptions & { sessionId?: number } = {}): string => {
       validateBudgets(input);
       let scope = requestedScope;
-      if ((input.category !== undefined || input.scope !== undefined) && scope === undefined) scope = "knowledge";
+      if (input.category !== undefined && scope === undefined) scope = "knowledge";
       if (!scope) scope = "all";
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
-      if ((input.category !== undefined || input.scope !== undefined) && scope !== "knowledge")
-        throw new Error("category and scope filters require layer knowledge");
+      if (input.category !== undefined && scope !== "knowledge")
+        throw new Error("category filter requires layer knowledge");
       if (input.cursor) return page([], input, "", [], "search").text;
       const effective = effectiveOptions(input);
       const historyFields = (scope === "knowledge" || scope === "all") && effective.versions !== "current";
       const options = { ...effective, fields: [...(input.fields ?? (historyFields ? SEARCH_HISTORY_DEFAULT_FIELDS : SEARCH_DEFAULT_FIELDS))],
         itemBudget: input.itemBudget === undefined ? input.full === true ? null : SEARCH_PREVIEW_TOKENS : input.itemBudget };
       const reader = options.sessionId === undefined ? undefined : session(options.sessionId);
-      const sessionIds = options.where === "all" ? undefined : options.where === "session" ? [options.sessionId!]
-        : store.projectSessionIds(reader!.projectId);
+      if (options.scope === "session" && !reader) throw new Error("scope:session requires a session context");
+      if (options.scope === "project" && !reader) throw new Error("scope:project requires a project context");
+      const sessionIds = options.scope === "global" || !reader ? undefined : options.scope === "session" ? [reader.id]
+        : store.projectSessionIds(reader.projectId);
       let addresses = store.searchAddresses(query, scope, sessionIds);
       // 22c: the path, applicable set, tips and ancestry are resolved once. Filtering happens over
       // that same graph before paging, so a page spends no budget on a status the query excluded.
-      const path = options.where === "all" ? null : store.knowledgePath(options.sessionId!, options.branch, options.headTurnId);
-      const graphInput = addresses.some(a => a.startsWith("K")) ? store.commitGraphInput() : null;
-      const graph = graphInput ? store.commitGraph(path, undefined, undefined, graphInput) : null;
-      const tips = new Map<number, KnowledgeRevision[]>();
-      for (const r of graph?.current ?? []) tips.set(r.knowledgeId, [...(tips.get(r.knowledgeId) ?? []), r]);
-      const byCommit = new Map(graph?.revisions.map(revision => [revision.id, revision]) ?? []);
+      const selection = addresses.some(a => a.startsWith("K")) ? knowledgeReadSelection(store, options) : null;
+      const graphInput = selection?.input;
+      const graph = selection?.graph;
+      const byCommit = selection?.byCommit ?? new Map<number, KnowledgeRevision>();
       const children = new Map<number, KnowledgeRevision[]>();
       for (const revision of graph?.revisions ?? []) for (const parent of graphInput!.parents.get(revision.id) ?? [])
         children.set(parent, [...(children.get(parent) ?? []), revision]);
       const revision = (address: string) => byCommit.get(Number(address.split("@")[1]))!;
       const fields = new Set(options.fields!.filter(field => field !== "reason"
         || ((scope === "knowledge" || scope === "all") && options.versions !== "current")));
-      const authorMatches = (r: KnowledgeRevision) => options.where !== "session"
-        || (r.runId !== null && graphInput!.metadata.runs.get(r.runId) === options.sessionId);
-      const valueMatches = (r: KnowledgeRevision) => authorMatches(r)
-        && (!options.category || r.category === options.category) && (!options.scope || r.scope === options.scope);
-      const versionMatches = (r: KnowledgeRevision) => {
-        if (!valueMatches(r)) return false;
-        if (options.versions === "all" || (options.where === "all" && options.versions === "history")) return true;
-        if (options.versions === "history") return graph!.applicable.has(r.id);
-        return graph!.current.some(tip => tip.id === r.id) && r.op !== "archive";
-      };
-      addresses = addresses.filter(address => !address.startsWith("K") || versionMatches(revision(address)));
+      const selected = new Set(selection?.representatives(addresses.filter(a => a.startsWith("K")).map(revision), query).map(r => r.id));
+      addresses = addresses.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
       // The graph freezes what a hit is; this freezes mutable annotations and Raw membership for
       // deferred pages. No open transaction survives the first page.
       const capture = (deferred: readonly unknown[]): FrozenHit[] => {
@@ -749,26 +751,21 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds, profile: frozen.profile });
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
-        const hit = revision(address), current = tips.get(id!) ?? [];
-        const applies = !path || graph!.applicable.has(hit.id);
-        const descendants = graph!.descendants(hit.id);
-        const successors = [...new Set(graph!.revisions.filter(r => descendants.has(r.id)).map(r => r.knowledgeId))]
-          .flatMap(nextId => tips.get(nextId) ?? []).filter(r => r.id !== hit.id && descendants.has(r.id));
-        const status = !applies ? "another branch"
-          : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
-          : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
-          : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
+        const hit = revision(address);
+        const status = selection!.status(hit);
         const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
         return renderKnowledgePreview({ knowledge, revision: hit }, frozen?.marks ?? store.listKnowledgeMarks(id!), status, fields,
           options.itemBudget === null ? Infinity : options.itemBudget!, parents, children.get(hit.id) ?? []);
       }).map(listingLine);
-      const where = options.where === "project" ? "project sessions" : options.where === "session" ? "this session" : "all sessions";
-      const filters = [`searched: ${where}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
+      const material = options.scope === "session" ? "this session; session knowledge" : options.scope === "project"
+        ? "project sessions; project knowledge" : options.scope === "global" ? "all sessions; global knowledge"
+        : reader ? "project sessions; global/project/session knowledge" : "all sessions; unrestricted knowledge owners";
+      const filters = [`searched: ${material}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
       const omitted = READ_FIELDS.filter(field => !fields.has(field));
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page({ items: addresses, format, capture }, { ...options,
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${preview}`, [], "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);

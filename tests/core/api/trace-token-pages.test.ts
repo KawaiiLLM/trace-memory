@@ -265,7 +265,7 @@ test("named multi-address values freeze under the transaction, but rendering and
     category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
   const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1-F1`;
   const expected = wholeTrace(memory, address);
-  const spies = (["renderTrace", "renderFact", "renderKnowledge", "renderKnowledgeTrace", "tokens"] as const).map(name => {
+  const spies = (["renderTrace", "renderFact", "renderKnowledgeTrace", "tokens"] as const).map(name => {
     const original = rendering[name];
     return vi.spyOn(rendering, name).mockImplementation(((...args: never[]) => {
       expect(store.db.isTransaction, name).toBe(false);

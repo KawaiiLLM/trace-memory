@@ -583,8 +583,9 @@ test("2026-09-07 B: two tips surface as alternatives to a third session and merg
   edit(c, "C version"); edit(d, "D version");
   const third = peer();
   expect(tips(third)).toEqual([2, 3]);
-  expect(memory.trace("K1")).toContain("Alternative K1@2");
-  expect(memory.trace("K1")).toContain("Alternative K1@3 (newest-created)");
+  expect(memory.trace("K1")).not.toContain("[K1@2]");
+  expect(memory.trace("K1")).toContain("[K1@3]");
+  expect(memory.trace("K1", { versions: "all" })).toContain("Alternative K1@2");
   expect(memory.inject(third)).toContain("K1@2"); expect(memory.inject(third)).toContain("K1@3");
   expect(third.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: "K1", ...content(third.fact) }]).results[0]).toContain("current tips: K1@2, K1@3");
   expect(() => memory.mark("K1", "verified", third)).toThrow("several tips");
@@ -775,11 +776,12 @@ test("41a: project/current defaults, version expansion and exact addresses prese
   const current = memory.search("FILTER", "knowledge", c);
   expect(current).toContain("[K1@2]");
   expect(current).not.toContain("[K1@3]");
-  expect(current).toContain("searched: project sessions, current versions");
+  expect(current).toContain("searched: project sessions; global/project/session knowledge, current versions");
   const history = memory.search("", "knowledge", { ...c, versions: "history" });
-  expect(history).toContain("[K1@1]"); expect(history).toContain("[K1@2]"); expect(history).not.toContain("[K1@3]");
+  expect(history).not.toContain("[K1@1]"); expect(history).toContain("[K1@2]"); expect(history).not.toContain("[K1@3]");
   const all = memory.search("", "knowledge", { ...c, versions: "all" });
-  for (const commit of [1, 2, 3]) expect(all).toContain(`[K1@${commit}]`);
+  expect(all).toContain("[K1@2]");
+  for (const commit of [1, 3]) expect(all).not.toContain(`[K1@${commit}]`);
   const trace = memory.trace("K1", c);
   expect(trace).toContain("K1 path current: K1@2");
   expect(trace).not.toContain("Applicable history on this path:");
@@ -789,7 +791,7 @@ test("41a: project/current defaults, version expansion and exact addresses prese
   expect(memory.trace("K1@2..K1@3", c)).toContain("[-C-]{+D+}");
 });
 
-test("41a: where, category and scope filter candidates and cursor options are frozen", () => {
+test("41a: category and unified scope filter candidates and cursor options are frozen", () => {
   const { root, c, peer } = commitPaths();
   const sameProject = peer(), foreign = peer(memory.store.createProject({ name: "foreign-41a", declaredBy: "mark" }).id);
   const create = (who: typeof root, text: string, category: "open" | "reference", scope: "project" | "global") =>
@@ -800,12 +802,12 @@ test("41a: where, category and scope filter candidates and cursor options are fr
   const facts = search.execute({ query: "main", layer: "facts" });
   expect(facts).toContain(`[F${sameProject.fact.slice(1)}]`);
   expect(facts).not.toContain(`[F${foreign.fact.slice(1)}]`);
-  expect(search.execute({ query: "main", layer: "facts", where: "all" })).toContain(`[F${foreign.fact.slice(1)}]`);
+  expect(search.execute({ query: "main", layer: "facts", scope: "global" })).toContain(`[F${foreign.fact.slice(1)}]`);
   expect(search.execute({ query: "41A", category: "open" })).toContain(`[K${shared.knowledgeId}@${shared.commit}]`);
   expect(search.execute({ query: "41A", category: "open" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
   expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge" })).toContain(`[K${global.knowledgeId}@${global.commit}]`);
-  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", where: "session" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
-  expect(search.execute({ query: "41A", layer: "facts", category: "open" })).toContain("rejected: category and scope filters require layer knowledge");
+  expect(search.execute({ query: "FOREIGN-GLOBAL", layer: "knowledge", scope: "session" })).not.toContain(`[K${global.knowledgeId}@${global.commit}]`);
+  expect(search.execute({ query: "41A", layer: "facts", category: "open" })).toContain("rejected: category filter requires layer knowledge");
   let page = search.execute({ query: "", layer: "knowledge", versions: "all", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(page)![1]!;
   expect(search.execute({ query: "", cursor, versions: "history" })).toContain("rejected: cursor versions is frozen");
@@ -895,18 +897,21 @@ test("41 review: search history defaults show existing statuses while current an
   expect(current).toContain("[K1@2]"); expect(current).not.toContain("status:");
   expect(current).toContain("preview: text only");
   const history = memory.search("", "knowledge", { ...path, versions: "history" });
-  expect(history).toContain("[K1@1]"); expect(history).toContain("status: superseded on this path by K1@2");
+  expect(history).not.toContain("[K1@1]");
+  expect(memory.search("Use blue tiles", "knowledge", { ...path, versions: "history" })).toContain("status: superseded on this path by K1@2");
   expect(history).toContain("[K1@2]"); expect(history).toContain("status: current on this path");
   expect(history).toContain("preview: fields text, status");
   const all = memory.search("", "knowledge", { ...path, versions: "all" });
-  expect(all).toContain("[K1@3]"); expect(all).toContain("status: another branch");
+  expect(all).not.toContain("[K1@3]");
+  expect(memory.search("SEARCH-STATUS-D", "knowledge", { ...path, versions: "all" })).toContain("status: another branch");
 
   const textOnly = memory.search("", "knowledge", { ...path, versions: "all", fields: ["text"] });
   expect(textOnly).not.toContain("status:"); expect(textOnly).toContain("preview: text only");
   const identityOnly = memory.search("", "knowledge", { ...path, versions: "all", fields: [] });
-  expect(hits(identityOnly)).toMatch(/^\[K1@1\] \[constraint\/project\]\n\[K1@2\] \[constraint\/project\]\n\[K1@3\] \[constraint\/project\]$/);
+  expect(hits(identityOnly)).toBe("[K1@2] [constraint/project]");
   expect(identityOnly).toContain("preview: identity only"); expect(identityOnly).toMatch(/omitted fields: .*status/);
 
+  c.write([{ op: "create", text: "SECOND-STATUS", category: "reference", scope: "project", supports: [c.fact], topics: [], reason: "Cursor fixture." }]);
   const first = memory.search("", "knowledge", { ...path, versions: "all", cap: 1 });
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   expect(memory.search("", "knowledge", { ...path, cursor, fields: ["text", "status"], cap: 1 })).not.toContain("unknown or expired cursor");
@@ -983,16 +988,18 @@ test("41 repair: knowledge search shows requested reasons only for history and a
   expect(current).toMatch(/omitted fields: .*reason/);
 
   const history = memory.search("", "knowledge", { ...c, versions: "history", fields: ["reason"] });
-  expect(history).toContain("reason: Initial admission of this conclusion.");
+  expect(history).not.toContain("reason: Initial admission of this conclusion.");
+  expect(memory.search("Use blue tiles", "knowledge", { ...c, versions: "history", fields: ["reason"] })).toContain("reason: Initial admission of this conclusion.");
   expect(history).toContain("reason: Substantive correction of the recorded conclusion.");
   expect(history).not.toContain("REASON-TEXT-C");
   expect(history).toContain("preview: fields reason; omitted fields:");
-  expect(history.match(/reason:/g)).toHaveLength(2);
+  expect(history.match(/reason:/g)).toHaveLength(1);
 
   const mixed = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "reason"] });
   expect(mixed).toContain("REASON-TEXT-C");
-  expect(mixed).toContain("REASON-TEXT-D");
-  expect(mixed.match(/reason: Substantive correction of the recorded conclusion\./g)).toHaveLength(2);
+  expect(mixed).not.toContain("REASON-TEXT-D");
+  expect(mixed.match(/reason: Substantive correction of the recorded conclusion\./g)).toHaveLength(1);
+  expect(memory.search("REASON-TEXT-D", "knowledge", { ...c, versions: "all", fields: ["reason"] })).toContain("reason: Substantive correction of the recorded conclusion.");
   expect(mixed).toContain("preview: fields text, reason; omitted fields:");
 
   const longReason = "because ".repeat(200).trim();
@@ -1150,9 +1157,9 @@ test("16b: search notes describe the supplied path, including archives and unres
   const { root, c, d, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
   const hits = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "status"] }).split("\n");
-  expect(hits.find(l => l.startsWith("[K1@1]"))).toContain("superseded on this path by K1@2");
+  expect(memory.search("Use blue tiles", "knowledge", { ...c, versions: "all" })).toContain("superseded on this path by K1@2");
   expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("current on this path");
-  expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("another branch");
+  expect(memory.search("D version", "knowledge", { ...c, versions: "all" })).toContain("another branch");
   expect(memory.search("C version", "knowledge", { ...root, versions: "all", fields: ["text", "status"] })).toContain("another branch");
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
   expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: c.read(), supports: [c.fact] }]).committed[0].commit).toBe(4);
@@ -1890,13 +1897,16 @@ test("21b 2026-09-08: a shared label alters no applicability, keeps its history 
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: 2 }, { knowledgeId: 1, commit: 3 }] }]);
   expect(groups(c).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: 2 }] }]);
   // An archive inherits the label; explicit search keeps its history labels, automatic material drops it.
+  expect(third.write([{ op: "archive", id: "K1@2", supports: [third.fact], reason: "Retired on this path." }]).results[0]).toContain("knowledge was not read");
+  third.read("K1@2"); // The default representative K1@3 does not certify the omitted alternative.
   expect(third.write([{ op: "archive", id: "K1@2", supports: [third.fact], reason: "Retired on this path." }]).committed).toHaveLength(1);
   expect(memory.store.getKnowledgeRevision(1, 4)!.topics).toEqual(["tiling"]);
   const hits = memory.search("tiling", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").filter(l => l.startsWith("[K"));
-  expect(hits).toHaveLength(3); // the two tips and the archive; the unlabelled root commit is not a hit
-  expect(hits.find(l => l.startsWith("[K1@4]"))).toContain("status: archived");
-  expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("status: archived"); // retired, not presented as a current rule
-  expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("status: tip");
+  expect(hits).toHaveLength(1); // One K: equal topic scores choose the newest current candidate (archive).
+  expect(hits[0]).toContain("[K1@4]");
+  expect(hits[0]).toContain("status: archived");
+  expect(memory.search("C version", "knowledge", { versions: "all" })).toContain("status: archived");
+  expect(memory.search("D version", "knowledge", { versions: "all" })).toContain("status: tip");
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: 3 }] }]);
   expect(memory.inject(third)).toContain("[K1@3]");
   expect(memory.inject(third)).not.toContain("[K1@4]");

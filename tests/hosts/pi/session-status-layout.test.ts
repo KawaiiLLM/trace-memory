@@ -8,6 +8,7 @@ import { SessionPanel, showSessionPanel } from "../../../src/hosts/pi/session-pa
 import { host, reply } from "./test-host.ts";
 import { compositionMap, contextMap, statusBody } from "../../../src/hosts/pi/session-status.ts";
 import type { ContextComposition } from "../../../src/hosts/pi/context-composition.ts";
+import { tokens } from "../../../src/core/render/index.ts";
 
 // These are installed Pi internals only in tests: reproduce the actual fullscreen dock,
 // not selector.render() or an invented terminal-height approximation.
@@ -398,9 +399,18 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const viewed = [first];
     for (let page = 0; page < 20; page++) { s.key("\x1b[6~"); viewed.push(s.frame().map(line => line.trimEnd()).join("\n")); }
     const seen = viewed.join("\n"), squashed = seen.replace(/\s+/g, "");
+    // Real registered schema/description bytes determine Tools, not a stale tool-text fixture.
+    // Conversation remains exactly 12 tokens; SDK occupancy is independently fixed above.
+    const toolTokens = [...h.tools.values()].reduce((sum, tool) => sum + tokens(JSON.stringify({
+      name: tool.name, description: tool.description, parameters: tool.parameters,
+    })), 0);
+    const total = toolTokens + 12;
+    expect(toolTokens).toBeGreaterThanOrEqual(1000); expect(toolTokens).toBeLessThan(10000);
+    const toolLabel = `Tools ~${(toolTokens / 1000).toFixed(1)}k (${(100 * toolTokens / total).toFixed(1)}% local)`;
+    const conversationLabel = `Conversation ~12 (${(1200 / total).toFixed(1)}% local)`;
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
       "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
-      "Estimated usage by category", "Tools ~2.4k (99.5% local)", "Conversation ~12 (0.5% local)", "Free ~955.5k (95.5% window)"])
+      "Estimated usage by category", toolLabel, conversationLabel, "Free ~955.5k (95.5% window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");
     expect(seen).not.toContain("Memory ~0");

@@ -667,7 +667,7 @@ export function renderKnowledgePreview(value: KnowledgeWithRevision, marks: Know
 }
 
 export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: KnowledgeMark[], parents: KnowledgeRevision[], children: KnowledgeRevision[], cap = Infinity,
-  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false): string {
+  effectiveGrounds: number[] = value.revision.supports, fields?: ReadonlySet<string>, historyLine = false, pathStatus?: string): string {
   const addresses = (commits: KnowledgeRevision[]) => commits.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none";
   const direct = new Set(value.revision.supports), inherited = effectiveGrounds.filter(id => !direct.has(id));
   if (!fields) {
@@ -686,6 +686,7 @@ export function renderKnowledgeTrace(value: KnowledgeWithRevision, marks: Knowle
       ...(r.supportSemantics === "change" ? [`\n  inherited lineage supports: ${factAddresses(inherited)}`] : [])] : []),
     ...(!fields.has("supports") && fields.has("topics") && r.topics.length ? [`\n  topics: ${JSON.stringify(r.topics)}`] : []),
     ...(fields.has("status") ? [`\n  status: ${r.op} ${r.createdAt}${r.actorRole ? `; actor ${r.actorRole}; run R${r.runId}${!r.supports.length ? "; maintenance judgment" : ""}` : ""}`] : []),
+    ...(fields.has("status") && pathStatus ? [`\n  status: ${pathStatus}`] : []),
     ...(fields.has("links") ? [`\n  parents: ${addresses(parents)}`, `\n  children: ${addresses(children)}`] : []),
     ...(historyLine ? [`\n${selectedCommitLine(r, fields)}`] : []),
   ].join("");

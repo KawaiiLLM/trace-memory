@@ -4,7 +4,7 @@ import { tokens } from "../src/core/render/index.ts";
 
 /** Strip only the paginator's trailing receipt, never a source's own receipt block. */
 export function tracePage(text: string) {
-  const suffix = /\n\nReceipts:\n(?:versions: (?:current|history|all)(?:\n|$))?(Hit continues on next page; concatenate without a newline\.\n)?(?:cursor=([\da-f-]{36}))?$/.exec(text);
+  const suffix = /\n\nReceipts:\n(?:(?:versions: (?:current|history|all)(?:; explicit K history)?|selected: [^\n]*|One representative per K;[^\n]*)(?:\n|$))*(Hit continues on next page; concatenate without a newline\.\n)?(?:cursor=([\da-f-]{36}))?$/.exec(text);
   return { body: suffix ? text.slice(0, suffix.index) : text, cursor: suffix?.[2], fragment: !!suffix?.[1] };
 }
 export function drainTrace(memory: Pick<TraceMemory, "trace">, first: string, options: ListingOptions = {}, between?: (page: number) => void) {
