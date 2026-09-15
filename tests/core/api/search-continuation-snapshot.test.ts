@@ -23,8 +23,9 @@ function session() {
  * require the two pages to join into exactly what the same query printed whole. */
 function paged(scope: "facts" | "knowledge" | "raw", query: string, between: () => void) {
   const body = (text: string) => text.split("\n\nReceipts:")[0]!;
-  const whole = body(memory.search(query, scope, { cap: 100 }));
-  const first = memory.search(query, scope, { cap: 1 });
+  const fields = scope === "knowledge" ? { fields: ["text", "marks"] as const } : {};
+  const whole = body(memory.search(query, scope, { cap: 100, ...fields }));
+  const first = memory.search(query, scope, { cap: 1, ...fields });
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   expect(memory.store.db.isTransaction).toBe(false); // no transaction is held while the caller decides
   between();
@@ -60,7 +61,7 @@ test("22c: a knowledge commit marked between two pages does not carry the mark i
   expect(joined).toBe(whole);
   expect(whole).not.toContain("flagged");
   // The mark is real: a fresh query after the paging shows it.
-  expect(memory.search("needle", "knowledge", { cap: 100 })).toContain("flagged");
+  expect(memory.search("needle", "knowledge", { cap: 100, fields: ["text", "marks"] })).toContain("flagged");
 });
 
 test("22c: a message completed between two pages does not join the established page's assembled trace", () => {

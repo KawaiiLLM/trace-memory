@@ -231,8 +231,8 @@ test("21a 2026-09-08: reason shows in commit history, diffs and the run, never i
   write.execute(batch);
   const receipt = JSON.parse(write.execute({ operations: [{ ...create, op: "update", id: read("K1@1"), reason: "Re-checked 42 files; wording unchanged." }], skipped: [] }));
   expect(receipt.diagnostics).toEqual([]); // the numeric-evidence diagnostic reads text, never the reason
-  expect(memory.trace("K1")).toContain("reason: Re-checked 42 files; wording unchanged.");
-  expect(memory.trace("K1@1..K1@2")).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1", { versions: "history", fields: ["reason"] })).toContain("reason: Re-checked 42 files; wording unchanged.");
+  expect(memory.trace("K1@1..K1@2", { fields: ["reason"] })).toContain("reason: Initial admission of this conclusion. -> Re-checked 42 files; wording unchanged.");
   expect(memory.trace(`R${memory.store.listRuns(1).at(-1)!.id}`)).toContain("K1@2 (update: Re-checked 42 files; wording unchanged.)");
   const automatic = memory.inject({ sessionId: 1, headTurnId: 1, branch: "main" });
   expect(automatic).toContain("Use pnpm"); expect(automatic).not.toContain("Re-checked 42 files");

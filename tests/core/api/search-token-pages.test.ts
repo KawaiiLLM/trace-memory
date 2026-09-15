@@ -89,7 +89,7 @@ test("invalid budgets and cap do not consume a valid cursor; budgets cannot chan
   for (const maxTokens of [0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "300", 1, 301]) {
     expect(() => memory.search("", "raw", { sessionId, cursor, maxTokens: maxTokens as number })).toThrow(/maxTokens/);
   }
-  expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: 10000 })).toThrow(/frozen/);
+  expect(() => memory.trace(`cursor=${cursor}`, { sessionId, maxTokens: 10000 })).toThrow(/at most 8000/);
   expect(() => memory.trace(`K1,cursor=${cursor}`, { sessionId })).toThrow(/alone/);
   expect(() => memory.search("", "raw", { sessionId, cursor, cap: 0 })).toThrow(/cap/);
   expect(() => memory.search("", "bogus" as never, { sessionId, cursor })).toThrow("invalid search scope");
@@ -123,7 +123,7 @@ test.each([64, 80, 96, 128])("tiny budget %s either rejects explicitly or keeps 
 test("model-facing schema and execution expose only search's token budget", () => {
   const { sessionId, turns } = corpus(["中文😀".repeat(2000)]);
   const [trace, search] = memory.tools({ kind: "manual", sessionId, branch: "main", currentTurnId: turns[0]!.id });
-  expect(search!.parameters.properties).toHaveProperty("maxTokens", { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER, default: 2000 });
+  expect(search!.parameters.properties).toHaveProperty("maxTokens", { type: "integer", minimum: 1, maximum: 8000, default: 2000 });
   expect(trace!.parameters.properties).not.toHaveProperty("maxTokens");
   const first = search!.execute({ query: "needle", layer: "raw", maxTokens: 256 });
   expect(tokens(first)).toBeLessThanOrEqual(256);

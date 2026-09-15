@@ -400,7 +400,7 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     const seen = viewed.join("\n"), squashed = seen.replace(/\s+/g, "");
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
       "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",
-      "Estimated usage by category", "Tools ~1.9k (99.4% local)", "Conversation ~12 (0.6% local)", "Free ~955.5k (95.5% window)"])
+      "Estimated usage by category", "Tools ~2.4k (99.5% local)", "Conversation ~12 (0.5% local)", "Free ~955.5k (95.5% window)"])
       expect(squashed).toContain(phrase.replace(/\s+/g, ""));
     expect(seen).not.toContain("Difference");
     expect(seen).not.toContain("Memory ~0");

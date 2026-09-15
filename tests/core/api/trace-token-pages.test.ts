@@ -205,7 +205,7 @@ test.each([128, 400, 2000])("non-monotone intact Unicode lines take one page whe
   expect(tokens("😀".repeat(128) + "a")).toBe(37);
   const expected = `[T${t.id}#E1@text] user: ${text}`;
   expect(memory.trace(`T${t.id}#user`, { full: true, maxTokens: Math.max(128, tokens(expected)) })).toBe(expected);
-  const search = memory.search("needle", "raw", { maxTokens: 1_000_000 });
+  const search = memory.search("needle", "raw", { maxTokens: 8000 });
   expect(search).not.toContain("cursor=");
   expect(memory.search("needle", "raw", { maxTokens: Math.max(128, tokens(search)) })).toBe(search);
 });
@@ -220,7 +220,7 @@ test("named multi-address values freeze under the transaction, but rendering and
     category: "mechanism", scope: "project", supports: [1], reason: "test", topics: [], createdAt: time }] }).ok).toBe(true);
   const address = `T${turn.id},S${sessionId},pagination,F1,K1,F1-F1`;
   const expected = wholeTrace(memory, address);
-  const spies = (["renderTrace", "renderFact", "renderKnowledge", "renderKnowledgeTrace", "renderCommitHistory", "tokens"] as const).map(name => {
+  const spies = (["renderTrace", "renderFact", "renderKnowledge", "renderKnowledgeTrace", "tokens"] as const).map(name => {
     const original = rendering[name];
     return vi.spyOn(rendering, name).mockImplementation(((...args: never[]) => {
       expect(store.db.isTransaction, name).toBe(false);

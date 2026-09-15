@@ -498,6 +498,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         return value;
       };
       const marks = store.listKnowledgeMarks(id!);
+      const fields = new Set(display.fields ?? ["text", "supports", "topics", "status", "links", "marks"]);
       const descriptions = new Map<number, () => string>();
       const capture = (revisions: typeof history) => {
         for (const r of revisions) {
@@ -505,9 +506,9 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           const parents = store.commitParents(r), children = store.commitChildren(r);
           descriptions.set(r.id, () => {
             const grounds = [...store.revisionGrounds(r)].sort((a, b) => a - b);
-            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds);
-            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds);
-            if (text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
+            const full = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, Infinity, grounds, fields);
+            const text = renderKnowledgeTrace({ knowledge, revision: r }, marks, parents, children, itemCap, grounds, fields);
+            if (!fields.has("text") || text !== full) for (const read of reads ?? []) if (read.knowledgeId === id && read.commits.includes(r.id)) read.complete = false;
             return text;
           });
         }
@@ -525,7 +526,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
           return ids;
         };
         const left = ancestors(a), right = ancestors(b);
-        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap);
+        return () => renderKnowledgeDiff(a, b, history.filter(r => left.has(r.id) !== right.has(r.id)), itemCap, fields);
       }
       if (from !== undefined) {
         const revision = commit(from);
@@ -559,10 +560,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       return () => [path ? `K${id} path current: ${tips.map(r => `K${id}@${r.id}`).join(", ") || "none"}`
         : `K${id} tips (newest-created: ${tips.length ? `K${id}@${Math.max(...tips.map(r => r.id))}` : "none"}):`,
         ...tips.map(r => (tips.length > 1 ? `Alternative K${id}@${r.id}${!path && r.id === Math.max(...tips.map(t => t.id)) ? " (newest-created)" : ""}\n` : "") + describe(r)),
-        ...links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`),
-        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable)]
-          : ["Commit history:", renderCommitHistory(allHistory)]),
-        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "All branch commits:", renderCommitHistory(allHistory)] : [])].join("\n");
+        ...(fields.has("links") ? links.map(l => `  ${l.kind}: K${l.toKnowledge}@${l.toCommit} (from K${l.fromKnowledge}@${l.fromCommit})`) : []),
+        ...(versions === "current" ? [] : path ? ["Applicable history on this path:", renderCommitHistory(applicable, fields)]
+          : ["Commit history:", renderCommitHistory(allHistory, fields)]),
+        ...(path && versions === "all" ? ["Other branches' tips:", ...otherTips.map(describe), "All branch commits:", renderCommitHistory(allHistory, fields)] : [])].join("\n");
     }
     const walkMatch = /^F([1-9]\d*)\.\.$/.exec(target ?? "");
     if (walkMatch) {

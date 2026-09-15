@@ -100,7 +100,7 @@ test("32d: archive provenance and exact-parent applicability survive reopen, inc
   expect(memory.trace(`K${f.item.knowledgeId}@${commit}`)).toContain("maintenance judgment");
   expect(memory.trace(`K${f.item.knowledgeId}@${f.item.commit}`)).toContain("rule");
   expect(memory.trace("F1")).toContain("rule");
-  expect(memory.search("rule", "knowledge")).toContain("maintenance judgment");
+  expect(memory.search("rule", "knowledge", { versions: "all", fields: ["text", "status"] })).toContain("status: archived");
 });
 
 test("32d: current claim and family are enforced in the atomic Store write, not by reads", () => {

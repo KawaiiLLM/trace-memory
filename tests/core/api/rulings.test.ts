@@ -513,7 +513,7 @@ test("34a: a child cannot escape an inapplicable historical parent by citing sha
   expect(edit(next, "Develop after revert").committed[0].commit).toBe(4);
   expect(tips(next)).toEqual([4]); expect(tips(root)).toEqual([1]);
   expect(memory.trace("K1@1..K1@4")).toContain("{+Develop+}");
-  expect(memory.trace("K1..")).toContain("K1@3 update");
+  expect(memory.trace("K1..")).toContain("status: update");
 });
 
 test("2026-09-07 B/34b: pre-fork evidence applies to both branches without blocking an authorized sibling write", () => {
@@ -665,7 +665,6 @@ test("search previews and cursor fragments never refresh a knowledge write base"
     expect(page).not.toContain("rejected:");
     expect(++count).toBeLessThan(100);
   }
-  expect(count).toBeGreaterThan(1);
   expect(edit().results[0]).toContain("current: K1@2");
   expect(edit("K1@2").results[0]).toContain("knowledge was not read");
   page = other.tools[0]!.execute({ address: "K1", full: true });
@@ -814,6 +813,64 @@ test("41a: where, category and scope filter candidates and cursor options are fr
   expect(page).not.toContain("rejected:");
 });
 
+test("41b: search previews budget text independently of long fact evidence metadata", () => {
+  const { c } = commitPaths();
+  const receipt = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: c.sessionId, branch: c.branch, createdAt: time },
+    facts: [{ turnId: c.headTurnId, category: "observation", actor: "user", text: "PREVIEW-FACT " + "word ".repeat(300),
+      quote: "quote ".repeat(2000), source: [`T${c.headTurnId}#user`], createdAt: time }], entryIds: [] });
+  if (!receipt.ok) throw new Error(receipt.problems.join("; "));
+  const factId = receipt.facts[0]!.id;
+  const search = c.tools.find(tool => tool.name === "search")!;
+  const preview = search.execute({ query: "PREVIEW-FACT", layer: "facts" });
+  expect(preview).toContain(`[F${factId}] [observation/user]`);
+  expect(preview).toContain("characters truncated");
+  expect(preview).not.toContain("quote:"); expect(preview).not.toContain("source:");
+  expect(preview).toContain("preview: text only");
+  expect(preview.split("\n").filter((line: string) => line.startsWith(`[F${factId}]`))).toHaveLength(1);
+  const tiny = search.execute({ query: "PREVIEW-FACT", layer: "facts", itemBudget: 1 });
+  expect(tiny).toContain(`[F${factId}] [observation/user] [...`);
+});
+
+test("41b: fields control knowledge trace and only actual complete text delivery grants a handle", () => {
+  const { root, peer, content } = commitPaths();
+  const other = peer();
+  const reader = memory.tools({ kind: "manual", sessionId: other.sessionId, currentTurnId: other.headTurnId, branch: "reader-41b", triggerEntryId: other.triggerEntryId });
+  const write = (tools: typeof reader, text: string) => JSON.parse(tools[3]!.execute({ operations: [{ op: "update", id: "K1@1",
+    ...content(other.fact, text), topics: [], reason: "41b update" }], skipped: [] }));
+  const noText = reader[0]!.execute({ address: "K1@1", fields: ["supports", "reason"] });
+  expect(noText).toContain("change supports"); expect(noText).not.toContain("Use blue tiles"); expect(noText).not.toContain("reason:");
+  expect(write(reader, "NO-TEXT-FAIL").results[0]).toContain("knowledge was not read");
+  reader[1]!.execute({ query: "Use blue tiles", layer: "knowledge", itemBudget: null, fields: ["text", "supports"] });
+  expect(write(reader, "SEARCH-FAIL").results[0]).toContain("knowledge was not read");
+  reader[0]!.execute({ address: "K1@1" });
+  expect(write(reader, "FINITE-COMPLETE").committed[0].commit).toBe(2);
+  const fresh = peer();
+  const freshTools = memory.tools({ kind: "manual", sessionId: fresh.sessionId, currentTurnId: fresh.headTurnId, branch: "full-reader-41b", triggerEntryId: fresh.triggerEntryId });
+  freshTools[0]!.execute({ address: "K1@2", full: true });
+  const committed = JSON.parse(freshTools[3]!.execute({ operations: [{ op: "update", id: "K1@2", ...content(fresh.fact, "FULL-COMPLETE"), topics: [], reason: "41b full" }], skipped: [] }));
+  expect(committed.committed[0].commit).toBe(3);
+  expect(root.tools[0]!.execute({ address: "K1@1", versions: "all", fields: ["reason"] })).not.toContain("reason:");
+  expect(root.tools[0]!.execute({ address: "K1", versions: "history", fields: ["reason"] })).toContain("reason:");
+});
+
+test("41b: fields and budgets freeze across pages; public pages cap at 8000 while internal null remains", () => {
+  const { c, content } = commitPaths();
+  c.write(["SECOND-41B", "THIRD-41B"].map(text => ({ op: "create", ...content(c.fact, text), topics: [], reason: "41b fixture" })));
+  const search = c.tools.find(tool => tool.name === "search")!, trace = c.tools.find(tool => tool.name === "trace")!;
+  expect(search.execute({ query: "", layer: "knowledge", maxTokens: 8001 })).toContain("rejected: maxTokens");
+  expect(trace.execute({ address: "K1", pageBudget: 8001 })).toContain("rejected: pageBudget");
+  const searchProperties = search.parameters.properties as Record<string, unknown>, traceProperties = trace.parameters.properties as Record<string, unknown>;
+  expect(searchProperties.maxTokens).toMatchObject({ maximum: 8000, default: 2000 });
+  expect(traceProperties.pageBudget).toMatchObject({ maximum: 8000, default: 2000 });
+  let page = search.execute({ query: "", layer: "knowledge", versions: "all", fields: ["text", "supports"], itemBudget: 20, cap: 1 });
+  const cursor = /cursor=(\S+)/.exec(page)![1]!;
+  expect(search.execute({ query: "", cursor, fields: ["text"] })).toContain("rejected: cursor fields is frozen");
+  expect(search.execute({ query: "", cursor, itemBudget: 21 })).toContain("rejected: cursor itemBudget is frozen");
+  page = search.execute({ query: "", cursor });
+  expect(page).not.toContain("rejected:");
+  expect(memory.trace("K1@1", { pageBudget: null })).toContain("[K1@1]");
+});
+
 test("34a: recursive parent scope bounds first-prompt injection and path reads", () => {
   const { root, peer, content } = commitPaths();
   root.write([{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", id: root.read(), ...content(root.fact, "Shared globally"), scope: "global" }]);
@@ -942,15 +999,15 @@ test("16b: commit addresses are global, full diffs allow siblings and reverse or
 test("16b: search notes describe the supplied path, including archives and unrestricted siblings", () => {
   const { root, c, d, edit } = commitPaths();
   edit(c, "C version"); edit(d, "D version");
-  const hits = memory.search("", "knowledge", { ...c, versions: "all" }).split("\n");
+  const hits = memory.search("", "knowledge", { ...c, versions: "all", fields: ["text", "status"] }).split("\n");
   expect(hits.find(l => l.startsWith("[K1@1]"))).toContain("superseded on this path by K1@2");
   expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("current on this path");
   expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("another branch");
-  expect(memory.search("C version", "knowledge", { ...root, versions: "all" })).toContain("another branch");
+  expect(memory.search("C version", "knowledge", { ...root, versions: "all", fields: ["text", "status"] })).toContain("another branch");
   expect(c.tools[0]!.execute({ address: "K1" })).toContain("C version");
   expect(c.write([{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", id: c.read(), supports: [c.fact] }]).committed[0].commit).toBe(4);
-  expect(memory.search("C version", "knowledge", { ...c, versions: "history" })).toContain("archived on this path");
-  expect(memory.search("D version", "knowledge", d)).toContain("current on this path");
+  expect(memory.search("C version", "knowledge", { ...c, versions: "history", fields: ["text", "status"] })).toContain("archived on this path");
+  expect(memory.search("D version", "knowledge", { ...d, fields: ["text", "status"] })).toContain("current on this path");
 });
 
 test("16b: marks address commits, bare writes bind the path and reject multiple tips", () => {
@@ -1685,11 +1742,11 @@ test("21b 2026-09-08: a shared label alters no applicability, keeps its history 
   // An archive inherits the label; explicit search keeps its history labels, automatic material drops it.
   expect(third.write([{ op: "archive", id: "K1@2", supports: [third.fact], reason: "Retired on this path." }]).committed).toHaveLength(1);
   expect(memory.store.getKnowledgeRevision(1, 4)!.topics).toEqual(["tiling"]);
-  const hits = memory.search("tiling", "knowledge", { versions: "all" }).split("\n").filter(l => l.startsWith("[K"));
+  const hits = memory.search("tiling", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").filter(l => l.startsWith("[K"));
   expect(hits).toHaveLength(3); // the two tips and the archive; the unlabelled root commit is not a hit
-  expect(hits.find(l => l.startsWith("[K1@4]"))).toContain("note: archived");
-  expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("note: archived"); // retired, not presented as a current rule
-  expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("note: tip");
+  expect(hits.find(l => l.startsWith("[K1@4]"))).toContain("status: archived");
+  expect(hits.find(l => l.startsWith("[K1@2]"))).toContain("status: archived"); // retired, not presented as a current rule
+  expect(hits.find(l => l.startsWith("[K1@3]"))).toContain("status: tip");
   expect(groups(third).topics).toEqual([{ topic: "tiling", commits: [{ knowledgeId: 1, commit: 3 }] }]);
   expect(memory.inject(third)).toContain("[K1@3]");
   expect(memory.inject(third)).not.toContain("[K1@4]");

@@ -146,7 +146,7 @@ test("22c: a search page formats its own hits and resolves the commit graph once
 
 test("22c: continuation is complete and stable, and a commit between pages moves no label", () => {
   const corpus = knowledgeCorpus(4, 3);
-  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const };
+  const options = { sessionId: corpus.sessionId, headTurnId: corpus.headTurnId, versions: "all" as const, fields: ["text", "status"] as const };
   const addresses = (text: string) => text.split("\n").filter(l => l.startsWith("[K")).map(l => l.slice(1, l.indexOf("]")));
   const whole = memory.search(corpus.query, "knowledge", options);
   const expected = addresses(whole);

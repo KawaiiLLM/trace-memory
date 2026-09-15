@@ -595,7 +595,7 @@ test("listing line caps still apply with an explicit large search token budget",
     facts: Array.from({ length: 101 }, (_, i) => ({ turnId: t.id, text: `needle ${i}`, category: "observation" as const,
       actor: "agent" as const, source: [`T${t.id}#assistant`], createdAt: time })) });
   expect(result.ok).toBe(true);
-  const first = memory.search("needle", "all", { maxTokens: 10000 });
+  const first = memory.search("needle", "all", { maxTokens: 8000 });
   expect(first.split("\n").filter((l) => l.startsWith("[F"))).toHaveLength(100);
   const cursor = /cursor=(\S+)/.exec(first)![1]!;
   noting(s.id, t.id, "needle added later");
@@ -625,12 +625,12 @@ test("search marks historical, merged and archived knowledge hits so they do not
   memory.store.commitConsolidationRun({ run, operations: [{ op: "update", topics: [], reason: "Substantive correction of the recorded conclusion.", knowledgeId: a, baseCommit: 1, text: "Use npm for installs", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
   memory.store.commitConsolidationRun({ run: { ...run, kind: "manual" }, operations: [{ op: "merge", topics: [], reason: "Merged duplicate knowledge into the survivor.", intoKnowledgeId: b, intoBaseCommit: b, absorb: [{ knowledgeId: c, baseCommit: c }], text: "pnpm is the package manager and its lockfile is committed", category: "constraint", scope: "project", supports: [1], createdAt: time }] });
   memory.store.commitConsolidationRun({ run, operations: [{ op: "archive", reason: "Retired: the cited evidence withdraws this conclusion.", knowledgeId: b, baseCommit: 5, supports: [1], createdAt: time }] });
-  const hits = memory.search("pnpm", "knowledge", { versions: "all" });
-  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`note: superseded by K${a}@4`);
-  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("note: archived");
-  expect(hits).toContain("note: archived");
-  const current = memory.search("for installs", "knowledge", { versions: "all" }).split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
-  expect(current).toContain("note: tip"); // unbound reads label tips without claiming current
+  const hits = memory.search("pnpm", "knowledge", { versions: "all", fields: ["text", "status"] });
+  expect(hits).toContain(`[K${a}@1]`); expect(hits).toContain(`status: superseded by K${a}@4`);
+  expect(hits.split("\n").find(l => l.startsWith(`[K${c}@3]`))).toContain("status: archived");
+  expect(hits).toContain("status: archived");
+  const current = memory.search("for installs", "knowledge", { versions: "all", fields: ["text", "status"] }).split("\n").find((l) => l.startsWith(`[K${a}@4]`))!;
+  expect(current).toContain("status: tip"); // unbound reads label tips without claiming current
 });
 
 test("reads resolve any existing address: another session's history, current revision, and a missing revision is rejected as missing", () => {

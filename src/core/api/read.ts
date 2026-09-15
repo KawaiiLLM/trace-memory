@@ -3,7 +3,7 @@ import { traceTargets } from "../model/address.ts";
 import type { TraceMemoryConfig } from "./index.ts";
 import type { Store, KnowledgeWithRevision, KnowledgePath, SourceEntry } from "../store/index.ts";
 import { KNOWLEDGE_CATEGORIES, KNOWLEDGE_SCOPES, type Fact, type FactRelation, type KnowledgeCategory, type KnowledgeMark, type KnowledgeRevision, type KnowledgeScope } from "../model/index.ts";
-import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
+import { budgetKnowledge, charge, expandList, tokens, finish, listingLine, renderKnowledge, renderKnowledgeBlock, renderSemantic, renderFact, renderFactPreview, renderKnowledgePreview, renderFactGroups, factGroupLayout, renderEntry, rawResultText, xmlBlock, type EntryView, type ResultExtractor, type EntryProfile } from "../render/index.ts";
 import { injectionText, compactText, measuredMemory, type MemoryComposition, FACTS_TITLE, RAW_TITLE, KNOWLEDGE_STATUS_TITLE } from "../render/material.ts";
 import { knowledgeStateKey, noVisibility, type KnowledgeStateReceipt, type SuppliedMaterial, type VisibleView } from "./visible.ts";
 
@@ -17,13 +17,20 @@ export const READ_WHERE = ["project", "session", "all"] as const;
 export type ReadWhere = (typeof READ_WHERE)[number];
 export const READ_VERSIONS = ["current", "history", "all"] as const;
 export type ReadVersions = (typeof READ_VERSIONS)[number];
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export const READ_FIELDS = ["text", "supports", "topics", "status", "reason", "links", "marks"] as const;
+export type ReadField = (typeof READ_FIELDS)[number];
+export const TRACE_DEFAULT_FIELDS: readonly ReadField[] = ["text", "supports", "topics", "status", "links", "marks"];
+export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
+export const SEARCH_PREVIEW_TOKENS = 80;
+export const MAX_PUBLIC_READ_TOKENS = 8000;
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; where?: ReadWhere; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
   for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget"] as const) {
     const value = options[key];
     if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value < 1)) throw new Error(`${key} must be a positive safe integer or null`);
+    if (key === "pageBudget" && value !== undefined && value !== null && value > MAX_PUBLIC_READ_TOKENS) throw new Error(`pageBudget must be at most ${MAX_PUBLIC_READ_TOKENS}`);
   }
   if (options.full !== undefined && typeof options.full !== "boolean") throw new Error("full must be boolean");
   if (options.full === true && [options.itemBudget, options.toolCallBudget, options.toolResultBudget].some(v => v !== undefined && v !== null)) throw new Error("full:true conflicts with finite content budgets; use null for all content ceilings");
@@ -33,6 +40,10 @@ export function validateBudgets(options: ListingOptions): void {
   if (options.versions !== undefined && !READ_VERSIONS.includes(options.versions)) throw new Error("versions must be current, history or all");
   if (options.category !== undefined && !KNOWLEDGE_CATEGORIES.includes(options.category)) throw new Error("invalid knowledge category filter");
   if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
+  if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > MAX_PUBLIC_READ_TOKENS))
+    throw new Error(`maxTokens must be a positive safe integer at most ${MAX_PUBLIC_READ_TOKENS}`);
+  if (options.fields !== undefined && (!Array.isArray(options.fields) || options.fields.some(field => !READ_FIELDS.includes(field))
+    || new Set(options.fields).size !== options.fields.length)) throw new Error("fields must contain unique supported field names");
 }
 export function readProfile(options: ListingOptions, inherited: EntryProfile): EntryProfile {
   const limit = (value: number | null | undefined, fallback: number) => options.full === true || value === null ? Infinity : value ?? fallback;
@@ -176,8 +187,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     const saved = options.cursor ? cursors.get(options.cursor) : undefined;
     if (options.cursor && (!saved || saved.owner !== owner)) throw new Error("unknown or expired cursor");
     if (saved?.origin === "trace" && origin === "search") throw new Error("search cannot continue a trace cursor; use trace");
-    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget", "full", "tool", "where", "versions", "category", "scope"] as const) {
-      if (saved && options[key] !== undefined && options[key] !== saved.budgets?.[key]) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
+    for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "pageBudget", "full", "tool", "where", "versions", "category", "scope", "fields"] as const) {
+      const same = key === "fields" ? JSON.stringify(options.fields) === JSON.stringify(saved?.budgets?.fields)
+        : options[key] === saved?.budgets?.[key];
+      if (saved && options[key] !== undefined && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
     }
     const cap = options.cap ?? saved?.cap ?? 100;
     if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
@@ -377,7 +390,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   };
   const traceRead = (address: string, options: ListingOptions = {}): TraceRead => {
     validateBudgets(options);
-    options = effectiveOptions(options);
     const cursor = /^cursor=([^,\s]+)$/.exec(address.trim());
     if (options.cursor || cursor) {
       // Preserve the explicit-cursor placeholder convention without allowing malformed entry
@@ -389,6 +401,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       }
       return page([], { ...options, cursor: options.cursor ?? cursor![1] });
     }
+    options = { ...effectiveOptions(options), fields: [...(options.fields ?? TRACE_DEFAULT_FIELDS)] };
     const targets = traceTargets(address);
     if (targets.some(target => target.startsWith("cursor="))) throw new Error("continue a cursor alone, not in a comma list");
     options = { ...options, maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS,
@@ -659,8 +672,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (!["facts", "knowledge", "all", "raw"].includes(scope)) throw new Error("invalid search scope");
       if ((input.category !== undefined || input.scope !== undefined) && scope !== "knowledge")
         throw new Error("category and scope filters require layer knowledge");
-      const options = effectiveOptions(input);
-      if (options.cursor) return page([], options, "", [], "search").text;
+      if (input.cursor) return page([], input, "", [], "search").text;
+      const options = { ...effectiveOptions(input), fields: [...(input.fields ?? SEARCH_DEFAULT_FIELDS)],
+        itemBudget: input.itemBudget === undefined ? SEARCH_PREVIEW_TOKENS : input.itemBudget };
       const reader = options.sessionId === undefined ? undefined : session(options.sessionId);
       const sessionIds = options.where === "all" ? undefined : options.where === "session" ? [options.sessionId!]
         : store.projectSessionIds(reader!.projectId);
@@ -672,7 +686,12 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const graph = graphInput ? store.commitGraph(path, undefined, undefined, graphInput) : null;
       const tips = new Map<number, KnowledgeRevision[]>();
       for (const r of graph?.current ?? []) tips.set(r.knowledgeId, [...(tips.get(r.knowledgeId) ?? []), r]);
-      const revision = (address: string) => graph!.revisions.find(r => r.id === Number(address.split("@")[1]))!;
+      const byCommit = new Map(graph?.revisions.map(revision => [revision.id, revision]) ?? []);
+      const children = new Map<number, KnowledgeRevision[]>();
+      for (const revision of graph?.revisions ?? []) for (const parent of graphInput!.parents.get(revision.id) ?? [])
+        children.set(parent, [...(children.get(parent) ?? []), revision]);
+      const revision = (address: string) => byCommit.get(Number(address.split("@")[1]))!;
+      const fields = new Set(options.fields!);
       const authorMatches = (r: KnowledgeRevision) => options.where !== "session"
         || (r.runId !== null && graphInput!.metadata.runs.get(r.runId) === options.sessionId);
       const valueMatches = (r: KnowledgeRevision) => authorMatches(r)
@@ -690,17 +709,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         const rest = deferred as string[];
         const record = (address: string) => Number(address.slice(1)), commitOf = (address: string) => Number(address.split("@")[1]);
         const ids = (prefix: string, of: (address: string) => number) => rest.filter(a => a.startsWith(prefix)).map(of);
-        const relations = store.listFactRelationsOf(ids("F", record));
         const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
         const entries = store.listSourceEntryIdsOf(ids("T", record));
-        return rest.map(address => address.startsWith("F") ? { address, relations: relations.get(record(address))! }
+        return rest.map(address => address.startsWith("F") ? { address }
           : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { entryTokens: config.render.entryTokens, toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } }
           : { address, marks: marks.get(commitOf(address))! });
       };
       const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
         const frozen: FrozenHit | undefined = typeof item === "string" ? undefined : item;
         const address = frozen?.address ?? item as string;
-        if (address.startsWith("F")) return factLine(Number(address.slice(1)), frozen?.relations);
+        if (address.startsWith("F")) return renderFactPreview(store.getFact(Number(address.slice(1)))!, fields, options.itemBudget === null ? Infinity : options.itemBudget!);
         if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds, profile: frozen.profile });
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
@@ -713,14 +731,16 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           : current.some(r => r.id === commit) ? (hit.op === "archive" ? (path ? "archived on this path" : "archived") : path ? "current on this path" : "tip (newest-created alternatives)")
           : successors.length && successors.every(r => r.op === "archive") ? (path ? "archived on this path" : "archived")
           : `superseded${path ? " on this path" : ""} by ${successors.map(r => `K${r.knowledgeId}@${r.id}`).join(", ") || "none"}`;
-        const retirement = successors.filter(r => r.op === "archive" && r.actorRole === "dreaming" && !r.supports.length)
-          .map(r => `\n  maintenance judgment: K${r.knowledgeId}@${r.id}; actor dreaming; run R${r.runId}; parent K${r.knowledgeId}@${r.parentId}; reason: ${r.reason}`).join("");
-        return knowledgeLine({ knowledge, revision: hit }, frozen?.marks) + `\n  note: ${status}${retirement}`;
+        const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
+        return renderKnowledgePreview({ knowledge, revision: hit }, frozen?.marks ?? store.listKnowledgeMarks(id!), status, fields,
+          options.itemBudget === null ? Infinity : options.itemBudget!, parents, children.get(hit.id) ?? []);
       }).map(listingLine);
       const where = options.where === "project" ? "project sessions" : options.where === "session" ? "this session" : "all sessions";
       const filters = [`searched: ${where}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
+      const omitted = READ_FIELDS.filter(field => !fields.has(field));
+      const preview = `preview: ${fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ") || "identity only"}`}; omitted fields: ${omitted.join(", ") || "none"}`;
       return page({ items: addresses, format, capture }, { ...options, maxTokens: options.maxTokens === undefined ? DEFAULT_READ_TOKENS : options.maxTokens },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}`, [], "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${preview}`, [], "search").text;
     },
     declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
       const project = store.declareProject(sessionId, name, source);
