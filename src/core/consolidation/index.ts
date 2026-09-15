@@ -6,7 +6,7 @@ import { type ConsolidationDiagnostic } from "./commit.ts";
 import type { CommittedKnowledgeOp, Store, RunInput } from "../store/index.ts";
 import type { RunAgent, RunAgentResult, TraceMemoryConfig, TaskOptions, AgentControl } from "../api/index.ts";
 import { renderKnowledge, renderFact, renderFactGroups, tokens, charge, type FactTurns } from "../render/index.ts";
-import { reviewFeedback, toolDefinitions } from "../api/tools.ts";
+import { consolidationToolDefinitions, reviewFeedback } from "../api/tools.ts";
 import { agentException, recordAttempt, requestMissing, updateCommitted } from "../api/audit.ts";
 import { knowledgeStatusNotes } from "../api/read.ts";
 import { budgetMaterial, consolidationText, RANGE_FACTS_TITLE, REMINDER_TITLE,
@@ -20,11 +20,11 @@ const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.u
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
-// 22d, as in Noting: the instructions and the tool definitions are the same bytes for the life of the
-// process, so they are estimated once instead of once per re-freeze. Lazily, because `toolDefinitions`
-// reaches this module through an import cycle and is not yet initialized while this module body runs.
+// 22d, as in Noting: the instructions and role-specialized tool definitions are the same bytes for
+// the life of the process, so they are estimated once instead of once per re-freeze. Lazily, because
+// the tool definitions reach this module through an import cycle during initialization.
 let fixed: { instructions: number; tools: number } | undefined;
-const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens(JSON.stringify(toolDefinitions)) });
+const fixedCost = () => (fixed ??= { instructions: tokens(prompt), tools: tokens(JSON.stringify(consolidationToolDefinitions())) });
 
 export type { ConsolidationDiagnostic } from "./commit.ts";
 

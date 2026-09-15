@@ -48,9 +48,11 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const op = value.op;
     const dreaming = store.isDreamingRun(run);
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
-      : run.kind === "consolidation" ? ["create", "update", "archive"] : ["create", "update", "merge", "archive"];
-    if (!allowed.includes(op)) errors.push(op === "split" || (op === "merge" && run.kind === "consolidation")
-      ? "structural operation requires trusted Dreamer authority" : "invalid op");
+      : run.kind === "consolidation" ? ["create", "update"] : ["create", "update", "merge", "archive"];
+    if (!allowed.includes(op)) errors.push(run.kind === "consolidation" && op === "archive"
+      ? "archive requires trusted Dreamer authority; update a continuing item or leave retirement to Dreamer"
+      : op === "split" || (op === "merge" && run.kind === "consolidation")
+        ? "structural operation requires trusted Dreamer authority" : "invalid op");
     const structural = op === "split";
     const keys = ["op", "reason", "supports", ...(op !== "create" ? ["id"] : []), ...(op === "merge" ? ["absorb"] : []),
       ...(structural ? ["children"] : op !== "archive" ? ["text", "category", "scope", "topics"] : [])];
