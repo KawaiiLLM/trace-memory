@@ -1378,7 +1378,9 @@ export default function (pi: ExtensionAPI) {
    * intent is expressed, never the project-sharing rules themselves. */
   const assignProject = (name: string) => {
     if (!state.sessionId) throw new Error("A session requires an assistant reply");
-    const marked = memory.declareProject(state.sessionId, name);
+    const marked = memory.declareProject(state.sessionId, name, "mark", {
+      sessionId: state.sessionId, branch: state.branch, headTurnId: state.head ?? null,
+    });
     state.projectId = memory.store.getSession(state.sessionId)!.projectId;
     state.project = memory.store.getProject(state.projectId)!.name;
     // Project attribution changes immediately; the next ordinary prompt evaluates the same delivery

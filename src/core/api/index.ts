@@ -441,7 +441,7 @@ export interface TraceMemory {
   trace(address: string, options?: ListingOptions): string;
   search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
-  declareProject(sessionId: number, name: string, source?: "marker" | "mark"): string;
+  declareProject(sessionId: number, name: string, source?: "marker" | "mark", path?: KnowledgePath): string;
   status(sessionId: number, branch?: string, headTurnId?: number | null): string;
   /** Footer progress for one session's selected branch and head: entries still to note, applicable
    * facts, facts not yet consolidated, and applicable current knowledge split by exact-version
@@ -922,5 +922,14 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     consolidate: input => execute("consolidation", input) as Promise<ConsolidateResult>,
     dream: input => execute("dreaming", { ...input, mode: "subagent", effectiveMode: "subagent" }) as Promise<DreamingResult>,
     ...read,
+    declareProject: (sessionId, name, source = "mark", path) => {
+      const selected = path?.branch !== undefined && path.headTurnId !== null
+        ? { sessionId: path.sessionId, branch: path.branch, headTurnId: path.headTurnId } : undefined;
+      const project = store.declareProject(sessionId, name, source, selected && { path: selected, atTrigger: phase => phase === "noting"
+        ? notingDue(selected)
+        : phase === "consolidation" ? consolidationTokens(selected) >= cfg.consolidation.triggerTokens
+        : pendingEvents(store, selected, false).reduce((sum, event) => sum + event.tokens, 0) >= cfg.dreaming.triggerTokens });
+      return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
+    },
   };
 }

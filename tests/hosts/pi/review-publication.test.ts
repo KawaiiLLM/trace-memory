@@ -71,7 +71,10 @@ test.each(["cancel", "project", "head"] as const)("32f review: preparing callbac
       if (changed || !/compaction (used|preparing)/.test(message)) return;
       changed = true;
       if (change === "cancel") controller.abort();
-      else if (change === "project") s.declareProject(1, "other-project", "mark");
+      else if (change === "project") {
+        const otherProject = s.createProject({ name: "other-project", declaredBy: "mark" });
+        s.mergeProject(s.getSession(1)!.projectId, otherProject.id);
+      }
       else {
         h.entries.length = h.entries.findIndex(e => e.customType === "trace-memory");
         void h.emit("session_tree", {}); // restore is synchronous, before the callback returns

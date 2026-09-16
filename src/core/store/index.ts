@@ -5,11 +5,11 @@
 
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { migrateDreaming, migrateKnowledgeLineage } from "./migration.ts";
+import { migrateDreaming, migrateKnowledgeLineage, migratePlacementAudits } from "./migration.ts";
 import { SourceNormalizationError, sourceAddresses, sourceKey, type SourceBlock, type SourceNormalizer } from "../model/source.ts";
 export { sourceAddresses } from "../model/source.ts";
 import { EXECUTIONS_SQL, beginExecution, linkExecutionRun, settleExecution, type LogicalTask, type ExecutionOutcome } from "./executions.ts";
-import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, DEFAULT_KNOWLEDGE_BUDGETS, deriveKnowledgeBudgets, changeWeight, currentResultsByRoot, pendingEvents, processedProjection, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
+import { PROCESSING_SQL, KNOWLEDGE_VIEW_VERSION, DEFAULT_KNOWLEDGE_BUDGETS, deriveKnowledgeBudgets, changeWeight, currentResultsByRoot, pendingEvents, processedProjection, projectionPaths, placementOwner, checkProcessedScopes, checkProcessedProjection, type DreamingRange, type KnowledgeBudgetField, type KnowledgeBudgets } from "./processing.ts";
 import { renderKnowledge, tokens } from "../render/index.ts";
 import { KNOWLEDGE_CATEGORIES, compareTriggerOrigins } from "../model/index.ts";
 import type {
@@ -295,6 +295,12 @@ export interface SourceInput {
 export interface SourceEntry extends SourceInput { id: number; entryOrdinal: number; blocks?: SourceBlock[] }
 
 export type Phase = "noting" | "consolidation" | "dreaming";
+/** Host-selected path plus the facade's exact trigger computations. Store invokes the callback
+ * under the declaration transaction; it is deliberately not taskEligibility, enrollment or stop state. */
+export interface ProjectDeclarationContext {
+  path: KnowledgePath;
+  atTrigger: (phase: Phase) => boolean;
+}
 export interface TaskTarget { sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number }
 export interface TaskClaim {
   sessionId: number; phase: Phase; executorId: string; token: string; expiresAt: number;
@@ -750,6 +756,7 @@ export class Store {
         }
       });
       this.db.exec(PROCESSING_SQL);
+      migratePlacementAudits(this.db);
       this.db.exec(EXECUTIONS_SQL);
       migrateKnowledgeLineage(this.db, true);
       // The policy is part of the same schema transaction. Concurrent openers serialize at BEGIN;
@@ -855,13 +862,17 @@ export class Store {
     return row ? toProject(row) : null;
   }
 
+  private relabelProject(fromProjectId: number, intoProjectId: number): void {
+    this.db.prepare("UPDATE projects SET merged_into = ? WHERE id = ?").run(intoProjectId, fromProjectId);
+    this.db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+    this.db.prepare("UPDATE knowledge SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+  }
+
   /** Relabel a merged project's sessions and project-scoped knowledge onto the survivor. */
   mergeProject(fromProjectId: number, intoProjectId: number): void {
     this.transaction(() => {
       const before = this.processedPlacements();
-      this.db.prepare("UPDATE projects SET merged_into = ? WHERE id = ?").run(intoProjectId, fromProjectId);
-      this.db.prepare("UPDATE sessions SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
-      this.db.prepare("UPDATE knowledge SET project_id = ? WHERE project_id = ?").run(intoProjectId, fromProjectId);
+      this.relabelProject(fromProjectId, intoProjectId);
       this.revalidatePlacement(before);
     });
   }
@@ -965,6 +976,11 @@ export class Store {
     this.db.prepare("UPDATE sessions SET closed_at = ? WHERE id = ?").run(at, sessionId);
   }
 
+  private otherSessionOwnsDreamerSeat(sessionId: number, now: number): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM task_claims
+      WHERE phase = 'dreaming' AND session_id != ? AND expires_at > ? LIMIT 1`).get(sessionId, now);
+  }
+
   reopenSession(sessionId: number, executorId: string): void {
     this.transaction(() => {
       this.db.prepare("UPDATE sessions SET closed_at = NULL WHERE id = ?").run(sessionId);
@@ -972,8 +988,9 @@ export class Store {
       for (const phase of ["noting", "consolidation", "dreaming"] as const) {
         const previous = this.getClaim(sessionId, phase);
         if (!previous || previous.executorId === executorId) continue;
+        const now = Date.now(), seatUnavailable = phase === "dreaming" && this.otherSessionOwnsDreamerSeat(sessionId, now);
         this.db.prepare("UPDATE task_claims SET executor_id = ?, token = ?, expires_at = ?, borrowed = 0, reserved = 1 WHERE session_id = ? AND phase = ?")
-          .run(executorId, randomUUID(), Date.now() + 30 * 60_000, sessionId, phase);
+          .run(executorId, randomUUID(), seatUnavailable ? Math.min(previous.expiresAt, now) : now + 30 * 60_000, sessionId, phase);
       }
     });
   }
@@ -997,6 +1014,7 @@ export class Store {
       const current = this.getClaim(target.sessionId, phase), now = Date.now();
       const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
       if (current && current.expiresAt > now && !takeover) return null;
+      if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
       const claim: TaskClaim = { sessionId: target.sessionId, phase, executorId,
         token: takeover ? current.token : randomUUID(), expiresAt: now + 30 * 60_000, borrowed, reserved: false };
       this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
@@ -2415,11 +2433,17 @@ export class Store {
     const moved = [...new Set([...before.active, ...after.active])].filter(id =>
       before.owners.get(id) !== after.owners.get(id) || !samePaths(id));
     if (!moved.length) return;
-    const affected = new Set(moved.flatMap(id => [before.owners.get(id)!, after.owners.get(id)!]));
+    const affected = new Set(moved.flatMap(id => [before.owners.get(id), after.owners.get(id)])
+      .filter((owner): owner is string => owner !== undefined));
     const check = checkProcessedProjection(after.projection, affected, this.knowledgeBudgets());
     if (check.problems.length) throw new Error(`Project placement rejected: ${check.problems.join("; ")}`);
-    for (const id of moved) this.db.prepare(`INSERT INTO knowledge_placement_validations
-      (commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)`).run(id, before.owners.get(id)!, after.owners.get(id)!, KNOWLEDGE_VIEW_VERSION, new Date().toISOString());
+    for (const id of moved) {
+      const oldOwner = before.owners.get(id), newOwner = after.owners.get(id);
+      // A declaration hand-over revokes the certificate instead of validating a new placement.
+      if (oldOwner === undefined || newOwner === undefined) continue;
+      this.db.prepare(`INSERT INTO knowledge_placement_validations
+        (commit_id,old_owner,new_owner,view_version,created_at) VALUES (?,?,?,?,?)`).run(id, oldOwner, newOwner, KNOWLEDGE_VIEW_VERSION, new Date().toISOString());
+    }
   }
 
   // -- marks: each row belongs to one immutable commit --
@@ -2508,7 +2532,7 @@ export class Store {
     return (this.db.prepare("SELECT project_declaration FROM sessions WHERE id = ?").get(sessionId) as { project_declaration: string }).project_declaration;
   }
 
-  declareProject(sessionId: number, name: string, source: "marker" | "mark"): Project {
+  declareProject(sessionId: number, name: string, source: "marker" | "mark", context?: ProjectDeclarationContext): Project {
     return this.transaction(() => {
       const session = this.getSession(sessionId);
       if (!session) throw new Error(`session S${sessionId} does not exist`);
@@ -2516,10 +2540,37 @@ export class Store {
       if (!name.trim()) throw new Error("project name must not be empty");
       const prior = this.projectDeclaration(sessionId);
       if (source === "marker" && prior === "mark") return this.getProject(session.projectId)!;
+      if (prior === "undeclared") {
+        if (!context || context.path.sessionId !== sessionId || context.path.branch === undefined || context.path.headTurnId === null ||
+            this.getTurn(context.path.headTurnId)?.sessionId !== sessionId)
+          throw new Error("Project declaration requires the host's selected session path");
+        for (const phase of ["noting", "consolidation", "dreaming"] as const) if (context.atTrigger(phase)) {
+          const action = phase === "dreaming" ? "let the normal Dreaming trigger finish, then retry" : "run /trace catchup, then retry";
+          throw new Error(`Project declaration rejected: ${phase} is due; ${action}`);
+        }
+        if (this.db.prepare("SELECT 1 FROM dreaming_ranges WHERE session_id = ? AND completed_run IS NULL LIMIT 1").get(sessionId))
+          throw new Error("Project declaration rejected: dreaming has an open range; let the normal Dreaming trigger finish, then retry");
+        const live = this.db.prepare("SELECT phase FROM task_claims WHERE session_id = ? AND expires_at > ? ORDER BY CASE phase WHEN 'noting' THEN 1 WHEN 'consolidation' THEN 2 ELSE 3 END LIMIT 1")
+          .get(sessionId, Date.now()) as { phase: Phase } | undefined;
+        if (live) throw new Error(`Project declaration rejected: ${live.phase} has a live claim; wait for it to finish, then retry`);
+      }
       let target = this.findProjectByName(name) ?? this.createProject({ name, declaredBy: source });
       while (target.mergedInto !== null) target = this.getProject(target.mergedInto)!;
-      if (prior === "undeclared" && session.projectId !== target.id) this.mergeProject(session.projectId, target.id);
       const before = this.processedPlacements();
+      if (prior === "undeclared" && session.projectId !== target.id) {
+        const input = this.commitGraphInput();
+        const certified = this.processedKnowledgeVersions(input.revisions.map(revision => revision.id));
+        const handover = new Set<number>();
+        for (const path of projectionPaths(this, sessionId)) for (const revision of this.commitGraph(path, undefined, undefined, input).current)
+          if (revision.scope === "project" && certified.has(revision.id) && placementOwner(this, { revision }, input.metadata) === `project:${session.projectId}`)
+            handover.add(revision.id);
+        for (const id of handover) {
+          // Placement audits point at immutable revisions and remain as historical evidence.
+          this.db.prepare("DELETE FROM processed_knowledge_versions WHERE commit_id = ?").run(id);
+          this.db.prepare("DELETE FROM settled_knowledge_events WHERE event_id = ?").run(id);
+        }
+        this.relabelProject(session.projectId, target.id);
+      }
       this.db.prepare("UPDATE sessions SET project_id = ?, project_declaration = ? WHERE id = ?").run(target.id, source, sessionId);
       this.revalidatePlacement(before);
       return target;

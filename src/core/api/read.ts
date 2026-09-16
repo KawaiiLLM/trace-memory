@@ -776,10 +776,6 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
         `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
     },
-    declareProject: (sessionId: number, name: string, source: "marker" | "mark" = "mark"): string => {
-      const project = store.declareProject(sessionId, name, source);
-      return `S${sessionId} project: ${project.name} (${store.projectDeclaration(sessionId)})`;
-    },
     mark: (address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string => {
       if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");
       const match = /^K([1-9]\d*)(?:@([1-9]\d*))?$/.exec(typeof address === "number" ? `K${address}` : address);

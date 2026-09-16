@@ -1,5 +1,27 @@
 import type { DatabaseSync } from "node:sqlite";
 
+/** Placement audits outlive processing certificates. Rebuild the historical table so its commit
+ * reference points at the immutable revision rather than the revocable certificate row. */
+export function migratePlacementAudits(db: DatabaseSync): void {
+  const row = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_placement_validations'").get() as { sql: string } | undefined;
+  if (!row || !row.sql.includes("processed_knowledge_versions")) return;
+  if (!db.isTransaction) throw new Error("Placement-audit store migration requires an active transaction");
+  const objects = db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'knowledge_placement_validations' AND type IN ('index','trigger') AND sql IS NOT NULL").all();
+  const sequence = db.prepare("SELECT seq FROM sqlite_sequence WHERE name = 'knowledge_placement_validations'").get();
+  db.exec(`CREATE TABLE knowledge_placement_validations_49 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
+    old_owner TEXT NOT NULL, new_owner TEXT NOT NULL,
+    view_version TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  INSERT INTO knowledge_placement_validations_49(id,commit_id,old_owner,new_owner,view_version,created_at)
+    SELECT id,commit_id,old_owner,new_owner,view_version,created_at FROM knowledge_placement_validations;
+  DROP TABLE knowledge_placement_validations;
+  ALTER TABLE knowledge_placement_validations_49 RENAME TO knowledge_placement_validations;`);
+  if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'knowledge_placement_validations'").run(sequence.seq!);
+  for (const object of objects) db.exec(String(object.sql));
+}
+
 /** Ticket 34a is additive except for the immutable revision operation/actor CHECKs. Historical
  * supports deliberately receive `complete_result`; every new write supplies `change` explicitly.
  * `transactionOwned` is reserved for Store's all-schema upgrade transaction; direct callers retain

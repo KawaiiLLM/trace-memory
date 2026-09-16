@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS dreaming_run_ranges (
 );
 CREATE TABLE IF NOT EXISTS knowledge_placement_validations (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  commit_id INTEGER NOT NULL REFERENCES processed_knowledge_versions(commit_id),
+  commit_id INTEGER NOT NULL REFERENCES knowledge_revisions(id),
   old_owner TEXT NOT NULL, new_owner TEXT NOT NULL,
   view_version TEXT NOT NULL, created_at TEXT NOT NULL
 );
@@ -150,9 +150,12 @@ export function processedBlock(values: KnowledgeWithRevision[], render = renderK
 }
 
 /** Include every stored branch and every terminal Turn, not an arbitrary executor subset. */
-function projectionPaths(store: Store): KnowledgePath[] {
+export function projectionPaths(store: Store, onlySessionId?: number): KnowledgePath[] {
   const paths: KnowledgePath[] = [];
-  for (const row of store.db.prepare("SELECT id FROM sessions").all()) {
+  const sessions = onlySessionId === undefined
+    ? store.db.prepare("SELECT id FROM sessions").all()
+    : store.db.prepare("SELECT id FROM sessions WHERE id = ?").all(onlySessionId);
+  for (const row of sessions) {
     const sessionId = Number(row.id);
     paths.push(store.knowledgePath(sessionId));
     for (const branch of store.db.prepare("SELECT branch FROM source_paths WHERE session_id = ?").all(sessionId))

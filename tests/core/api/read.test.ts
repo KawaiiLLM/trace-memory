@@ -573,7 +573,8 @@ test("status reports attribution, counts, every watermark and last runs, and no 
 test("project mark merges an undeclared own project, relabels facts and knowledge, and beats later marker reports", () => {
   const s = session(undefined, "undeclared"), t = turn(s.id), n = noting(s.id, t.id), f = n.facts[0]!;
   const e = knowledge(s.id, f.id), own = knowledge(s.id, f.id, "open", "session");
-  expect(memory.declareProject(s.id, "declared")).toContain("declared (mark)");
+  const selected = { sessionId: s.id, branch: "main", headTurnId: t.id };
+  expect(memory.declareProject(s.id, "declared", "mark", selected)).toContain("declared (mark)");
   const project = memory.store.findProjectByName("declared")!;
   expect(memory.store.getProject(s.projectId)!.mergedInto).toBe(project.id);
   expect(memory.store.listProjectFacts(project.id).map((f) => f.id)).toEqual([f.id]);

@@ -109,8 +109,8 @@ test("17c 2026-09-08: two active executors share target claims and the loser sel
   b.ctx.sessionManager.getSessionId = () => "pi-second";
   try {
     await a.turn(); await b.turn();
-    a.memory.declareProject(1, "Shared executor project");
-    a.memory.declareProject(2, "Shared executor project");
+    a.memory.declareProject(1, "Shared executor project", "mark", a.memory.store.knowledgePath(1, "main"));
+    a.memory.declareProject(2, "Shared executor project", "mark", a.memory.store.knowledgePath(2, "main"));
     const first = target(a.memory, { facts: 1 }), second = target(a.memory, { facts: 1 });
     const ar = hold(a), br = hold(b);
     await Promise.all([tick(a), tick(b)]);
@@ -134,7 +134,7 @@ test("17c 2026-09-08: borrowed requests freeze target project and branch; costs 
   const h = host();
   try {
     await h.turn();
-    h.memory.declareProject(1, "Borrowed project");
+    h.memory.declareProject(1, "Borrowed project", "mark", h.memory.store.knowledgePath(1, "main"));
     const t = target(h.memory, { facts: 1, project: "Borrowed project", branch: "target-branch" });
     const f = h.memory.store.listSessionFacts(t.sessionId)[0]!;
     const operations = [{ op: "create", topics: [], reason: "Initial admission of this conclusion.", text: "Target knowledge", category: "term", scope: "project", supports: [`F${f.id}`] }];
