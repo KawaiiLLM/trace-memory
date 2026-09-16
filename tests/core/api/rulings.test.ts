@@ -2431,6 +2431,19 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
 });
 
+test("46: a rule and the choice under it are two items; sub-items are their own opens; an empty receipt is a complete block", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  // The two atomicity sentences sit beside 44's, which stay as they are.
+  expect(prompt).toContain("the goal text holds the intent alone and nothing is archived. The pinned development baseline is its own `reference` state item, updated as it moves. Each staffing choice is its own item with the role named first");
+  expect(prompt).toContain("A user's rule and the assistant's choice, practice or implementation made under it are two items — the rule is the `constraint`, the choice is the assistant's current choice, updated when the choice changes — and neither absorbs the other when the range states them together; a `goal` never absorbs a user's rule stated beside it, which stays its own `constraint`.");
+  expect(prompt).toContain("A work item with named sub-items holds only the shared target, order and current step; each sub-item with its own scope and acceptance is its own `open`, continued on its own id.");
+  // The empty receipt is a complete block; 45's sentences around it stay as they are.
+  expect(prompt).toContain("its receipt lists the whole items the capacity could not hold. When the receipt is empty, the block — with the versions already visible in an inherited context — is the whole applicable set: a claim no supplied item maintains has no existing item, so create it without a search to confirm absence. Read the supplied block first for what this range closes and for the item a claim continues.");
+  // Steps 2 and 3 of the search procedure apply only without a complete block.
+  expect(prompt).toContain("2. Without one, and only when the block is absent or its receipt is not empty (with a complete block, the item a claim continues is found by reading the block), `search` a single distinctive literal word taken from the old state:");
+  expect(prompt).toContain("3. No hit means change the word, never stack words.");
+});
+
 test("45: overflow receipts are not a reading checklist; omitted items need a specific read cue", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
   expect(prompt).toContain("it is not a reading checklist");
