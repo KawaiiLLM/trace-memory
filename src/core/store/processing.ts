@@ -173,51 +173,58 @@ export function placementOwner(store: Store, value: Pick<KnowledgeWithRevision, 
   return r.scope === "session" ? `session:${sessionId}` : `project:${projectId}`;
 }
 
+export interface ProcessedPathProjection {
+  path: KnowledgePath;
+  values: KnowledgeWithRevision[];
+  pools: Map<string, Map<number, KnowledgeWithRevision>>;
+}
+
 export function processedProjection(store: Store, accepted: number[] = [], affected?: Set<string>,
-  prepared?: ReturnType<Store["commitGraphInput"]>) {
+  prepared?: ReturnType<Store["commitGraphInput"]>, selectedPath?: KnowledgePath) {
   const processed = new Set([...store.db.prepare("SELECT commit_id FROM processed_knowledge_versions").all().map(r => Number(r.commit_id)), ...accepted]);
-  const pools = new Map<string, Map<number, KnowledgeWithRevision>>();
   const owners = new Map<number, string>();
-  if (affected?.size === 0) return { pools, owners, paths: [] as { path: KnowledgePath; values: KnowledgeWithRevision[] }[] };
   const input = prepared ?? store.commitGraphInput();
-  // A full audit names empty owner pools too. In particular, archiving an owner's last active item
-  // must not make the canonical check claim that no owner was checked. Affected-scope enforcement
-  // still filters these identities below without changing the accounting algorithm.
-  if (!affected || affected.has("global")) pools.set("global", new Map());
-  for (const row of store.db.prepare("SELECT id, project_id FROM sessions").all()) {
-    const project = `project:${Number(row.project_id)}`, session = `session:${Number(row.id)}`;
-    if (!affected || affected.has(project)) pools.set(project, pools.get(project) ?? new Map());
-    if (!affected || affected.has(session)) pools.set(session, new Map());
-  }
   // Historical certificates retain their owner even when an unprocessed successor hides them.
   for (const revision of input.revisions) if (processed.has(revision.id))
     owners.set(revision.id, placementOwner(store, { revision }, input.metadata));
   const knowledge = new Map<number, KnowledgeWithRevision["knowledge"]>();
-  const paths = projectionPaths(store).filter(path => !affected || affected.has("global") ||
+  const candidates = selectedPath ? [selectedPath] : projectionPaths(store);
+  const paths = candidates.filter(path => selectedPath !== undefined || !affected || affected.has("global") ||
     affected.has(`session:${path.sessionId}`) || affected.has(`project:${input.metadata.projects.get(path.sessionId)}`)).map(path => {
     const values = store.commitGraph(path, undefined, undefined, input).current
       .filter(r => r.op !== "archive" && processed.has(r.id)).map(revision => {
         if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, store.getKnowledge(revision.knowledgeId)!);
         return { knowledge: knowledge.get(revision.knowledgeId)!, revision };
       });
+    // Owner budgets are a partition of this path's current processed versions. Empty rows remain
+    // explicit for the three owners relevant to the path, so a Dreamer receipt never loses a line
+    // merely because maintenance archived the owner's last item.
+    const project = `project:${input.metadata.projects.get(path.sessionId)}`, session = `session:${path.sessionId}`;
+    const pools = new Map<string, Map<number, KnowledgeWithRevision>>([
+      ["global", new Map()], [project, new Map()], [session, new Map()],
+    ]);
     for (const value of values) {
       const owner = owners.get(value.revision.id)!;
       if (!pools.has(owner)) pools.set(owner, new Map());
       pools.get(owner)!.set(value.revision.id, value);
     }
-    return { path, values };
+    return { path, values, pools };
   });
-  return { pools, paths, owners };
+  return { paths, owners };
 }
 
-/** `fullAudit` expands totals to every owner/path while `affected` continues to define which
- * overages can reject this operation. Both modes use the same prepared projection/check rules. */
-export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>, limits = store.knowledgeBudgets(), fullAudit = false) {
-  return checkProcessedProjection(processedProjection(store, accepted, fullAudit ? undefined : affected), affected, limits);
+/** Check either one frozen run path or every stored branch/terminal Turn used by Settings and
+ * placement validation. Affected scopes restrict rejection only; they never erase the reported
+ * projection of a supplied path. */
+export function checkProcessedScopes(store: Store, accepted: number[] = [], affected?: Set<string>, limits = store.knowledgeBudgets(),
+  path?: KnowledgePath) {
+  return checkProcessedProjection(processedProjection(store, accepted, affected, undefined, path), affected, limits);
 }
 
 /** Reuse the tentative placement's exact after projection; no reads or new applicability decisions. */
-export function checkProcessedProjection({ pools, paths, owners }: ReturnType<typeof processedProjection>, affected: Set<string> | undefined, limits: KnowledgeBudgets) {
+export function checkProcessedProjection(projection: ReturnType<typeof processedProjection>, affected: Set<string> | undefined,
+  limits: KnowledgeBudgets) {
+  const { paths, owners } = projection;
   const rendered = new Map<number, string>();
   const render = (value: KnowledgeWithRevision) => {
     if (!rendered.has(value.revision.id)) rendered.set(value.revision.id, renderKnowledge(value));
@@ -229,16 +236,20 @@ export function checkProcessedProjection({ pools, paths, owners }: ReturnType<ty
     if (!measured.has(key)) measured.set(key, tokens(processedBlock(values, render)));
     return measured.get(key)!;
   };
-  const totals: { scope: string; tokens: number; cap: number }[] = [];
-  for (const [scope, values] of pools)
-    totals.push({ scope, tokens: blockTokens([...values.values()]), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
-  const relevantApplicable = new Set<string>();
-  for (const { path, values } of paths) {
-    const scope = `applicable:S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`;
-    totals.push({ scope, tokens: blockTokens(values), cap: limits.applicable });
-    if (!affected || values.some(value => affected.has(owners.get(value.revision.id)!))) relevantApplicable.add(scope);
+  const totals: { scope: string; tokens: number; cap: number; path: KnowledgePath }[] = [];
+  for (const pathProjection of paths) {
+    for (const [scope, values] of pathProjection.pools) totals.push({ scope, path: pathProjection.path,
+      tokens: blockTokens([...values.values()]), cap: scope === "global" ? limits.global : scope.startsWith("project:") ? limits.project : limits.session });
+    totals.push({ scope: `applicable:S${pathProjection.path.sessionId}/${pathProjection.path.branch ?? ""}/T${pathProjection.path.headTurnId ?? ""}`,
+      path: pathProjection.path, tokens: blockTokens(pathProjection.values), cap: limits.applicable });
   }
-  const relevant = (total: { scope: string }) => !affected || relevantApplicable.has(total.scope) || affected.has(total.scope);
+  const relevant = (total: { scope: string; path: KnowledgePath }) => {
+    if (!affected) return true;
+    if (!total.scope.startsWith("applicable:")) return affected.has(total.scope);
+    return paths.find(pathProjection => pathProjection.path === total.path)?.values
+      .some(value => affected.has(owners.get(value.revision.id)!)) === true;
+  };
+  const pathLabel = (path: KnowledgePath) => `S${path.sessionId}/${path.branch ?? ""}/T${path.headTurnId ?? ""}`;
   return { totals, problems: totals.filter(t => relevant(t) && t.tokens > t.cap)
-    .map(t => `${t.scope}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
+    .map(t => `${t.scope} on ${pathLabel(t.path)}: processed knowledge ${t.tokens} exceeds ${t.cap}; reduce the affected processed pool before retrying this operation`) };
 }

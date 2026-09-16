@@ -148,8 +148,11 @@ test("35d newly admitted Dreamer request fits above the retired 20k processed-in
   }
   for (const value of values) f.memory.store.db.prepare("UPDATE knowledge_revisions SET text = ? WHERE id = ?").run(value.revision.text, value.revision.id);
   expect(f.memory.store.checkProcessedScopes(commits.map(commit => commit.commit)).problems).toEqual([]);
-  const run = f.memory.store.recordRun({ kind: "dreaming", sessionId: f.session.id, outcome: "success", createdAt: "now" });
-  f.memory.store.completeDreaming(run.id, commits.map(commit => commit.commit), commits.map(commit => commit.commit));
+  const eventIds = commits.map(commit => commit.commit);
+  const range = f.memory.store.retainDreamingRange(f.target, eventIds);
+  const run = f.memory.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: f.target.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
+  f.memory.store.completeDreaming(run.id, eventIds, eventIds);
   f.create("new admission trigger", "project");
   await f.memory.dream(f.target);
   const admitted = f.captured();

@@ -392,7 +392,9 @@ function dreamingScenarios(size: string): Sample[] {
       }
     });
     const results = current.map(c => c.commit);
-    const run = store.recordRun({ kind: "dreaming", sessionId: target.sessionId, outcome: "success", createdAt: time });
+    const range = store.retainDreamingRange(target, events);
+    const run = store.recordRun({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch,
+      dreamingRangeId: range.id, outcome: "success", createdAt: time });
     const counter = countGraphResolutions();
     let eligibilityGraphs: number;
     try { memory.taskEligibility("dreaming", target); eligibilityGraphs = counter.resolutions(); } finally { counter.restore(); }

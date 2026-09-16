@@ -98,8 +98,7 @@ proves fit. The model-facing check receipt is only a deterministic projection of
 It reports the target's relevant Global, Project and Session owner totals, including zero-valued pools,
 the maximum applicable path and number of paths checked, separate pending change-event and exact-version
 obligation counts, other canonical completion counts, rounds/repair state and every blocker. It omits
-normal non-maximum paths, per-version rows and exact-set arrays. The full untruncated totals for every
-owner and path—including owners outside the target—plus graph-derived versions, supplied and accounted
+normal non-maximum paths, per-version rows and exact-set arrays. The full untruncated totals for the frozen run path's three owner pools and applicable block—without unrelated owners or path maxima—plus graph-derived versions, supplied and accounted
 events, candidates, successor-free results, consumed inputs, conflicts and failures remain in
 `runs.response.check`. Finalization reads those exact sets rather than the receipt, while affected-owner
 filtering preserves the existing success rules. Receipt identities are diagnostics only: they grant
@@ -111,8 +110,7 @@ include the reference base itself. Model output never enumerates candidates, and
 provenance plus the bound run capability, claim and family checks identify legal current-run output;
 retained-range membership or an actor label alone does not. Arbitrary runtime reads, untouched
 processed references, writable-family membership, earlier-attempt outputs not formally readmitted and
-outside successors add none. Before completion, core rechecks the global consuming graph and removes
-every candidate with an update, archive, split or merge consumer. Unchanged formal leaves, terminal own
+outside successors add none. Before completion, core rechecks consuming edges against the frozen path. A successor blocks when it has a same-session trigger origin related as same, ancestor or descendant, or when it applies on the frozen path regardless of origin. A divergent or independent successor that is inapplicable there does not block; unknown required same-session provenance fails explicitly. This certification predicate is intentionally not the write-side guard: divergent siblings retain permission to write. Unchanged formal leaves, terminal own
 reference maintenance, both split children and archive-state leaves remain candidates; consumed
 originals and intermediates do not. Existing certificates are never revoked. The same final transaction
 validates the complete resulting accepted processed pool against current shared caps before inserting
@@ -628,15 +626,12 @@ Ticket 35d stores one Knowledge policy row in each database: Global 4,000, Proje
 Session 1,000 tokens by default. Exact safe-integer addition derives the applicable processed ceiling
 `G + P + S` (15,000), the ordinary-injection/compaction Knowledge capacity `G + P + S + 5,000`
 (20,000), and the Dreamer processed-input capacity by the same formula. The 5,000-token constant is
-an unprocessed-work allowance, not another stored or configurable cap. Owner pools remain
-independent: each project has the full Project budget and each session has the full Session budget;
-they are never multiplied into one global total.
+an unprocessed-work allowance, not another stored or configurable cap. Owner pools remain independent: each project has the full Project budget and each session has the full Session budget; they are never multiplied into one global total. For any check, each pool contains only current non-archived processed versions applicable on that one path, grouped by effective placement owner. Project and global sharing occur through applicability on the path, not by unioning stored branches. The separately rendered applicable block contains the union of those three item sets; its token count is not the arithmetic sum of three independently framed owner blocks.
 
 Supported schema creation and upgrade, source/lineage migration, policy initialization and policy
 validation commit as one database transaction. A failed later migration or integrity check therefore
 publishes neither a partial schema upgrade nor a new default-policy row; reopening retries idempotently.
-Single-field edits are separate ordinary database transactions. A reduction validates all affected
-processed owner pools and applicable session paths in that same transaction; any overage or write/commit
+Single-field edits are separate ordinary database transactions. A reduction retains the existing enumeration of every stored branch and terminal Turn, and validates each path's affected owner pools and applicable block independently in that same transaction; no branch union is measured. Any overage or write/commit
 failure rolls back the policy row. Reads and no-op edits do not rewrite unrelated memory
 or Pi settings. Every new selection, placement, completion, certification, compact allocation and
 ordinary injection reads current database policy. Dreamer and Consolidator freeze their derived input
@@ -681,10 +676,9 @@ category grouping remains presentation rather than a globally relevance-sorted b
 
 ## Knowledge trace and negation walks (ticket 03a)
 
-`trace("K1")` defaults to the path-current tip and its parents, children, links,
-and marks. `versions: "history"` adds applicable commit history;
-`versions: "all"` also adds other-branch tips and a disjoint list of only those
-branches' commits. Without a bound session, tips are labelled newest-created and
+`trace("K1")` defaults to active current tips applicable on the path and their parents, children, links,
+and marks. `versions: "history"` additionally admits applicable superseded and archived revisions;
+`versions: "all"` additionally admits other branches' revisions in the selected scope, including their history and archives. Such inapplicable revisions are never write bases on this path, and reading never bypasses write validation. Without a bound session, tips are labelled newest-created and
 all history appears once. `K1@57` reads one immutable global commit,
 `K1@57..K1@61` compares any two commits of the same identity, and `K1..` shows the
 complete commit tree across branches. These explicit addresses ignore data filters.
@@ -709,9 +703,7 @@ time and space in the two token counts; trace does not truncate knowledge text.
 `F1..` includes the starting fact and follows later inbound strong negations
 (newer facts point to older facts in storage), depth first, in ascending fact-id
 order. Two spaces per level show branching. Shared descendants appear on each
-branch; every leaf ends with `no later strong negation recorded`. Fact lines
-retain all normal relation annotations, even though weak negations and supports
-are not traversed. Later means allocation order, not potentially backdated fact
+branch; every leaf ends with `no later strong negation recorded`. Fact lines retain all normal relation annotations, even though weak negations and supports are not traversed. Automatic material and path-scoped collections retain an annotation only when both Fact endpoints satisfy the selected path snapshot. Exact `F<n>` reads remain unrestricted and receipt relations whose other endpoint is inapplicable there. Later means allocation order, not potentially backdated fact
 timestamps. No model call or derived fact status is involved.
 
 IDs and commits must be positive safe integers without leading zeros. Knowledge
@@ -1027,9 +1019,7 @@ Only `category` implies `layer: "knowledge"` and rejects another explicit layer.
 Scope works across all layers and does not imply a layer. Exact trace evidence remains
 unrestricted; selection grants no source or write authority.
 
-`versions` defaults to `current`: active current DAG tips inside the selected owner
-scope. `history` also admits applicable superseded and archived revisions; `all` also
-admits nonapplicable branch revisions inside that same scope. Historical parent
+`versions` defaults to `current`: active current DAG tips applicable on the reader's path inside the selected owner scope. `history` also admits applicable superseded and archived revisions; `all` also admits other branches' revisions inside that same scope, including their history and archives. Inapplicable revisions remain unavailable as write bases; reads do not bypass writer validation. Historical parent
 conditions still constrain path applicability. Without a path, current uses graph
 tips and history/all include the graph history. Versions are candidates inside a K,
 not separate knowledge identities.

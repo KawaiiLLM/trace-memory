@@ -148,7 +148,9 @@ test("32f: 50 tool rounds and one repair consume only one Dreamer recovery allow
         const outside = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$2", author: "test", text: "outside ".repeat(4500), category: "constraint", scope: "project", supports: [1], topics: [], reason: "outside the frozen family", createdAt: "seed" }] });
         if (!outside.ok) throw Error(outside.problems.join());
         h.memory.setKnowledgeBudget("project", 5_000);
-        const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "seed" });
+        const range = s.openDreamingRange(1, "main")!;
+        const run = s.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+          outcome: "success", createdAt: "seed" });
         s.completeDreaming(run.id, [outside.committed[0]!.commit], [outside.committed[0]!.commit]);
         return reply("First pass complete"); // host must check, and send exactly one repair
       }

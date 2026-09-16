@@ -2423,7 +2423,7 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt).toContain("a fact's `quote`, a review cue or a targeted search hit points to an item not supplied complete");
   expect(prompt).toContain("the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked");
   expect(prompt).toContain("a legal fact outside the range is needed, or a stale-base refusal requires the applicable successor to be read again");
-  expect(prompt).toContain("`search` matches one contiguous literal substring over every version and every branch and does not combine keywords");
+  expect(prompt).toContain("`search` matches one contiguous literal substring over the versions applicable here and does not combine keywords");
   expect(prompt).toContain("No hit means change the word, never stack words.");
   expect(prompt).toContain("Read an exact current version before writing only when it was not supplied complete in the knowledge block or inherited context.");
   expect(prompt).not.toContain("within its own 10,000-token allowance");
@@ -2436,6 +2436,21 @@ test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or
   expect(prompt).toContain("Record what later work will need and cannot look up: a decision or ruling with its reason — why the design takes this shape, why a threshold has this value, what it replaced — even when it lands in code in the same batch, because the code keeps only the current value.");
   expect(prompt).toContain("How existing code happens to be written is looked up when needed and is not a fact.");
   expect(prompt).not.toContain("re-derivable from code or git");
+});
+
+test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
+  const trace = toolDefinitions.find(tool => tool.name === "trace")!;
+  const search = toolDefinitions.find(tool => tool.name === "search")!;
+  const versions = (trace.parameters.properties as Record<string, { description?: string }>).versions!.description!;
+  expect(versions).toContain("current = active current tips applicable on this path");
+  expect(versions).toContain("history = additionally applicable superseded and archived revisions");
+  expect(versions).toContain("all = additionally other branches' revisions within the selected scope, including their history and archives");
+  expect(versions).toContain("never write bases here");
+  expect(trace.description).toContain("versions=all additionally adds other branches' revisions, including their history and archives");
+  expect(trace.description).toContain("revisions not applicable here are never write bases");
+  expect(search.description).toContain("history additionally includes applicable superseded and archived revisions");
+  expect(search.description).toContain("all additionally includes other branches' revisions in scope, including their history and archives");
+  expect(search.description).toContain("reading never bypasses write validation");
 });
 
 test("46: a rule and the choice under it are two items; sub-items are their own opens; an empty receipt is a complete block", () => {

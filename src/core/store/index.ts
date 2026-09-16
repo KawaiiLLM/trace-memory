@@ -816,7 +816,7 @@ export class Store {
         field === "global" && total.scope === "global" || field === "project" && total.scope.startsWith("project:") ||
         field === "session" && total.scope.startsWith("session:"));
       const over = relevant.filter(total => total.tokens > total.cap);
-      if (over.length) throw new Error(over.map(total => `${total.scope}: used ${total.tokens} tokens, proposed cap ${total.cap}, overage ${total.tokens - total.cap}`).join("; "));
+      if (over.length) throw new Error(over.map(total => `${total.scope}: used ${total.tokens} tokens, proposed cap ${total.cap}, overage ${total.tokens - total.cap}; path S${total.path.sessionId}/${total.path.branch ?? ""}/T${total.path.headTurnId ?? ""}`).join("; "));
       const column = `${field}_tokens`;
       const result = this.db.prepare(`UPDATE knowledge_budget_policy SET ${column} = ? WHERE id = 1`).run(policy[field]);
       if (result.changes !== 1) throw new Error("Knowledge budget policy update did not affect its authoritative row");
@@ -1150,7 +1150,7 @@ export class Store {
       for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(ids))
         projected.facts.get(Number(row.fact_id))!.entries.push(Number(row.entry_id));
       const facts = [...projected.facts.values()].map(value => value.fact).filter(fact => this.factOnPath(fact, path, snapshot, projected));
-      return { facts, relations: this.listFactRelationsOf(facts.map(fact => fact.id)) };
+      return { facts, relations: this.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot) };
     });
   }
 
@@ -1182,6 +1182,43 @@ export class Store {
       for (const id of new Set([relation.fromFact, relation.toFact])) relations.get(id)?.push(relation);
     }
     return relations;
+  }
+
+  /** Judge immutable Fact membership in one frozen path snapshot with batched endpoint/source reads. */
+  factApplicabilityOnPath(factIds: readonly number[], path: KnowledgePath,
+    snapshot = this.pathSnapshot(path)): Map<number, boolean> {
+    const endpointIds = [...new Set(factIds)];
+    const input: ApplicabilityInput = { runs: new Map(), projects: new Map(), facts: new Map() };
+    if (!endpointIds.length) return new Map();
+    const ids = JSON.stringify(endpointIds);
+    for (const row of this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id
+      WHERE f.id IN (SELECT value FROM json_each(?))`).all(ids)) {
+      const fact = toFact(row);
+      input.facts.set(fact.id, { fact, sessionId: Number(row.session_id), runId: Number(row.run_id), entries: [] });
+    }
+    for (const row of this.db.prepare(`SELECT fact_id, entry_id FROM fact_sources
+      WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id`).all(ids))
+      input.facts.get(Number(row.fact_id))?.entries.push(Number(row.entry_id));
+    return new Map(endpointIds.map(id => {
+      const fact = input.facts.get(id)?.fact;
+      return [id, !!fact && this.factOnPath(fact, path, snapshot, input)] as const;
+    }));
+  }
+
+  /** Automatic material keeps a relation only when both immutable Fact endpoints belong to the
+   * selected path. Explicit Fact-address reads continue to use the unrestricted relation methods. */
+  listFactRelationsOnPathOf(factIds: number[], path: KnowledgePath,
+    snapshot = this.pathSnapshot(path)): Map<number, FactRelation[]> {
+    const all = this.listFactRelationsOf(factIds);
+    const endpointIds = [...new Set([...all.values()].flatMap(relations => relations.flatMap(r => [r.fromFact, r.toFact])))];
+    if (!endpointIds.length) return all;
+    const applies = this.factApplicabilityOnPath(endpointIds, path, snapshot);
+    return new Map([...all].map(([id, relations]) => [id,
+      relations.filter(relation => applies.get(relation.fromFact) && applies.get(relation.toFact))]));
+  }
+
+  listFactRelationsOnPath(factId: number, path: KnowledgePath, snapshot = this.pathSnapshot(path)): FactRelation[] {
+    return this.listFactRelationsOnPathOf([factId], path, snapshot).get(factId) ?? [];
   }
 
   // -- runs (standalone: failure / cancelled, or a run with nothing else to commit) --
@@ -1733,6 +1770,40 @@ export class Store {
     return result;
   }
 
+  /** Certification sees only successors that belong to the frozen run path: every comparable
+   * same-session origin, plus every successor whose inherited evidence applies on that path. This is
+   * intentionally stricter than the write guard's divergent-sibling permission without changing it. */
+  certificationSuccessors(commitIds: readonly number[], path: KnowledgePath, runId: number,
+    snapshot?: PathSnapshot, prepared?: ReturnType<Store["commitGraphInput"]>): Map<number, number[]> {
+    const successors = this.consumingSuccessors(commitIds);
+    if (!commitIds.length) return successors;
+    snapshot ??= this.pathSnapshot(path);
+    const input = prepared ?? this.commitGraphInput();
+    const incoming = this.getRun(runId);
+    if (!incoming || incoming.sessionId === null || !this.getSession(incoming.sessionId))
+      throw new Error(`cannot determine incoming target-session provenance for Dreamer certification`);
+    const facts = new Map<number, boolean>(), commits = new Map<number, boolean>();
+    for (const [baseCommit, ids] of successors) {
+      const blocking: number[] = [];
+      for (const successorId of ids) {
+        const successor = input.metadata.revisions!.get(successorId);
+        const prior = successor?.runId == null ? null : this.getRun(successor.runId);
+        if (!successor || !prior || prior.sessionId === null || !this.getSession(prior.sessionId))
+          throw new Error(`K@${baseCommit}: cannot determine target-session provenance for consuming successor commit ${successorId}; repair authoritative provenance before retrying certification`);
+        let comparable = successor.runId === runId;
+        if (!comparable && prior.sessionId === incoming.sessionId) {
+          const relation = compareTriggerOrigins(incoming.origin, prior.origin);
+          if (relation === "unknown") throw new Error(`K@${baseCommit}: trigger ancestry is unknown for an existing same-session successor; re-admit from authoritative native ancestry`);
+          if (relation === "independent") throw new Error(`K@${baseCommit}: stored trigger origin does not match its target session`);
+          comparable = relation !== "divergent";
+        }
+        if (comparable || this.commitApplies(successor, path, snapshot, input.metadata, facts, commits)) blocking.push(successorId);
+      }
+      successors.set(baseCommit, blocking);
+    }
+    return successors;
+  }
+
   /** The immutable-origin guard is separate from evidence applicability and complete-read authority. */
   private competingSuccessors(knowledgeId: number, baseCommit: number, path: KnowledgePath | null, runId: number): ConsumedBaseConflict | null {
     const successors = this.consumingSuccessors([baseCommit]).get(baseCommit)!;
@@ -2198,7 +2269,9 @@ export class Store {
     });
   }
 
-  checkProcessedScopes(acceptedResultIds: number[] = []) { return checkProcessedScopes(this, acceptedResultIds); }
+  checkProcessedScopes(acceptedResultIds: number[] = [], path?: KnowledgePath) {
+    return checkProcessedScopes(this, acceptedResultIds, undefined, this.knowledgeBudgets(), path);
+  }
 
   /** 32d passes its target/claim/frozen-family recheck here, inside the same short transaction.
    * The successful run and two exact sets are authoritative; no watermark or tip substitution. */
@@ -2216,7 +2289,7 @@ export class Store {
   }
 
   private completeDreamingTransaction(runId: number, eventIds: number[], resultIds: number[], validate: () => void,
-    fullAudit: boolean): DreamingScopeAudit | undefined {
+    returnAudit: boolean): DreamingScopeAudit | undefined {
     return this.transaction(() => {
       const events = [...new Set(eventIds)].sort((a, b) => a - b), results = [...new Set(resultIds)].sort((a, b) => a - b);
       const previous = this.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").get(runId);
@@ -2234,10 +2307,19 @@ export class Store {
         return placementOwner(this, { revision });
       }));
       const budgets = this.knowledgeBudgets();
+      // The retained range is the admitted frozen-path authority. A branch label or today's latest
+      // Turn cannot reconstruct that path for a direct or historical run.
+      const rangeRow = this.db.prepare(`SELECT r.* FROM dreaming_run_ranges d JOIN dreaming_ranges r ON r.id = d.range_id
+        WHERE d.run_id = ?`).get(runId);
+      if (!rangeRow) throw new Error("Dreaming completion requires an admitted retained range with a frozen path");
+      const completionPath = { sessionId: Number(rangeRow.session_id), branch: String(rangeRow.branch), headTurnId: Number(rangeRow.head_turn_id) };
       // The immutable revision/applicability input is also valid for range closure after the
       // certificate rows are inserted; only processed status changes, and that is read separately.
-      const graphInput = fullAudit || affected.size ? this.commitGraphInput() : undefined;
-      const projection = processedProjection(this, results, fullAudit ? undefined : affected, graphInput);
+      const graphInput = this.commitGraphInput();
+      const blockers = this.certificationSuccessors(results, completionPath, runId, undefined, graphInput);
+      const stale = results.filter(id => blockers.get(id)!.length);
+      if (stale.length) throw new Error(`Dreaming certification candidates gained consuming successors on the frozen path: ${stale.map(id => `K@${id}`).join(", ")}`);
+      const projection = processedProjection(this, results, affected, graphInput, completionPath);
       const check = checkProcessedProjection(projection, affected, budgets);
       const audit = { check, budgets };
       if (check.problems.length) throw new DreamingScopeAuditError(audit);
@@ -2260,7 +2342,7 @@ export class Store {
         }
         return audit;
       } catch (error) {
-        if (!fullAudit) throw error;
+        if (!returnAudit) throw error;
         throw new DreamingScopeAuditError(audit, error);
       }
     });
@@ -2268,17 +2350,25 @@ export class Store {
 
   private processedPlacements() {
     const projection = processedProjection(this);
-    const active = new Set<number>();
-    for (const pool of projection.pools.values()) for (const id of pool.keys()) active.add(id);
-    return { owners: projection.owners, active, projection };
+    const active = new Set<number>(), activePaths = new Map<number, Set<string>>();
+    for (const path of projection.paths) for (const value of path.values) {
+      active.add(value.revision.id);
+      if (!activePaths.has(value.revision.id)) activePaths.set(value.revision.id, new Set());
+      activePaths.get(value.revision.id)!.add(JSON.stringify([path.path.sessionId, path.path.branch ?? null, path.path.headTurnId ?? null]));
+    }
+    return { owners: projection.owners, active, activePaths, projection };
   }
 
   private revalidatePlacement(before: ReturnType<Store["processedPlacements"]>): void {
     const after = this.processedPlacements();
     // Admission can expose a certified global predecessor even when no certificate's owner moves.
-    // Compare the actual projected pool, not just the relabelled sessions or knowledge rows.
+    // Compare exact per-path membership, not a union that can hide movement between paths.
+    const samePaths = (id: number) => {
+      const left = before.activePaths.get(id) ?? new Set(), right = after.activePaths.get(id) ?? new Set();
+      return left.size === right.size && [...left].every(path => right.has(path));
+    };
     const moved = [...new Set([...before.active, ...after.active])].filter(id =>
-      before.owners.get(id) !== after.owners.get(id) || before.active.has(id) !== after.active.has(id));
+      before.owners.get(id) !== after.owners.get(id) || !samePaths(id));
     if (!moved.length) return;
     const affected = new Set(moved.flatMap(id => [before.owners.get(id)!, after.owners.get(id)!]));
     const check = checkProcessedProjection(after.projection, affected, this.knowledgeBudgets());

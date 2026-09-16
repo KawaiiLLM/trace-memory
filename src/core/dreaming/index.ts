@@ -74,7 +74,9 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
     const fact = store.getFact(id); if (!fact) throw new Error(`Missing direct support F${id}`); return fact;
   });
   const times = store.factTurnTimes(facts);
-  const factText = (count: number) => ["Direct supporting facts:", ...renderFactGroups(facts.slice(0, count), f => renderFact(f, store.listFactRelations(f.id)), times),
+  const pathSnapshot = store.pathSnapshot(path);
+  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, pathSnapshot);
+  const factText = (count: number) => ["Direct supporting facts:", ...renderFactGroups(facts.slice(0, count), f => renderFact(f, relations.get(f.id) ?? []), times),
     ...(count < facts.length ? [`Omitted whole direct facts beyond 10000: ${facts.slice(count).map(f => `F${f.id}`).join(", ")}; expand with trace.`] : [])].join("\n");
   let count = facts.length;
   while (count && tokens(factText(count)) > 10000) count--;
@@ -117,8 +119,11 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const pathSnapshot = store.pathSnapshot(path);
     const graph = store.commitGraph(null, undefined, undefined, graphInput);
     const candidates = [...new Set([...formal, ...ownCandidates])].sort((a, b) => a - b);
-    const consumers = store.consumingSuccessors(candidates);
-    const resultIds = candidates.filter(id => consumers.get(id)!.length === 0);
+    let certificationFailure: string | undefined;
+    let consumers: Map<number, number[]>;
+    try { consumers = store.certificationSuccessors(candidates, path, currentRunId, pathSnapshot, graphInput); }
+    catch (error) { certificationFailure = String(error); consumers = store.consumingSuccessors(candidates); }
+    const resultIds = certificationFailure ? [] : candidates.filter(id => consumers.get(id)!.length === 0);
 
     // A transaction refusal is forgivable only when core returned an exact consumed base and the
     // fresh graph still contains that consuming edge for a formal processing version.
@@ -127,7 +132,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const memoryFailures = binding.memory.problems.length && (!binding.memory.competitiveConflicts.length ||
       verifiedConflicts.length !== binding.memory.competitiveConflicts.length) ? binding.memory.problems : [];
     const operationFailures = [...binding.toolProblems, ...memoryFailures];
-    const failures: string[] = [...operationFailures];
+    const failures: string[] = [...operationFailures, ...(certificationFailure ? [certificationFailure] : [])];
     try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
 
     const accountedEventIds = eventIds.filter(eventId => {
@@ -182,7 +187,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     // Awaited pass-end and post-run checks always read current policy/projection; they are never
     // reused across the provider await. Only the later final transaction shares its own snapshot.
     const currentBudgets = store.knowledgeBudgets();
-    return state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, true), currentBudgets);
+    return state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, path), currentBudgets);
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
@@ -222,7 +227,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
         const state = inspect();
         if (state.externalSuccessors.length) {
           const currentBudgets = store.knowledgeBudgets();
-          finalCheck = state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, true), currentBudgets);
+          finalCheck = state.finish(checkProcessedScopes(store, state.resultIds, state.affected, currentBudgets, path), currentBudgets);
           if (finalCheck.failures.length) throw new Error(finalCheck.problems.join("; "));
           run.response = JSON.stringify({ ...JSON.parse(run.response!), check: finalCheck, problems: finalCheck.problems });
           store.updateRun(runId, { ...run, outcome: "conflict" });
