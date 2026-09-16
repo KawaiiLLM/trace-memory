@@ -208,6 +208,17 @@ CREATE TABLE IF NOT EXISTS source_paths (
   entry_ids TEXT NOT NULL,
   PRIMARY KEY (session_id, branch)
 );
+-- Native checkpoints that own a Turn but are not Raw source entries (notably compaction boundaries),
+-- plus the user source that created each ordinary Turn. Host-native identity keeps import idempotent;
+-- no host envelope or selected-path policy enters this table.
+CREATE TABLE IF NOT EXISTS native_turns (
+  session_id INTEGER NOT NULL REFERENCES sessions(id),
+  native_lineage TEXT NOT NULL,
+  native_id TEXT NOT NULL,
+  turn_id INTEGER NOT NULL UNIQUE REFERENCES turns(id),
+  kind TEXT NOT NULL CHECK (kind IN ('turn','compaction')),
+  PRIMARY KEY (session_id, native_lineage, native_id)
+);
 CREATE TABLE IF NOT EXISTS noted_entries (
   entry_id INTEGER NOT NULL REFERENCES source_entries(id),
   run_id INTEGER NOT NULL REFERENCES runs(id),
@@ -720,18 +731,21 @@ export class Store {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
             const input = JSON.parse(String(row.content));
-            let blocks: SourceBlock[] | undefined;
+            let blocks: SourceBlock[] | undefined, sealMismatch = false;
             if (row.blocks == null) {
               try { blocks = normalizeSource?.(input); }
               catch (error) {
                 if (!(error instanceof SourceNormalizationError)) throw error;
+                sealMismatch = true;
                 // Persist JSON null below: retain legacy proof without retrying this row on reopen.
                 // Numeric storage identities locate the row without exposing Raw or native IDs.
                 console.warn(`Trace Memory: legacy source normalization skipped; entry=${Number(row.id)} turn=${Number(input.turnId)}; call mapping mismatch`);
               }
             } else blocks = JSON.parse(String(row.blocks));
             const entry = { ...input, id: Number(row.id), entryOrdinal: Number(row.entry_ordinal), ...(blocks ? { blocks } : {}) };
-            update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : normalizeSource ? "null" : null, entry.id);
+            // An absent host decode is not a permanent negative result: another host owns that Raw.
+            // Only a recognized mismatch is sealed as JSON null.
+            update.run(JSON.stringify(sourceAddresses(entry)), blocks ? JSON.stringify(blocks) : sealMismatch || row.blocks === "null" ? "null" : null, entry.id);
           }
         }
       });
@@ -867,6 +881,12 @@ export class Store {
   getSession(id: number): Session | null {
     const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
     return row ? toSession(row) : null;
+  }
+
+  findSessionByHost(host: string): Session | null {
+    const rows = this.db.prepare("SELECT * FROM sessions WHERE host = ? ORDER BY id").all(host);
+    if (rows.length > 1) throw new Error(`multiple memory sessions are bound to host ${host}`);
+    return rows.length ? toSession(rows[0]) : null;
   }
 
   enrollment(sessionId: number): Enrollment {
@@ -2309,6 +2329,24 @@ export class Store {
 
   listTurns(sessionId: number): Turn[] {
     return this.db.prepare("SELECT * FROM turns WHERE session_id = ? ORDER BY id").all(sessionId).map(toTurn);
+  }
+
+  findNativeTurn(sessionId: number, nativeLineage: string, nativeId: string): { turnId: number; kind: "turn" | "compaction" } | null {
+    const row = this.db.prepare("SELECT turn_id, kind FROM native_turns WHERE session_id = ? AND native_lineage = ? AND native_id = ?")
+      .get(sessionId, nativeLineage, nativeId) as { turn_id: number; kind: "turn" | "compaction" } | undefined;
+    return row ? { turnId: row.turn_id, kind: row.kind } : null;
+  }
+
+  bindNativeTurn(sessionId: number, nativeLineage: string, nativeId: string, turnId: number, kind: "turn" | "compaction"): void {
+    if (!nativeLineage || !nativeId || this.getTurn(turnId)?.sessionId !== sessionId || this.getTurn(turnId)?.kind !== kind)
+      throw new Error("invalid native Turn binding");
+    const known = this.findNativeTurn(sessionId, nativeLineage, nativeId);
+    if (known) {
+      if (known.turnId !== turnId || known.kind !== kind) throw new Error("native Turn identity changed after persistence");
+      return;
+    }
+    this.db.prepare("INSERT INTO native_turns (session_id, native_lineage, native_id, turn_id, kind) VALUES (?, ?, ?, ?, ?)")
+      .run(sessionId, nativeLineage, nativeId, turnId, kind);
   }
 
   projectSessionIds(projectId: number): number[] {

@@ -85,6 +85,19 @@ test("upgrade isolates recognized malformed rows, preserves evidence and ordinal
   } finally { m.close(); }
 });
 
+test("a decoder that declines another host's Raw does not seal that row as malformed", () => {
+  const f = fixture();
+  const entry = f.store.appendSourceEntry({ ...f.input("another-host", []), raw: JSON.stringify({ foreign: true }) });
+  f.store.close();
+  let store = new Store(f.path, piSourceBlocks);
+  expect(store.getSourceEntry(entry.id)!.blocks).toBeUndefined();
+  expect(store.db.prepare("SELECT blocks FROM source_entries WHERE id = ?").get(entry.id)!.blocks).toBeNull();
+  store.close();
+  store = new Store(f.path, input => JSON.parse(input.raw).foreign ? [{ kind: "text", text: "decoded by owner" }] : undefined);
+  try { expect(store.getSourceEntry(entry.id)!.blocks).toEqual([{ kind: "text", text: "decoded by owner" }]); }
+  finally { store.close(); }
+});
+
 test("upgrade never swallows unexpected decoder or database transaction errors", () => {
   const f = fixture();
   f.store.appendSourceEntry(f.input("row", [f.block]));
