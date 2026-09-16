@@ -359,8 +359,9 @@ test("32d: shared scope completion through two connections cannot certify a comb
   if (!added.ok) throw Error(added.problems.join());
   const secondTask = other.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id });
   expect(await other.dream(first.target)).toMatchObject({ outcome: "dropped" });
+  expect((await secondTask).outcome).toBe("dropped");
   releaseFirst(); expect((await firstTask).outcome).toBe("success");
-  releaseSecond(); expect((await secondTask).outcome).toBe("failure");
+  releaseSecond(); expect((await other.dream({ sessionId: session.id, branch: "main", headTurnId: turn.id })).outcome).toBe("failure");
   expect(first.store.isKnowledgeProcessed(first.item.commit)).toBe(true);
   expect(first.store.isKnowledgeProcessed(added.committed[0]!.commit)).toBe(false);
   expect(first.store.checkProcessedScopes().problems).toEqual([]);

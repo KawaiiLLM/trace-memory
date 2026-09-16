@@ -83,7 +83,8 @@ test.each(["branch", "project", "lost claim", "replaced claim", "range completed
       h.entries.length = oldEnd;
       await h.emit("session_tree", {});
     } else if (change === "project") {
-      s.declareProject(1, "different-project", "mark");
+      const differentProject = s.createProject({ name: "different-project", declaredBy: "mark" });
+      s.mergeProject(s.getSession(1)!.projectId, differentProject.id);
       await h.emit("session_tree", {});
     } else if (change === "range completed" || change === "range replaced") {
       h.memory.setKnowledgeBudget("project", 6_100);

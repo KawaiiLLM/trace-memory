@@ -384,7 +384,7 @@ test("provisional host state cannot restore a former file-derived shared project
 
 test("removing file discovery preserves stored project attribution on restore", async () => {
   const h = host(); await h.turn();
-  h.memory.declareProject(1, "stored-project", "marker"); // A declaration already persisted by a prior version.
+  h.memory.declareProject(1, "stored-project", "marker", h.memory.store.knowledgePath(1, "main")); // A declaration already persisted by a prior version.
   const project = h.memory.store.getSession(1)!.projectId;
   writeFileSync(join(h.dir, ".trace-memory"), "different-project");
   await h.emit("session_start");

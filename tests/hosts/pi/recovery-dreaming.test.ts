@@ -122,7 +122,10 @@ test.each(["knowledge", "project", "cancel"] as const)("32f: final coherent rech
       if (changed || !message.includes("compaction preparing bounded")) return;
       changed = true;
       if (change === "cancel") controller.abort();
-      else if (change === "project") s.declareProject(1, "changed-project", "mark");
+      else if (change === "project") {
+        const changedProject = s.createProject({ name: "changed-project", declaredBy: "mark" });
+        s.mergeProject(s.getSession(1)!.projectId, changedProject.id);
+      }
       else {
         const updated = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(20_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external change after fit", createdAt: "external" }] });
         expect(updated.ok).toBe(true);

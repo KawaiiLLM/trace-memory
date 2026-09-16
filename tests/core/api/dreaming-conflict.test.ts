@@ -471,33 +471,19 @@ test("untrusted provider result and public settlement cannot manufacture the exc
   expect(f.count()).toBe(1);
 });
 
-test.each([false, true])("another target's Dreamer may finish shared events (merge=%s) without making the original execution a failure", async merge => {
+test("another target's Dreamer waits while the database seat is occupied", async () => {
   const f = fixture(), frozen = new Barrier(), finished = new Barrier();
   f.setAgent(async () => { frozen.release(); await finished.wait; return success; });
   const pending = f.memory.dream(f.target);
   await frozen.wait;
-  let absorbed: typeof f.item | undefined;
-  if (merge) {
-    const created = f.other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.otherPath.sessionId, createdAt: "now" },
-      operations: [{ op: "create", handle: "$outside", author: "external", ...f.content }] });
-    if (!created.ok) throw Error(created.problems.join());
-    absorbed = created.committed[0]!;
-  }
-  const other = TraceMemory(f.db, async raw => {
-    const task = raw as DreamingAgentInput;
-    // Ticket 44: the older shared item survives; the outside duplicate is absorbed.
-    expect(tool(task, "memory").execute({ operations: [{ op: merge ? "merge" : "update", id: `K${f.item.knowledgeId}@${f.item.commit}`,
-      ...(merge ? { absorb: [`K${absorbed!.knowledgeId}@${absorbed!.commit}`] } : {}),
-      text: "Maintained by the other Dreamer", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "legal shared maintenance" }], skipped: [] })).toContain('"committed"');
-    return success;
-  }, { dreaming: { triggerTokens: 1 } }); memories.push(other);
-  try { expect((await other.dream(f.otherPath)).outcome).toBe("success"); }
-  finally { finished.release(); }
-  const result = await pending;
-  expect(result.outcome).toBe("success");
+  const other = TraceMemory(f.db, async () => { throw new Error("the occupied seat must prevent a second worker"); },
+    { dreaming: { triggerTokens: 1 } }); memories.push(other);
+  expect((await other.dream(f.otherPath)).outcome).toBe("dropped");
+  finished.release();
+  expect((await pending).outcome).toBe("success");
   expect(f.count()).toBe(0);
-  expect(f.store.db.prepare("SELECT * FROM dreaming_completions").all()).toHaveLength(2);
-  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(false);
+  expect(f.store.db.prepare("SELECT * FROM dreaming_completions").all()).toHaveLength(1);
+  expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(true);
   expect(f.store.retryDreamingRange(f.target)).toBeNull();
 });
 

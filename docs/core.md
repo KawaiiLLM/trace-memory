@@ -36,7 +36,9 @@ visible as requested-versus-actual.
 
 `dream({sessionId, branch, headTurnId, model?, thinkingLevel?, subagentThinkingLevel?})`
 uses the existing claim/admission/cancellation path, always in subagent mode. Eligibility is
-rechecked at admission. The retained range keeps its original anchor, path, event/version obligations and
+rechecked at admission. Dreaming keeps its target-scoped claim row, token, expiry and reserved
+takeover, but acquisition also requires the database's single Dreamer seat to be free; Noting and
+Consolidation claims remain independent. The retained range keeps its original anchor, path, event/version obligations and
 writable family through retries; current exact results are resolved afresh. Its membership
 is audit and authority, not a permanently indivisible input batch: a later admission reselects whole
 current results for still-unsettled events within 10k. An enlarged event that cannot fit alone remains
@@ -1111,11 +1113,19 @@ and calling session/project, and preserve the remaining lines on later pages.
 
 `mark(knowledgeId, kind)` (`verified` | `flagged` | `clear`) replaces or clears
 only the current revision's mark; historical marks remain on their revisions.
-`declareProject(sessionId, name)` declares attribution through an explicit user
-command; its source defaults to `mark`. Pi no longer discovers project marker
-files. The storage contract retains `marker` provenance and existing assignments,
-without any schema migration or new file-based declarations. New session-owned
-projects must use `createSession({ …, projectDeclaration: "undeclared" })`.
+`declareProject(sessionId, name, source, path)` declares attribution through an explicit user
+command; its source defaults to `mark`, and the host supplies the currently selected path. Pi no
+longer discovers project marker files. An undeclared session is accepted only when Raw, fact and
+Knowledge work on that path are each below their configured trigger and it has no open Dreaming
+range or live phase claim. A refusal names the phase; `/trace catchup` drains Noting and
+Consolidation, while due Dreaming is left to its normal trigger. Declaration never flushes work.
+In the same transaction, merging the implicit project into the named target revokes the certificate
+and event settlement of each certified project-scope revision current on any stored path of the
+session. Existing pending-event and Dreamer grouping rules then carry the hand-over; earlier
+certificates, revision identity and placement audits remain. Placement is still revalidated because
+membership can expose other certified knowledge. The storage contract retains `marker` provenance
+and existing assignments, without file-based declarations. New session-owned projects must use
+`createSession({ …, projectDeclaration: "undeclared" })`.
 Only undeclared projects merge via `mergeProject`; leaving a
 named project moves the declaring session and its session knowledge, not peers.
 `status(sessionId)` reports session/project fact counts, visible active knowledge
