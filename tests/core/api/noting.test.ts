@@ -7,6 +7,7 @@ import { renderKnowledge, tokens } from "../../../src/core/render/index.ts";
 import { knowledgeBlock } from "../../../src/core/render/material.ts";
 import fixture from "../../fixtures/noting/turns.json";
 import memories from "../../fixtures/noting/facts.json";
+import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -266,20 +267,16 @@ test("20b 2026-09-08 scenario 4, on the Consolidator since 25a: no knowledge cat
   const first = turn(); script.push(async () => success([batch(first.id)])); await noting(first.id);
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId, createdAt: time }, operations: categories.map((category, i) => ({
-    op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const, text: memories.knowledge, supports: [1], createdAt: time,
+    op: "create", topics: [], reason: "Initial admission of this conclusion." as const, handle: `$e${i + 1}`, author: "fake", category, scope: "project" as const,
+    text: `${memories.knowledge} ${"word ".repeat(1_000)}`, supports: [1], createdAt: time,
   })) });
   const item = (id: number) => renderKnowledge(memory.store.listCurrentKnowledge(memory.store.knowledgePath(sessionId, "main")).find(k => k.knowledge.id === id)!);
   const consolidate = () => memory.consolidate({ sessionId, branch: "main", mode: "subagent" });
-  // A cap of one token holds nothing at all — not even the first-priority constraint (17b kept three)
-  // and not even the receipt naming the omissions, so the task stays pending (review 2026-09-08).
-  memory.close(); open({ consolidation: { knowledgeTokens: 1 } });
-  await expect(consolidate()).rejects.toThrow(/Knowledge capacity/);
-  for (const [i] of categories.entries()) expect(memory.trace(`K${i + 1}`)).toContain(`[K${i + 1}@`); // omitted, not deleted
-  expect(memory.store.consolidationBatch(sessionId, "main").map(f => f.id)).toEqual([1]); // still pending
-  // A binding cap keeps a whole prefix of the priority order, and the block, its category tags and its
-  // own omission receipts all stay inside it — the receipts are charged, not free.
-  const cap = 200;
-  memory.close(); open({ consolidation: { knowledgeTokens: cap } });
+  // Ticket 45 retired the arbitrary tiny per-Consolidator setting. Zero owner budgets derive the
+  // minimum 5k allowance, which still binds this oversized pool and keeps omitted items traceable.
+  memory.close(); open();
+  setKnowledgeInjection(memory, 5_000);
+  const cap = memory.knowledgeBudgets().injection;
   script.push(async () => ({ outcome: "success", output: "Done.", request }));
   expect((await consolidate()).outcome).toBe("success");
   const material = calls.at(-1)!.material as unknown as { knowledge: { category: string; text: string }[]; receipts: string[] };

@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { DreamingScopeAuditError, type Store, type RunInput } from "../store/index.ts";
 import { checkProcessedScopes, placementOwner, processedBlock } from "../store/processing.ts";
-import { renderFact, renderFactGroups, renderKnowledgeBlock, budgetKnowledge, tokens } from "../render/index.ts";
+import { renderFact, renderFactGroups, renderKnowledgeBlock, tokens } from "../render/index.ts";
+import { budgetRelevantKnowledge } from "../render/knowledge-selection.ts";
 import { dreamingToolDefinitions, type bindTools } from "../api/tools.ts";
 import type { AgentControl, RunAgent, RunAgentResult, TraceMemoryConfig } from "../api/index.ts";
-import { similarity, type ConsolidateInput } from "../consolidation/index.ts";
+import type { ConsolidateInput } from "../consolidation/index.ts";
 import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
@@ -62,9 +63,8 @@ export function freezeDreaming(store: Store, input: DreamingInput, config: Trace
   let old = processedBlock(processed), oldIds = processed.map(v => v.revision.id);
   if (tokens(`Processed knowledge:\n${old}`) > processedInputCap) {
     const query = [...changed.versions, ...changed.predecessors].map(v => v.revision.text).join("\n");
-    const scores = new Map(processed.map(v => [v.revision.id, similarity(query, v.revision.text)]));
-    const selected = budgetKnowledge(processed, Math.max(0, processedInputCap - tokens("Processed knowledge:\n")), undefined, "Dreamer processed input", undefined,
-      (a, b) => scores.get(b.revision.id)! - scores.get(a.revision.id)!);
+    const selected = budgetRelevantKnowledge(processed, Math.max(0, processedInputCap - tokens("Processed knowledge:\n")), query,
+      undefined, "Dreamer processed input");
     old = [renderKnowledgeBlock(selected.groups.filter(g => g.text)), ...selected.receipts].join("\n");
     oldIds = selected.commits;
   }

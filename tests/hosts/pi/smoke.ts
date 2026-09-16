@@ -136,7 +136,9 @@ try {
   assert.equal(archive.actorRole, "dreaming");
   assert.deepEqual(archive.supports, []);
   assert.ok(store.isKnowledgeProcessed(archive.id));
-  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}`).includes("maintenance judgment"));
+  // Current-only trace intentionally gives an archived identity only a compact status pointer;
+  // inspect the exact archive commit to verify its trusted maintenance provenance.
+  assert.ok(dreamer.memory.trace(`K${item.knowledgeId}@${archive.id}`).includes("maintenance judgment"));
   assert.ok(dreamer.notices.some(n => n.includes("compaction preparing")));
   assert.ok(!dreamer.notices.some(n => n.includes("compaction used")), "before returning a carrier is not persisted success");
   const entry = dreamer.compaction(compacted.compaction.summary, { details: compacted.compaction.details });

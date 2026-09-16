@@ -8,7 +8,7 @@ import { afterEach, expect, test } from "vitest";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emptyNoteReply, host, notingFact, reply } from "./test-host.ts";
-import { configuration, parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices } from "../../../src/hosts/pi/settings.ts";
+import { configuration, parseKnowledgeBudgetInput, parseLayer, preferences, thinkingChoices, writeGlobal } from "../../../src/hosts/pi/settings.ts";
 import { validateConfig } from "../../../src/core/api/index.ts";
 
 const hosts: ReturnType<typeof host>[] = [];
@@ -32,19 +32,23 @@ const edit = async (h: ReturnType<typeof host>, line: string, value: string | un
   await command(h, "");
 };
 
-test("35d retires the file injection cap and parses exact database-budget input", () => {
-  expect(validateConfig({}).consolidation.knowledgeTokens).toBe(10_000);
+test("35d/45 retire file-owned knowledge caps and parse exact database-budget input", () => {
+  expect(validateConfig({}).consolidation).not.toHaveProperty("knowledgeTokens");
   expect(parseKnowledgeBudgetInput("0", "Global Knowledge budget")).toBe(0);
   expect(parseKnowledgeBudgetInput("15000", "Project Knowledge budget")).toBe(15_000);
   for (const value of ["-1", "1.5", "NaN", "Infinity", "01", " 1", "1 ", "9007199254740992", "1e3", ""])
     expect(() => parseKnowledgeBudgetInput(value, "Global Knowledge budget")).toThrow(/exact nonnegative safe integer/);
-  for (const value of [20_000, 1]) {
-    expect(() => parseLayer({ "render.knowledgeBlockTokens": value })).toThrow(/Removed setting render.knowledgeBlockTokens.*remove it.*Settings.*bound database/);
-    expect(() => validateConfig({ render: { knowledgeBlockTokens: value } } as never)).toThrow(/Removed setting render.knowledgeBlockTokens/);
+  for (const value of [20_000, 1]) for (const key of ["render.knowledgeBlockTokens", "consolidation.knowledgeTokens"]) {
+    expect(() => parseLayer({ [key]: value })).toThrow(new RegExp(`Removed setting ${key.replace(".", "\\.")}.*remove it.*Settings.*bound database`));
+    const [section, field] = key.split(".");
+    expect(() => validateConfig({ [section!]: { [field!]: value } } as never)).toThrow(new RegExp(`Removed setting ${key.replace(".", "\\.")}`));
   }
   const h = setup();
-  expect(() => configuration(h.dir, JSON.stringify({ "render.knowledgeBlockTokens": 20_000 }), join(h.dir, "agent")))
-    .toThrow(/Removed setting render.knowledgeBlockTokens/);
+  for (const key of ["render.knowledgeBlockTokens", "consolidation.knowledgeTokens"])
+    expect(() => configuration(h.dir, JSON.stringify({ [key]: 20_000 }), join(h.dir, "agent")))
+      .toThrow(new RegExp(`Removed setting ${key.replace(".", "\\.")}`));
+  expect(() => writeGlobal(globalPath(h), "consolidation.knowledgeTokens", 1 as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
+  expect(() => h.memory.configure({ consolidation: { knowledgeTokens: 1 } } as never)).toThrow(/Removed setting consolidation\.knowledgeTokens/);
   expect(globalFile(h)["trace-memory"]).toBeUndefined();
   expect(preferences.map(p => p.key)).toEqual(["noting.forkModeDefault", "notingModel", "notingThinking",
     "consolidation.forkModeDefault", "consolidationModel", "consolidationThinking", "dreaming.model", "dreaming.thinking", "closedSessionScope"]);

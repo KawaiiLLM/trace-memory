@@ -279,7 +279,7 @@ test("empty ranges do not call the agent or create records", async () => {
 // longer has a subject here; it survives on the Noter's history block, pinned in noting.test.ts
 // ("selected historical facts display by Turn time rather than insertion id"). The knowledge half is
 // unchanged, and the removal itself is pinned below.
-test("already-consolidated facts are not supplied while the range remains complete, and categories follow the knowledge budget", async () => {
+test("already-consolidated facts are not supplied while the range remains complete, and categories keep presentation order", async () => {
   const newest = fact(memories.base, { createdAt: "2026-08-17" }), oldest = fact(memories.observation, { createdAt: "2026-08-15" });
   const categories = ["constraint", "open", "dispute", "goal", "mechanism", "term", "reference"] as const;
   for (const category of categories) knowledge([newest], { category });
@@ -294,14 +294,8 @@ test("already-consolidated facts are not supplied while the range remains comple
   expect(input).toContain(`[F${current}]`);
   expect(calls[0]!.range.facts.map(f => f.id)).toEqual([current]);
   for (let i = 1; i < categories.length; i++) expect(input.indexOf(`[${categories[i - 1]}/project]`)).toBeLessThan(input.indexOf(`[${categories[i]}/project]`));
-  // 20b: the knowledge cap is hard — not even the three categories 17b's exemption protected survive a
-  // one-token budget — and, since the review of 2026-09-08, hard for its receipt too: a budget that
-  // holds neither an item nor the receipt naming it leaves the batch pending rather than running.
-  memory.close(); open({ consolidation: { knowledgeTokens: 1 } });
-  fact(memories.interpretation);
-  const runs = memory.store.listRuns(sessionId).length;
-  await expect(consolidation()).rejects.toThrow(/capacity/);
-  expect(memory.store.listRuns(sessionId)).toHaveLength(runs);
+  // Ticket 45 retires the synthetic per-Consolidator cap; database-policy boundary cases are pinned
+  // separately, while this older test keeps its fact/history and category-presentation contract.
 });
 
 test("bigram Jaccard has a known nontrivial score and an inclusive configurable threshold", async () => {

@@ -41,7 +41,9 @@
 import { createHash } from "node:crypto";
 import type { Fact } from "../model/index.ts";
 import type { KnowledgeWithRevision } from "../store/index.ts";
-import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, xmlBlock, type FactTurns } from "./index.ts";
+import { budgetFacts, budgetKnowledge, charge, finish, renderKnowledgeBlock, tokens, wholeKnowledge, xmlBlock,
+  type BudgetedKnowledge, type FactTurns } from "./index.ts";
+import { budgetRelevantKnowledge } from "./knowledge-selection.ts";
 
 /** One knowledge category group as `budgetKnowledge` returns it: the category and its rendered lines. */
 export interface KnowledgeGroup { category: string; text: string }
@@ -147,7 +149,12 @@ export interface MaterialBudget {
   knowledge?: KnowledgeWithRevision[];
   /** How one knowledge item renders; the read facade adds its marks. */
   knowledgeLine?: (value: KnowledgeWithRevision) => string;
-  /** The owning configuration key, used only in capacity diagnostics and omission receipts. */
+  /** A worker query opts into the shared relevance-bounded selection used by Consolidation and Dreaming. */
+  knowledgeQuery?: string;
+  /** Optional pre-render of exactly `knowledge` with `knowledgeLine`. A freeze may reuse this
+   * range-independent complete-pool measurement while only its relevance query changes. */
+  knowledgeWhole?: BudgetedKnowledge;
+  /** The owning capacity, used only in capacity diagnostics and omission receipts. */
   knowledgeBudget?: string;
   /** 29b: the status lines of inherited commits that are no longer current. They are reserved out of
    * `caps.knowledge` before the block fills what is left, because a stale-authority warning is worth
@@ -188,19 +195,36 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   /** How far past each cap this material is, in tokens; zero when it fits. Every consumer receipts an
    * overage; only compact escalates on it (ticket 20 "Compaction escalation", steps 2 and 4). */
   over: { current: number; episodic: number } } {
-  // 29b: the notes come out of the knowledge allowance first, whole lines only, and what does not fit
-  // is receipted rather than cut mid-line — a truncated "this is archived" is worse than a counted one.
-  const notes: string[] = [];
-  let noteCost = 0;
-  for (const note of input.knowledgeNotes ?? []) {
-    const next = charge([KNOWLEDGE_STATUS_TITLE, ...notes, note]); // the block's own title is charged with it
-    if (next > (input.caps.knowledge ?? 0)) break;
-    notes.push(note); noteCost = next;
+  const receiptCost = (list: string[]) => list.length ? charge(list) + charge(["Receipts:"]) : 0;
+  // 29b: status is mandatory and comes out of the knowledge allowance first. Select the largest
+  // whole-line prefix whose own title and, when needed, bounded omission receipt plus shared heading
+  // all fit. The receipt is part of the selection rather than unbudgeted text appended afterwards.
+  const allNotes = input.knowledgeNotes ?? [], cap = input.caps.knowledge ?? 0;
+  const statusCosts = [0];
+  for (const note of allNotes) statusCosts.push(statusCosts.at(-1)! + tokens(note) + 1
+    + (statusCosts.length === 1 ? tokens(KNOWLEDGE_STATUS_TITLE) + 1 : 0));
+  let keptNotes = -1;
+  for (let kept = 0; kept <= allNotes.length; kept++) {
+    const omitted = allNotes.length - kept;
+    const receipts = omitted ? [`omitted ${omitted} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
+    if (statusCosts[kept]! + receiptCost(receipts) <= cap) keptNotes = kept;
   }
-  const noteReceipts = (input.knowledgeNotes ?? []).length > notes.length
-    ? [`omitted ${(input.knowledgeNotes ?? []).length - notes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
-  const active = input.knowledge ? budgetKnowledge(input.knowledge, Math.max(0, input.caps.knowledge! - noteCost - charge(noteReceipts)), input.knowledgeLine, input.knowledgeBudget)
-    : { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] };
+  if (keptNotes < 0) {
+    const receipt = `omitted ${allNotes.length} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`;
+    throw new Error(`Knowledge capacity: the inherited status omission receipt alone (${receiptCost([receipt])} tokens) exceeds ${input.knowledgeBudget ?? "Knowledge capacity"} (${cap})`);
+  }
+  const notes = allNotes.slice(0, keptNotes), noteCost = statusCosts[keptNotes]!;
+  const noteReceipts = keptNotes < allNotes.length
+    ? [`omitted ${allNotes.length - keptNotes} inherited knowledge status lines; ${input.knowledgeBudget ?? "Knowledge capacity"} is full`] : [];
+  const knowledgeCap = Math.max(0, cap - noteCost - receiptCost(noteReceipts));
+  const stable = input.knowledge ? input.knowledgeWhole ?? wholeKnowledge(input.knowledge, input.knowledgeLine) : undefined;
+  // As in Dreaming, relevance changes retention only when the complete stable block is over capacity.
+  // A fitting pool keeps its existing category/time/id presentation and has no omission receipt.
+  const active = !stable ? { groups: [] as KnowledgeGroup[], receipts: [] as string[], commits: [] as number[] }
+    : stable.cost <= knowledgeCap ? stable
+    : input.knowledgeQuery !== undefined
+      ? budgetRelevantKnowledge(input.knowledge!, knowledgeCap, input.knowledgeQuery, input.knowledgeLine, input.knowledgeBudget)
+      : budgetKnowledge(input.knowledge!, knowledgeCap, input.knowledgeLine, input.knowledgeBudget);
   const label = input.label ?? "raw", kept = label === "raw" ? "unrecorded raw" : "range facts";
   const current = tokens(input.current);
   const ceiling = input.caps.current; // absent: this consumer's current material has no inner cap (25c)
@@ -208,7 +232,6 @@ export function budgetMaterial(input: MaterialBudget): { knowledge: KnowledgeGro
   if (ceiling !== undefined && current > ceiling) receipts.push(`${label} ceiling: ${current - ceiling} tokens over ${ceiling}; all ${kept} kept`);
   // The `Receipts:` heading `finish` emits is charged with the receipts (review 2026-09-08: every emitted
   // component counts, the heading included; it may be charged to both budgets, which over-counts safely).
-  const receiptCost = (list: string[]) => list.length ? charge(list) + charge(["Receipts:"]) : 0;
   const reserved = () => current + charge([...input.framing, ...(input.range ? [rangeLine(input.range)] : [])]) + receiptCost(receipts);
   // Two passes: the historical-fact receipt is itself charged, and only a first pass knows whether
   // there is one. A receipt is bounded, so the second pass is the last (ticket 20 "Budgeted receipts").

@@ -66,7 +66,6 @@ For example, either settings file can contain:
     "dreaming.model": "session",
     "dreaming.thinking": "inherit",
     "consolidation.batchTokens": 10000,
-    "consolidation.knowledgeTokens": 10000,
     "compaction.factsTokens": 10000,
     "compaction.rawTokens": 10000,
     "compaction.overflowTokens": 10000
@@ -82,16 +81,15 @@ ordinary-injection/compaction Knowledge window and the 20,000 Dreamer processed-
 three compaction bases therefore still total 40,000 by default; `compaction.overflowTokens` adds the
 shared 10,000 required-only allowance. No base lends spare capacity to another window.
 
-`render.knowledgeBlockTokens` is retired. Remove it from every settings file and
-`TRACE_MEMORY_CONFIG`; finding it is a named load error. Stop older executors before opening a
+`render.knowledgeBlockTokens` and `consolidation.knowledgeTokens` are retired. Remove them from every settings file and
+`TRACE_MEMORY_CONFIG`; finding either is a named load error. Consolidator knowledge uses the same database-derived injection capacity as foreground Knowledge and Dreamer's processed input. Stop older executors before opening a
 database with this authority/schema upgrade; mixed old/new runtimes are unsupported. Database budget edits are exact decimal
 nonnegative safe integers, commit transactionally, write no Pi settings file and affect all
 connections to that database. A reduction that would make any already processed owner pool or
 applicable path exceed the proposed cap is rejected with used/cap/overage diagnostics. Running
-Dreamer requests keep their frozen admitted processed-input ceiling; their check receipt also shows
+Dreamer and Consolidator requests keep their frozen admitted knowledge ceiling; Dreamer's check receipt also shows
 current derived capacities, and later admissions use the current policy. Actual provider context
-capacity remains an independent hard gate. Consolidator references keep their separate
-`consolidation.knowledgeTokens` setting (default 10,000).
+capacity remains an independent hard gate.
 
 Environment override example:
 
@@ -285,6 +283,10 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
   consolidation.triggerTokens (tokens, not a count)`; an old fact count is never reinterpreted as a
   token budget. The menu never offers it: the menu edits mode/model preferences and closed-session scope only,
   and the advanced keys live in the settings files.
+- `consolidation.knowledgeTokens` is **removed** (ticket 45). Consolidator knowledge now uses the
+  bound database's derived injection capacity (`G + P + S + 5,000`) frozen at task admission. Any
+  configuration layer that supplies the old key fails by name and directs the user to the three
+  database Knowledge budgets in Settings; the value is never reinterpreted or ignored.
 - `consolidation.subagentModeDefault` is **removed** (ticket 25 amendment 2; still removed under 29e,
   which restored the choice under `consolidation.forkModeDefault`). It stays a removed setting rather
   than becoming an alias because it is the **inverse** boolean: reading a saved `true` as fork mode
