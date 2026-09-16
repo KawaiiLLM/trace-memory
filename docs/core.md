@@ -47,7 +47,11 @@ graph or explicit catchup/recovery/direct retry can reconsider the same retained
 from the supplied batch is settled. Earlier legal Dreamer outputs
 remain mandatory candidates. Admission freezes material, model/thinking and profile. It supplies
 processed knowledge within 20k, changed knowledge within 10k and whole direct facts within 10k,
-with framing and explicit omitted-fact receipts. Runtime reads never extend the family or batch.
+with framing and explicit omitted-fact receipts. Runtime reads never extend the family or batch. The
+sole revival exception lets a capability-bound Dreamer merge one active family member into an
+applicable archived older survivor: both exact parents require complete reads, and the existing
+derived-identity insert admits the survivor in that merge transaction. No other outside identity or
+operation gains authority.
 Only processed material exceeding 20k uses lexical relevance, with stable category/time/id ties.
 The shared `budgetKnowledge` keeps optional `required` exact-commit IDs in its fifth argument and
 an optional priority comparator in its sixth: required bodies are protected before optional selection,
@@ -60,6 +64,8 @@ it; other database connections cannot reuse it. Dreamer may update, binary-merge
 archive inside that family, but cannot create parentless Knowledge. Split is one operation with one
 fully read exact parent and two complete child bodies; the transaction creates both identities and
 `split_from` links or none. Merge accepts exactly two distinct parents and keeps the older Knowledge identity as the survivor.
+An archive base is accepted only as that trusted revival survivor; update, manual and Consolidator
+writes, an archived absorbed parent and ordinary outside-family operations retain the archive/family refusal.
 Consolidator remains limited to fact-backed create/update with candidate review and accounting.
 
 Every new revision stores a complete body or archival state while `supports` stores only this
@@ -166,6 +172,14 @@ equivalence or authorize merging independently changing claims. Topics remain pa
 rendered revision: keeping budget-related text while dropping its valid budget label is invalid,
 while replacing a genuinely obsolete settings-file label with a database-policy label is a valid
 classification correction.
+
+Changed input follows its event and exact-version obligation lines with nonempty `New:`, `Changed:`
+and `Archived:` groups in that order. Archives are classified first and carry their predecessor body
+beside the archive line. A nonarchive current result is New only when no version of that K in the
+frozen path's applicable commit graph has an exact processing certificate; otherwise it is Changed.
+Certificates are globally shared, but an inapplicable sibling version is outside that graph. Items
+stay in commit order within each group, each result appears once, and group headings are charged in
+the existing 10k changed-material selection.
 
 The worker chooses unchanged, tightened, merged, split or archived dispositions before broad writes,
 so it does not polish a known archive target. Tool feedback and new evidence may correct that choice,
@@ -817,8 +831,10 @@ rejected. Skipped items remain `{fact, because}`.
 Dreamer's immediate form accepts update/merge/split/archive. It alone may use empty supports. Merge
 has one `id`, exactly one `absorb` and one complete result, and the lower Knowledge id must survive. Split has `id`, supports, reason and exactly
 two `{text, category, topics}` children; both inherit parent scope. Every parent is an exact complete
-read. Parentless create and the historical create-plus-update/archive decomposition workaround are
-rejected atomically.
+read. One merge may revive an applicable archived older `id` by absorbing an active family member;
+the archive commit is the exact survivor base and the archive predecessor is read for semantic
+comparison. Parentless create, every other archive-base use and the historical create-plus-update/archive
+decomposition workaround are rejected atomically.
 
 The first valid batch writes nothing. Its tool result contains ordered item results
 and `feedback: {role: "user", content}`. The host appends this feedback once as a user

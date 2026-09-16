@@ -1751,9 +1751,9 @@ export class Store {
       ) SELECT id FROM descendants`).all(commitId) as { id: number }[]).map(r => r.id));
   }
 
-  baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null): string | null {
+  baseProblem(knowledgeId: number, base: number, path: KnowledgePath | null, allowArchived = false): string | null {
     const revision = this.getKnowledgeRevision(knowledgeId, base);
-    if (revision && revision.op !== "archive" && (!path || this.commitApplies(revision, path))) return null;
+    if (revision && (revision.op !== "archive" || allowArchived) && (!path || this.commitApplies(revision, path))) return null;
     return `K${knowledgeId}@${base}: base is missing, archived or inapplicable at the frozen writer path`;
   }
 
@@ -1866,9 +1866,19 @@ export class Store {
         if (this.isDreamingRun(input.run)) {
           if (!path) throw new Error("Dreamer requires its frozen path");
           const range = this.validateDreamingRun(input.run, path);
-          const parents = input.operations.flatMap(op => op.op === "create" ? [] : op.op === "merge" ? [op.intoKnowledgeId, ...op.absorb.map(a => a.knowledgeId)] : [op.knowledgeId]);
-          if (parents.some(id => !range.knowledgeIds.includes(id))) throw new Error("knowledge outside the frozen Dreamer family is read-only");
-          if (input.operations.some(op => op.op === "create")) throw new Error("Dreamer cannot create knowledge without an explicit split parent");
+          for (const op of input.operations) {
+            if (op.op === "create") throw new Error("Dreamer cannot create knowledge without an explicit split parent");
+            if (op.op !== "merge") {
+              if (!range.knowledgeIds.includes(op.knowledgeId)) throw new Error("knowledge outside the frozen Dreamer family is read-only");
+              continue;
+            }
+            const survivor = this.getKnowledgeRevision(op.intoKnowledgeId, op.intoBaseCommit);
+            const revival = survivor?.op === "archive" && !range.knowledgeIds.includes(op.intoKnowledgeId)
+              && op.absorb.length === 1 && range.knowledgeIds.includes(op.absorb[0]!.knowledgeId)
+              && this.getKnowledgeRevision(op.absorb[0]!.knowledgeId, op.absorb[0]!.baseCommit)?.op !== "archive";
+            if (!revival && [op.intoKnowledgeId, ...op.absorb.map(parent => parent.knowledgeId)].some(id => !range.knowledgeIds.includes(id)))
+              throw new Error("knowledge outside the frozen Dreamer family is read-only");
+          }
         } else if (input.run.kind === "consolidation" && input.operations.some(op => op.op === "archive")) {
           throw new Error("archive requires trusted Dreamer authority; update a continuing item or leave retirement to Dreamer");
         } else if (input.operations.some(op => op.op === "split" || (op.op === "merge" && input.run.kind === "consolidation"))) {
@@ -1911,9 +1921,12 @@ export class Store {
     const targets = op.op === "create" ? [] : op.op === "merge"
       ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb]
       : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
+    const revivalSurvivor = dreaming && op.op === "merge"
+      && this.getKnowledgeRevision(op.intoKnowledgeId, op.intoBaseCommit)?.op === "archive";
     const seen = new Set<number>();
     for (const target of targets) {
-      const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path);
+      const bad = this.baseProblem(target.knowledgeId, target.baseCommit, path,
+        revivalSurvivor && target.knowledgeId === op.intoKnowledgeId && target.baseCommit === op.intoBaseCommit);
       if (bad) return { ok: false, reason: bad };
       const conflict = this.competingSuccessors(target.knowledgeId, target.baseCommit, path, runId);
       if (conflict) throw new ConsumedBaseConflictError(conflict, this.consumedBaseMessage(conflict, path, runId));
@@ -2021,8 +2034,11 @@ export class Store {
     const graph = this.commitGraph(inputPath, undefined, pathSnapshot, graphInput);
     const events = pendingEvents(this, inputPath, true, pathSnapshot, graphInput, graph);
     const outputRoots = range ? ownCommits ?? this.dreamingOwnCommits(range.id) : [];
-    const processed = this.processedKnowledgeVersions(graph.current.map(revision => revision.id));
+    const certifiedApplicable = this.processedKnowledgeVersions([...graph.applicable]);
+    const processed = new Set(graph.current.filter(revision => certifiedApplicable.has(revision.id)).map(revision => revision.id));
     const revisions = new Map(graph.revisions.map(revision => [revision.id, revision]));
+    const previouslyCertified = new Set(graph.revisions.filter(revision => graph.applicable.has(revision.id)
+      && certifiedApplicable.has(revision.id)).map(revision => revision.knowledgeId));
     const knowledgeIds = [...new Set(graph.current.flatMap(revision => [revision.knowledgeId,
       ...(revision.op === "archive" && revision.parentId !== null ? [revisions.get(revision.parentId)?.knowledgeId] : [])]).filter((id): id is number => id !== undefined))];
     const knowledge = new Map((knowledgeIds.length ? this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(knowledgeIds)) : [])
@@ -2057,13 +2073,22 @@ export class Store {
         if (!revision) throw new Error(`Archive predecessor ${id} is unavailable`);
         return value(revision);
       });
-      const supplied = new Set(versions.filter(v => v.revision.op !== "archive").map(v => v.revision.id));
+      const predecessorById = new Map(predecessors.map(item => [item.revision.id, item]));
+      const groups = { New: [] as string[], Changed: [] as string[], Archived: [] as string[] };
+      for (const item of [...versions].sort((a, b) => a.revision.id - b.revision.id)) {
+        if (item.revision.op === "archive") {
+          const predecessor = predecessorById.get(item.revision.parentId!);
+          const archive = `K${item.knowledge.id}@${item.revision.id} archived${item.revision.actorRole === "dreaming" && !item.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${item.revision.actorRole ?? "fact-backed writer"}; parent K${item.knowledge.id}@${item.revision.parentId}; supports: ${item.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${item.revision.reason}`;
+          groups.Archived.push(`${archive}\nArchive predecessor (historical, not a new fact):\n${render(predecessor!.revision)}`);
+        } else {
+          groups[previouslyCertified.has(item.knowledge.id) ? "Changed" : "New"].push(`${render(item.revision)}\n  processed: ${item.processed}`);
+        }
+      }
+      const grouped = (["New", "Changed", "Archived"] as const).flatMap(name =>
+        groups[name].length ? [`${name}:`, ...groups[name]] : []);
       const text = [`Change events: ${selectedEvents.map(e => `K${e.knowledgeId}@${e.id} (${e.tokens})`).join(", ") || "none"}`,
         `Exact version obligations: ${selectedVersions.map(value => `K${value.knowledgeId}@${value.id} (${value.tokens})`).join(", ") || "none"}`,
-        ...predecessors.filter(v => !supplied.has(v.revision.id)).map(v => `Archive predecessor (historical, not a new fact):\n${render(v.revision)}`),
-        ...versions.map(v => v.revision.op === "archive"
-          ? `K${v.knowledge.id}@${v.revision.id} archived${v.revision.actorRole === "dreaming" && !v.revision.supports.length ? " (maintenance judgment)" : " (fact-backed)"}; actor: ${v.revision.actorRole ?? "fact-backed writer"}; parent K${v.knowledge.id}@${v.revision.parentId}; supports: ${v.revision.supports.map(id => `F${id}`).join(", ")}; reason: ${v.revision.reason}`
-          : `${render(v.revision)}\n  processed: ${v.processed}`)].join("\n");
+        ...grouped].join("\n");
       return { events: selectedEvents, obligations: selectedObligations, versionObligations: selectedVersions,
         eventResults: selectedEvents.map(event => ({ eventId: event.id, commits: [...(eventResults.get(event.id) ?? [])].filter(id => resultIds.has(id)).sort((a, b) => a - b) })),
         oldestId: range?.anchor ?? selectedObligations[0]?.id ?? null, versions, predecessors, text,

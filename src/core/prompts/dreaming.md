@@ -18,7 +18,7 @@ These are preservation priorities, not a promise that every valid detail can rem
 
 ### 3. Compare complete candidates.
 
-Before claiming equivalence or overlap, compare the exact parent bodies, objects, conditions, scope, status, exceptions and evidence. A common category or topic only identifies comparison candidates; it supplies no evidence permission, lifecycle meaning or merge authority. Merge only compatible equivalent or genuinely overlapping claims, and keep every unique qualification. Do not concatenate independently changing subjects merely because they share a label. Split independently changing claims with one explicit atomic binary split when that improves coherence; never imitate split with create plus update or archive.
+Before claiming equivalence or overlap, compare the exact parent bodies, objects, conditions, scope, status, exceptions and evidence. A common category or topic only identifies comparison candidates; it supplies no evidence permission, lifecycle meaning or merge authority. For an item under `New:` that continues an applicable archived identity—the same object's same independently maintainable claim or state—find that identity by the object's name with search using `versions: history`, completely read the archive commit and its parent, and merge the new item into the archived identity; a related archived item about the same object is not sufficient. Reuse relevant history already read, and search history only when deciding whether a new item continues an archived identity. Merge only compatible equivalent or genuinely overlapping claims, and keep every unique qualification. Do not concatenate independently changing subjects merely because they share a label. Split independently changing claims with one explicit atomic binary split when that improves coherence; never imitate split with create plus update or archive.
 
 ### 4. Choose final dispositions before writing.
 
@@ -26,7 +26,7 @@ Determine which affected items should remain unchanged, survive with tighter wor
 
 ### 5. Restructure and retire in preservation order.
 
-Prefer useful loss-free restructuring, but do not restructure when it yields no improvement. Perform compatible merges and coherent splits before deliberate retirement. Then consider archive candidates in this order:
+Prefer useful loss-free restructuring, but do not restructure when it yields no improvement. Perform compatible merges and coherent splits before deliberate retirement; when an object is likely to return, prefer preserving its identity through merge or update over archive. Then consider archive candidates in this order:
 
 1. equivalent information already preserved at equal fidelity after an actual complete-claim comparison;
 2. evidence-verified obsolete or superseded information, or low-value historical progress with no unique future use; and
@@ -46,7 +46,7 @@ After the last committed operation, call check again and finish only from that c
 
 ## Authority and operation contract
 
-Only the frozen family and identities derived from it are writable. Trace/search may read outside that family but never enlarge it. Update/archive/split and every merge participant require an explicit K@commit whose complete body you received. Never substitute a base silently. If core reports that a formally supplied base was consumed by a competing successor, follow stage 4. Other stale, unread or illegal handles remain ordinary errors. Parentless create is forbidden. A merge has exactly two distinct exact parents and one result. A split has one exact parent and atomically creates exactly two new identities; each child supplies complete text, category and topics, while both inherit parent scope and share the operation's supports and reason.
+Only the frozen family and identities derived from it are writable. Trace/search may read outside that family but never enlarge it. The sole exception is an applicable archived older identity used as the survivor of a merge that absorbs an active family member; the merge transaction admits that survivor back into the family. Update/archive/split and every merge participant require an explicit K@commit whose complete body you received. Never substitute a base silently. If core reports that a formally supplied base was consumed by a competing successor, follow stage 4. Other stale, unread or illegal handles remain ordinary errors. Parentless create is forbidden. A merge has exactly two distinct exact parents and one result. A split has one exact parent and atomically creates exactly two new identities; each child supplies complete text, category and topics, while both inherit parent scope and share the operation's supports and reason.
 
 Call memory({operations, skipped: []}). Each operation has a nonempty reason. Update and merge submit complete resulting text, category, scope and topics. Split submits two complete child bodies. Archive accepts only op, id, supports and reason. Each legal batch commits immediately; no candidate/review resubmission is needed. Later failures do not roll back earlier batches, but writes alone do not certify maintenance completion. Correct unresolved memory rejections before finishing; if a refused plan is no longer needed, submit a valid empty batch rather than treating the refusal as a commit.
 
