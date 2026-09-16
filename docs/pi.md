@@ -527,7 +527,7 @@ the same operations the menu performs, not hidden aliases of a menu entry.
 Bare `/trace` opens a native menu with four entries:
 
 - **Current session:** a compact context-capacity map and pending/trigger estimates,
-  enrollment, project, cost and recovery warnings in a scrollable Pi-themed panel, with
+  enrollment, project, the session's spend by phase and recovery warnings in a scrollable Pi-themed panel, with
   `On`/`Off` with confirmation and shared fork/clone scope, `Runs` with a count input,
   `Project` with a name input, `Mark` with an address input and a kind selection, and
   `Retry fork` only while this session is automatically downgraded.
@@ -1716,8 +1716,8 @@ policy its `SettingsManager` reports from `settings.json` (`retry.enabled`, `max
 Transient errors (429, 5xx, overloaded, timeouts, fetch failures) back off exponentially;
 other errors fail at once. A retry re-runs the assistant turn only: tool execution and commits
 happen after a reply, so a retried call never repeats a write. The adapter subscribes to Pi's
-`auto_retry_start`/`auto_retry_end`, records the attempts in the run record, shows the warning
-indicator while one waits and posts one notice per scheduled attempt.
+`auto_retry_start`/`auto_retry_end`, records the attempts in the run record and posts one
+notice per scheduled attempt; the footer indicator does not change while one waits (51).
 
 ## Run records
 
@@ -1751,7 +1751,7 @@ model-request counts:
 |---|---|
 | `notes: 24->102` | 24 imported source entries no Noting run has committed yet, over 102 committed facts applicable on this branch (already consolidated facts included) |
 | `memory: 9->252=>54` | 9 applicable facts Consolidation has not taken on this path, over 252 unprocessed then 54 processed applicable current Knowledge versions |
-| `cost` | this session's cumulative memory-run spend at the model's configured API rates (Pi's own cost formula) |
+| `cost` | today's memory-run spend across every session in the database, from local midnight, at the model's configured API rates (Pi's own cost formula); this session's cumulative spend and its composition by phase are in Current session (51) |
 
 The two Knowledge counts use `listCurrentKnowledge`'s counting unit: divergent
 applicable tips are separate versions. They partition its existing total. Processing
@@ -1766,8 +1766,9 @@ A disabled session shows the compact line `🧠 ○ off`, with no counting at al
 stored pending material and diagnostics stay available under Current session,
 whose `Pending: / trigger` bars measure estimated tokens rather than these counts. A value that cannot be read is `?` — an
 unknown is never a fabricated zero — and a Pi session that has not yet allocated
-a memory identity shows `notes: ?->? memory: ?->?=>? cost: $?` and says so in its
-status details rather than fabricating zeros.
+a memory identity shows `notes: ?->? memory: ?->?=>? cost: $0.00` — the counts are
+unknown and say so in its status details rather than fabricating zeros, while the
+cost is today's database-wide figure, which needs no session identity (51).
 
 The counts describe **imported evidence**. A disabled interval may hold native
 history that was never imported, so a zero is not proof that every available
@@ -1778,24 +1779,29 @@ failure or a cancellation advances nothing, and a provider failure *after* the
 commit restores nothing. A nonzero queue below its token trigger is idle, not a
 failure and not a request to drain.
 
-`cost` is this session's cumulative memory spend and nothing else: work another
-executor performed for this session counts, work this executor performed for a
-borrowed session is charged to that session. A statusline's own daily aggregate
-is a separate number over other sessions and the foreground; the two are not
-added together and this one is not today's total.
+`cost` is today's memory spend over every session in the database — each run
+whose record was created at or after the host's local midnight, whichever session
+it was run for — so the figure resets at the day boundary on its own, at the next
+refresh. It is the memory share of the daily total a statusline extension reports
+from the session logs (the worker logs are placed where that reader scans, 24c).
+This session's cumulative spend is the `Cost:` line of Current session, with its
+composition on the two lines beneath (`Noting n runs $x · Consolidation n runs $x`,
+`Dreaming n runs $x · Manual n runs $x`); work another executor performed for this
+session counts there, work this executor performed for a borrowed session is
+charged to that session.
 
-The indicator is a Pi theme role, never a literal colour, in one precedence: off,
-active retry, running Noting, running Consolidation, last failure, last warning,
-idle. If both phases run, Noting is shown.
+The indicator is a Pi theme role, never a literal colour: one role per running
+phase, in the precedence Noting, Consolidation, Dreaming when phases overlap. A
+retry, a failure or a warning does not colour it — the foreground notify reports
+those (51).
 
 | State | Indicator | Theme role |
 |---|---|---|
 | Off | `○ off` | `dim` |
-| Enabled, idle | `○` | `dim` |
+| Enabled, idle (a retry waiting, a last failure or warning included) | `○` | `dim` |
 | Noting running | `●` | `accent` |
 | Consolidation running | `●` | `success` |
-| Retrying, blocked on a launch condition, or committed with problems | `●` | `warning` |
-| Last task failed | `●` | `error` |
+| Dreaming running | `●` | `customMessageLabel` |
 
 The indicator describes this executor, including while it works on a borrowed
 target; the counts and the cost stay this session's. Where colour support is

@@ -79,6 +79,7 @@ test("32f: compatible Dreamer waiters share one execution; cancelling a wait lea
     h.provider(async () => { await held; return { ...reply(""), stopReason: "error", errorMessage: "shared failure" }; });
     const owner = compact(h);
     await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <customMessageLabel>●<\/customMessageLabel> /); // 51: a running Dreamer has its own role
     const controller = new AbortController();
     const cancelled = compact(h, controller.signal), waiter = compact(h);
     await vi.waitFor(() => expect(h.notices.filter(n => n.includes("waiting for the running Dreamer"))).toHaveLength(2));

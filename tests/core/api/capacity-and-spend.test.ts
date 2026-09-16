@@ -123,7 +123,8 @@ test("22d: spend totals come from the recorded usage without loading a run's req
   const runId = memory.store.listRuns(sessionId)[0]!.id;
   write(runId, { output: "x".repeat(200_000), usage, problems: [] });
   // The pre-change implementation, computed here from the bodies: the same totals, read the slow way.
-  const reference = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  const reference = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, costs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 },
+    input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
   for (const run of memory.store.listRuns(sessionId)) {
     reference.runs[run.kind]++;
     let recorded: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number; cost?: { total?: number } } | null = null;
@@ -131,6 +132,7 @@ test("22d: spend totals come from the recorded usage without loading a run's req
     if (!recorded) continue;
     reference.input += recorded.input ?? 0; reference.output += recorded.output ?? 0;
     reference.cacheRead += recorded.cacheRead ?? 0; reference.cacheWrite += recorded.cacheWrite ?? 0; reference.cost += recorded.cost?.total ?? 0;
+    reference.costs[run.kind] += recorded.cost?.total ?? 0; // 51: the same total, attributed by kind
   }
   const bodies = countRunBodies();
   try {

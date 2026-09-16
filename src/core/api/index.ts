@@ -449,8 +449,11 @@ export interface TraceMemory {
    * tokenizing, freeze or run body. `knowledge` retains the total-current-version contract. */
   progress(sessionId: number, branch?: string, headTurnId?: number | null): { entries: number; facts: number; unconsolidated: number;
     knowledge: number; unprocessedKnowledge: number; processedKnowledge: number };
-  /** Model spend of one session's runs: run counts by kind, token totals and cost (user ruling: the footer shows the session cumulative). */
-  spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  /** Model spend of one session's runs: run counts and cost by kind, token totals and total cost (51: Current session shows this composition). */
+  spend(sessionId: number): { runs: { noting: number; consolidation: number; dreaming: number; manual: number }; costs: { noting: number; consolidation: number; dreaming: number; manual: number };
+    input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
+  /** Cost of every session's runs created at or after a UTC instant (51: the footer's figure for today, from the host's local midnight). */
+  spendSince(since: string): number;
 }
 
 export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOverride = {},

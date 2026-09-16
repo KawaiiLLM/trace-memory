@@ -842,10 +842,10 @@ test("the footer indicator follows activity: accent while noting runs, error aft
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   h.provider(async () => { throw new Error("offline"); });
   await h.turn(); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /); // 51: failures do not colour the indicator
   h.provider(async c => { if (noteCommitted(c)) throw new Error("offline after commit"); return notingFact(c); }, { autoStop: false });
   await h.turn(); await h.drain();
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
 });
 
 test("a fork sees consolidation progress exactly when every fact of that consolidation lies on its path", async () => {
@@ -895,7 +895,7 @@ test("a stream that dies mid-reply is a failure carrying the provider's error, c
   expect(JSON.parse(run.response!).problems[0]).toContain("stream reset by peer");
   expect(h.memory.store.listSessionFacts(1)).toHaveLength(0);
   expect(h.memory.store.listSourceEntries(1).some(e => h.memory.store.entryNoted(e.id))).toBe(false);
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <error>●<\/error> /);
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /); // 51
   h.provider(async c => noteCommitted(c) ? { ...reply(""), stopReason: "error", errorMessage: "stream reset after commit" } : notingFact(c), { autoStop: false });
   await h.turn(); await h.drain();
   run = h.memory.store.listRuns(1).at(-1)!;
@@ -965,12 +965,13 @@ test("a retry re-sends the same request: a stream error after a tool round does 
   expect(response.retries).toEqual([{ attempt: 1, error: expect.stringContaining("fetch failed") }]);
 });
 
-test("the footer shows the warning indicator while a retry waits", async () => {
+test("51: the footer keeps the running phase's colour while a retry waits; the notify alone reports the wait", async () => {
   const h = host({ "noting.triggerTokens": 30, retry: { baseDelayMs: 60 } });
   let calls = 0;
   h.provider(async c => { calls++; if (calls === 1) return { ...reply(""), stopReason: "error", errorMessage: "fetch failed" }; return notingFact(c); });
-  await h.turn(); // the first attempt failed, the retry is sleeping
-  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <warning>●<\/warning> /);
+  await h.turn(); // the first attempt failed, the retry is sleeping: Noting is still the running phase
+  expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <accent>●<\/accent> /);
+  expect(h.notices.some(n => n.includes("retry 1/"))).toBe(true);
   await new Promise(r => setTimeout(r, 120)); await h.drain();
   expect(h.statuses.get("trace-memory")).toMatch(/^🧠 <dim>○<\/dim> /);
   expect(h.memory.store.listRuns(1)[0]!.outcome).toBe("success");

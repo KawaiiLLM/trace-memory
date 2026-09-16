@@ -1,11 +1,11 @@
 // Ticket 24a "Footer counts and indicator" (parent 24, sections "Footer counts and cost" and
 // "Indicator semantics"). The enabled footer is
 //
-//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <unconsolidated facts>-><unprocessed current Knowledge>=><processed current Knowledge> cost: $<session cumulative>
+//     🧠 <indicator> notes: <pending entries>-><applicable facts> memory: <unconsolidated facts>-><unprocessed current Knowledge>=><processed current Knowledge> cost: $<today, every session>
 //
 // The off footer is the compact `🧠 ○ off`. These
 // cases pin what each number means on a synthetic branch, that work stays pending until its business
-// commit, that the indicator is Pi theme roles in the ruled precedence while routine text stays dim,
+// commit, that the indicator is one Pi theme role per running phase (51) while routine text stays dim,
 // and that a refresh loads no Raw, rendered Knowledge or run audit body and builds one path snapshot.
 import { afterEach, expect, test, vi } from "vitest";
 import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, type Reply } from "./test-host.ts";
@@ -46,7 +46,7 @@ const enumerated = (h: Host, branch = "main") => {
     facts: String(h.memory.store.listBranchFacts(1, branch, head).length),
     unconsolidated: String(h.memory.store.consolidationBatch(1, branch, head).length),
     unprocessedKnowledge: String(knowledge.length - processedKnowledge), processedKnowledge: String(processedKnowledge),
-    knowledge: String(knowledge.length), cost: h.memory.spend(1).cost.toFixed(2) };
+    knowledge: String(knowledge.length), cost: h.memory.spendSince(midnight()).toFixed(2) };
 };
 /** An existing refresh point, not a new one: `agent_end` is the boundary at which this turn's
  * evidence became importable. */
@@ -61,9 +61,11 @@ function facts(h: Host, count = 3) {
   if (!committed.ok) throw new Error(committed.problems.join("; "));
   return committed.facts;
 }
+/** Local midnight as the UTC instant the footer compares `runs.created_at` against (51). */
+const midnight = (now = new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 /** One synthetic run with an observed usage, charged to `sessionId` and executed by `executor`. */
-function priced(h: Host, sessionId: number, executorSessionId: number, cost: number) {
-  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId, executorSessionId, branch: "main", createdAt: time,
+function priced(h: Host, sessionId: number, executorSessionId: number, cost: number, createdAt = time) {
+  const committed = h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId, executorSessionId, branch: "main", createdAt,
     response: JSON.stringify({ usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: { total: cost } } }) }, facts: [] });
   if (!committed.ok) throw new Error(committed.problems.join("; "));
 }
@@ -105,14 +107,28 @@ test("footer chains facts to consolidate, unprocessed current Knowledge and proc
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->0=>1 cost: $0.00</dim>");
   expect(footer(h)).toMatchObject(enumerated(h));
 
-  // Cost is the session's cumulative run spend: work another executor performed for this session
-  // counts; this executor's borrowed work for another session is charged to that session, not here.
-  priced(h, 1, 2, 0.12);
+  // 51: the footer's cost is today's spend across the whole database — another session's run made
+  // after local midnight counts, this session's run made before it does not — while `spend(session)`
+  // keeps each session's cumulative figure for Current session.
+  const today = new Date(new Date(midnight()).getTime() + 60_000).toISOString();
+  const yesterday = new Date(new Date(midnight()).getTime() - 60_000).toISOString();
+  priced(h, 1, 2, 0.12, yesterday);
   const borrowed = h.memory.store.createSession({ host: "pi:other", startedAt: time, firstReplyAt: time, projectId: 1, enrollmentChoice: true });
-  priced(h, borrowed.id, 1, 9.99);
+  priced(h, borrowed.id, 1, 9.99, today);
+  priced(h, 1, 1, 0.25, today);
   await refresh(h);
-  expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "0.12" });
+  expect(footer(h)).toMatchObject({ ...enumerated(h), cost: "10.24" });
+  expect(h.memory.spend(1)).toMatchObject({ cost: 0.37, costs: { noting: 0.37, consolidation: 0, dreaming: 0, manual: 0 }, runs: { noting: 4 } }); // three priced runs and the unpriced facts() run
   expect(h.memory.spend(borrowed.id).cost).toBe(9.99);
+  // Current session carries the composition; headless `/trace` prints the same body.
+  const dreamed = h.memory.store.commitConsolidationRun({ run: { kind: "dreaming", sessionId: 1, branch: "main", createdAt: today,
+    response: JSON.stringify({ usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.5 } } }) }, operations: [] });
+  if (!dreamed.ok) throw new Error(dreamed.problems.join("; "));
+  await h.commands.get("trace")!.handler("", h.ctx);
+  const panel = h.notices.at(-1)!;
+  expect(panel).toContain("Cost: $0.8700");
+  expect(panel).toMatch(/Noting 4 runs \$0\.3700 · Consolidation \d+ runs \$0\.0000/); // the fixture's unpriced runs count but cost nothing
+  expect(panel).toMatch(/Dreaming \d+ runs \$0\.5000 · Manual \d+ runs \$0\.0000/);
   expect(h.requests).toEqual([]); // nothing here called a model
 });
 
@@ -135,8 +151,8 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   h.provider(async () => { throw new Error("offline"); });
   await h.turn(); await h.answer("next completed source"); await h.drain();
   const failed = footer(h);
-  expect(failed.role).toBe("error");
-  expect(failed.status).toMatch(/^🧠 <error>●<\/error> <dim>notes: .*<\/dim>$/);
+  expect(failed.role).toBe("dim"); // 51: a failure is reported by the notify, not by the indicator
+  expect(failed.status).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: .*<\/dim>$/);
   expect(failed).toMatchObject(enumerated(h));
   expect(Number(failed.entries)).toBeGreaterThan(0); // the new turn's entries stayed pending
   expect(failed.facts).toBe("1");
@@ -149,8 +165,8 @@ test("24a: an in-flight batch is still pending, a failed run advances nothing, a
   // longer joins the previous batch, and would start a further run this case is not about.
   await h.turn(); await h.drain();
   const after = footer(h);
-  expect(after.role).toBe("warning"); // committed with problems
-  expect(after.status).toMatch(/^🧠 <warning>●<\/warning> <dim>notes: .*<\/dim>$/);
+  expect(after.role).toBe("dim"); // committed with problems: the notify carries the warning (51)
+  expect(after.status).toMatch(/^🧠 <dim>○<\/dim> <dim>notes: .*<\/dim>$/);
   expect(Number(after.entries)).toBeLessThan(pendingBefore);
   expect(Number(after.facts)).toBeGreaterThan(1);
   expect(after).toMatchObject(enumerated(h));
@@ -278,7 +294,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   h.setHeaderTimestamp("2099-01-01T00:00:00.000Z");
   await h.emit("session_start");
   expect(h.memory.store.getSession(1)).toBeNull();
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?=>? cost: $?</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: ?->? memory: ?->?=>? cost: $0.00</dim>"); // 51: today's database-wide spend is readable without a session identity
   await h.commands.get("trace")!.handler("", h.ctx);
   expect(h.notices.at(-1)).toContain("Session: None (no assistant reply)");
   expect(h.notices.at(-1)).toContain("Unknown / 1,000,000,000 (no session)");
@@ -294,7 +310,7 @@ test("24a: without an allocated memory identity the counts are unknown, not zero
   expect(h.requests).toEqual([]);
 });
 
-test("24a: the indicator is theme roles in the ruled precedence, Noting wins over Consolidation, and no colour support prints the same line unpainted", async () => {
+test("24a/51: the indicator is one theme role per running phase, Noting wins over Consolidation, and no colour support prints the same line unpainted", async () => {
   const h = host({ "noting.triggerTokens": 1, "consolidation.triggerTokens": 1, "noting.forkModeDefault": false });
   h.provider(async c => c.systemPrompt!.includes("### Second-round user message") ? consolidationReply() : notingFact(c));
   await h.turn(); // F1 recorded; idle again

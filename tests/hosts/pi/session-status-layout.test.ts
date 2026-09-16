@@ -28,7 +28,7 @@ const body = (width: number) => statusBody(["Current session", ...contextMap({ t
   "Session: S1", "Enrollment: Disabled (default)", "Project: example (mark)", "Pending: / trigger — estimated tokens",
   "Noting: [##########] 12,000 / 10,000 (120.0%)", "Consolidation: [..........] 0 / 5,000 (0.0%)",
   "Dreaming: [#.........] 500 / 5,000 (10.0%)", "Pending / trigger is not task completion or worker readiness.",
-  "Cost: $0.0000", ...recovery], width);
+  "Cost: $0.0000", "  Noting 0 runs $0.0000 · Consolidation 0 runs $0.0000", "  Dreaming 0 runs $0.0000 · Manual 0 runs $0.0000", ...recovery], width);
 export function dockFrame(editor: any, width: number, height: number, crowded = false,
   transcript = "transcript\n".repeat(40), pending = "") {
   const empty = new Container(), editorContainer = new Container(); editorContainer.addChild(editor);
