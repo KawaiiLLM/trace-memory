@@ -43,7 +43,7 @@ The plugin's injected messages — knowledge block, compaction block and branch 
 - Only what this batch adds. Do not rewrite what the pool already holds unless it materially changed.
 - Every fact carries `source`: the minimal set of entry ids that directly support it. Never invent one.
 - Repeated similar tool calls are not facts; file reads and commits become the tool-call index by the system.
-- Do not record what is trivially re-derivable from code or git. "Re-derivable from the raw" is not a reason to skip: after compaction the raw is out of context and is fetched only on purpose, by address.
+- Record what later work will need and cannot look up: a decision or ruling with its reason — why the design takes this shape, why a threshold has this value, what it replaced — even when it lands in code in the same batch, because the code keeps only the current value. How existing code happens to be written is looked up when needed and is not a fact. "Re-derivable from the raw" is not a reason to skip: after compaction the raw is out of context and is fetched only on purpose, by address.
 - The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.
 - Zero output is a normal result; submit it as `note({facts: []})`.
 
