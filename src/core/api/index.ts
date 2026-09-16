@@ -390,8 +390,9 @@ export interface TraceMemory {
   /** Terminal worker settlement, including Dreamer's future worker: persist first, then abort
    * locally owned target tasks on automatic off. Attempt refusal is not terminal settlement. */
   settleExecution(id: string, outcome: import("../store/executions.ts").ExecutionOutcome, runId: number, reason?: string): ReturnType<Store["settleExecution"]>;
-  /** Fence owned tokens before requesting cancellation; stopping prevents later admission. */
-  cancelTasks(stopping?: boolean): void;
+  /** Fence owned tokens before requesting cancellation; stopping prevents later admission.
+   * Returned identities acknowledge locally owned abort requests, not provider termination. */
+  cancelTasks(stopping?: boolean): { sessionId: number; phase: Phase; executionId: string }[];
   /** Freeze before host preflight: even an unsent refusal belongs to this admission generation. */
   readonly cancellation: number;
   /** End local waits at teardown's deadline; provider promises remain rejection-handled. */
@@ -459,7 +460,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const store = new Store(dbPath, normalizeSource);
   const executorId = randomUUID();
   let stopping = false;
-  const tasks = new Set<{ sessionId: number; controller: AbortController; force(): void; close(): void }>();
+  const tasks = new Set<{ sessionId: number; phase: Phase; executionId: string; controller: AbortController; force(): void; close(): void }>();
   const abortTarget = (sessionId: number) => {
     for (const task of tasks) if (task.sessionId === sessionId) { task.close(); task.controller.abort(); }
   };
@@ -477,8 +478,10 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
   const cancelTasks = (stop = false) => {
     stopping ||= stop;
     cancellation++;
+    const owned = [...tasks].map(({ sessionId, phase, executionId }) => ({ sessionId, phase, executionId }));
     try { if (!store.closed) { if (stop) store.beginShutdown(); store.invalidateExecutor(executorId); } }
     finally { for (const task of tasks) { task.close(); task.controller.abort(); } }
+    return owned;
   };
   // Freeze database values first; the returned renderer runs outside the read transaction.
   const prepareTrace = (address: string, display: ListingOptions = {}, reads?: KnowledgeRead[]): (() => string) => {
@@ -773,7 +776,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     let force!: () => void;
     const forced = new Promise<RunAgentResult>(resolve => { force = () => resolve({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" }); });
     const progress: Partial<RunAgentResult> = {};
-    const task = { sessionId: target.sessionId, controller, force, close: () => {} };
+    const task = { sessionId: target.sessionId, phase, executionId: executionId!, controller, force, close: () => {} };
     tasks.add(task);
     // 28b (parent 28 amendment 3): the admitting operation's own cancellation, linked to this task's
     // controller in exactly the shape `cancelTasks` uses for the whole executor — close the binding
