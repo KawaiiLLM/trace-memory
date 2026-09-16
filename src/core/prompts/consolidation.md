@@ -110,14 +110,14 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 
 ### Finding what this range closes
 
-Read the supplied knowledge block first. Use `trace` or `search` when an id is receipted, the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked, a legal fact outside the range is needed, or a stale-base refusal requires the applicable successor to be read again.
+Read the supplied knowledge block first. Use `trace` or `search` when a fact's `quote`, a review cue or a targeted search hit points to an item not supplied complete, the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked, a legal fact outside the range is needed, or a stale-base refusal requires the applicable successor to be read again.
 
-1. With an address — in a fact's `quote`, in the negated-support reminders, in the block's omission receipt — `trace` it first.
+1. With an address — in a fact's `quote`, a negated-support reminder, a CLOSER entry or a targeted search hit — `trace` it if the needed version was not supplied complete.
 2. Without one, `search` a single distinctive literal word taken from the old state: the object's name, the previous version number, "not committed", "awaiting". `search` matches one contiguous literal substring over every version and every branch and does not combine keywords, so a query of several words only matches text containing that exact sequence.
 3. No hit means change the word, never stack words.
 4. Read an exact current version before writing only when it was not supplied complete in the knowledge block or inherited context.
 
-The block's omission receipt names the items outside the budget; inspect any receipted item that may maintain a claim or state this range changes.
+The block's omission receipt names the items outside the budget; it is not a reading checklist. Read a receipted item only when a fact's `quote`, a review cue or a targeted search hit points to it. Do not enumerate or trace the receipt to reconstruct the omitted pool. Lower lexical relevance does not prove an item irrelevant; preserve the necessary read exceptions above.
 
 ### Correction-driven edits
 

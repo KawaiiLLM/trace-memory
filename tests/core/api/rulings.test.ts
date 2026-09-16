@@ -2420,7 +2420,8 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt).toContain("When this block is supplied, it holds the applicable set up to the database-derived capacity; its receipt lists the whole items the capacity could not hold.");
   expect(prompt).toContain("Read the supplied block first for what this range closes and for the item a claim continues.");
   expect(prompt).toContain("A complete exact version supplied here needs no reread.");
-  expect(prompt).toContain("an id is receipted, the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked");
+  expect(prompt).toContain("a fact's `quote`, a review cue or a targeted search hit points to an item not supplied complete");
+  expect(prompt).toContain("the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked");
   expect(prompt).toContain("a legal fact outside the range is needed, or a stale-base refusal requires the applicable successor to be read again");
   expect(prompt).toContain("`search` matches one contiguous literal substring over every version and every branch and does not combine keywords");
   expect(prompt).toContain("No hit means change the word, never stack words.");
@@ -2428,6 +2429,18 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt).not.toContain("within its own 10,000-token allowance");
   expect(prompt).not.toContain("the `open`, `goal` and `reference` ones are traced before deciding what this range closes");
   expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
+});
+
+test("45: overflow receipts are not a reading checklist; omitted items need a specific read cue", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("it is not a reading checklist");
+  expect(prompt).toContain("Read a receipted item only when a fact's `quote`, a review cue or a targeted search hit points to it.");
+  expect(prompt).toContain("Do not enumerate or trace the receipt to reconstruct the omitted pool.");
+  expect(prompt).toContain("Lower lexical relevance does not prove an item irrelevant; preserve the necessary read exceptions above.");
+  expect(prompt).toContain("a negated-support reminder, a CLOSER entry or a targeted search hit — `trace` it if the needed version was not supplied complete");
+  expect(prompt).not.toContain("when an id is receipted");
+  expect(prompt).not.toContain("in the block's omission receipt — `trace` it first");
+  expect(prompt).not.toContain("inspect any receipted item that may maintain a claim");
 });
 
 /** Ticket 40 C1 as reversed by ticket 44: a persistent object's current state remains one
