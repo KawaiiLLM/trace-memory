@@ -585,7 +585,16 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       const fact = store.getFact(Number(factMatch[1]));
       if (!fact) throw new Error(`fact ${target} does not exist`);
       const relations = store.listFactRelations(fact.id);
-      return () => renderFact(fact, relations, itemCap);
+      let receipt = "";
+      if (display.sessionId !== undefined) {
+        const path = store.knowledgePath(display.sessionId, display.branch, display.headTurnId);
+        const snapshot = store.pathSnapshot(path);
+        const otherIds = [...new Set(relations.map(relation => relation.fromFact === fact.id ? relation.toFact : relation.fromFact))];
+        const applies = store.factApplicabilityOnPath(otherIds, path, snapshot);
+        const inapplicable = otherIds.filter(id => !applies.get(id));
+        if (inapplicable.length) receipt = `\nrelations retained by explicit Fact read; other endpoints not applicable on this path: ${inapplicable.map(id => `F${id}`).join(", ")}`;
+      }
+      return () => renderFact(fact, relations, itemCap) + receipt;
     }
     const runMatch = /^R([1-9]\d*)$/.exec(target ?? "");
     if (runMatch) {
@@ -606,7 +615,12 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     if (!turn) throw new Error(`turn ${target} does not exist`);
     if (sessionOfAddress !== undefined && turn.sessionId !== sessionOfAddress) throw new Error(`turn ${target} does not exist`);
     if (parsed.selector?.kind === "facts") {
-      const facts = store.listTurnFacts(turn.id), relations = store.listFactRelationsOf(facts.map(f => f.id)), times = store.factTurnTimes(facts);
+      const facts = store.listTurnFacts(turn.id);
+      const relations = display.sessionId === undefined ? store.listFactRelationsOf(facts.map(f => f.id)) : (() => {
+        const path = store.knowledgePath(display.sessionId!, display.branch, display.headTurnId);
+        return store.listFactRelationsOnPathOf(facts.map(f => f.id), path);
+      })();
+      const times = store.factTurnTimes(facts);
       return () => renderFactGroups(facts, (f, frame) => renderFact(f, relations.get(f.id) ?? [], itemCap, frame), times, true).join("\n");
     }
     const calls = store.listToolCalls(turn.id);
@@ -665,8 +679,11 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
     return false;
   };
   const consolidationTokens = (target: TaskTarget): number => {
+    const path = store.knowledgePath(target.sessionId, target.branch, target.headTurnId);
+    const snapshot = store.pathSnapshot(path);
     const facts = store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-    return tokens(renderFactGroups(facts, f => renderFact(f, store.listFactRelations(f.id)), store.factTurnTimes(facts)).join("\n"));
+    const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
+    return tokens(renderFactGroups(facts, f => renderFact(f, relations.get(f.id) ?? []), store.factTurnTimes(facts)).join("\n"));
   };
   const pendingTokens: TraceMemory["pendingTokens"] = (phase, target) => {
     const trigger = cfg[phase].triggerTokens;

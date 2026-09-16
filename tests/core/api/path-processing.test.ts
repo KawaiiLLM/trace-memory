@@ -224,6 +224,14 @@ test("34b: a consumed supplied event succeeds with exact settlement and no adopt
   release();
   const result = await pending;
   expect(result.outcome).toBe("success");
+  if (!("runId" in result)) throw new Error("missing run id");
+  const response = JSON.parse(f.store.getRun(result.runId)!.response!);
+  expect(response.check.resultIds).toEqual([]);
+  expect(response.check.eventIds).toEqual([f.base.commit]);
+  expect(response.check.totals).toHaveLength(4);
+  expect(response.check.totals.map((total: { scope: string }) => total.scope)).toEqual([
+    "global", `project:${f.project.id}`, `session:${f.session.id}`, `applicable:S${f.session.id}/left/T${f.turn.id}`,
+  ]);
   expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events ORDER BY event_id").all().map(row => Number(row.event_id))).toEqual([f.base.commit]);
   expect(f.store.db.prepare("SELECT commit_id FROM processed_knowledge_versions ORDER BY commit_id").all()).toEqual([]);
   expect(f.store.isKnowledgeProcessed(rivalCommit)).toBe(false);
@@ -326,7 +334,10 @@ test("34b/35b: a restored exact version is reported honestly as pending work by 
   const written = tools.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update", id: `K${f.base.knowledgeId}@${f.base.commit}`,
     text: "left result", category: "constraint", scope: "project", supports: [`F${noted.facts[0]!.id}`], topics: [], reason: "left-only update" }], skipped: [] });
   const successor = JSON.parse(written).committed[0].commit as number;
-  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, createdAt: at, outcome: "success" });
+  const leftPath = { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id };
+  const range = f.store.retainDreamingRange(leftPath, [f.base.commit]);
+  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.session.id, branch: leftPath.branch,
+    dreamingRangeId: range.id, createdAt: at, outcome: "success" });
   f.store.completeDreaming(run.id, [f.base.commit], [successor]);
   const rootPath = { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id };
   expect(f.store.currentCommit(f.base.knowledgeId, rootPath).map(revision => revision.id)).toEqual([f.base.commit]);
@@ -338,4 +349,66 @@ test("34b/35b: a restored exact version is reported honestly as pending work by 
     return success;
   });
   expect((await f.memory.dream(rootPath)).outcome).toBe("success");
+});
+
+test.each([
+  { name: "divergent inapplicable", support: "right" as const, target: "left" as const, certified: true },
+  { name: "divergent applicable", support: "shared" as const, target: "left" as const, certified: false },
+  { name: "descendant inapplicable", support: "right" as const, target: "root" as const, certified: false },
+])("47 certification: $name successor follows lineage-or-applicable", async ({ support, target, certified }) => {
+  let f!: ReturnType<typeof pathFixture>, successorCommit = 0;
+  f = pathFixture(async () => {
+    let fact = f.fact;
+    if (support === "right") {
+      const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, facts: [{
+        turnId: f.turn.id, entryIds: [f.right.id], category: "decision", actor: "user", text: "right-only certification evidence",
+        source: [`T${f.turn.id}#E3`], createdAt: at,
+      }] });
+      if (!noted.ok) throw new Error(noted.problems.join("; "));
+      fact = noted.facts[0]!.id;
+    }
+    const right = f.memory.tools(f.path("right", f.right.id));
+    right.find(tool => tool.name === "trace")!.execute({ address: `K${f.base.knowledgeId}@${f.base.commit}`, itemBudget: null });
+    const successor = right.find(tool => tool.name === "memory")!.execute({ operations: [{ op: "update",
+      id: `K${f.base.knowledgeId}@${f.base.commit}`, text: `${support} successor`, category: "constraint", scope: "project",
+      supports: [`F${fact}`], topics: [], reason: "certification successor" }], skipped: [] });
+    expect(successor).not.toContain("rejected:");
+    successorCommit = JSON.parse(successor).committed[0].commit as number;
+    return success;
+  });
+  const selected = target === "root"
+    ? { sessionId: f.session.id, branch: "root", headTurnId: f.turn.id, triggerEntryId: f.root.id }
+    : { sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id };
+  const result = await f.memory.dream(selected);
+  expect(result.outcome).toBe("success");
+  expect(f.store.isKnowledgeProcessed(f.base.commit)).toBe(certified);
+  const runId = (result as { runId: number }).runId;
+  const completion = f.store.db.prepare("SELECT result_ids FROM dreaming_completions WHERE run_id = ?").get(runId)!;
+  expect(JSON.parse(String(completion.result_ids))).toEqual(certified ? [f.base.commit] : []);
+  if (support === "shared") {
+    expect(f.store.isKnowledgeProcessed(successorCommit)).toBe(false);
+    expect(f.store.db.prepare("SELECT event_id FROM settled_knowledge_events WHERE event_id = ?").get(successorCommit)).toBeUndefined();
+    expect(f.store.pendingKnowledgeEvents(selected).map(event => event.id)).toContain(successorCommit);
+    const rangeId = Number(f.store.db.prepare("SELECT range_id FROM dreaming_run_ranges WHERE run_id = ?").get(runId)!.range_id);
+    const retained = f.store.dreamingRange(rangeId, true)!;
+    expect([...retained.eventIds, ...retained.versionIds, ...f.store.dreamingOwnCommits(rangeId)]).not.toContain(successorCommit);
+  }
+});
+
+test("47 certification: unknown required same-session successor provenance fails explicitly", async () => {
+  const f = pathFixture();
+  const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, facts: [{
+    turnId: f.turn.id, entryIds: [f.right.id], category: "decision", actor: "user", text: "unknown-origin right evidence",
+    source: [`T${f.turn.id}#E3`], createdAt: at,
+  }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const successor = f.store.commitConsolidationRun({ path: { sessionId: f.session.id, branch: "right", headTurnId: f.turn.id },
+    run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, operations: [{ op: "update",
+      knowledgeId: f.base.knowledgeId, baseCommit: f.base.commit, text: "unknown-origin successor", category: "constraint", scope: "project",
+      supports: [noted.facts[0]!.id], topics: [], reason: "unknown", createdAt: at }] });
+  if (!successor.ok) throw new Error(successor.problems.join("; "));
+  const result = await f.memory.dream({ sessionId: f.session.id, branch: "left", headTurnId: f.turn.id, triggerEntryId: f.left.id });
+  expect(result.outcome).toBe("failure");
+  expect("problems" in result ? result.problems.join(" ") : "").toContain("trigger ancestry is unknown");
+  expect(f.store.isKnowledgeProcessed(f.base.commit)).toBe(false);
 });

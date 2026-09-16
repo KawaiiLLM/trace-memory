@@ -16,7 +16,13 @@ test("32: declaration rechecks a newly applicable certified global predecessor o
       const result = store.commitConsolidationRun({ run: { kind: "manual", sessionId: author.id, createdAt: "now" }, operations });
       expect(result.ok).toBe(true);
     };
-    const complete = (id: number) => store.completeDreaming(store.recordRun({ kind: "dreaming", sessionId: author.id, outcome: "success", createdAt: "now" }).id, [id], [id]);
+    const complete = (id: number) => {
+      const path = { sessionId: author.id, branch: "main", headTurnId: turn.id };
+      const range = store.retainDreamingRange(path, [id]);
+      const run = store.recordRun({ kind: "dreaming", sessionId: author.id, branch: path.branch,
+        dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
+      store.completeDreaming(run.id, [id], [id]);
+    };
     write([{ op: "create", handle: "$1", author: "test", ...content }]); complete(1);
     write([{ op: "update", knowledgeId: 1, baseCommit: 1, ...content, scope: "project", text: "project-only successor" }]);
     write([{ op: "create", handle: "$2", author: "test", ...content }]); complete(3);

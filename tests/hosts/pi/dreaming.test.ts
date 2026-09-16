@@ -108,7 +108,9 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
       if (requests === 1) {
         const outside = store.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", text: "outside ".repeat(4500), category: "constraint", scope: "project", supports: [1], topics: [], reason: "outside frozen family", createdAt: "now" }] });
         if (!outside.ok) throw Error(outside.problems.join());
-        const id = store.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "now" }).id;
+        const range = store.openDreamingRange(1, "main")!;
+        const id = store.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+          outcome: "success", createdAt: "now" }).id;
         store.completeDreaming(id, [outside.committed[0]!.commit], [outside.committed[0]!.commit]);
       }
       if (tools === 24 && !conversation.messages.some(m => JSON.stringify(m).includes("One repair,"))) return reply("Done first pass");

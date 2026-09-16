@@ -87,7 +87,9 @@ test.each(["branch", "project", "lost claim", "replaced claim", "range completed
       await h.emit("session_tree", {});
     } else if (change === "range completed" || change === "range replaced") {
       h.memory.setKnowledgeBudget("project", 6_100);
-      const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "external" });
+      const range = s.openDreamingRange(1, "main")!;
+      const run = s.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+        outcome: "success", createdAt: "external" });
       s.completeDreaming(run.id, [item.commit], [item.commit]);
       expect(s.retryDreamingRange({ sessionId: 1, branch: "main", headTurnId: 2 })).toBeNull();
       const next = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "seed" }, operations: [{ op: "create", handle: "$2", author: "test", text: "new ".repeat(12_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "new independent work", createdAt: "seed" }] });
@@ -119,7 +121,10 @@ test("32f review: borrowed D of another session is capacity, never this compact'
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
     h.memory.setKnowledgeBudget("project", 6_100);
-    const completed = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "seed" });
+    const selected = s.knowledgePath(1, "main");
+    const range = s.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: selected.headTurnId! }, [item.commit]);
+    const completed = s.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+      outcome: "success", createdAt: "seed" });
     s.completeDreaming(completed.id, [item.commit], [item.commit]);
     const peer = s.createSession({ host: "closed-peer", projectId: s.getSession(1)!.projectId, enrollmentChoice: true, startedAt: "seed", firstReplyAt: "seed" });
     const turn = s.appendTurn({ sessionId: peer.id, kind: "turn", userPrompt: "peer evidence", startedAt: "seed" });

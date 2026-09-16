@@ -192,12 +192,13 @@ export function freezeNoting(store: Store, input: NotingInput, config: TraceMemo
   // freshness order is what `budgetFacts` selects by, so it is filtered, not replaced.
   const facts = store.listSessionFacts(session.id).filter(f => store.factOnPath(f, path, snapshot));
   const factTurns = store.factTurnTimes(facts);
+  const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
   // The same fact renders the same line for the whole freeze, and one Turn's tool calls are the same
   // rows on every candidate: both are read and rendered once here rather than inside the loop.
   const lines = new Map<number, string>();
   const factLine = (fact: Fact) => {
     let line = lines.get(fact.id);
-    if (line === undefined) lines.set(fact.id, line = renderFact(fact, store.listFactRelations(fact.id)));
+    if (line === undefined) lines.set(fact.id, line = renderFact(fact, relations.get(fact.id) ?? []));
     return line;
   };
   const calls = new Map<number, ReturnType<Store["listToolCalls"]>>();

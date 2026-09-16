@@ -87,7 +87,9 @@ test("footer chains facts to consolidate, unprocessed current Knowledge and proc
   await refresh(h);
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1=>0 cost: $0.00</dim>");
   const current = h.memory.store.listCurrentKnowledge({ sessionId: 1, branch: "main", headTurnId: 1 })[0]!;
-  const dream = h.memory.store.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", outcome: "success", createdAt: time });
+  const range = h.memory.store.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: 1 }, [current.revision.id]);
+  const dream = h.memory.store.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+    outcome: "success", createdAt: time });
   h.memory.store.completeDreaming(dream.id, [current.revision.id], [current.revision.id]);
   await refresh(h);
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0=>1 cost: $0.00</dim>");

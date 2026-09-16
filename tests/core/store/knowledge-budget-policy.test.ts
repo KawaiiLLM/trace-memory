@@ -310,6 +310,13 @@ function processedProjectKnowledge(store: Store, text: string, name = "race-proj
   return { project, session, turn, commit, used };
 }
 
+function completionRun(store: Store, item: ReturnType<typeof processedProjectKnowledge>) {
+  const path = { sessionId: item.session.id, branch: "main", headTurnId: item.turn.id };
+  const range = store.retainDreamingRange(path, [item.commit]);
+  return store.recordRun({ kind: "dreaming", sessionId: item.session.id, branch: path.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
+}
+
 test("35d Project and Session budgets apply independently to each owner pool", () => {
   const store = open();
   const items = [
@@ -321,7 +328,7 @@ test("35d Project and Session budgets apply independently to each owner pool", (
   expect(items[0]!.used + items[1]!.used).toBeGreaterThan(store.knowledgeBudgets().project);
   expect(items[2]!.used + items[3]!.used).toBeGreaterThan(store.knowledgeBudgets().session);
   for (const item of items) {
-    const run = store.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    const run = completionRun(store, item);
     store.completeDreaming(run.id, [item.commit], [item.commit]);
     expect(store.isKnowledgeProcessed(item.commit)).toBe(true);
   }
@@ -332,7 +339,7 @@ test("35d reductions diagnose current processed owners and pending revisions do 
   store.setKnowledgeBudget("project", 20_000);
   const item = processedProjectKnowledge(store, "current ".repeat(3_000));
   expect(item.used).toBeGreaterThan(1_000);
-  const run = store.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+  const run = completionRun(store, item);
   store.completeDreaming(run.id, [item.commit], [item.commit]);
   const used = store.checkProcessedScopes().totals.find(total => total.scope === `project:${item.project.id}`)!.tokens;
   expect(() => store.setKnowledgeBudget("project", used - 1)).toThrow(new RegExp(`project:${item.project.id}: used ${used} tokens, proposed cap ${used - 1}, overage 1`));
@@ -341,7 +348,7 @@ test("35d reductions diagnose current processed owners and pending revisions do 
   const pending = processedProjectKnowledge(store, "pending ".repeat(5_000));
   expect(pending.used).toBeGreaterThan(item.used);
   expect(store.setKnowledgeBudget("project", used).policy.project).toBe(used);
-  const pendingRun = store.recordRun({ kind: "dreaming", sessionId: pending.session.id, outcome: "success", createdAt: "now" });
+  const pendingRun = completionRun(store, pending);
   expect(() => store.completeDreaming(pendingRun.id, [pending.commit], [pending.commit])).toThrow(/project:.*exceeds/);
   expect(store.isKnowledgeProcessed(pending.commit)).toBe(false);
 });
@@ -350,14 +357,14 @@ test("35d sequential two-connection orders enforce policy reduction against cert
   const path = file(), writer = open(path), settings = open(path);
   writer.setKnowledgeBudget("project", 20_000);
   const first = processedProjectKnowledge(writer, "growth ".repeat(2_500));
-  const firstRun = writer.recordRun({ kind: "dreaming", sessionId: first.session.id, outcome: "success", createdAt: "now" });
+  const firstRun = completionRun(writer, first);
   writer.completeDreaming(firstRun.id, [first.commit], [first.commit]); // growth wins
   const used = writer.checkProcessedScopes().totals.find(total => total.scope === `project:${first.project.id}`)!.tokens;
   expect(() => settings.setKnowledgeBudget("project", used - 1)).toThrow(/overage 1/);
 
   settings.setKnowledgeBudget("project", used);
   const later = processedProjectKnowledge(writer, "later growth ".repeat(3_000));
-  const laterRun = writer.recordRun({ kind: "dreaming", sessionId: later.session.id, outcome: "success", createdAt: "now" });
+  const laterRun = completionRun(writer, later);
   expect(() => writer.completeDreaming(laterRun.id, [later.commit], [later.commit])).toThrow(/processed knowledge.*exceeds/);
   expect(writer.knowledgeBudgets()).toEqual(settings.knowledgeBudgets());
 });
@@ -367,7 +374,7 @@ test("35d a reduction that wins is enforced by later project placement", () => {
   const first = processedProjectKnowledge(writer, "first ".repeat(1_000), "policy-project-a");
   const second = processedProjectKnowledge(writer, "second ".repeat(1_000), "policy-project-b");
   for (const item of [first, second]) {
-    const run = writer.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    const run = completionRun(writer, item);
     writer.completeDreaming(run.id, [item.commit], [item.commit]);
   }
   const cap = Math.max(...writer.checkProcessedScopes().totals.filter(total => total.scope.startsWith("project:")).map(total => total.tokens));
@@ -384,7 +391,7 @@ test.each(["project", "session"] as const)("35d real overlapping %s reduction an
     const item = processedProjectKnowledge(setup, `${scope} overlap `.repeat(1_000), `${scope}-${order}`, scope);
     const owner = scope === "project" ? `project:${item.project.id}` : `session:${item.session.id}`;
     const acceptedUsed = setup.checkProcessedScopes([item.commit]).totals.find(total => total.scope === owner)!.tokens;
-    const run = setup.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    const run = completionRun(setup, item);
     setup.close(); stores.splice(stores.indexOf(setup), 1);
     const budget = { kind: "budget", field: scope, value: acceptedUsed - 1 };
     const complete = { kind: "complete", runId: run.id, eventIds: [item.commit], resultIds: [item.commit] };
@@ -405,7 +412,7 @@ test.each(["placement", "reduction"] as const)("35d real overlapping project pla
   const first = processedProjectKnowledge(setup, "first placement ".repeat(1_000), `place-a-${winnerName}`);
   const second = processedProjectKnowledge(setup, "second placement ".repeat(1_000), `place-b-${winnerName}`);
   for (const item of [first, second]) {
-    const run = setup.recordRun({ kind: "dreaming", sessionId: item.session.id, outcome: "success", createdAt: "now" });
+    const run = completionRun(setup, item);
     setup.completeDreaming(run.id, [item.commit], [item.commit]);
   }
   const cap = Math.max(...setup.checkProcessedScopes().totals.filter(total => total.scope.startsWith("project:")).map(total => total.tokens));

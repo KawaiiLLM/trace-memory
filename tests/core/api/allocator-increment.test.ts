@@ -118,7 +118,8 @@ test("32e exact processed version becomes optional; a committed unfinished succe
   const { s, t, f } = fixture();
   const path = { sessionId: s.id, branch: "main", headTurnId: t.id };
   const original = memory.store.listCurrentKnowledge(path)[0]!;
-  const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: time });
+  const range = memory.store.retainDreamingRange(path, [original.revision.id]);
+  const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", dreamingRangeId: range.id, outcome: "success", createdAt: time });
   memory.store.completeDreaming(success.id, [original.revision.id], [original.revision.id]);
   expect(() => memory.setKnowledgeBudget("project", 0)).toThrow(/project:1: used/);
   expect(charged(memory.compact(s.id, "main", t.id)).knowledge).toBeGreaterThan(0);
@@ -146,7 +147,7 @@ test("32e unfinished archive status is required until exact completion, without 
   memory.setKnowledgeBudget("project", 0);
   expect(memory.knowledgeBudgets().project).toBe(0);
   expect(compacted(memory.compact(s.id, "main", t.id))).toContain("maintenance not completed");
-  const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: time });
+  const success = memory.store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", dreamingRangeId: range.id, outcome: "success", createdAt: time });
   memory.store.completeDreaming(success.id, [k.revision.id], [archive.committed[0]!.commit]);
   expect(compacted(memory.compact(s.id, "main", t.id))).not.toContain("maintenance not completed");
 });

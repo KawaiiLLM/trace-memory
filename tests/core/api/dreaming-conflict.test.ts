@@ -152,7 +152,9 @@ test.each([false, true])("a successor of processed read-only material does not e
     operations: [{ op: "create", handle: "$processed", author: "external", ...f.content, text: "processed ".repeat(4500) }] });
   if (!created.ok) throw Error(created.problems.join());
   const processed = created.committed[0]!;
-  const certified = f.other.store.recordRun({ kind: "dreaming", sessionId: f.otherPath.sessionId, outcome: "success", createdAt: "now" });
+  const range = f.other.store.retainDreamingRange(f.otherPath, [processed.commit]);
+  const certified = f.other.store.recordRun({ kind: "dreaming", sessionId: f.otherPath.sessionId, branch: f.otherPath.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
   f.other.store.completeDreaming(certified.id, [processed.commit], [processed.commit]);
 
   const frozen = new Barrier(), changed = new Barrier();
@@ -526,7 +528,9 @@ test("narrow reference conflict survives close/reopen and replay; the next real 
     operations: [{ op: "create", handle: "$processed-streak", author: "external", ...f.content, text: "processed reference" }] });
   if (!created.ok) throw Error(created.problems.join());
   const processed = created.committed[0]!;
-  const certified = f.other.store.recordRun({ kind: "dreaming", sessionId: f.otherPath.sessionId, outcome: "success", createdAt: "now" });
+  const range = f.other.store.retainDreamingRange(f.otherPath, [processed.commit]);
+  const certified = f.other.store.recordRun({ kind: "dreaming", sessionId: f.otherPath.sessionId, branch: f.otherPath.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
   f.other.store.completeDreaming(certified.id, [processed.commit], [processed.commit]);
 
   f.setAgent(async () => ({ ...success, outcome: "failure", output: "real error" }));

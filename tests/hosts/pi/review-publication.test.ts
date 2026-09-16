@@ -37,7 +37,9 @@ test.each(["native→custom", "custom→native"] as const)("32f review: %s repor
       changed = true;
       if (direction === "native→custom") {
         h.memory.setKnowledgeBudget("project", 7_000);
-        const run = s.recordRun({ kind: "dreaming", sessionId: 1, outcome: "success", createdAt: "external" });
+        const range = s.retainDreamingRange({ sessionId: 1, branch: "main", headTurnId: 1 }, [item.commit]);
+        const run = s.recordRun({ kind: "dreaming", sessionId: 1, branch: "main", dreamingRangeId: range.id,
+          outcome: "success", createdAt: "external" });
         s.completeDreaming(run.id, [item.commit], [item.commit]);
       } else {
         const update = s.commitConsolidationRun({ run: { kind: "manual", sessionId: 1, createdAt: "external" }, operations: [{ op: "update", knowledgeId: item.knowledgeId, baseCommit: item.commit, text: "external ".repeat(20_000), category: "constraint", scope: "project", supports: [1], topics: [], reason: "external", createdAt: "external" }] });

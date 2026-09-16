@@ -153,8 +153,9 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
   // once; only the relevance query is rebuilt when capacity negotiation shortens the range.
   const suppliedKnowledge = knowledge.filter(({ revision }) => !initial.visible.knowledgeCommitIds.has(revision.id));
   const knowledgeWhole = wholeKnowledge(suppliedKnowledge);
-  const relations = new Map(facts.map((f) => [f.id, store.listFactRelations(f.id)]));
-  const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id)!)]));
+  const pathSnapshot = store.pathSnapshot(path);
+  const relations = store.listFactRelationsOnPathOf(facts.map(f => f.id), path, pathSnapshot);
+  const lines = new Map(facts.map((f) => [f.id, renderFact(f, relations.get(f.id) ?? [])]));
   const byId = new Map(facts.map(f => [f.id, f]));
   const factTurns = store.factTurnTimes(facts);
   // Ticket 20 "Consolidation": the oldest-first whole-fact prefix whose rendered lines — the same
@@ -189,7 +190,7 @@ export function freezeConsolidation(store: Store, input: ConsolidateInput, confi
         if (!cited) {
           cited = store.getFact(edge.toFact)!;
           byId.set(cited.id, cited);
-          lines.set(cited.id, renderFact(cited, store.listFactRelations(cited.id)));
+          lines.set(cited.id, renderFact(cited, store.listFactRelationsOnPath(cited.id, path, pathSnapshot)));
           if (!factTurns.has(cited.turnId)) for (const [id, time] of store.factTurnTimes([cited])) factTurns.set(id, time);
         }
         reminderCommits.add(item.revision.id);

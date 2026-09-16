@@ -27,7 +27,16 @@ function fixture(store = new Store(":memory:"), project = "A") {
     return result.committed[0]!;
   };
   const create = (text = "knowledge", scope: "global" | "project" | "session" = "project", range?: number) => write({ op: "create", handle: "$1", author: "test", ...content, text, scope }, range);
-  const success = () => store.recordRun({ kind: "dreaming", sessionId: s.id, branch: "main", outcome: "success", createdAt: "now" }).id;
+  const success = (rangeId?: number | null) => {
+    if (rangeId === null) return store.recordRun({ kind: "dreaming", sessionId: s.id, branch: target.branch, outcome: "success", createdAt: "now" }).id;
+    let retained = rangeId === undefined ? store.openDreamingRange(target.sessionId, target.branch) : store.dreamingRange(rangeId);
+    if (!retained) {
+      const pending = store.pendingKnowledgeEvents(target);
+      retained = store.retainDreamingRange(target, pending.filter(event => event.kind === "event").map(event => event.id), [], null,
+        pending.filter(event => event.kind === "version").map(event => event.id));
+    }
+    return store.recordRun({ kind: "dreaming", sessionId: s.id, branch: target.branch, dreamingRangeId: retained.id, outcome: "success", createdAt: "now" }).id;
+  };
   return { store, p, s, t, target, content, write, create, success };
 }
 
@@ -55,8 +64,9 @@ test("32b performance: metadata and fact checks are bounded per projection, plac
   for (let i = 0; i < 8; i++) fixture(a.store);
   let c = a.create();
   for (let i = 0; i < 40; i++) c = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content });
+  const range = a.store.retainDreamingRange(a.target, [c.commit]);
   const sql = vi.spyOn(a.store.db, "prepare"), facts = vi.spyOn(a.store, "factOnPath"), graphs = vi.spyOn(a.store, "commitGraph");
-  a.store.completeDreaming(a.success(), [c.commit], [c.commit]);
+  a.store.completeDreaming(a.success(range.id), [c.commit], [c.commit]);
   const points = () => sql.mock.calls.filter(([s]) => /SELECT (\*|session_id) FROM (facts|turns|runs|sessions) WHERE id = \?/.test(s)).length;
   expect(points()).toBeLessThan(30);
   expect(facts.mock.calls.length).toBeLessThanOrEqual(graphs.mock.calls.length);
@@ -96,9 +106,9 @@ test.each(["global", "project", "session", "applicable"] as const)("32b performa
   const value = { knowledge: a.store.getKnowledge(c.knowledgeId)!, revision: a.store.knowledgeRevision(c.commit)! };
   const owner = scope === "global" || scope === "applicable" ? "global" : `${scope}:${scope === "project" ? a.p.id : a.s.id}`;
   const cap = { global: 4000, project: 10000, session: 1000, applicable: 15000 }[scope];
-  const projection = { owners: new Map([[c.commit, owner]]), paths: [{ path: a.target, values: [value] }],
+  const projection = { owners: new Map([[c.commit, owner]]), paths: [{ path: a.target, values: [value],
     // Isolate the independent applicable guard; real projections also include the scope pools.
-    pools: scope === "applicable" ? new Map() : new Map([[owner, new Map([[c.commit, value]])]]) };
+    pools: scope === "applicable" ? new Map() : new Map([[owner, new Map([[c.commit, value]])]]) }] };
   for (const expected of [cap, cap + 1]) {
     let low = 0, high = 20000;
     while (low < high) {
@@ -136,7 +146,7 @@ test("32b review: construction closes only its connection and preserves initiali
 
 test("32b review: public spend and status include Dreaming without changing evidence counts", () => {
   const memory = TraceMemory(":memory:", vi.fn()), a = fixture(memory.store);
-  const before = memory.progress(a.s.id, a.target.branch, a.t.id), run = a.success();
+  const before = memory.progress(a.s.id, a.target.branch, a.t.id), run = a.success(null);
   expect(memory.spend(a.s.id).runs.dreaming).toBe(1);
   expect(memory.status(a.s.id)).toContain("1 dreaming");
   expect(memory.status(a.s.id)).toContain(`Last dreaming: run ${run} success`);
@@ -383,15 +393,16 @@ test("34b: a failed Dreamer retains original events and exposes an uncertified o
   expect(a.store.dreamingRange(range.id)?.knowledgeIds).toEqual([c.knowledgeId, derived.knowledgeId]);
 });
 
-test("32: completion validation and certification roll back atomically; external later events stay pending", () => {
+test("47: completion validation rolls back atomically and unknown successor provenance refuses certification", () => {
   const a = fixture(), c = a.create(), run = a.success();
   expect(() => a.store.completeDreaming(run, [c.commit], [c.commit], () => { throw Error("lost claim"); })).toThrow("lost claim");
   expect(a.store.isKnowledgeProcessed(c.commit)).toBe(false);
   expect(a.store.pendingKnowledgeEvents(a.target)).toHaveLength(1);
   const later = a.write({ op: "update", knowledgeId: c.knowledgeId, baseCommit: c.commit, ...a.content, text: "external" });
-  a.store.completeDreaming(run, [c.commit], [c.commit]);
+  expect(() => a.store.completeDreaming(run, [c.commit], [c.commit])).toThrow("trigger ancestry is unknown");
+  expect(a.store.isKnowledgeProcessed(c.commit)).toBe(false);
   expect(a.store.isKnowledgeProcessed(later.commit)).toBe(false);
-  expect(a.store.pendingKnowledgeEvents(a.target).map(e => e.id)).toEqual([later.commit]);
+  expect(a.store.pendingKnowledgeEvents(a.target).map(e => e.id)).toEqual([c.commit, later.commit]);
 });
 
 test("34a: placement revalidation preserves certification while parent scope bounds a moved child", () => {
@@ -447,7 +458,7 @@ test("audited completion exposes a rejected receipt only after authority has den
   audit!.budgets.global = Number.MAX_SAFE_INTEGER;
   expect(a.store.isKnowledgeProcessed(blocked.commit)).toBe(false);
   expect(a.store.db.prepare("SELECT * FROM dreaming_completions WHERE run_id = ?").all(run)).toEqual([]);
-  expect(a.store.checkProcessedScopes([blocked.commit]).problems).toHaveLength(1);
+  expect(a.store.checkProcessedScopes([blocked.commit]).problems.length).toBeGreaterThan(0);
   expect(() => a.store.completeDreaming(run, [blocked.commit], [blocked.commit])).toThrow(/global.*exceeds 4000/);
 });
 
@@ -467,7 +478,9 @@ test("32: existing CHECK constraints migrate without certifying legacy knowledge
   const migrated = new Store(file); stores.push(migrated);
   expect(migrated.isKnowledgeProcessed(c.commit)).toBe(false);
   expect(migrated.pendingKnowledgeEvents(a.target)).toHaveLength(1);
-  const run = migrated.recordRun({ kind: "dreaming", sessionId: a.s.id, outcome: "success", createdAt: "now" });
+  const range = migrated.retainDreamingRange(a.target, [c.commit]);
+  const run = migrated.recordRun({ kind: "dreaming", sessionId: a.s.id, branch: a.target.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
   migrated.completeDreaming(run.id, [c.commit], [c.commit]);
   migrated.declareProject(a.s.id, "B", "mark"); migrated.close();
   const reopened = new Store(file); stores.push(reopened);

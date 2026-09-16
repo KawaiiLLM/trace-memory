@@ -289,7 +289,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // Both read one mutable annotation of an otherwise immutable record. A caller that froze it at
   // query time (22c) supplies it; everyone else reads it now, exactly as before.
   const factLine = (id: number, relations: readonly FactRelation[] = store.listFactRelations(id)) => renderFact(store.getFact(id)!, [...relations]);
-  const factGroups = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id), store.factTurnTimes(facts));
+  const factGroups = (facts: Fact[], relations = store.listFactRelationsOf(facts.map(fact => fact.id))) =>
+    renderFactGroups(facts, f => factLine(f.id, relations.get(f.id) ?? []), store.factTurnTimes(facts));
   const knowledgeLine = (value: KnowledgeWithRevision, marks: readonly KnowledgeMark[] = store.listKnowledgeMarks(value.knowledge.id)) =>
     renderKnowledge(value, [...marks]);
   // The knowledge part of the shared material contract (20a): the applicable commits at one node,
@@ -457,11 +458,15 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
             return () => renderKnowledgeTrace({ knowledge: records.get(revision.knowledgeId)!, revision }, marks.get(revision.id) ?? [],
               parents, children, profile.entryTokens, grounds, fields, false, status);
           });
-          const facts = store.listProjectFacts(project.id).map(fact => ({ fact, relations: store.listFactRelations(fact.id) }));
-          const times = store.factTurnTimes(facts.map(f => f.fact)), relations = new Map(facts.map(f => [f.fact.id, f.relations]));
+          const facts = store.listProjectFacts(project.id);
+          const relations = options.sessionId === undefined ? store.listFactRelationsOf(facts.map(fact => fact.id)) : (() => {
+            const path = store.knowledgePath(options.sessionId!, options.branch, options.headTurnId);
+            return store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path);
+          })();
+          const times = store.factTurnTimes(facts);
           collectionReceipts.push(`selected: project ${project.name} facts; ${options.scope ?? "global/project"} knowledge; ${options.versions} versions`, KNOWLEDGE_REPRESENTATIVE_RECEIPT);
-          return () => [...knowledge.map(render => render()), ...renderFactGroups(facts.map(f => f.fact),
-            (fact, frame) => renderFact(fact, relations.get(fact.id)!, profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
+          return () => [...knowledge.map(render => render()), ...renderFactGroups(facts,
+            (fact, frame) => renderFact(fact, relations.get(fact.id) ?? [], profile.entryTokens, frame), times, true)].filter(Boolean).join("\n");
         }
         return prepare(target, { ...options, profile }, reads);
       };
@@ -475,7 +480,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
           : [{ render: () => `${target}: no facts exist in this range` }];
       });
       const ids = units.flatMap(unit => "fact" in unit ? [unit.fact] : []);
-      const relations = ids.length ? store.listFactRelationsOf(ids) : new Map<number, FactRelation[]>();
+      const relations = !ids.length ? new Map<number, FactRelation[]>() : options.sessionId === undefined
+        ? store.listFactRelationsOf(ids)
+        : store.listFactRelationsOnPathOf(ids, store.knowledgePath(options.sessionId, options.branch, options.headTurnId));
       return units.map(unit => "fact" in unit ? { ...unit, relations: relations.get(unit.fact)! } : unit);
     });
     const format = (units: readonly unknown[]) => (units as TraceUnit[])
@@ -603,7 +610,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // the facts title with the facts, the Raw title with the Raw, each block's omission receipts
       // with their own block. The `Receipts:` heading `finish` emits is charged to each window that
       // has a receipt, which over-counts safely (the same rule `budgetMaterial` applies).
-      const lines = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id), factTurns);
+      const factRelations = store.listFactRelationsOnPathOf(applicable.map(fact => fact.id), path, snapshot);
+      const lines = (facts: Fact[]) => renderFactGroups(facts, f => factLine(f.id, factRelations.get(f.id) ?? []), factTurns);
       const factsCharge = (facts: Fact[], receipts: string[]) => charge([xmlBlock("episodic", ""), FACTS_TITLE])
         + charge(lines(facts)) + (receipts.length ? charge(receipts) + charge(["Receipts:"]) : 0);
       const rawCharge = (contents: string[]) => charge([RAW_TITLE]) + charge(contents);
@@ -694,8 +702,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path, snapshot) &&
         r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
+      const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);
       const content = ["this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
-        "Facts:", ...factGroups(facts), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
+        "Facts:", ...factGroups(facts, relations), "Commits (by evidence):", ...commits.map((c) => knowledgeLine(c)),
         title, ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts), ...receipt()].join("\n");
       return xmlBlock("branch_carry", content); // Tags delimit; content stays byte-identical to shared trace lines.
     },

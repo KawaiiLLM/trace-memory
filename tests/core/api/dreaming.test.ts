@@ -23,7 +23,9 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, b
   const p = store.createProject({ name: "P", declaredBy: "mark" });
   const s = store.createSession({ host: "test", enrollmentChoice: true, projectId: p.id, startedAt: "now", firstReplyAt: "now" });
   const t = store.appendTurn({ sessionId: s.id, kind: "turn", userPrompt: "rule", startedAt: "now" });
-  const f = store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, facts: [{ turnId: t.id, category: "decision", actor: "user", text: body, source: [`T${t.id}#user`], createdAt: "now" }] });
+  const entry = memory.appendEntry({ sessionId: s.id, turnId: t.id, nativeLineage: "fixture", nativeId: "root", role: "user", text: body, raw: "{}", calls: [] });
+  memory.selectEntries(s.id, "main", [entry.id]);
+  const f = store.commitNotingRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, facts: [{ turnId: t.id, entryIds: [entry.id], category: "decision", actor: "user", text: body, source: [`T${t.id}#E1`], createdAt: "now" }] });
   if (!f.ok) throw Error(f.problems.join());
   const content = { text: body, category: "constraint" as const, scope, supports: [f.facts[0]!.id], topics: [], reason: "fact", createdAt: "now" };
   const c = store.commitConsolidationRun({ run: { kind: "manual", sessionId: s.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", ...content }] });
@@ -39,7 +41,9 @@ function addProcessedReference(f: ReturnType<typeof fixture>, text = "reference 
   ] });
   if (!created.ok) throw new Error(created.problems.join("; "));
   const item = created.committed[0]!;
-  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, outcome: "success", createdAt: "now" });
+  const range = f.store.retainDreamingRange(f.target, [item.commit]);
+  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, branch: f.target.branch,
+    dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
   f.store.completeDreaming(run.id, [item.commit], [item.commit]);
   return { item, runId: run.id };
 }
@@ -260,7 +264,7 @@ test("34b: successive consumed inputs settle independently; a later unchanged le
   const f = fixture(async task => {
     if (reread && f.store.listKnowledgeRevisions().length === 3) return success;
     const current = f.store.currentCommit(f.item.knowledgeId, f.target)[0]!;
-    const updated = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: current.id, ...f.content, text: "external successor" }] });
+    const updated = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)), operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: current.id, ...f.content, text: "external successor" }] });
     expect(updated.ok).toBe(true);
     if (reread) task.tools.find(t => t.name === "trace")!.execute({ address: `K${f.item.knowledgeId}` });
     return success;
@@ -459,7 +463,7 @@ test("a post-race completion insert failure retains the exact final audit and or
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
       const moved = f.store.commitConsolidationRun({ path: f.target,
-        run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" },
+        run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)),
         operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit,
           ...f.content, text: "consumer before failing completion" }] });
       expect(moved.ok).toBe(true);
@@ -504,7 +508,7 @@ test("34b: a successor arriving before the final transaction consumes the input 
   const f = fixture(async () => {
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
-      const moved = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, ...f.content, text: "external after check" }] });
+      const moved = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)), operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, ...f.content, text: "external after check" }] });
       expect(moved.ok).toBe(true);
       return transaction(fn);
     });
@@ -517,7 +521,7 @@ test("34b: a successor arriving before the final transaction consumes the input 
   expect(f.store.pendingKnowledgeEvents(f.target).map(e => e.id)).toEqual([2]);
 });
 
-test("35 canonical audit keeps all owner/path totals while the bound receipt projects only target-relevant owners, including zero pools", async () => {
+test("47 canonical audit and bound receipt contain only the frozen target path, including empty owner pools", async () => {
   let receipt = "";
   const f = fixture(async task => {
     const memory = task.tools.find(tool => tool.name === "memory")!;
@@ -537,7 +541,10 @@ test("35 canonical audit keeps all owner/path totals while the bound receipt pro
   }] });
   if (!written.ok) throw new Error(written.problems.join("; "));
   const otherCommit = written.committed[0]!.commit;
-  const processed = f.store.recordRun({ kind: "dreaming", sessionId: otherSession.id, outcome: "success", createdAt: "now" });
+  const otherPath = { sessionId: otherSession.id, branch: "main", headTurnId: otherTurn.id };
+  const otherRange = f.store.retainDreamingRange(otherPath, [otherCommit]);
+  const processed = f.store.recordRun({ kind: "dreaming", sessionId: otherSession.id, branch: "main",
+    dreamingRangeId: otherRange.id, outcome: "success", createdAt: "now" });
   f.store.completeDreaming(processed.id, [otherCommit], [otherCommit]);
   // Synthetic legacy overage outside this target: retain it in full audit without changing the
   // existing affected-owner success rule for the target's independent archive.
@@ -553,24 +560,18 @@ test("35 canonical audit keeps all owner/path totals while the bound receipt pro
   const audit = JSON.parse(f.store.getRun(result.runId)!.response!).check;
   const targetProject = f.store.getSession(f.target.sessionId)!.projectId;
   expect(audit.relevantOwnerScopes).toEqual(["global", `project:${targetProject}`, `session:${f.target.sessionId}`]);
-  expect(audit.totals).toContainEqual({ scope: "global", tokens: 0, cap: 4_000 });
-  expect(audit.totals).toContainEqual({ scope: `project:${targetProject}`, tokens: 0, cap: 10_000 });
-  expect(audit.totals).toContainEqual({ scope: `session:${f.target.sessionId}`, tokens: 0, cap: 1_000 });
-  expect(audit.totals).toContainEqual(expect.objectContaining({ scope: `project:${otherProject.id}`, tokens: expect.any(Number) }));
-  expect(audit.totals.find((total: { scope: string }) => total.scope === `project:${otherProject.id}`).tokens).toBeGreaterThan(10_000);
-  expect(audit.problems.join(" ")).not.toContain(`project:${otherProject.id}`);
+  expect(audit.totals).toContainEqual(expect.objectContaining({ scope: "global", tokens: 0, cap: 4_000 }));
+  expect(audit.totals).toContainEqual(expect.objectContaining({ scope: `project:${targetProject}`, tokens: 0, cap: 10_000 }));
+  expect(audit.totals).toContainEqual(expect.objectContaining({ scope: `session:${f.target.sessionId}`, tokens: 0, cap: 1_000 }));
+  expect(audit.totals).not.toContainEqual(expect.objectContaining({ scope: `project:${otherProject.id}` }));
   const applicable = audit.totals.filter((total: { scope: string }) => total.scope.startsWith("applicable:"));
-  expect(applicable).toHaveLength(101);
-  const maximum = Math.max(...applicable.map((total: { tokens: number }) => total.tokens));
-  const equalMaximumScopes = applicable.filter((total: { tokens: number }) => total.tokens === maximum)
-    .map((total: { scope: string }) => total.scope).sort();
-  expect(equalMaximumScopes.length).toBeGreaterThan(1);
+  expect(applicable).toHaveLength(1);
   expect(receipt).toContain(`- project:${targetProject}: used 0 / limit 10000 / headroom +10000`);
   expect(receipt).toContain(`- session:${f.target.sessionId}: used 0 / limit 1000 / headroom +1000`);
   expect(receipt).not.toContain(`- project:${otherProject.id}:`);
-  expect(receipt).toContain("Maximum applicable projection (101 checked):");
+  expect(receipt).toContain("Maximum applicable projection (1 checked):");
   expect(receipt).toContain("Blockers: none");
-  expect(receipt).toContain(equalMaximumScopes[0]);
+  expect(receipt).toContain(applicable[0].scope);
 });
 
 test("32d: direct facts are deduplicated whole bodies within 10k, with honest omitted-fact receipts", async () => {
@@ -725,7 +726,7 @@ test("44: a newer external identity cannot absorb the selected older result", as
 test("32d: rereading a later external version permits a deliberate own update, not certifying the external base", async () => {
   let external = 0, own = 0;
   const f = fixture(async task => {
-    const moved = f.store.commitConsolidationRun({ path: f.target, run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, ...f.content, text: "external wording" }] });
+    const moved = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)), operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, ...f.content, text: "external wording" }] });
     if (!moved.ok) throw Error(moved.problems.join());
     external = moved.committed[0]!.commit;
     task.tools.find(t => t.name === "trace")!.execute({ address: `K${f.item.knowledgeId}` });
