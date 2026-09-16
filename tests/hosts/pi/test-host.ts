@@ -188,9 +188,11 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   let headerTimestamp: unknown = "2099-01-01T00:00:00.000Z";
   let thinkingLevel: ThinkingLevel = "off";
   const statuses = new Map<string, string | undefined>();
-  // A notice is host activity: it keeps `drain` waiting through a short retry backoff, which
-  // otherwise looks idle (a scheduled retry paints the footer warning, not the running indicator).
-  const ctx = { cwd: dir, model, hasUI: false, getContextUsage: () => contextUsage, getSystemPrompt: () => "", getSystemPromptOptions: () => ({ skills: [] }), ui: { notify: (s: string) => { activity++; notices.push(s); }, setStatus: (key: string, text: string | undefined) => statuses.set(key, text),
+  // A notice is host activity: it keeps `drain` waiting through a short retry backoff. 51: the footer
+  // no longer paints a retry wait, so the host reads it from the retry notice itself and treats the
+  // next status refresh (the worker refreshes at retry end, commit and result) as its end.
+  let backingOff = false;
+  const ctx = { cwd: dir, model, hasUI: false, getContextUsage: () => contextUsage, getSystemPrompt: () => "", getSystemPromptOptions: () => ({ skills: [] }), ui: { notify: (s: string) => { activity++; notices.push(s); if (/ retry \d+\/\d+ in /.test(s)) backingOff = true; }, setStatus: (key: string, text: string | undefined) => { statuses.set(key, text); backingOff = false; },
       select: async (title: string, options: string[]) => { dialogs.push({ title, options }); return answers.shift(); },
       confirm: async (title: string, message: string) => { dialogs.push({ title: `${title} ${message}` }); return answers.shift() ?? false; },
       input: async (title: string) => { dialogs.push({ title }); return answers.shift(); },
@@ -321,7 +323,7 @@ export function host(config: Record<string, unknown> = {}, options: { native?: N
   // outlives a cancelled child and is released before a scheduled retry ends. A test that knows its
   // own completion condition — a request sent, a fact committed, a run recorded — states it with
   // `vi.waitFor` on that condition instead, as the native cases already do.
-  const busy = () => !shuttingDown && /<(accent|success)>●</.test(statuses.get("trace-memory") ?? "");
+  const busy = () => !shuttingDown && !backingOff && /<(accent|success|customMessageLabel)>●</.test(statuses.get("trace-memory") ?? "");
   // `setImmediate`, not `setTimeout`: two 17c cases install fake timers, and the check phase still
   // lets Pi's own timers, file I/O and the stubbed wire run. Wall-clock comes from `performance`,
   // which those cases do not fake.

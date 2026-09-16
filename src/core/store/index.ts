@@ -2506,7 +2506,9 @@ export class Store {
    * cancelled run whose usage is unknown, or a response that is not JSON at all. A run whose usage
    * object exists but is empty is an observation of zeros, and is reported as one; nothing here
    * manufactures a zero for a missing one (parent 22, "Capacity and accounting"). */
-  listRunUsage(sessionId: number): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
+  /** Run usage of one session, or of every session when `sessionId` is null (51: the footer's
+   * database-wide daily figure); `since` keeps runs created at or after that UTC instant. */
+  listRunUsage(sessionId: number | null, since?: string): { kind: RunKind; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null }[] {
     const rows = this.db.prepare(`SELECT kind,
         CASE WHEN json_valid(response) THEN json_type(response, '$.usage') END recorded,
         CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.input') END input,
@@ -2514,7 +2516,8 @@ export class Store {
         CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheRead') END cacheRead,
         CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cacheWrite') END cacheWrite,
         CASE WHEN json_valid(response) THEN json_extract(response, '$.usage.cost.total') END cost
-      FROM runs WHERE session_id = ? ORDER BY id`).all(sessionId) as Record<string, unknown>[];
+      FROM runs WHERE (? IS NULL OR session_id = ?) AND (? IS NULL OR created_at >= ?) ORDER BY id`)
+      .all(sessionId, sessionId, since ?? null, since ?? null) as Record<string, unknown>[];
     const count = (value: unknown) => (typeof value === "number" ? value : 0);
     return rows.map(row => ({ kind: row.kind as RunKind,
       // `json_type` is null for a missing key and 'null' for a recorded null: both are "no observation".

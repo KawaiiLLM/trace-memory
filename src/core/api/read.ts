@@ -498,14 +498,22 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   // a cancelled run with unknown usage — contributes nothing at all, not a zero.
   const spend = (sessionId: number) => {
     session(sessionId);
-    const totals = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const totals = { runs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 }, costs: { noting: 0, consolidation: 0, dreaming: 0, manual: 0 },
+      input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     for (const { kind, usage } of store.listRunUsage(sessionId)) {
       totals.runs[kind]++;
       if (!usage) continue;
       totals.input += usage.input; totals.output += usage.output;
-      totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite; totals.cost += usage.cost;
+      totals.cacheRead += usage.cacheRead; totals.cacheWrite += usage.cacheWrite; totals.cost += usage.cost; totals.costs[kind] += usage.cost;
     }
     return totals;
+  };
+  // 51: the footer's figure — every session's runs created at or after `since` (the host passes local
+  // midnight as a UTC instant), so the number resets at the day boundary on its own.
+  const spendSince = (since: string): number => {
+    let cost = 0;
+    for (const { usage } of store.listRunUsage(null, since)) if (usage) cost += usage.cost;
+    return cost;
   };
   /** Footer progress/applicability numbers for one session's selected branch and head, answered from
    * one path snapshot (22a), the pending-entry identities (22b), and one exact-version processed lookup.
@@ -546,6 +554,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   };
   return {
     spend,
+    spendSince,
     progress,
     trace: (address: string, options?: ListingOptions) => traceRead(address, options).text,
     traceRead,

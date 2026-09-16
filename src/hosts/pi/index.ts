@@ -184,13 +184,12 @@ export default function (pi: ExtensionAPI) {
         missDetected.add(input.kind);
         callContext.ui.notify("Trace Memory: fork downgraded after two consecutive cache misses. Future memory tasks in this session will use subagent.", "warning");
       },
-      // Pi's own retry policy runs inside the child; the footer and the one warning per scheduled
-      // backoff stay the adapter's, exactly as they were before the cutover.
+      // Pi's own retry policy runs inside the child; the one warning per scheduled backoff stays the
+      // adapter's. 51: the footer indicator no longer tracks a retry — the notify reports it.
       onRetry: event => {
-        activity.retrying = true; showSpend(callContext);
         callContext.ui.notify(`Trace Memory: ${input.kind} retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.error}`, "warning");
       },
-      onRetryEnd: () => { activity.retrying = false; showSpend(callContext); },
+      onRetryEnd: () => showSpend(callContext), // the same refresh point as before; only the colour is gone
     });
   }, core, piResultText, piSourceBlocks);
   /** One fork-to-subagent notice per Pi session, whatever refused the fork: the live state at
@@ -360,42 +359,47 @@ export default function (pi: ExtensionAPI) {
   // A committed run may still carry problems (audit update or provider failure after the commit): warn, keep success.
   // The plugin's own model spend as a footer status item (Pi's setStatus, the shape ponytail uses);
   // background runs never enter Pi's session totals, which only count entries of the session file.
-  const activity = { running: new Map<WorkerPhase, number>(), retrying: false, last: "ok" as "ok" | "warning" | "error" };
+  const activity = { running: new Map<WorkerPhase, number>() };
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
-  /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a). One status item, one line:
+  /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
+   * ticket 51. One status item, one line:
    *
    *     🧠 ● notes: 24->102 memory: 9->252=>54 cost: $0.12
    *
    * The arrows are stage inputs and outputs, not percentages: `notes` is the entries still to note
    * over every applicable committed fact; `memory` is the facts still to consolidate over the
    * unprocessed then processed applicable current Knowledge versions. These two exact-version counts
-   * partition the existing current-knowledge total. `cost` is this memory session's cumulative run
-   * spend (work another executor performed *for* it included, work it performed for another session
-   * excluded, because each run is charged to the session it was run for). Off is the compact
-   * `🧠 ○ off`; the stored counts stay available in Current session.
+   * partition the existing current-knowledge total. `cost` is today's memory spend across the whole
+   * database — every session's runs created since local midnight (51) — the memory share of the
+   * daily total pi-status reports; this session's cumulative spend and its composition by phase
+   * are in Current session. Off is the compact `🧠 ○ off`; the stored counts stay available there.
    *
    * Every count comes from one core progress/applicability query over the current selected branch
    * and head (`memory.progress`), so nothing here renders Raw, tokenizes, freezes a task or loads a
    * run's audit body, and no timer refreshes it — the existing lifecycle, commit, control and
-   * status points do. A value that cannot be read is `?`: an unknown is not a fabricated zero, and
-   * before this Pi session has allocated a memory identity there is nothing to count at all.
+   * status points do, and a day boundary is observed at the next of them. A value that cannot be
+   * read is `?`: an unknown is not a fabricated zero, and before this Pi session has allocated a
+   * memory identity there is nothing to count at all.
    *
-   * The indicator is Pi theme roles, never a literal colour, in the ruled precedence: off, active
-   * retry, running Noting, running Consolidation, last failure, last warning, idle. Both phases
-   * running shows Noting. It describes this executor, including while it works on a borrowed
-   * target; the counts and the cost stay this session's. */
+   * The indicator is Pi theme roles, never a literal colour: one role per running phase — Noting
+   * `accent`, Consolidation `success`, Dreaming `customMessageLabel` (teal, green, purple in both
+   * bundled themes) — in that precedence when phases overlap; idle and off are `dim`. A retry, a
+   * failure or a warning does not colour it: the foreground notify reports those (51). It describes
+   * this executor, including while it works on a borrowed target. */
+  /** Local midnight of the host's clock as the UTC instant `runs.created_at` is compared against (51). */
+  const localMidnight = (now = new Date()) => new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
   const showSpend = (context: ExtensionContext) => {
     if (closed || !context.ui?.setStatus) return;
     const theme = (context.ui as { theme?: { fg?: (color: string, text: string) => string } }).theme;
     const paint = (color: string, text: string) => { try { return theme?.fg ? theme.fg(color, text) : text; } catch { return text; } };
     if (!enabled()) { context.ui.setStatus(tag, `🧠 ${paint("dim", "○ off")}`); return; }
-    const indicator = activity.retrying ? paint("warning", "●") : runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") || runningKind("dreaming") ? paint("success", "●")
-      : activity.last === "error" ? paint("error", "●") : activity.last === "warning" ? paint("warning", "●") : paint("dim", "○");
+    const indicator = runningKind("noting") ? paint("accent", "●") : runningKind("consolidation") ? paint("success", "●")
+      : runningKind("dreaming") ? paint("customMessageLabel", "●") : paint("dim", "○");
     let counts: ReturnType<typeof memory.progress> | undefined, cost: number | undefined;
     if (state?.sessionId) {
       try { counts = memory.progress(state.sessionId, state.branch, state.head ?? null); } catch { /* unavailable: shown as ?, never as 0 */ }
-      try { cost = memory.spend(state.sessionId).cost; } catch { /* the same rule for the amount */ }
     }
+    try { cost = memory.spendSince(localMidnight()); } catch { /* the same rule for the amount */ }
     const value = (count?: number) => count === undefined ? "?" : String(count);
     const text = `notes: ${value(counts?.entries)}->${value(counts?.facts)}` +
       ` memory: ${value(counts?.unconsolidated)}->${value(counts?.unprocessedKnowledge)}=>${value(counts?.processedKnowledge)}` +
@@ -406,7 +410,6 @@ export default function (pi: ExtensionAPI) {
   const reportProblems = (result: unknown, context: ExtensionContext) => {
     const r = result as { outcome?: string; problems?: string[] } | undefined;
     if (r?.outcome === "dropped") return; // a duplicate trigger says nothing about the run still in flight
-    activity.last = r?.outcome === "failure" || r?.outcome === "cancelled" ? "error" : r?.outcome === "bounced" || r?.problems?.length ? "warning" : "ok";
     showSpend(context);
     if (r?.outcome === "success" && r.problems?.length) context.ui.notify(`Trace Memory: committed with problems. ${r.problems.join("; ")}`, "warning");
   };
@@ -956,7 +959,7 @@ export default function (pi: ExtensionAPI) {
       slot.result = promise;
       activity.running.set(kind, 1); showSpend(context);
       trackSlot(kind, slot, promise.then(result => reportProblems(result, context), error => {
-        activity.last = "error"; context.ui.notify(String(error), "error");
+        context.ui.notify(String(error), "error");
       }), context, () => { showSpend(context); if (catchup) driveCatchup(); });
     }
     if (catchup) driveCatchup(); // 18b: an ordinary eligible-entry opportunity is the other resumption event.
@@ -1159,7 +1162,7 @@ export default function (pi: ExtensionAPI) {
       if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
       return result;
     },
-      error => { activity.last = "error"; context.ui.notify(String(error), "error"); return undefined; }),
+      error => { context.ui.notify(String(error), "error"); return undefined; }),
       context, () => { showSpend(context); if (catchup) driveCatchup(); });
     slot.result = settled;
     const result = await settled;
@@ -1351,8 +1354,8 @@ export default function (pi: ExtensionAPI) {
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
     if (value) { reconcile(false); save(); }
     showSpend(ctx);
-    const { lines, recovery, cost, shared } = sessionSummary();
-    const notice = statusBody([...recovery, ...lines, cost, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
+    const { lines, recovery, cost, composition, shared } = sessionSummary();
+    const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
     ctx.ui.notify(`${notice}\n${value ? "Available history, including the paused interval, is queued; ordinary completions check thresholds." : "Processing and future injection are paused. Stored memory and already-injected text remain."}`, "info");
   };
   // ---- 24b: the command surface ----
@@ -1538,9 +1541,19 @@ export default function (pi: ExtensionAPI) {
       if (s && !enabled()) for (const task of memory.store.taskFailures(s.id).filter(t => t.count >= 3))
         recovery.push(`Automatic off: ${task.phase}, backlog head ${task.head}, ${task.count} failures; last R${task.lastRunId}: ${task.lastReason}. Use /trace on to resume.`);
     } catch { recovery.push("Project / recovery: Unknown (unavailable)"); }
-    let cost: string;
-    try { cost = `Cost: ${state.sessionId ? `$${memory.spend(state.sessionId).cost.toFixed(4)}` : "N/A (no session)"}`; }
-    catch { cost = "Cost: Unknown (unavailable)"; }
+    let cost: string; const composition: string[] = [];
+    try {
+      if (!state.sessionId) cost = "Cost: N/A (no session)";
+      else {
+        const totals = memory.spend(state.sessionId);
+        cost = `Cost: $${totals.cost.toFixed(4)}`;
+        // 51: the session's cumulative spend by phase, two short lines under the total; the footer
+        // shows today's database-wide figure instead, so neither repeats the other.
+        const phase = (kind: "noting" | "consolidation" | "dreaming" | "manual", label: string) => `${label} ${totals.runs[kind]} runs $${totals.costs[kind].toFixed(4)}`;
+        composition.push(`  ${phase("noting", "Noting")} · ${phase("consolidation", "Consolidation")}`,
+          `  ${phase("dreaming", "Dreaming")} · ${phase("manual", "Manual")}`);
+      }
+    } catch { cost = "Cost: Unknown (unavailable)"; }
     if (compact) lines[0] += ` | ${cost.replace(/^Cost: /, "")}`;
     const downgrade = suppressed();
     if (downgrade) recovery.push(`Fork: suppressed since ${downgrade.at} (cache miss${downgrade.runId ? ` on R${downgrade.runId}` : ""}); Retry fork in the /trace menu`);
@@ -1550,7 +1563,7 @@ export default function (pi: ExtensionAPI) {
     const shared = compact ? (state.shared ? ["Shared identity"] : [])
       : [state.shared ? "Shared identity: this switch also affects forks or clones carrying this memory identity."
         : "Forks or clones carrying this memory identity share this switch."];
-    return { lines, recovery, cost, shared };
+    return { lines, recovery, cost, composition, shared };
   };
   // Full measurements only on explicit panel/headless status opening, never on toggle confirmation.
   // No reconciliation, compact allocation, tool grants or worker admission.
@@ -1565,7 +1578,7 @@ export default function (pi: ExtensionAPI) {
       const label = phase === "dreaming" ? "Dreaming" : PHASE_LABEL[phase], pending = memory.pendingTokens(phase, target);
       lines.push(paint => pendingBar(label, pending, compact, paint));
     }
-    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost);
+    if (!compact) lines.push("Pending / trigger is not task completion or worker readiness.", summary.cost, ...summary.composition);
     lines.push(...summary.shared);
     return (width, paint) => statusBody([...summary.recovery, ...compositionMap(composition, model, width, paint), ...lines.map(line => typeof line === "string" ? line : line(paint))], width, paint);
   };
