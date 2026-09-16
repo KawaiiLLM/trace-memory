@@ -2431,6 +2431,13 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
 });
 
+test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or-git exclusion", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("Record what later work will need and cannot look up: a decision or ruling with its reason — why the design takes this shape, why a threshold has this value, what it replaced — even when it lands in code in the same batch, because the code keeps only the current value.");
+  expect(prompt).toContain("How existing code happens to be written is looked up when needed and is not a fact.");
+  expect(prompt).not.toContain("re-derivable from code or git");
+});
+
 test("46: a rule and the choice under it are two items; sub-items are their own opens; an empty receipt is a complete block", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
   // The two atomicity sentences sit beside 44's, which stay as they are.
