@@ -1145,24 +1145,18 @@ absent from these lists, so a consumer that persists them as coverage can only u
 `budgetKnowledge`, `budgetFacts` and `budgetMaterial` report the same identities; no block's
 bytes changed.
 
-`visibleView(contextEntries, {db, session, pi})` (in `core/api/visible.ts`) is the one
-derived view: given the entries a host's context builder returns for the selected leaf, it
-yields `raw` (native entry id → `source` for a retained conversation entry, `view` for one a
-carrier supplied a bounded view of — 30: a legacy `tier: 1` or `tier: 2` carrier counts as that
-same view, and a retained view is never compared with the current profile to demand a richer
-replacement), `factIds` and `knowledgeCommitIds`. It is pure, reads no
-database and imports no host SDK type — it reads only `{id, type, customType, details}`. An
-id that appears only in text, a free-form summary and a compaction without our
-`details.traceMemory` contribute nothing; entries retained past such a compaction still count;
-a carrier from another database or another memory session contributes nothing, and one written
-before the memory session id existed is matched through its host session id. Applicability is a
-separate authority and is never folded in: a new fact or commit changes what is applicable
-without changing this view. Only our identified custom messages and structured compactions can
-carry plugin coverage. Runtime parsing validates the complete arrays, safe integer identities,
-source representation, binding and generation; any malformed field rejects the entire carrier
-without donating visibility or completion. Valid empty injections and legacy tier markers remain
-readable. Command generations belong to the originating Pi session, even when a fork legitimately
-inherits material bound to the same memory session. The carrier format itself is host-side (see `docs/pi.md`).
+Core owns the host-neutral `VisibleView` contract in `core/api/visible.ts`: `raw` maps a native
+entry id to `source` for a retained original or `view` for a bounded supplied representation, while
+`factIds`, `knowledgeCommitIds` and `knowledgeStates` identify complete retained material. Legacy
+metadata remains part of the contract for worker and fixture compatibility. Core also owns
+`SuppliedMaterial`, `InitialContext`, the empty view and the canonical state-notice identity helper.
+A persisted envelope can only understate coverage; it cannot establish material it did not carry.
+
+Each host reads its own persisted envelope and produces this contract. Core knows no host entry
+shape, binding identity, SDK type or parsing rule, and imports no host module. Pi's reader and its
+binding validation live in `hosts/pi/visible.ts`; malformed Pi payloads fail closed there. A new
+fact or commit may change applicability without changing the host-derived view because applicability
+remains a separate core authority. See `docs/pi.md` for Pi's concrete format and reader behavior.
 
 ## Branch summary read (ticket 07)
 

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { sourceSeededMemory, visibleView, type ConsolidationAgentInput } from "../../source-fixture.ts";
+import { sourceSeededMemory, type ConsolidationAgentInput } from "../../source-fixture.ts";
+import { visibleView } from "../../../src/hosts/pi/visible.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 

@@ -4,7 +4,8 @@ import { join } from "node:path";
 import { expect, test, vi } from "vitest";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
   type CompactionEntry, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { visibleView, type ContextEntry, type SuppliedMaterial, type VisibleBinding } from "../../../src/core/api/index.ts";
+import type { SuppliedMaterial } from "../../../src/core/api/index.ts";
+import { visibleView, type ContextEntry, type VisibleBinding } from "../../../src/hosts/pi/visible.ts";
 import { piSession } from "./native-fixture.ts";
 
 // Ticket 29a, migrated from 26c's compaction-preparation cases: the baseline of a compaction is the
