@@ -5,6 +5,7 @@ import { resolveCcHostConfig, type CcHostConfig, type ResolvedCcHostConfig } fro
 import { recordSessionStart, validateNativeSessionId, type CcHookInput } from "./binding.ts";
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
+import { CcForegroundTools } from "./tools.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -12,6 +13,7 @@ export * from "./transcript.ts";
 export * from "./importer.ts";
 export * from "./control.ts";
 export * from "./lifecycle.ts";
+export * from "./tools.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
   const config = resolveCcHostConfig(configInput);
@@ -42,12 +44,15 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     try { appendFileSync(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}\n`, { mode: 0o600 }); }
     catch (error) { console.error(`Trace Memory CC: lifecycle journal failed: ${String(error)}`); }
   });
+  const foreground = new CcForegroundTools(coordinator);
+  const pendingCalls = new Map<string, AbortController>();
   let buffer = "", ending: Promise<void> | null = null, notifyEnding!: () => void;
   const endingStarted = new Promise<void>(resolveEnding => { notifyEnding = resolveEnding; });
   const finish = (reason: string) => {
     if (ending) return ending;
     runtimeEvent("shutdown-request", { reason });
     ending = (async () => {
+      for (const controller of pendingCalls.values()) controller.abort(new DOMException("MCP shutdown", "AbortError"));
       process.stdin.destroy();
       const result = await coordinator.shutdown(reason);
       if (!result.confirmed) process.exitCode = 1;
@@ -67,13 +72,27 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
       let request: { id?: unknown; method?: unknown; params?: unknown };
       try { request = JSON.parse(line); }
       catch { console.error("Trace Memory CC: invalid MCP JSON-RPC input"); continue; }
+      if (request.method === "notifications/cancelled") {
+        const cancelled = (request.params as { requestId?: unknown } | undefined)?.requestId;
+        pendingCalls.get(JSON.stringify(cancelled))?.abort(new DOMException("MCP call cancelled", "AbortError"));
+        continue;
+      }
       if (request.id === undefined) continue;
       if (request.method === "initialize") reply(request.id, {
         protocolVersion: (request.params as { protocolVersion?: string } | undefined)?.protocolVersion ?? "2025-11-25",
         capabilities: { tools: {} }, serverInfo: { name: "trace-memory", version: "0.1.0-beta.7" },
       });
-      else if (request.method === "tools/list") reply(request.id, { tools: [] });
-      else reply(request.id, undefined, { code: -32601, message: "Ticket 43a exposes no public MCP tools" });
+      else if (request.method === "tools/list") reply(request.id, { tools: foreground.list() });
+      else if (request.method === "tools/call") {
+        const key = JSON.stringify(request.id), controller = new AbortController();
+        if (pendingCalls.has(key)) { reply(request.id, undefined, { code: -32600, message: "duplicate in-flight request id" }); continue; }
+        pendingCalls.set(key, controller);
+        const params = request.params as { name?: unknown; arguments?: unknown; _meta?: unknown } | undefined;
+        void foreground.call(params?.name, params?.arguments, params?._meta, controller.signal)
+          .then(result => reply(request.id, result), error => reply(request.id, undefined,
+            { code: -32603, message: error instanceof Error ? error.message : String(error) }))
+          .finally(() => pendingCalls.delete(key));
+      } else reply(request.id, undefined, { code: -32601, message: "method not found" });
     }
   });
   process.stdin.on("end", () => { void finish("stdio EOF"); });

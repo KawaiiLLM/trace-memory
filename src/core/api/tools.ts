@@ -11,9 +11,9 @@ export interface ToolDefinition {
   parameters: Record<string, unknown>;
   execute(input: unknown): string;
 }
-export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; readKnowledgeCommits?: { knowledgeId: number; commit: number }[] }
+export type ToolContext = { kind: "manual"; sessionId: number; branch: string; currentTurnId: number; triggerEntryId?: number; entryIds?: number[]; readKnowledgeCommits?: { knowledgeId: number; commit: number }[]; maxReadChars?: number }
   | { kind: "noting" | "consolidation" | "dreaming"; sessionId: number; branch: string; headTurnId?: number | null; triggerEntryId?: number; entryIds?: number[]; range: { from: string; to: string };
-      readKnowledgeCommits: { knowledgeId: number; commit: number }[] };
+      readKnowledgeCommits: { knowledgeId: number; commit: number }[]; maxReadChars?: number };
 type Reads = { traceRead(address: string, options?: ListingOptions): TraceRead;
   search(query: string, layer?: SearchScope, options?: ListingOptions & { sessionId?: number }): string };
 const object = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "object", properties, required, additionalProperties: false });
@@ -157,13 +157,29 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
   })) : undefined;
   const initialPath = initial?.path ?? [], initialPathSnapshot = initial?.snapshot;
   const sourceTurns = initialPathSnapshot?.turns ?? store.pathTurns(path);
+  const manualPath = context.kind === "manual" && context.entryIds ? store.sourcePath(session.id, context.branch, path.headTurnId!) : [];
+  const manualTrigger = context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined
+    ? manualPath.findIndex(entry => entry.id === context.triggerEntryId) : manualPath.length - 1;
+  if (context.kind === "manual" && context.entryIds && context.triggerEntryId !== undefined && manualTrigger < 0)
+    throw new Error("manual source prefix does not contain the exact triggering entry");
+  const manualEntries = context.kind === "manual" && context.entryIds ? manualPath.slice(0, manualTrigger + 1) : [];
+  if (context.kind === "manual" && context.entryIds && (context.entryIds.length !== manualEntries.length ||
+      context.entryIds.some((id, index) => id !== manualEntries[index]!.id)))
+    throw new Error("manual source prefix does not match the exact triggering ancestry");
+  const manualEntryIds = context.kind === "manual" && context.entryIds ? new Set(context.entryIds) : null;
   const frozenEntries = context.kind === "noting" ? (context.entryIds ?? initialPath.filter(e => allowed.has(e.turnId)).map(e => e.id)) : [];
   const frozenIds = new Set(frozenEntries);
   if (context.kind === "manual" || context.kind === "dreaming") for (const handle of context.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit);
     if (revision) reads.set(revision.id, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
   }
-  const memory = bindMemory(store, session.id, run, review, path, reads);
+  const memory = bindMemory(store, session.id, run, review, path, reads, manualEntryIds
+    ? factId => {
+      const fact = store.getFact(factId);
+      if (!fact) return false;
+      const entries = store.factEntries(factId);
+      return entries.length ? entries.every(entryId => manualEntryIds.has(entryId)) : fact.turnId !== path.headTurnId;
+    } : undefined);
   const sequence = memory.sequence;
   const fetched: { address: string; input: unknown; content: string }[] = [];
   let closed = false, committed: { runId: number; facts: Fact[]; diagnostics: NotingDiagnostic[] } | undefined;
@@ -183,7 +199,8 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     // Manual writers resolve against the path at their call. An automatic run resolves only against
     // its binding snapshot, then narrows authority to the admitted range; no later matching legacy
     // occurrence can retroactively make a frozen source ambiguous.
-    const sourcePath = context.kind === "noting" ? initialPath : store.sourcePath(session.id, context.branch, path.headTurnId!);
+    const sourcePath = context.kind === "noting" ? initialPath : context.kind === "manual" && context.entryIds
+      ? manualEntries : store.sourcePath(session.id, context.branch, path.headTurnId!);
     const candidates = context.kind === "noting" ? sourcePath.filter(entry => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates.map((entry, index) => [entry.id, index]));
     const resolution = new Map<string, SourceResolution[]>();
@@ -302,13 +319,15 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     } });
   const tools = [
     definition("trace", (input) => {
-      const { text: content, completed } = read.traceRead(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
+      const { text: content, completed } = read.traceRead(input.address as string, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
+        ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
       memory.reread(completed);
       fetched.push({ address: input.address as string, input: structuredClone(input), content }); return content;
     }),
     definition("search", (input) => {
       if (typeof input.query !== "string") throw new Error("query must be a string");
-      return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch });
+      return read.search(input.query, input.layer as SearchScope | undefined, { ...input as ListingOptions, sessionId: session.id, headTurnId: path.headTurnId, branch: context.branch,
+        ...(context.maxReadChars === undefined ? {} : { maxChars: context.maxReadChars }) });
     }),
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),

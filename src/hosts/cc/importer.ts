@@ -17,6 +17,14 @@ export interface CcReconcileResult {
   problems: string[];
 }
 
+export interface CcPersistedCall {
+  coreSessionId: number;
+  branch: string;
+  headTurnId: number;
+  triggerEntryId: number;
+  entryIds: number[];
+}
+
 const unavailableRunner = async () => ({ outcome: "failure" as const, output: null,
   audit: { available: false as const, reason: "Claude Code workers are not part of ticket 43a" } });
 const provisionalEnabled = (binding: CcSessionBinding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
@@ -53,6 +61,27 @@ export class CcImporter {
   }
 
   currentBinding(): CcSessionBinding { return this.binding; }
+
+  /** Resolve one native tool call from the incremental structural index. The transcript supplies
+   * identity; source_paths only names the already-published branch that owns that ancestry. */
+  persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
+    if (!toolUseId || this.binding.coreSessionId === null) return null;
+    const nativeToolName = `mcp__traceMemory__${toolName}`;
+    const ancestry = this.transcript.callPath(toolUseId, nativeToolName);
+    if (!ancestry) return null;
+    const entryIds: number[] = [];
+    for (const node of ancestry) if (node.sourceKind && node.sourceKind !== "compaction") {
+      if (node.entryId === undefined) return null;
+      entryIds.push(node.entryId);
+    }
+    const carrierNode = ancestry.at(-1)!;
+    if (!carrierNode.calls.some(call => call.id === toolUseId && call.name === nativeToolName) || carrierNode.entryId === undefined) return null;
+    const carrier = this.memory.store.getSourceEntry(carrierNode.entryId);
+    if (!carrier || !carrier.calls.some(call => call.callId === toolUseId && call.name === nativeToolName)) return null;
+    const branch = this.memory.store.sourceBranchForPrefix(this.binding.coreSessionId, entryIds, this.binding.branch);
+    if (!branch) return null;
+    return { coreSessionId: this.binding.coreSessionId, branch, headTurnId: carrier.turnId, triggerEntryId: carrier.id, entryIds };
+  }
 
   private async persist(update: (binding: CcSessionBinding) => CcSessionBinding): Promise<void> {
     this.binding = await updateBinding(this.config, this.binding.nativeSessionId, current => {

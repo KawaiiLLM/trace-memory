@@ -360,6 +360,20 @@ test("32: historical event weights, archive-before, one current input body and i
   expect(a.store.pendingKnowledgeEvents(a.target)).toHaveLength(4);
 });
 
+test("50: whitespace pricing re-keys cached knowledge weights without deleting old rows", () => {
+  const a = fixture(), c = a.create(`body${" ".repeat(100_000)}tail`);
+  a.store.db.prepare("DELETE FROM knowledge_weights WHERE commit_id = ?").run(c.commit);
+  a.store.db.prepare("INSERT INTO knowledge_weights VALUES (?, ?, ?)").run(c.commit, "34a-v1", 1);
+
+  const expected = tokens(renderKnowledge({ knowledge: a.store.getKnowledge(c.knowledgeId)!, revision: a.store.knowledgeRevision(c.commit)! }));
+  expect(expected).toBeGreaterThan(700);
+  expect(a.store.knowledgeEventWeight(c.commit)).toBe(expected);
+  expect(a.store.db.prepare("SELECT view_version, tokens FROM knowledge_weights WHERE commit_id = ? ORDER BY view_version").all(c.commit)).toEqual([
+    { view_version: "34a-v1", tokens: 1 },
+    { view_version: KNOWLEDGE_VIEW_VERSION, tokens: expected },
+  ]);
+});
+
 test("32: 4999 does not trigger, 5000 does, and eligibility launches no provider", () => {
   const agent = vi.fn();
   const memory = TraceMemory(":memory:", agent);

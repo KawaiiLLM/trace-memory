@@ -24,7 +24,7 @@ export const SEARCH_DEFAULT_FIELDS: readonly ReadField[] = ["text"];
 export const SEARCH_HISTORY_DEFAULT_FIELDS: readonly ReadField[] = ["text", "status"];
 export const SEARCH_PREVIEW_TOKENS = 80;
 export const MAX_PUBLIC_READ_TOKENS = 8000;
-export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
+export interface ListingOptions { itemBudget?: number | null; toolCallBudget?: number | null; toolResultBudget?: number | null; pageBudget?: number | null; maxTokens?: number; /** Host transport ceiling over the final returned string, in JavaScript UTF-16 code units. Not model-facing. */ maxChars?: number; cap?: number; cursor?: string; tool?: number; full?: boolean; versions?: ReadVersions; category?: KnowledgeCategory; scope?: KnowledgeScope; fields?: readonly ReadField[]; sessionId?: number; headTurnId?: number | null; branch?: string; entryIds?: readonly number[]; profile?: EntryProfile }
 /** Validate aliases and filters before rendering or touching cursor state. Null is only a
  * content-ceiling disable; pageBudget=null is reserved for internal assembled material reads. */
 export function validateBudgets(options: ListingOptions): void {
@@ -43,6 +43,8 @@ export function validateBudgets(options: ListingOptions): void {
   if (options.scope !== undefined && !KNOWLEDGE_SCOPES.includes(options.scope)) throw new Error("invalid knowledge scope filter");
   if (options.maxTokens !== undefined && (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > MAX_PUBLIC_READ_TOKENS))
     throw new Error(`maxTokens must be a positive safe integer at most ${MAX_PUBLIC_READ_TOKENS}`);
+  if (options.maxChars !== undefined && (!Number.isSafeInteger(options.maxChars) || options.maxChars < 1))
+    throw new Error("maxChars must be a positive safe integer");
   if (options.fields !== undefined && (!Array.isArray(options.fields) || options.fields.some(field => !READ_FIELDS.includes(field))
     || new Set(options.fields).size !== options.fields.length)) throw new Error("fields must contain unique supported field names");
 }
@@ -181,7 +183,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     tool?: number; versions?: ReadVersions; category?: KnowledgeCategory;
     scope?: KnowledgeScope; fields?: readonly ReadField[];
   };
-  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
+  type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; maxChars?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
   // entry, not an obligation: the least recently used one is dropped once this many are outstanding,
   // and the reader meets the "unknown or expired cursor" error that an unknown cursor always met.
@@ -222,15 +224,23 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const key = options.pageBudget !== undefined ? "pageBudget" : "maxTokens";
       throw new Error(`cursor ${key} is frozen; omit it or use the original budget`);
     }
+    const namesMaxChars = options.maxChars !== undefined;
+    const maxChars = namesMaxChars ? options.maxChars : saved?.maxChars;
+    if (saved && namesMaxChars && maxChars !== saved.maxChars)
+      throw new Error("cursor maxChars is frozen; omit it or use the original ceiling");
     const cursor = randomUUID();
     const fragmentNote = "Hit continues on next page; concatenate without a newline.";
     const output = (lines: string[], more: boolean, fragment = false) => finish({ content: lines.join("\n"),
       receipts: [...(footer ? [footer] : []), ...(fragment ? [fragmentNote] : []), ...(more ? [`cursor=${cursor}`] : [])] });
-    const fits = (lines: string[], more: boolean, fragment = false) => maxTokens === undefined || tokens(output(lines, more, fragment)) <= maxTokens;
+    const violations = (text: string) => (maxTokens !== undefined && tokens(text) > maxTokens)
+      || (maxChars !== undefined && text.length > maxChars);
+    const fits = (lines: string[], more: boolean, fragment = false) => !violations(output(lines, more, fragment));
     // Alternating letters/digits bound the UUID's estimate, so an admitted tiny budget still
     // permits progress when the next page generates a more expensive cursor spelling.
     const minimum = output(["😀"], true, true).replace(cursor, "a1a1a1a1-a1a1-4a1a-a1a1-a1a1a1a1a1a1");
-    if (maxTokens !== undefined && tokens(minimum) > maxTokens) throw new Error("listing maxTokens is too small for pagination hints and content");
+    const tooSmall = maxChars === undefined ? "listing maxTokens is too small for pagination hints and content"
+      : "listing limits are too small for pagination hints and content";
+    if (violations(minimum)) throw new Error(tooSmall);
     const lines: string[] = [], pending = [...(saved?.pending ?? [])];
     let at = saved?.offset ?? 0, fragment = false, fragmented = saved?.fragmented ?? false;
     while (lines.length < cap && (pending.length || at < items.length)) {
@@ -242,6 +252,8 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // The estimator is not monotone (an ASCII suffix can reclassify an emoji run).
       // Price each intact line once before probing; never repeat this full scan on its fragments.
       if (!fragmented && fits([...lines, line], more)) { lines.push(pending.shift()!); continue; }
+      // Prefer an intact pending line on the next page instead of splitting it into spare room.
+      if (lines.length) break;
       // Probe near the page size, not halfway through a potentially megabyte-long remainder.
       // Measuring the whole suffix on EVERY page makes a large single line quadratic to drain.
       // Price only valid code-point prefixes too: a dangling surrogate can change the estimator's
@@ -249,12 +261,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const prefix = (end: number) => line.slice(0, end > 0 && /[\uD800-\uDBFF]/.test(line[end - 1]!)
         && /[\uDC00-\uDFFF]/.test(line[end] ?? "") ? end - 1 : end);
       let low = 0, high = Math.min(256, line.length);
-      while (high < line.length && fits([...lines, prefix(high)], true, true)) {
+      while (high < line.length && fits([prefix(high)], true, true)) {
         low = high; high = Math.min(line.length, high * 2);
       }
-      if (high === line.length && fits([...lines, line], more)) { lines.push(pending.shift()!); fragmented = false; continue; }
-      // Prefer a whole line on the next page to splitting into this page's spare space.
-      if (lines.length) break;
+      if (high === line.length && fits([line], more)) { lines.push(pending.shift()!); fragmented = false; continue; }
       // Keep the suffix in the SAME pending queue, at code-point boundaries. Escaped text is
       // transported verbatim: fragments must be concatenated before interpreting JSON escapes.
       while (low < high) {
@@ -262,17 +272,19 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         if (fits([prefix(mid)], true, true)) low = mid; else high = mid - 1;
       }
       const kept = prefix(low);
-      if (!kept || !fits([kept], true, true)) throw new Error("listing maxTokens is too small for this hit and pagination hints");
+      if (!kept || !fits([kept], true, true)) throw new Error(maxChars === undefined
+        ? "listing maxTokens is too small for this hit and pagination hints" : "listing limits are too small for this hit and pagination hints");
       lines.push(kept); pending[0] = line.slice(kept.length); fragment = true; fragmented = true;
       break;
     }
     const more = pending.length > 0 || at < items.length;
     const result = output(lines, more, fragment);
-    if (maxTokens !== undefined && tokens(result) > maxTokens) throw new Error("listing maxTokens is too small for pagination hints");
+    if (violations(result)) throw new Error(maxChars === undefined
+      ? "listing maxTokens is too small for pagination hints" : "listing limits are too small for pagination hints");
     // Snapshot and validate first: a rejected request must leave the input cursor usable.
     const remainder = more ? saved ? { ...saved, offset: at, pending, fragmented }
-      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented, frozen }
-      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, reads, origin, fragmented, frozen } : undefined;
+      : capture ? { items: capture(items.slice(at)), offset: 0, pending, format, footer, cap, owner, maxTokens, maxChars, reads, origin, fragmented, frozen }
+      : { items, offset: at, pending, format, footer, cap, owner, maxTokens, maxChars, reads, origin, fragmented, frozen } : undefined;
     if (options.cursor) cursors.delete(options.cursor);
     if (remainder) {
       cursors.set(cursor, remainder);

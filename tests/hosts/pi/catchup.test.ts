@@ -396,10 +396,10 @@ test("17c 2026-09-08: failed own capacity admission leaves the slot free for a s
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 30 });
   try {
     // 27a: the allowance is the window minus the 10,000-token headroom (no 85% multiplier, no output
-    // reserve), so 17,000 leaves 7,000 for input — above the small closed tail's updated fixed cost
+    // reserve), so 17,500 leaves 7,500 for input — above the small closed tail's updated fixed cost
     // (about 6,000 after 40's Noter rules) and below that plus this session's own entry view, which
     // 30 caps at 2,000 tokens. That is the split this case needs, at the sizes 30's profile produces.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 17000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 17500 };
     h.persist({ role: "user", content: "word ".repeat(15000), timestamp: 1 });
     h.persist(reply("seed")); await h.emit("session_start");
     const t = target(h.memory);
