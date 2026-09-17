@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { enrollmentDefault } from "../../core/api/index.ts";
+import type { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 
 export interface CcHookInput {
@@ -56,6 +57,13 @@ export function bindingPath(config: ResolvedCcHostConfig, nativeSessionId: strin
 
 export function bindingMutexPath(config: ResolvedCcHostConfig, nativeSessionId: string): string {
   return join(config.stateDir, "locks", `${validateNativeSessionId(nativeSessionId)}.mutex.sqlite`);
+}
+
+/** Resolve the undeclared per-session project. Callers perform this write only while holding the
+ * binding lock so project, allocation, declaration and enrollment cannot be observed separately. */
+export function implicitCcProject(store: Store, nativeSessionId: string) {
+  const name = `cc:${validateNativeSessionId(nativeSessionId)}`;
+  return store.findProjectByName(name) ?? store.createProject({ name, declaredBy: "marker" });
 }
 
 function parseBinding(value: unknown): CcSessionBinding {

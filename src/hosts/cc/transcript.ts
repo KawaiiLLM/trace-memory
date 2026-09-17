@@ -67,6 +67,12 @@ const resultTexts = (content: unknown): string[] => typeof content === "string" 
 const timestamp = (record: CcNativeRecord): string | null => typeof record.timestamp === "string" && Number.isFinite(Date.parse(record.timestamp))
   ? record.timestamp : null;
 const nativeId = (record: CcNativeRecord): string | null => typeof record.uuid === "string" && record.uuid ? record.uuid : null;
+/** Native compaction may copy an identity while adding its top-level conversation slug. The slug is
+ * placement metadata, not source or attachment identity; every other byte remains integrity-bound. */
+const nativeIdentity = (record: CcNativeRecord): string => {
+  const { slug: _slug, ...identity } = record;
+  return JSON.stringify(identity);
+};
 
 const humanCommandPrompt = (content: string): string | null => {
   const values = new Map<string, string>();
@@ -266,8 +272,8 @@ export class CcTranscriptCursor {
     return reverse.reverse();
   }
 
-  scan(path: string, visit: (record: CcNativeRecord, source: CcSourceRecord | null, raw: string, scan: CcTranscriptScan) => void,
-    collect = false): CcTranscriptScan | CcTranscriptSnapshot {
+  scan(path: string, visit: (record: CcNativeRecord, source: CcSourceRecord | null, raw: string,
+    scan: CcTranscriptScan, acceptedIdentity: boolean) => void, collect = false): CcTranscriptScan | CcTranscriptSnapshot {
     let descriptor: number | undefined;
     try {
       descriptor = openSync(path, "r");
@@ -303,7 +309,7 @@ export class CcTranscriptCursor {
       const finalNewline = bytes.lastIndexOf(0x0a);
       const completeLength = finalNewline < 0 ? 0 : finalNewline + 1;
       const completeOffset = start + completeLength;
-      const records: CcNativeRecord[] = [], collectedById = new Map<string, { record: CcNativeRecord; raw: string }>();
+      const records: CcNativeRecord[] = [], collectedById = new Map<string, { record: CcNativeRecord; identity: string }>();
       const parsedRecords: { record: CcNativeRecord; source: CcSourceRecord | null; raw: string; node: CcNativeNode | null }[] = [];
       // Appends extend the committed structural index in place. Its cursor offset is not advanced
       // until projection and binding succeed, so a fatal retry rereads the suffix and fills only
@@ -332,9 +338,9 @@ export class CcTranscriptCursor {
         physicalRecords += 1;
         let source = classifySourceRecord(record), node = nodeOf(record);
         if (node) {
-          const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid);
+          const prior = scanNodes.get(node.uuid), collected = collectedById.get(node.uuid), identity = nativeIdentity(record);
           if (prior && (prior.parentUuid !== node.parentUuid || prior.sourceKind !== node.sourceKind || prior.lineageProblem !== node.lineageProblem) ||
-              collected && collected.raw !== raw) {
+              collected && collected.identity !== identity) {
             const problem = `native transcript UUID ${node.uuid} changed within the completed file`;
             scan.markProblem(node.uuid, problem);
             source = null; node = null;
@@ -346,7 +352,7 @@ export class CcTranscriptCursor {
                 carriers.add(node.uuid); scanCalls.set(call.id, carriers);
               }
             }
-            if (!collected) collectedById.set(node.uuid, { record, raw });
+            if (!collected) collectedById.set(node.uuid, { record, identity });
             if (source) selectedLeafUuid = node.uuid;
           }
         }
@@ -371,7 +377,9 @@ export class CcTranscriptCursor {
       for (const value of parsedRecords) if (value.node) add(value);
       for (const value of parsedRecords) if (!value.node) ordered.push(value);
       for (const value of ordered) {
-        try { visit(value.record, value.source, value.raw, scan); }
+        const acceptedIdentity = nativeId(value.record) === null || !!value.node &&
+          !value.node.lineageProblem && !value.node.importProblem;
+        try { visit(value.record, value.source, value.raw, scan, acceptedIdentity); }
         catch (error) { throw new CcTranscriptScanFailure(scan, error); }
       }
       const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
@@ -409,11 +417,18 @@ export function readTranscriptMetadata(path: string): CcTranscriptSnapshot {
   } finally { if (descriptor !== undefined) closeSync(descriptor); }
 }
 
-export function readCompleteTranscript(path: string): CcTranscriptSnapshot {
-  const cursor = new CcTranscriptCursor();
+function completeTranscript(path: string, accepted?: CcNativeRecord[]): CcTranscriptSnapshot {
+  const cursor = new CcTranscriptCursor(), acceptedSet = accepted ? new Set<CcNativeRecord>() : null;
   try {
-    const value = cursor.scan(path, () => {}, true);
-    if (value instanceof CcTranscriptScan) { cursor.commit(value); return value.snapshot; }
+    const value = cursor.scan(path, (record, _source, _raw, _scan, acceptedIdentity) => {
+      if (acceptedIdentity) acceptedSet?.add(record);
+    }, true);
+    if (value instanceof CcTranscriptScan) {
+      if (accepted) accepted.push(...value.snapshot.records.filter(record => acceptedSet!.has(record)));
+      const problem = value.problems[0];
+      cursor.commit(value, problem);
+      return problem ? { ...value.snapshot, problem } : value.snapshot;
+    }
     return value;
   } catch (error) {
     let size: number | null = null, modifiedMs: number | null = null;
@@ -421,6 +436,14 @@ export function readCompleteTranscript(path: string): CcTranscriptSnapshot {
     return { ...snapshot(path, size === null ? null : { size, modifiedMs: modifiedMs!, changedMs: 0, device: 0, inode: 0 }),
       exists: size !== null, problem: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function readCompleteTranscript(path: string): CcTranscriptSnapshot { return completeTranscript(path); }
+
+export function readTranscriptBootstrap(path: string): { snapshot: CcTranscriptSnapshot; createdAt: string | null; firstAssistantAt: string | null } {
+  const accepted: CcNativeRecord[] = [], value = completeTranscript(path, accepted);
+  const firstAssistant = accepted.map(classifySourceRecord).find(source => source?.kind === "assistant");
+  return { snapshot: value, createdAt: nativeCreatedAt(accepted), firstAssistantAt: firstAssistant?.timestamp ?? null };
 }
 
 export function nativeCreatedAt(records: readonly CcNativeRecord[]): string | null {

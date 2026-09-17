@@ -249,6 +249,37 @@ test("all record diagnostics survive unchanged and append wakes and clear on a c
   } finally { f.importer.close(); }
 });
 
+test.each(["attachment-first", "assistant-first"])("a rejected sole assistant never authorizes bootstrap allocation (%s)", async order => {
+  const conflictingAssistant = assistant("dup", "u", 2, [{ type: "text", text: "rejected assistant" }]);
+  const conflictingAttachment: CcNativeRecord = { uuid: "dup", parentUuid: "u", type: "attachment", timestamp: at(2),
+    attachment: { type: "hook_additional_context", content: ["synthetic"] } };
+  const duplicates = order === "attachment-first" ? [conflictingAttachment, conflictingAssistant] : [conflictingAssistant, conflictingAttachment];
+  const f = await setup([prompt("u", null, 1), ...duplicates], `bootstrap-${order}`);
+  try {
+    const result = await f.importer.reconcile();
+    expect(result).toMatchObject({ state: "not-ready", coreSessionId: null,
+      problems: ["native transcript UUID dup changed within the completed file"] });
+    expect(readBinding(f.config, f.nativeSessionId)!.coreSessionId).toBeNull();
+  } finally { f.importer.close(); }
+});
+
+test("a later accepted assistant authorizes allocation while the earlier conflict remains diagnosed", async () => {
+  const conflictingAttachment: CcNativeRecord = { uuid: "dup", parentUuid: "u", type: "attachment", timestamp: at(2),
+    attachment: { type: "hook_additional_context", content: ["synthetic"] } };
+  const conflictingAssistant = assistant("dup", "u", 2, [{ type: "text", text: "rejected assistant" }]);
+  const f = await setup([prompt("u", null, 1), conflictingAttachment, conflictingAssistant], "bootstrap-later-valid");
+  try {
+    expect(await f.importer.reconcile()).toMatchObject({ state: "not-ready", coreSessionId: null });
+    appendFileSync(f.transcriptPath, line(assistant("accepted", "u", 3, [{ type: "text", text: "accepted assistant" }])));
+    const result = await f.importer.reconcile();
+    expect(result).toMatchObject({ state: "not-ready", coreSessionId: expect.any(Number),
+      problems: ["native transcript UUID dup changed within the completed file"] });
+    const binding = readBinding(f.config, f.nativeSessionId)!;
+    expect(f.importer.memory.store.getSession(binding.coreSessionId!)?.firstReplyAt).toBe(at(3));
+    expect(f.importer.memory.store.findSourceEntry(binding.coreSessionId!, f.nativeSessionId, "accepted")?.text).toBe("accepted assistant");
+  } finally { f.importer.close(); }
+});
+
 test("a conflicting UUID is reported per record while later valid progress remains durable", async () => {
   const first = assistant("duplicate-id", "a", 3, [{ type: "text", text: "first" }]);
   const conflict = assistant("duplicate-id", "a", 3, [{ type: "text", text: "changed" }]);

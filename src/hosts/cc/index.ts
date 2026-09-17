@@ -6,6 +6,7 @@ import { recordSessionStart, validateNativeSessionId, type CcHookInput } from ".
 import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
+import { ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -16,18 +17,20 @@ export * from "./lifecycle.ts";
 export * from "./tools.ts";
 export * from "./worker.ts";
 export * from "./scheduler.ts";
+export * from "./injection.ts";
 
-export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
+export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
   const config = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
     const snapshot = readCompleteTranscript(input.transcript_path);
     await recordSessionStart(config, input, snapshot.exists && !snapshot.problem ? nativeCreatedAt(snapshot.records) : null);
-    return;
+    return ccSessionStartInjection(config, input);
   }
   if (input.hook_event_name !== "SessionEnd") throw new Error(`unsupported Claude Code Hook ${String(input.hook_event_name)}`);
   const result = await recordCcSessionEnd(config, input);
   if (!result.confirmed) console.error(`Trace Memory CC: SessionEnd close not confirmed: ${result.diagnostic ?? result.reason}`);
+  return null;
 }
 
 export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostConfig,
@@ -131,5 +134,8 @@ if (direct) void (async () => {
     throw new Error("usage: node src/hosts/cc/index.ts mcp|hook --config /absolute/path/to/cc.config.json");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); process.exit(process.exitCode ?? 0); }
-  else await handleCcHook(config, JSON.parse(await readStdin()));
+  else {
+    const output = await handleCcHook(config, JSON.parse(await readStdin()));
+    if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+  }
 })().catch(error => { console.error(`Trace Memory CC: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });
