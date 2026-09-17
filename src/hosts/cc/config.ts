@@ -8,6 +8,8 @@ export interface CcHostConfig {
   pollIntervalMs?: number;
   finalSyncTimeoutMs?: number;
   finalSyncStablePolls?: number;
+  /** Bound for a write tool to observe its exact native assistant call in the transcript. */
+  writeSourceTimeoutMs?: number;
 }
 
 export interface ResolvedCcHostConfig {
@@ -17,6 +19,7 @@ export interface ResolvedCcHostConfig {
   pollIntervalMs: number;
   finalSyncTimeoutMs: number;
   finalSyncStablePolls: number;
+  writeSourceTimeoutMs: number;
 }
 
 const positive = (name: string, value: number): number => {
@@ -38,5 +41,6 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
     pollIntervalMs: positive("pollIntervalMs", input.pollIntervalMs ?? 2_000),
     finalSyncTimeoutMs: positive("finalSyncTimeoutMs", input.finalSyncTimeoutMs ?? 5_000),
     finalSyncStablePolls: positive("finalSyncStablePolls", input.finalSyncStablePolls ?? 2),
+    writeSourceTimeoutMs: positive("writeSourceTimeoutMs", input.writeSourceTimeoutMs ?? 5_000),
   };
 }

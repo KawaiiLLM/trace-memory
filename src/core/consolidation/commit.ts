@@ -12,7 +12,8 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
-  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[]) {
+  frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[],
+  eligibleSupport?: (factId: number) => boolean) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
@@ -26,6 +27,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     return raw.map(address => {
       const id = typeof address === "string" && /^F[1-9]\d*$/.test(address) ? Number(address.slice(1)) : NaN;
       if (!Number.isSafeInteger(id) || !store.getFact(id)) errors.push(`${address}: not an available fact`);
+      else if (eligibleSupport && !eligibleSupport(id)) errors.push(`${address}: fact evidence is after the exact triggering source prefix`);
       return id;
     });
   };

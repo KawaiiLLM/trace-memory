@@ -8,7 +8,7 @@ export interface MemoryReview {
   feedback(batch: MemoryBatch): { text: string; near: NearPair[]; completed: KnowledgeRead[] };
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId),
-  reads = new Map<number, KnowledgeWithRevision>()) {
+  reads = new Map<number, KnowledgeWithRevision>(), eligibleSupport?: (factId: number) => boolean) {
   for (const handle of review?.frozen.prepared?.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit)!;
     reads.set(handle.commit, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
@@ -33,7 +33,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   const execute = (input: unknown) => {
     if (committed && review) return "rejected: already committed";
     if (review && candidate && requests === candidateRequest) return "rejected: the review feedback has not been read yet; resubmit after the feedback message";
-    const prepared = prepareMemory(store, sessionId, input, run, review?.frozen, path, [...reads.values()]);
+    const prepared = prepareMemory(store, sessionId, input, run, review?.frozen, path, [...reads.values()], eligibleSupport);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
     if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
     if (review && !candidate) {

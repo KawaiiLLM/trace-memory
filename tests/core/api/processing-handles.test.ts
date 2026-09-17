@@ -87,6 +87,23 @@ test("32: an inapplicable sibling successor does not invalidate an exact read on
 });
 
 
+test("manual writers freeze fact sources and knowledge supports at the exact trigger prefix", () => {
+  const a = setup();
+  seedSourceEntry(a.m, a.t.id, "assistant", "carrier");
+  const carrier = a.m.store.listSourceEntries(1, a.t.id).at(-1)!;
+  seedSourceEntry(a.m, a.t.id, "assistant", "later evidence");
+  const later = a.m.store.listSourceEntries(1, a.t.id).at(-1)!;
+  a.m.selectEntries(1, "main", [a.rootEntry.id, carrier.id, later.id]);
+  const lateTools = a.m.tools({ ...a.context, triggerEntryId: later.id, entryIds: [a.rootEntry.id, carrier.id, later.id] });
+  expect(lateTools[2]!.execute({ facts: [{ category: "observation", actor: "agent", text: "later",
+    source: [`T${a.t.id}#E${later.entryOrdinal}`] }] })).not.toContain("rejected:");
+  const earlyTools = a.m.tools({ ...a.context, triggerEntryId: carrier.id, entryIds: [a.rootEntry.id, carrier.id] });
+  expect(earlyTools[2]!.execute({ facts: [{ category: "observation", actor: "agent", text: "too late",
+    source: [`T${a.t.id}#E${later.entryOrdinal}`] }] })).toContain("invalid source");
+  expect(earlyTools[3]!.execute({ operations: [{ op: "create", ...a.content, supports: ["F2"] }], skipped: [] }))
+    .toContain("after the exact triggering source prefix");
+});
+
 test("32: full K body embedded in raw trace or search never masquerades as a named K read", () => {
   const a = setup();
   // Reading through the facade is not delivery through this model's tool binding.

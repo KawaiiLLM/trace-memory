@@ -298,6 +298,10 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, selectedLeafUuid: "a1" });
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" })}\n`);
   for (let i = 0; i < 100 && !stdout.includes('"id":2'); i++) await sleep(5);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "trace", arguments: { address: "T1" } } })}\n`);
+  for (let i = 0; i < 100 && !stdout.includes('"id":3'); i++) await sleep(5);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "note", arguments: { facts: [] } } })}\n`);
+  for (let i = 0; i < 100 && !stdout.includes('"id":4'); i++) await sleep(5);
   child.kill("SIGINT");
   const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, reject) => {
     const timeout = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`stdio MCP did not exit; stderr=${stderr}; binding=${JSON.stringify(readBinding(f.config, f.nativeSessionId))}`)); }, 2_000);
@@ -306,7 +310,13 @@ test("stdio MCP stays protocol-clean and only prompt_input_exit confirms close a
   expect(exit).toEqual({ code: 1, signal: null });
   expect(stdout.trim().split("\n").map(value => JSON.parse(value))).toEqual([
     expect.objectContaining({ jsonrpc: "2.0", id: 1, result: expect.objectContaining({ capabilities: { tools: {} } }) }),
-    expect.objectContaining({ jsonrpc: "2.0", id: 2, result: { tools: [] } }),
+    expect.objectContaining({ jsonrpc: "2.0", id: 2, result: { tools: expect.arrayContaining([
+      expect.objectContaining({ name: "trace" }), expect.objectContaining({ name: "search" }),
+      expect.objectContaining({ name: "note" }), expect.objectContaining({ name: "memory" }),
+    ]) } }),
+    expect.objectContaining({ jsonrpc: "2.0", id: 3, result: expect.objectContaining({ content: [expect.objectContaining({ type: "text", text: expect.stringContaining("question") })] }) }),
+    expect.objectContaining({ jsonrpc: "2.0", id: 4, result: expect.objectContaining({ isError: true,
+      content: [expect.objectContaining({ text: expect.stringContaining("source-not-ready") })] }) }),
   ]);
   expect(readBinding(f.config, f.nativeSessionId)).toMatchObject({ executor: { pid: child.pid }, lastClose: { confirmed: false, reason: "SIGINT" } });
   expect(await recordCcSessionEnd(f.config, { hook_event_name: "SessionEnd", session_id: f.nativeSessionId,

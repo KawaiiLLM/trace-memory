@@ -4,7 +4,7 @@ import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { bindingPath, readBinding, updateBinding, validateNativeSessionId, type CcExecutorBinding, type CcHookInput,
   type CcSessionBinding } from "./binding.ts";
-import { CcImporter, type CcReconcileResult } from "./importer.ts";
+import { CcImporter, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
 
@@ -16,6 +16,8 @@ export interface CcCloseResult {
 }
 
 export type CcDiagnostic = (message: string) => void;
+export interface CcReadProjection { memory: CcImporter["memory"]; binding?: CcPersistedCall }
+export interface CcToolProjection extends CcPersistedCall { memory: CcImporter["memory"] }
 const wait = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
 export interface CcSessionEndResult { confirmed: boolean; reason: string; diagnostic?: string }
@@ -218,6 +220,34 @@ export class CcCoordinator {
       }
     });
     return this.queue;
+  }
+
+  /** One non-waiting persisted projection for read tools. */
+  async toolProjection(): Promise<CcReadProjection> {
+    const result = await this.requestReconcile("foreground read");
+    if (!this.importer) throw new Error("binding-not-ready: Claude Code session binding is unavailable");
+    const triggerEntryId = result?.selectedEntryIds.at(-1);
+    const binding = result?.coreSessionId && result.headTurnId && triggerEntryId
+      ? { coreSessionId: result.coreSessionId, branch: result.branch, headTurnId: result.headTurnId, triggerEntryId, entryIds: result.selectedEntryIds }
+      : undefined;
+    return { memory: this.importer.memory, ...(binding ? { binding } : {}) };
+  }
+
+  /** Write tools alone wait for the exact host-authenticated native call. */
+  async waitForToolCall(toolUseId: string, toolName: "note" | "memory", signal?: AbortSignal): Promise<CcToolProjection> {
+    const deadline = Date.now() + this.config.writeSourceTimeoutMs;
+    while (Date.now() < deadline) {
+      signal?.throwIfAborted();
+      if (this.closing || this.closed) throw new Error("source-not-ready: Claude Code executor is shutting down");
+      const result = await this.requestReconcile("foreground write binding");
+      if (result?.state === "disabled" && result.coreSessionId !== null)
+        throw new Error("Trace Memory is Disabled; use the operator command to enable memory");
+      const call = this.importer?.persistedCall(toolUseId, toolName);
+      if (call) return { memory: this.importer!.memory, ...call };
+      await wait(Math.min(20, this.config.pollIntervalMs, Math.max(1, deadline - Date.now())));
+    }
+    signal?.throwIfAborted();
+    throw new Error(`source-not-ready: exact current call ${toolUseId} was not persisted within ${this.config.writeSourceTimeoutMs} ms; retry this write`);
   }
 
   private stopWakeups(): void {

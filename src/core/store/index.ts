@@ -2741,6 +2741,18 @@ export class Store {
     if (!Array.isArray(ids) || ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error("stored source path is malformed");
     return ids as number[];
   }
+  /** Resolve a persisted native ancestry without exposing source_paths storage to a host adapter.
+   * A later extension of the same branch is eligible; a sibling that diverged before the prefix is not. */
+  sourceBranchForPrefix(sessionId: number, entryIds: readonly number[], preferred?: string): string | null {
+    if (!entryIds.length || entryIds.some(id => !Number.isSafeInteger(id) || id < 1)) return null;
+    const matches = (this.db.prepare("SELECT branch, entry_ids FROM source_paths WHERE session_id = ? ORDER BY branch")
+      .all(sessionId) as { branch: string; entry_ids: string }[]).flatMap(row => {
+        const ids: unknown = JSON.parse(row.entry_ids);
+        if (!Array.isArray(ids) || ids.some(id => !Number.isSafeInteger(id) || id < 1)) throw new Error("stored source path is malformed");
+        return entryIds.every((id, index) => ids[index] === id) ? [row.branch] : [];
+      });
+    return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
+  }
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {
       this.requireEnabled(sessionId);

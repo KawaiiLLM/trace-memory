@@ -46,6 +46,7 @@ export interface CcNativeNode {
   uuid: string;
   parentUuid: string | null;
   sourceKind: CcSourceRecord["kind"] | null;
+  calls: { id: string; name: string }[];
   timestamp: string | null;
   lineageProblem?: string;
   importProblem?: string;
@@ -127,16 +128,19 @@ const nodeOf = (record: CcNativeRecord): CcNativeNode | null => {
   if (!uuid) return null;
   const source = classifySourceRecord(record);
   try {
-    return { uuid, parentUuid: nativeParentId(record), sourceKind: source?.kind ?? null, timestamp: source?.timestamp ?? timestamp(record) };
+    return { uuid, parentUuid: nativeParentId(record), sourceKind: source?.kind ?? null,
+      calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record) };
   } catch (error) {
     if (!(error instanceof CcNativeLineageError)) throw error;
-    return { uuid, parentUuid: null, sourceKind: source?.kind ?? null, timestamp: source?.timestamp ?? timestamp(record), lineageProblem: error.message };
+    return { uuid, parentUuid: null, sourceKind: source?.kind ?? null,
+      calls: source?.kind === "assistant" ? source.calls.map(call => ({ id: call.callId, name: call.name })) : [], timestamp: source?.timestamp ?? timestamp(record), lineageProblem: error.message };
   }
 };
 
 export class CcTranscriptScan {
   readonly nodes: Map<string, CcNativeNode>;
   readonly snapshot: CcTranscriptSnapshot;
+  readonly callCarriers: Map<string, Set<string>>;
   readonly stamp: FileStamp;
   readonly reset: boolean;
   readonly completeOffset: number;
@@ -145,10 +149,10 @@ export class CcTranscriptScan {
   readonly problems: string[];
   readonly newProblems: Set<string>;
 
-  constructor(input: { nodes: Map<string, CcNativeNode>; snapshot: CcTranscriptSnapshot;
+  constructor(input: { nodes: Map<string, CcNativeNode>; callCarriers: Map<string, Set<string>>; snapshot: CcTranscriptSnapshot;
     stamp: FileStamp; reset: boolean; completeOffset: number; lineCount: number; selectedLeafUuid: string | null;
     problems?: string[]; newProblems?: Set<string> }) {
-    this.nodes = input.nodes;
+    this.nodes = input.nodes; this.callCarriers = input.callCarriers;
     this.snapshot = input.snapshot; this.stamp = input.stamp; this.reset = input.reset;
     this.completeOffset = input.completeOffset; this.lineCount = input.lineCount; this.selectedLeafUuid = input.selectedLeafUuid;
     this.problems = input.problems ?? [];
@@ -205,6 +209,7 @@ export class CcTranscriptCursor {
   private recordCount = 0;
   private selectedLeafUuid: string | null = null;
   private nodes = new Map<string, CcNativeNode>();
+  private callCarriers = new Map<string, Set<string>>();
   private unresolvedProblems = new Set<string>();
   private rejected: { stamp: FileStamp; snapshot: CcTranscriptSnapshot } | null = null;
   private lastSnapshot: CcTranscriptSnapshot | null = null;
@@ -217,6 +222,28 @@ export class CcTranscriptCursor {
     return values;
   }
   node(uuid: string): CcNativeNode | undefined { return this.nodes.get(uuid); }
+  callPath(toolUseId: string, expectedName: string): CcNativeNode[] | null {
+    const carrierIds = this.callCarriers.get(toolUseId);
+    if (!carrierIds?.size) return null;
+    if (carrierIds.size !== 1) throw new Error(`native tool call ${toolUseId} is ambiguous in this session`);
+    const carrier = this.nodes.get([...carrierIds][0]!)!;
+    const invocation = carrier.calls.find(call => call.id === toolUseId)!;
+    if (invocation.name !== expectedName)
+      throw new Error(`native tool call ${toolUseId} invoked ${invocation.name}, not ${expectedName}`);
+    const reverse: CcNativeNode[] = [], seen = new Set<string>();
+    let current: CcNativeNode | undefined = carrier;
+    while (current) {
+      if (seen.has(current.uuid)) throw new Error(`native lineage cycle at ${current.uuid}`);
+      if (current.lineageProblem) throw new Error(current.lineageProblem);
+      if (current.importProblem) throw new Error(current.importProblem);
+      seen.add(current.uuid); reverse.push(current);
+      if (current.parentUuid === null) break;
+      const parent = current.parentUuid;
+      current = this.nodes.get(parent);
+      if (!current) throw new Error(`native lineage parent ${parent} is missing`);
+    }
+    return reverse.reverse();
+  }
 
   scan(path: string, visit: (record: CcNativeRecord, source: CcSourceRecord | null, raw: string, scan: CcTranscriptScan) => void,
     collect = false): CcTranscriptScan | CcTranscriptSnapshot {
@@ -261,13 +288,14 @@ export class CcTranscriptCursor {
       // until projection and binding succeed, so a fatal retry rereads the suffix and fills only
       // committed source associations. A reset builds a replacement index off to the side.
       const scanNodes = reset ? new Map<string, CcNativeNode>() : this.nodes;
+      const scanCalls = reset ? new Map<string, Set<string>>() : this.callCarriers;
       const problems = reset ? [] : [...this.unresolvedProblems], newProblems = new Set<string>();
       let selectedLeafUuid = reset ? null : this.selectedLeafUuid;
       let physicalRecords = reset ? 0 : this.recordCount;
       let lines = reset ? 0 : this.lineCount;
       const preliminary = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
-      const scan = new CcTranscriptScan({ nodes: scanNodes, snapshot: preliminary, stamp, reset,
+      const scan = new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: preliminary, stamp, reset,
         completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
       let beginning = 0;
       while (beginning < completeLength) {
@@ -290,7 +318,13 @@ export class CcTranscriptCursor {
             scan.markProblem(node.uuid, problem);
             source = null; node = null;
           } else {
-            if (!prior) scanNodes.set(node.uuid, node);
+            if (!prior) {
+              scanNodes.set(node.uuid, node);
+              for (const call of node.calls) {
+                const carriers = scanCalls.get(call.id) ?? new Set<string>();
+                carriers.add(node.uuid); scanCalls.set(call.id, carriers);
+              }
+            }
             if (!collected) collectedById.set(node.uuid, { record, raw });
             if (source) selectedLeafUuid = node.uuid;
           }
@@ -321,7 +355,7 @@ export class CcTranscriptCursor {
       }
       const resultSnapshot = snapshot(path, stamp, { completeBytes: completeOffset, recordCount: physicalRecords, records,
         incompleteBytes: stamp.size - completeOffset, changed: true, reset });
-      return new CcTranscriptScan({ nodes: scanNodes, snapshot: resultSnapshot, stamp, reset,
+      return new CcTranscriptScan({ nodes: scanNodes, callCarriers: scanCalls, snapshot: resultSnapshot, stamp, reset,
         completeOffset, lineCount: lines, selectedLeafUuid, problems, newProblems });
     } finally { closeSync(descriptor); }
   }
@@ -329,7 +363,7 @@ export class CcTranscriptCursor {
   commit(scan: CcTranscriptScan, problem?: string): void {
     if (scan.reset) this.unresolvedProblems.clear();
     for (const value of scan.newProblems) this.unresolvedProblems.add(value);
-    if (scan.reset) this.nodes = scan.nodes;
+    if (scan.reset) { this.nodes = scan.nodes; this.callCarriers = scan.callCarriers; }
     this.stamp = scan.stamp; this.completeOffset = scan.completeOffset;
     this.lineCount = scan.lineCount; this.recordCount = scan.snapshot.recordCount; this.selectedLeafUuid = scan.selectedLeafUuid;
     this.rejected = null; this.lastSnapshot = problem ? { ...scan.snapshot, problem } : scan.snapshot;
