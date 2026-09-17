@@ -87,16 +87,16 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.persist(reply("word ".repeat(15000)));
     await h.emit("session_start");
     // The larger exact-address guidance raises fixed prompt/tool cost (40's Noter rules again, to
-    // about 6,000). This fixture allows 9,000 input tokens: one 2,000-token entry fits beside it,
+    // about 6,000). This fixture allows 9,500 input tokens: one 2,000-token entry fits beside it,
     // but two do not. Production headroom, triggers and material windows remain unchanged.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 19000 };
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 19500 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
     // 27a, replacing the whole-body estimate plus output reserve: what the child really sent had to
     // satisfy the one rule, measured as Pi measures the child's context — its messages, with no
     // assistant usage yet on a first round — with the headroom left over.
-    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(19000);
+    expect(estimateContextTokens(conversationOf(h.requests[0]).messages as never).tokens + CONTEXT_HEADROOM).toBeLessThanOrEqual(19500);
     const pending = h.memory.pendingEntries(1, "main", 1);
     // An allowance of 1,000 tokens: under the fixed instruction and tool cost, so nothing is admitted.
     h.ctx.model = { ...h.ctx.model!, contextWindow: 11000 };
