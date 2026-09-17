@@ -10,6 +10,8 @@ import { recordSessionStart, readBinding } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { ccSourceBlocks, classifySourceRecord, readCompleteTranscript, selectedNativePath,
   type CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
+import { copyThenTypedRecords, copyTypedPrompt, modelThenTypedRecords, modelTypedPrompt, toSpecPrompt, toSpecRecords }
+  from "../fixtures/cc-ticket-52.ts";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -50,6 +52,12 @@ async function importerFixture() {
   const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, at(1));
   return { ...f, importer: new CcImporter(f.config, binding) };
+}
+async function importerForRecords(records: CcNativeRecord[], nativeSessionId: string) {
+  const f = fixture(); writeFileSync(f.transcriptPath, records.map(line).join(""));
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: nativeSessionId,
+    transcript_path: f.transcriptPath }, records[0]!.timestamp as string);
+  return { ...f, nativeSessionId, importer: new CcImporter(f.config, binding) };
 }
 
 test("CC transcript parsing is newline-safe and structurally normalizes native source", () => {
@@ -102,6 +110,77 @@ test("source classification uses native provenance rather than user-controlled p
     message: { role: "assistant", model: "claude-test", content: [{ type: "text", text: "host control" }] } })).toBeNull();
   expect(classifySourceRecord({ ...typed, uuid: "side", isSidechain: true })).toBeNull();
   expect(classifySourceRecord({ ...typed, uuid: "summary", isCompactSummary: true })).toBeNull();
+});
+
+test("human command provenance opens a prompt without reinterpreting existing prompt sources", () => {
+  const human = { uuid: "human", parentUuid: null, type: "user", timestamp: at(1), origin: { kind: "human" },
+    message: { role: "user", content: "ordinary human text" } };
+  expect(classifySourceRecord(human)).toMatchObject({ kind: "user", text: "ordinary human text" });
+  expect(classifySourceRecord({ ...human, uuid: "command-args", message: { role: "user", content:
+    "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>  focused scope  </command-args>" } }))
+    .toMatchObject({ kind: "user", text: "/review focused scope" });
+  expect(classifySourceRecord({ ...human, uuid: "command-no-args", message: { role: "user", content:
+    "<command-message>markdown-writing</command-message>\n<command-name>/markdown-writing</command-name>" } }))
+    .toMatchObject({ kind: "user", text: "/markdown-writing" });
+  const literal = "Discuss <command-name>/review</command-name> as literal XML";
+  expect(classifySourceRecord({ ...human, uuid: "literal", message: { role: "user", content: literal } }))
+    .toMatchObject({ kind: "user", text: literal });
+  const typedEnvelope = { ...human, uuid: "typed-envelope", promptSource: "typed",
+    message: { role: "user", content: "<command-message>review</command-message>\n<command-name>/review</command-name>" } };
+  expect(classifySourceRecord(typedEnvelope)).toMatchObject({ kind: "user", text: typedEnvelope.message.content });
+  expect(classifySourceRecord({ ...human, uuid: "meta", isMeta: true })).toBeNull();
+  expect(classifySourceRecord({ ...human, uuid: "visible", isVisibleInTranscriptOnly: true })).toBeNull();
+  expect(classifySourceRecord({ ...human, uuid: "sidechain", isSidechain: true })).toBeNull();
+  expect(classifySourceRecord({ ...human, uuid: "summary", isCompactSummary: true })).toBeNull();
+  expect(classifySourceRecord({ ...human, uuid: "local", origin: undefined,
+    message: { role: "user", content: "<command-name>/model</command-name>\n<command-message>model</command-message>" } })).toBeNull();
+  expect(classifySourceRecord({ ...human, uuid: "interrupted", origin: undefined,
+    message: { role: "user", content: "[Request interrupted by user]" } })).toBeNull();
+});
+
+test("pinned native command sequences preserve command ownership and exclude local companions", async () => {
+  const skill = await importerForRecords(toSpecRecords, "ticket-52-skill");
+  try {
+    const result = await skill.importer.reconcile();
+    expect(result).toMatchObject({ state: "ready", problems: [] });
+    const turns = skill.importer.memory.store.listTurns(result.coreSessionId!);
+    expect(turns.map(turn => turn.userPrompt)).toEqual(["fixture root", toSpecPrompt]);
+    const entries = skill.importer.memory.store.listSourceEntries(result.coreSessionId!);
+    expect(entries.map(entry => entry.nativeId)).toEqual([
+      "fixture-root", "ad9dd570-96fc-439c-b695-d2f7ffa931f3", "76daf7a6-7627-43f9-8d70-022fe70111ad",
+      "d94f596d-76c6-4fcf-921f-4a2fa4103e95", "431be203-fb8e-44b4-9c21-b714d748cc5c",
+    ]);
+    const command = entries.find(entry => entry.nativeId === "76daf7a6-7627-43f9-8d70-022fe70111ad")!;
+    expect(command).toMatchObject({ text: toSpecPrompt, entryOrdinal: 1 });
+    expect(command.raw).toBe(JSON.stringify(toSpecRecords[2]));
+    expect(ccSourceBlocks(command)).toEqual([{ kind: "text", text: toSpecPrompt }]);
+    expect(entries.slice(-3).map(entry => entry.turnId)).toEqual([turns[1]!.id, turns[1]!.id, turns[1]!.id]);
+    expect(entries.slice(-3).map(entry => entry.entryOrdinal)).toEqual([1, 2, 3]);
+  } finally { skill.importer.close(); }
+
+  const local = await importerForRecords(modelThenTypedRecords, "ticket-52-model");
+  try {
+    const result = await local.importer.reconcile();
+    expect(result).toMatchObject({ state: "ready", problems: [] });
+    const turns = local.importer.memory.store.listTurns(result.coreSessionId!);
+    expect(turns.map(turn => turn.userPrompt)).toEqual(["fixture root", modelTypedPrompt]);
+    expect(local.importer.memory.store.listSourceEntries(result.coreSessionId!).map(entry => entry.nativeId)).toEqual([
+      "model-root", "adfb1f65-bdbb-4c40-b83d-deb5eeee7648", "6abc4870-0861-44bf-baed-33c8173bb7d1", "model-typed-reply",
+    ]);
+    expect(turns[1]!.parentTurnId).toBe(turns[0]!.id);
+  } finally { local.importer.close(); }
+
+  const copy = await importerForRecords(copyThenTypedRecords, "ticket-52-copy");
+  try {
+    const result = await copy.importer.reconcile();
+    expect(result).toMatchObject({ state: "ready", problems: [] });
+    const turns = copy.importer.memory.store.listTurns(result.coreSessionId!);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toMatchObject({ userPrompt: copyTypedPrompt, parentTurnId: turns[0]!.id });
+    expect(copy.importer.memory.store.listSourceEntries(result.coreSessionId!).map(entry => entry.nativeId)).toEqual([
+      "copy-root", "d528ce68-372d-46b3-a66a-2f0fe58101c9", "7d69b574-e463-4d3c-be2f-b43ceb5b32d6", "copy-typed-reply",
+    ]);
+  } finally { copy.importer.close(); }
 });
 
 test("selected native ancestry honors logical compaction parents and reports missing parents and cycles", () => {

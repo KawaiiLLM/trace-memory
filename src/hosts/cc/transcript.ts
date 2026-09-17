@@ -68,6 +68,24 @@ const timestamp = (record: CcNativeRecord): string | null => typeof record.times
   ? record.timestamp : null;
 const nativeId = (record: CcNativeRecord): string | null => typeof record.uuid === "string" && record.uuid ? record.uuid : null;
 
+const humanCommandPrompt = (content: string): string | null => {
+  const values = new Map<string, string>();
+  const tag = /\s*<(command-name|command-message|command-args)>([\s\S]*?)<\/\1>/gy;
+  let offset = 0;
+  while (offset < content.length) {
+    if (!content.slice(offset).trim()) break;
+    tag.lastIndex = offset;
+    const match = tag.exec(content);
+    if (!match || values.has(match[1]!)) return null;
+    values.set(match[1]!, match[2]!);
+    offset = tag.lastIndex;
+  }
+  const name = values.get("command-name")?.trim(), message = values.get("command-message")?.trim();
+  if (!name || !message || values.size < 2 || !/^\/[^\s<>]+$/.test(name) || message !== name.slice(1)) return null;
+  const args = values.get("command-args")?.trim();
+  return args ? `${name} ${args}` : name;
+};
+
 export class CcNativeLineageError extends Error {}
 
 /** Decode native lineage exactly once. A malformed present value is not an absent parent. */
@@ -119,8 +137,11 @@ export function classifySourceRecord(record: CcNativeRecord): CcSourceRecord | n
     return { kind: "toolResult", record, nativeId: id, timestamp: timestamp(record), text: "", calls };
   }
   if (!(typeof content === "string" || Array.isArray(content))) return null;
-  if (!["typed", "queued", "sdk", "system"].includes(String(record.promptSource))) return null;
-  return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text: textBlocks(content).join("\n"), calls: [] };
+  const nativePrompt = ["typed", "queued", "sdk", "system"].includes(String(record.promptSource));
+  const humanPrompt = record.isMeta !== true && record.origin?.kind === "human";
+  if (!nativePrompt && !humanPrompt) return null;
+  const text = !nativePrompt && typeof content === "string" ? humanCommandPrompt(content) ?? content : textBlocks(content).join("\n");
+  return { kind: "user", record, nativeId: id, timestamp: timestamp(record), text, calls: [] };
 }
 
 const nodeOf = (record: CcNativeRecord): CcNativeNode | null => {
@@ -458,7 +479,7 @@ export const ccSourceBlocks: SourceNormalizer = entry => {
     }
     return result;
   }
-  if (typeof record.message?.content === "string") return [{ kind: "text", text: record.message.content }];
+  if (typeof record.message?.content === "string") return [{ kind: "text", text: source.text }];
   for (const block of blocks(record.message?.content)) result.push(block.type === "text" && typeof block.text === "string"
     ? { kind: "text", text: block.text } : { kind: "marker", text: `[${typeof block.type === "string" ? block.type : "non-text content"} omitted]` });
   return result;
