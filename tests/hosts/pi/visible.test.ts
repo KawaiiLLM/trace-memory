@@ -5,10 +5,10 @@ import type { CompactionEntry, CustomMessageEntry, SessionEntry } from "@earendi
 import { host, reply } from "./test-host.ts";
 import { visibility } from "../../../src/hosts/pi/index.ts";
 import { tag } from "../../../src/hosts/pi/settings.ts";
-import { visibleView, type Carrier, type ContextEntry, type VisibleBinding } from "../../../src/core/api/index.ts";
+import { visibleView, type Carrier, type ContextEntry, type VisibleBinding } from "../../../src/hosts/pi/visible.ts";
 
 // Ticket 29a — the host half: the production host writes the two carriers, and the view is read back
-// off Pi's own compaction-aware context view. The pure rules are in tests/core/api/visible.test.ts;
+// off Pi's own compaction-aware context view. The pure rules are in tests/hosts/pi/visible-reader.test.ts;
 // what a real Pi session does with a rewind, a cancelled attempt and repeated summary text is in
 // compaction-baseline.test.ts.
 

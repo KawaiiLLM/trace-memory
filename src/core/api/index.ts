@@ -6,10 +6,10 @@ import { parseTurnAddress, parseKnowledgeAddress } from "../model/address.ts";
 import { sourceBlocks, resultHasText, type SourceNormalizer } from "../model/source.ts";
 import { readFacade, readProfile, type ListingOptions, type SearchScope, type CompactResult, type Injection, type TopicGroups, type KnowledgeRead } from "./read.ts";
 export type { ListingOptions, SearchScope, CompactResult, Injection, TopicGroups } from "./read.ts";
-// 29a "One derived view": the pure visibility projection over a host's own retained context entries.
+// 29a/53: core owns only the host-neutral visibility contract; each host reads its own envelopes.
 import type { VisibleView } from "./visible.ts";
-export { knowledgeStateKey, noVisibility, visibleView } from "./visible.ts";
-export type { Carrier, ContextEntry, InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleBinding, VisibleView } from "./visible.ts";
+export { knowledgeStateKey, noVisibility } from "./visible.ts";
+export type { InitialContext, KnowledgeStateReceipt, SuppliedEntry, SuppliedMaterial, VisibleView } from "./visible.ts";
 // Hosts use this façade; persistence remains entirely in core/store.
 import { randomUUID } from "node:crypto";
 import { pendingEvents } from "../store/processing.ts";
@@ -350,7 +350,7 @@ export interface TaskOptions {
    * already aborted when the task reaches this point cancels it before its first request. */
   signal?: AbortSignal;
   /** 29b "Same builder, different initial state": what the child this task will run in already holds,
-   * as the host derived it from that child's own starting context (29a's `visibleView`). Present only
+   * as the host derived it from that child's own starting context. Present only
    * for a task the host will really run with an inherited context; a fresh child — an explicit
    * subagent, a fork re-admitted as one after a refusal — carries none and its material is built from
    * the empty view. Core reads it to subtract, never to decide the mode. */
@@ -437,7 +437,7 @@ export interface TraceMemory {
   inject(target: number | { projectId: number } | KnowledgePath): string;
   /** 29a: the same block with the commit ids it kept, for the carrier the host writes on the message
    * it persists. `inject` is this call read for its text alone. 31: `visible` is the reader's own
-   * context (29a's view), whose commits are subtracted and whose stale commits get a status line; the
+   * context, whose commits are subtracted and whose stale commits get a status line; the
    * default empty view is the whole applicable set, which is what a fresh context always got. */
   injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView): Injection;
   trace(address: string, options?: ListingOptions): string;

@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { buildSessionContext, convertToLlm, estimateTokens, SessionManager } from "@earendil-works/pi-coding-agent";
 import { compactText } from "../../../src/core/render/material.ts";
-import { visibleView } from "../../../src/core/api/visible.ts";
+import { visibleView } from "../../../src/hosts/pi/visible.ts";
 
 // Characterization probes for the approved composition work, not a composition implementation.
 const binding = { db: ":memory:", session: 1, pi: "composition-probe" };

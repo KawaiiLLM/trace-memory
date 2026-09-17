@@ -981,12 +981,18 @@ compaction — there is no preparation entry, no frozen `considered` set and no 
 mirroring any of this — and the `session_compact` event's entry id is never keyed on: it
 resolves by summary text and hands back the first entry with that text.
 
-`visibility(sessionManager)` (exported from `hosts/pi/index.ts`) wraps core's `visibleView`
-with the memo the host reads it through: keyed on the leaf id, the entry count and the
-identity binding, so a rewind, a new entry, a compaction and the allocation of the memory
-session id each invalidate it while a streaming token recomputes nothing. Database state is
-deliberately not in the key — applicability must observe a new fact or commit even when the
-native leaf has not moved.
+`hosts/pi/visible.ts` owns the Pi entry types, binding and parser. It derives core's host-neutral
+`VisibleView` contract from `buildContextEntries()` without reading the database or prose. Runtime
+validation covers complete arrays, safe integer identities, source representation, binding and
+legacy generation; any malformed field rejects the entire envelope without donating visibility or
+completion. Valid empty injections and legacy tier markers remain readable. Command generations
+belong to the originating Pi session even when a fork legitimately inherits material bound to the
+same memory session.
+
+`visibility(sessionManager)` (exported from `hosts/pi/index.ts`) memoizes that Pi reader by leaf id,
+entry count and identity binding, so a rewind, new entry, compaction or memory-session allocation
+invalidates it while a streaming token recomputes nothing. Database state is deliberately absent
+from the key: applicability must observe a new fact or commit even when the native leaf has not moved.
 
 ## Manual catchup and stop (18b)
 

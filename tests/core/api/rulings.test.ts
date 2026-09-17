@@ -15,6 +15,7 @@ import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
 import { consolidationToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
+import { visibleView } from "../../../src/hosts/pi/visible.ts";
 
 let directory: string;
 let memory: ReturnType<typeof sourceSeededMemory>;
@@ -1542,7 +1543,7 @@ test("30: a marked compressed view is visible Raw; a budget change adds no richn
   const carrier = (entries: unknown[]) => ({ id: "c", type: "compaction",
     details: { traceMemory: { ...binding, supplied: { entries, factIds: [], knowledgeCommitIds: [] } } } });
   // The one representation new writers emit, and both legacy tiers, are all visible Raw.
-  const view = api.visibleView([carrier([
+  const view = visibleView([carrier([
     { id: 1, nativeId: "e1", view: "bounded" },
     { id: 2, nativeId: "e2", tier: 1 },
     { id: 3, nativeId: "e3", tier: 2 },
@@ -1553,16 +1554,16 @@ test("30: a marked compressed view is visible Raw; a budget change adds no richn
   // nothing compares what it holds with what the current configuration would render.
   for (const render of [{ entryTokens: 40, toolInputTokens: 1, toolResultTokens: 1 }, { entryTokens: 100_000, toolInputTokens: 1_000, toolResultTokens: 1_000 }]) {
     const m = sourceSeededMemory(join(directory, "richness.sqlite"), async () => ok([]), { render });
-    try { expect([...api.visibleView([carrier([{ id: 1, nativeId: "e1", view: "bounded" }])], binding).raw.keys()]).toEqual(["e1"]); }
+    try { expect([...visibleView([carrier([{ id: 1, nativeId: "e1", view: "bounded" }])], binding).raw.keys()]).toEqual(["e1"]); }
     finally { m.close(); }
   }
   // Unmarked material still establishes nothing: a bare id, an unknown representation, a foreign
   // database's carrier, and a native compaction's own details.
-  expect(api.visibleView([carrier([{ id: 4, nativeId: "e4" }, { nativeId: "e5", view: "bounded" }])], binding).raw.has("e4")).toBe(false);
-  expect(api.visibleView([carrier([{ id: 6, nativeId: "e6", tier: 3 }])], binding).raw.has("e6")).toBe(false);
-  expect(api.visibleView([{ id: "c", type: "compaction", details: { traceMemory: { db: "other", session: 7, pi: "pi-1",
+  expect(visibleView([carrier([{ id: 4, nativeId: "e4" }, { nativeId: "e5", view: "bounded" }])], binding).raw.has("e4")).toBe(false);
+  expect(visibleView([carrier([{ id: 6, nativeId: "e6", tier: 3 }])], binding).raw.has("e6")).toBe(false);
+  expect(visibleView([{ id: "c", type: "compaction", details: { traceMemory: { db: "other", session: 7, pi: "pi-1",
     supplied: { entries: [{ id: 7, nativeId: "e7", view: "bounded" }], factIds: [], knowledgeCommitIds: [] } } } }], binding).raw.size).toBe(0);
-  expect(api.visibleView([{ id: "c", type: "compaction", details: { readFiles: [], modifiedFiles: [] } }], binding).raw.size).toBe(0);
+  expect(visibleView([{ id: "c", type: "compaction", details: { readFiles: [], modifiedFiles: [] } }], binding).raw.size).toBe(0);
 });
 
 // 17b, 2026-09-08: "Consolidation triggers at fifty applicable unconsolidated committed facts" with
