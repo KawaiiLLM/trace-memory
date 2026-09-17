@@ -6,12 +6,13 @@ const sourceFiles = (directory: string): string[] => readdirSync(directory, { wi
   .flatMap(entry => entry.isDirectory() ? sourceFiles(join(directory, entry.name))
     : entry.name.endsWith(".ts") ? [join(directory, entry.name)] : []);
 
-test("53: core has no host import or concrete Pi visibility format", () => {
+test("53/43d: core has no host import or concrete host visibility format", () => {
   const files = sourceFiles("src/core");
   const sources = files.map(path => ({ path, text: readFileSync(path, "utf8") }));
   for (const { path, text } of sources) {
     expect(text, `${path} imports a host`).not.toMatch(/from\s+["'][^"']*(?:\/hosts\/|\.\.\/\.\.\/hosts\/)/);
-    for (const concrete of ["custom_message", "details.traceMemory", "VisibleBinding", "ContextEntry", "visibleView"])
+    for (const concrete of ["custom_message", "details.traceMemory", "hook_additional_context", "transcript_path",
+      "SessionStart", "VisibleBinding", "ContextEntry", "visibleView"])
       expect(text, `${path} contains host visibility format/type ${concrete}`).not.toContain(concrete);
   }
 });

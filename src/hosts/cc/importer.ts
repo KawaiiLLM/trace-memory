@@ -2,9 +2,9 @@ import { TraceMemory, type TraceMemory as TraceMemoryFacade } from "../../core/a
 import type { SourceEntry } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
-import { readBinding, updateBinding, type CcSessionBinding } from "./binding.ts";
+import { implicitCcProject, readBinding, updateBinding, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
-  nativeCreatedAt, nativeParentId, readCompleteTranscript, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
+  nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
 
 export interface CcReconcileResult {
@@ -103,9 +103,8 @@ export class CcImporter {
     const observed = readTranscriptMetadata(this.binding.transcriptPath), observedKey = snapshotKey(observed);
     if (this.bootstrap?.key === observedKey) return { summary: this.bootstrap, snapshot: { ...observed,
       completeBytes: this.bootstrap.completeBytes, recordCount: this.bootstrap.recordCount, incompleteBytes: this.bootstrap.incompleteBytes } };
-    const current = readCompleteTranscript(this.binding.transcriptPath), key = snapshotKey(current);
-    const firstAssistant = current.records.map(classifySourceRecord).find(source => source?.kind === "assistant");
-    const summary = { key, createdAt: nativeCreatedAt(current.records), firstAssistantAt: firstAssistant?.timestamp ?? null,
+    const bootstrap = readTranscriptBootstrap(this.binding.transcriptPath), current = bootstrap.snapshot, key = snapshotKey(current);
+    const summary = { key, createdAt: bootstrap.createdAt, firstAssistantAt: bootstrap.firstAssistantAt,
       completeBytes: current.completeBytes, recordCount: current.recordCount, incompleteBytes: current.incompleteBytes };
     if (!current.problem) this.bootstrap = summary;
     return { summary, snapshot: current };
@@ -126,8 +125,7 @@ export class CcImporter {
       const existing = this.memory.store.findSessionByHost(host);
       if (existing) return { ...binding, coreSessionId: existing.id, projectId: existing.projectId,
         enrollment: this.memory.store.enrollment(existing.id) };
-      const projectName = `cc:${binding.nativeSessionId}`;
-      const project = this.memory.store.findProjectByName(projectName) ?? this.memory.store.createProject({ name: projectName, declaredBy: "marker" });
+      const project = implicitCcProject(this.memory.store, binding.nativeSessionId);
       const session = this.memory.store.createSession({ host, startedAt: summary.createdAt!, firstReplyAt: summary.firstAssistantAt!, projectId: project.id,
         projectDeclaration: "undeclared", nativeCreatedAt: summary.createdAt!, baseline: this.config.baseline, enrollmentChoice: binding.enrollment.choice });
       return { ...binding, coreSessionId: session.id, projectId: project.id, enrollment: this.memory.store.enrollment(session.id) };
@@ -158,7 +156,11 @@ export class CcImporter {
     if (this.binding.nativeCreatedAt === null || this.binding.coreSessionId === null) {
       ({ summary, snapshot: bootstrapSnapshot } = this.bootstrapSummary());
       if (!bootstrapSnapshot.exists) return this.result("unavailable", bootstrapSnapshot);
-      if (bootstrapSnapshot.problem) return this.result("not-ready", bootstrapSnapshot, [bootstrapSnapshot.problem]);
+      // A complete-read identity diagnostic must block the Hook, but the importer still owns
+      // record-local repair: once creation and the first reply are independently known, allocate and
+      // let the incremental scanner persist valid records while reporting the conflicting identity.
+      if (bootstrapSnapshot.problem && (!summary.createdAt || !summary.firstAssistantAt))
+        return this.result("not-ready", bootstrapSnapshot, [bootstrapSnapshot.problem]);
       await this.refreshEnrollment(summary);
     }
     if (this.binding.coreSessionId === null ? !provisionalEnabled(this.binding) : !this.memory.store.enabled(this.binding.coreSessionId))
