@@ -1,6 +1,7 @@
 import { TraceMemory, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
 import type { SourceEntry } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
+import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
 import { readBinding, updateBinding, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
   nativeCreatedAt, nativeParentId, readCompleteTranscript, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
@@ -25,8 +26,9 @@ export interface CcPersistedCall {
   entryIds: number[];
 }
 
-const unavailableRunner = async () => ({ outcome: "failure" as const, output: null,
-  audit: { available: false as const, reason: "Claude Code workers are not part of ticket 43a" } });
+const unavailableRunner = async () => ({ outcome: "failure" as const,
+  output: "CC worker configuration is required for Noting and Consolidation admission",
+  audit: { available: false as const, reason: "Claude Agent SDK worker was not configured" } });
 const provisionalEnabled = (binding: CcSessionBinding) => binding.enrollment.choice ?? binding.enrollment.defaultEnabled;
 
 class CcIntegrityError extends Error {}
@@ -43,6 +45,7 @@ const snapshotKey = (value: CcTranscriptSnapshot) => JSON.stringify([value.exist
 
 export class CcImporter {
   readonly memory: TraceMemoryFacade;
+  readonly workerCapacity?: { inputTokens: number; prefixTokens: 0 };
   private readonly config: ResolvedCcHostConfig;
   private binding: CcSessionBinding;
   private reopened = false;
@@ -52,12 +55,18 @@ export class CcImporter {
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
 
-  constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding) {
+  constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
     if (binding.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
     this.config = config;
     this.binding = binding;
-    this.memory = TraceMemory(config.dbPath, unavailableRunner, {}, undefined,
+    let memory!: TraceMemoryFacade;
+    const prepared = config.worker ? createCcRunAgent(config, workerDependencies,
+      kind => memory.config[kind].maxToolRounds) : undefined;
+    memory = TraceMemory(config.dbPath, prepared?.runAgent ?? unavailableRunner,
+      { closedSessionScope: config.closedSessionScope }, undefined,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    this.memory = memory;
+    this.workerCapacity = prepared?.capacity;
   }
 
   currentBinding(): CcSessionBinding { return this.binding; }

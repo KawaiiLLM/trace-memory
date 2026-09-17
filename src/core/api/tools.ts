@@ -332,7 +332,12 @@ export function bindTools(store: Store, read: Reads, supplied: ToolContext, meta
     ...(dreaming ? [definition("check", input => { if (Object.keys(input).length) throw new Error("check expects {} only"); return dreaming.check(); })] : [definition("note", note)]),
     definition("memory", input => context.kind === "noting" ? "rejected: memory is not the writer for a noting run" : memory.execute(input)),
   ];
+  const acknowledgeRequest = () => {
+    if (closed) throw new Error("noting run has finished");
+    requests++;
+    memory.requestSeen();
+  };
   return { tools, sequence, fetched, memory, get toolProblems() { return [...toolProblems.values()]; }, get committed() { return committed; }, get problems() { return problems; },
-    get notingNearAudit() { return nearAudit(); }, close: () => { closed = true; },
-    reportRequest: (request: unknown) => { if (closed) throw new Error("noting run has finished"); requests++; memory.requestSeen(); run.request = JSON.stringify(request); } };
+    get notingNearAudit() { return nearAudit(); }, close: () => { closed = true; }, acknowledgeRequest,
+    reportRequest: (request: unknown) => { acknowledgeRequest(); run.request = JSON.stringify(request); } };
 }

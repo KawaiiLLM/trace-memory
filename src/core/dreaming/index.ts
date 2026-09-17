@@ -33,6 +33,7 @@ export interface DreamingAgentInput extends AgentControl {
   /** Admission-time snapshot only; later check receipts use the current database policy. */
   admittedProcessedInputCap: number;
   tools: import("../api/tools.ts").ToolDefinition[];
+  acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
   /** Called by the native host only at a completed pass, never an intermediate tool turn. */
   passEnd(rounds: number): string | undefined;
@@ -202,7 +203,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   let result: RunAgentResult;
   try { result = await runAgent({ kind: "dreaming", sessionId, branch, model: frozen.model, mode: "subagent", prompt, promptHash,
     text: frozen.text, material: frozen.material, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
-    tools: binding.tools, reportRequest: binding.reportRequest,
+    tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest,
     passEnd, reportRounds: (used: number) => { rounds = used; } } satisfies DreamingAgentInput); }
   catch (error) { result = agentException(error); }
   binding.close();

@@ -402,7 +402,13 @@ test("20a 2026-09-08: no host file lays out the knowledge, fact, Raw or review b
     ["pi/index.ts", "pi/native.ts", "pi/fork.ts", "cc/index.ts"].map(path => new URL(path, directory).href)));
   for (const file of files) {
     const source = readFileSync(file, "utf8");
-    for (const title of titles) expect([file.pathname, source.includes(title)]).toEqual([file.pathname, false]);
+    // Text headings begin at a word boundary; identifiers such as the SDK's `settingSources:` do not.
+    for (const title of titles) {
+      const present = /^\w/.test(title)
+        ? new RegExp(`\\b${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(source)
+        : source.includes(title);
+      expect([file.pathname, present]).toEqual([file.pathname, false]);
+    }
   }
 });
 

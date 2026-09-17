@@ -7,6 +7,7 @@ import { bindingPath, readBinding, updateBinding, validateNativeSessionId, type 
 import { CcImporter, type CcPersistedCall, type CcReconcileResult } from "./importer.ts";
 import { startControlServer, type CcControlServer } from "./control.ts";
 import { classifySourceRecord, readCompleteTranscript, selectedNativePath } from "./transcript.ts";
+import { CcTaskScheduler } from "./scheduler.ts";
 
 export interface CcCloseResult {
   confirmed: boolean;
@@ -129,6 +130,7 @@ export async function recordCcSessionEnd(config: ResolvedCcHostConfig, input: Cc
 
 export class CcCoordinator {
   private importer: CcImporter | null = null;
+  private scheduler: CcTaskScheduler | null = null;
   private control: CcControlServer | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
   private transcriptWatcher: FSWatcher | null = null;
@@ -158,11 +160,12 @@ export class CcCoordinator {
     if (!binding) return;
     this.observe("attach-start", { final });
     this.importer = new CcImporter(this.config, binding);
+    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.importer.workerCapacity, this.diagnostic);
     try {
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal)
         .then(control => { this.control = control; });
-    } catch (error) { this.importer.close(); this.importer = null; throw error; }
+    } catch (error) { this.scheduler.stop(); this.scheduler = null; this.importer.close(); this.importer = null; throw error; }
     this.watchTranscript(binding);
     if (final) this.importer.memory.cancelTasks(true);
     this.observe("attach-complete", { final });
@@ -209,6 +212,7 @@ export class CcCoordinator {
         await this.attach(final, deadline);
         const result = await this.importer?.reconcile() ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
+        if (!final && result) this.scheduler?.trigger(result);
         if (reason !== "stat wake-up") this.observe("reconcile", { reason, final, state: result?.state ?? "unbound",
           coreSessionId: result?.coreSessionId ?? null, appended: result?.appendedEntryIds.length ?? 0 });
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
@@ -286,7 +290,7 @@ export class CcCoordinator {
   async shutdown(reason: string): Promise<CcCloseResult> {
     if (this.closed) return { confirmed: false, reason: "coordinator already closed", diagnostic: "duplicate shutdown" };
     if (this.closing) return { confirmed: false, reason: "coordinator shutdown already in progress" };
-    this.closing = true; this.stopWakeups(); this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
+    this.closing = true; this.scheduler?.stop(); this.stopWakeups(); this.startup.abort(new DOMException("Lifecycle shutdown", "AbortError"));
     this.observe("shutdown-begin", { reason });
     let result: CcCloseResult = { confirmed: false, reason: "no bound importer", diagnostic: "binding was never established" };
     try {
@@ -295,6 +299,7 @@ export class CcCoordinator {
       result = await this.finalReconcile();
       if (this.importer) {
         this.importer.memory.forceTasks();
+        await this.scheduler?.settle();
         this.importer.memory.store.releaseExecutor(this.importer.memory.executorId);
       }
       // MCP teardown is never close authority. Preserve the named executor so the
@@ -311,7 +316,7 @@ export class CcCoordinator {
     } finally {
       this.stopWakeups();
       this.closed = true; this.closing = false;
-      this.importer?.close(); this.importer = null; this.control = null;
+      this.importer?.close(); this.importer = null; this.scheduler = null; this.control = null;
     }
   }
 }

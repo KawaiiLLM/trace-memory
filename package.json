@@ -34,11 +34,14 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.1.77",
     "@earendil-works/pi-ai": "0.85.1",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@earendil-works/pi-coding-agent": "0.85.1",
     "typescript": "^5.6.0",
     "@types/node": "^24.10.9",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "zod": "4.3.6"
   },
   "files": [
     "src/core",

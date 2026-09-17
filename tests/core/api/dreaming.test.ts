@@ -35,6 +35,29 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, b
 }
 const success = { outcome: "success", output: "done", request: { exact: "request" } } as const;
 
+test("Dreamer exposes payload-free acknowledgement without fabricating audit and preserves exact request reporting", async () => {
+  const payloadFree = fixture(async task => {
+    expect(task.acknowledgeRequest).toEqual(expect.any(Function));
+    task.acknowledgeRequest();
+    return { outcome: "failure", output: "synthetic stop", audit: { available: false, reason: "no provider body" } };
+  });
+  const first = await payloadFree.memory.dream(payloadFree.target);
+  expect(first.outcome).toBe("failure");
+  if (!("runId" in first)) throw new Error("missing run id");
+  expect(payloadFree.store.getRun(first.runId)!.request).toBeNull();
+
+  const exact = { provider: "body" };
+  const reported = fixture(async task => {
+    task.reportRequest(exact);
+    task.acknowledgeRequest();
+    return { outcome: "success", output: "done", request: exact };
+  });
+  const second = await reported.memory.dream(reported.target);
+  expect(second.outcome).toBe("success");
+  if (!("runId" in second)) throw new Error("missing run id");
+  expect(reported.store.getRun(second.runId)!.request).toBe(JSON.stringify(exact));
+});
+
 function addProcessedReference(f: ReturnType<typeof fixture>, text = "reference rule") {
   const created = f.store.commitConsolidationRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, operations: [
     { op: "create", handle: `$reference-${text}`, author: "test", ...f.content, text },
