@@ -61,6 +61,10 @@ export interface NotingAgentInput extends AgentControl {
   /** Read a note receipt's user-role NEAR feedback for delivery before the next provider request. */
   reviewFeedback(toolResult: string): string | undefined;
   tools: ToolDefinition[];
+  /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
+   * payload. This is not a model-facing tool or argument. A native boundary calls this or
+   * reportRequest exactly once, never both. */
+  acknowledgeRequest: () => void;
   reportRequest: (request: unknown) => void;
 }
 export interface EntryAudit {
@@ -358,7 +362,7 @@ export async function runNoting(
   const agentInput: NotingAgentInput = { kind: "noting", entryIds: entries.map(e => e.id), sessionId, branch, range,
     readKnowledgeCommits: structuredClone(readKnowledgeCommits), model, mode, prompt, promptHash,
     material, text, supplied: structuredClone(supplied), entryAudit: structuredClone(entryAudit), reviewFeedback,
-    tools: binding.tools, reportRequest: binding.reportRequest };
+    tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest };
   let result: RunAgentResult;
   try { result = await runAgent(agentInput); }
   catch (error) { result = agentException(error); }

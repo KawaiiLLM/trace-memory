@@ -66,6 +66,10 @@ export interface ConsolidationAgentInput extends AgentControl {
    * protocol stays in core; the adapter only chooses the message or steering mechanism. */
   reviewFeedback(toolResult: string): string | undefined;
   tools: import("../api/tools.ts").ToolDefinition[];
+  /** Host-only: a proven later model turn acknowledges review delivery without fabricating an audit
+   * payload. This is not a model-facing tool or argument. A native boundary calls this or
+   * reportRequest exactly once, never both. */
+  acknowledgeRequest(): void;
   reportRequest(request: unknown): void;
 }
 export type ConsolidateResult = { executionId?: string; automaticOff?: string } & (
@@ -337,7 +341,8 @@ export async function runConsolidation(store: Store, frozen: ReturnType<typeof f
     return { text: feedback, near, completed };
   } });
   let result: RunAgentResult;
-  try { result = await runAgent({ ...structuredClone(base), material, text, supplied: structuredClone(supplied), reviewFeedback, tools: binding.tools, reportRequest: binding.reportRequest }); }
+  try { result = await runAgent({ ...structuredClone(base), material, text, supplied: structuredClone(supplied), reviewFeedback,
+    tools: binding.tools, acknowledgeRequest: binding.acknowledgeRequest, reportRequest: binding.reportRequest }); }
   catch (error) { result = agentException(error); }
   binding.close();
   // A direct facade close may dispose before the provider settles; never access that store.

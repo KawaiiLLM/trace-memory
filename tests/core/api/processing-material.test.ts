@@ -72,6 +72,22 @@ test("32: complete reminder and validated inherited carrier share the builder's 
   } finally { f.memory.close(); }
 });
 
+test("payload-free acknowledgement promotes pending NEAR full-body authority only for the later generation", async () => {
+  const f = fixture(input => {
+    input.acknowledgeRequest();
+    const candidate = { operations: [{ op: "create", ...f.content }], skipped: [] };
+    expect(input.readKnowledgeCommits).toEqual([]);
+    const feedback = input.tools[3]!.execute(candidate);
+    expect(feedback).toContain("K1@1");
+    const update = { operations: [{ op: "update", id: "K1@1", ...f.content }], skipped: [] };
+    expect(input.tools[3]!.execute(update)).toContain("feedback has not been read yet");
+    input.acknowledgeRequest();
+    expect(input.tools[3]!.execute(update)).toContain("committed");
+  });
+  try { expect((await f.memory.consolidate(f.target)).outcome).toBe("success"); }
+  finally { f.memory.close(); }
+});
+
 test("32: NEAR full-body read is granted only after the existing requestSeen delivery gate", async () => {
   const f = fixture(input => {
     const candidate = { operations: [{ op: "create", ...f.content }], skipped: [] };

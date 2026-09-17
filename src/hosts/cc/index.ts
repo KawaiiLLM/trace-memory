@@ -14,6 +14,8 @@ export * from "./importer.ts";
 export * from "./control.ts";
 export * from "./lifecycle.ts";
 export * from "./tools.ts";
+export * from "./worker.ts";
+export * from "./scheduler.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<void> {
   const config = resolveCcHostConfig(configInput);

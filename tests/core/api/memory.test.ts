@@ -20,6 +20,23 @@ const success = (): RunAgentResult => ({ outcome: "success", output: "Done", req
 const integrate = () => memory.consolidate({ sessionId: 1, branch: "main" });
 const read = (address: string) => readHandle(memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }), address);
 
+test("payload-free acknowledgement advances one Consolidator review generation without request audit", async () => {
+  setup(async input => {
+    input.acknowledgeRequest();
+    const write = input.tools[3]!;
+    expect(write.execute(batch)).toContain("feedback");
+    expect(write.execute(batch)).toContain("feedback has not been read yet");
+    input.acknowledgeRequest();
+    expect(JSON.parse(write.execute(batch)).committed).toHaveLength(1);
+    return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
+  });
+  const result = await integrate();
+  if (result.outcome !== "success") throw new Error("expected success");
+  const run = memory.store.getRun(result.runId)!;
+  expect(run.request).toBeNull();
+  expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
+});
+
 test("Consolidation stopping after its first valid batch bounces and preserves the candidate and receipt", async () => {
   setup(async input => { input.reportRequest({ first: true }); input.tools[3]!.execute(batch); return success(); });
   const result = await integrate();

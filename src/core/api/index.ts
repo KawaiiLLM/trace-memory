@@ -312,6 +312,8 @@ export interface TaskOptions {
   /** Durable execution shared only with a refused attempt's fallback. */
   executionId?: string;
   borrowed?: boolean; automatic?: boolean; executorSessionId?: number; boundary?: TaskBoundary;
+  /** Host result ceiling in JavaScript UTF-16 characters, passed only to bound read tools. */
+  maxReadChars?: number;
   /** Persisted source-entry identity at host admission; later same-Turn entries must not move it. */
   triggerEntryId?: number;
   /** The mode the host will actually run this task in when it differs from the requested `mode`
@@ -821,7 +823,8 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
       if (input.borrowed) run.closedSessionScope = closedSessionScope;
       Object.assign(run, store.bindRunOrigin(run, origin));
       if (phase === "dreaming") Object.assign(run, store.bindDreamingRun(run));
-      const binding = bindTools(store, read, context, run, review, undefined, dreaming, cfg.noting.nearThreshold);
+      const binding = bindTools(store, read, input.maxReadChars === undefined ? context : { ...context, maxReadChars: input.maxReadChars },
+        run, review, undefined, dreaming, cfg.noting.nearThreshold);
       task.close = binding.close;
       return binding;
     };

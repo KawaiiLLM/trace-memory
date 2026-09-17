@@ -50,6 +50,73 @@ function shownIds(receipt: string): number[] {
   return [...text.matchAll(/^F(\d+) \(Jaccard /gm)].map(match => Number(match[1]));
 }
 
+test("payload-free acknowledgement advances one Noter review generation without creating request audit", async () => {
+  const turn = appendTarget(oldFact().text);
+  let acknowledge!: NotingAgentInput["acknowledgeRequest"];
+  let report!: NotingAgentInput["reportRequest"];
+  agent = async input => {
+    acknowledge = input.acknowledgeRequest;
+    report = input.reportRequest;
+    input.acknowledgeRequest();
+    const note = input.tools.find(tool => tool.name === "note")!;
+    const first = note.execute({ facts: [newFact(turn.id, oldFact().text)] });
+    expect(input.reviewFeedback(first)).toContain("NEAR:");
+    expect(note.execute({ facts: [newFact(turn.id, oldFact().text)] })).toContain("feedback has not been read yet");
+    input.acknowledgeRequest();
+    expect(JSON.parse(note.execute({ facts: [newFact(turn.id, oldFact().text)] })).factIds).toEqual([2]);
+    return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
+  };
+
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" });
+  expect(result).toMatchObject({ outcome: "success" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  const run = memory.store.getRun(result.runId)!;
+  expect(run.request).toBeNull();
+  expect(JSON.parse(run.response!)).toMatchObject({ usage: null, audit: { available: false }, problems: [] });
+  expect(() => acknowledge()).toThrow("noting run has finished");
+  expect(() => report({ tooLate: true })).toThrow("noting run has finished");
+});
+
+test("reportRequest preserves exact audit while acknowledging once, and later acknowledgement does not erase it", async () => {
+  const turn = appendTarget(oldFact().text);
+  agent = async input => {
+    input.reportRequest({ exact: ["provider", "body"] });
+    const note = input.tools.find(tool => tool.name === "note")!;
+    expect(input.reviewFeedback(note.execute({ facts: [newFact(turn.id, oldFact().text)] }))).toContain("NEAR:");
+    expect(note.execute({ facts: [newFact(turn.id, oldFact().text)] })).toContain("feedback has not been read yet");
+    input.acknowledgeRequest();
+    expect(JSON.parse(note.execute({ facts: [newFact(turn.id, oldFact().text)] })).factIds).toEqual([2]);
+    return { outcome: "success", output: "done", audit: { available: false, reason: "native request body unavailable" } };
+  };
+
+  const result = await memory.noting({ sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" });
+  if (result.outcome !== "success") throw new Error("expected success");
+  expect(JSON.parse(memory.store.getRun(result.runId)!.request!)).toEqual({ exact: ["provider", "body"] });
+});
+
+test("payload-free acknowledgement completes an empty Noting batch and preserves missing-request enforcement", async () => {
+  const turn = appendTarget("No durable fact is present in this entry.");
+  let unavailable = true;
+  agent = async input => {
+    input.acknowledgeRequest();
+    expect(JSON.parse(input.tools.find(tool => tool.name === "note")!.execute({ facts: [] })).committed).toContain("zero facts");
+    return unavailable
+      ? { outcome: "success", output: "done", audit: { available: false as const, reason: "native request body unavailable" } }
+      : { outcome: "success", output: "done" };
+  };
+
+  const accepted = await memory.noting({ sessionId, branch: "main", headTurnId: turn.id, mode: "subagent" });
+  if (accepted.outcome !== "success") throw new Error("expected success");
+  expect(memory.store.getRun(accepted.runId)!.request).toBeNull();
+  expect(memory.pendingEntries(sessionId, "main", turn.id)).toEqual([]);
+
+  const missingTurn = appendTarget("Another entry has no durable fact.");
+  unavailable = false;
+  const missing = await memory.noting({ sessionId, branch: "main", headTurnId: missingTurn.id, mode: "subagent" });
+  if (missing.outcome !== "success") throw new Error("a committed empty batch remains business success");
+  expect(missing.problems).toEqual(["runAgent must return the exact provider request after commit"]);
+});
+
 test("38a baseline distinction: a valid same-object batch reviews before it commits", async () => {
   const turn = memory.store.appendTurn({ sessionId, parentTurnId: firstTurnId, kind: "turn", assistantText: "Package trace-memory moved from beta.2 to beta.3", startedAt: "second" });
   agent = async input => {
