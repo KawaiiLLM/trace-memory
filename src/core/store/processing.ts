@@ -3,7 +3,7 @@ import { renderKnowledge, renderKnowledgeBlock, tokens } from "../render/index.t
 import { KNOWLEDGE_CATEGORIES, type KnowledgeRevision, type TriggerOrigin } from "../model/index.ts";
 
 /** Change this whenever the immutable knowledge material rendering changes. Marks are not events. */
-export const KNOWLEDGE_VIEW_VERSION = "34a-v1";
+export const KNOWLEDGE_VIEW_VERSION = "50-v1-whitespace-pricing";
 export const KNOWLEDGE_BUDGET_ALLOWANCE = 5_000;
 export type KnowledgeBudgetField = "global" | "project" | "session";
 export interface KnowledgeBudgetValues { global: number; project: number; session: number }

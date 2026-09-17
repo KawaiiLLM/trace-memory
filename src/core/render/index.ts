@@ -15,14 +15,13 @@ export interface Rendered { content: string; receipts: string[] }
 // segment is priced by its own rule, the shape used by tokenx (github.com/johannschopplich/tokenx,
 // MIT), whose ratios are calibrated against OpenAI's o200k_base. Every budget here uses this.
 // Two rules are ours, both measured: runs are priced across letter/digit boundaries because this
-// project's addresses (F42, T7, K1) are that shape in every line we budget, and a run of horizontal
-// whitespace costs the one token o200k holds for it. Accuracy over 20 corpora of this project's own
-// text: 7.2% mean absolute error, at worst 15% under and 19% over. Over-counting is the safe
+// project's addresses (F42, T7, K1) are that shape in every line we budget. Long whitespace uses
+// bounded estimates calibrated against o200k: 128 horizontal characters or 16 line breaks per token.
+// Accuracy over the recorded corpora of this project's own text: 7.6% mean absolute error, at worst 15% under
+// and 19% over. Over-counting is the safe
 // direction for a budget. core/render/index.test.ts pins the bound against recorded true counts.
 const PUNCTUATION = /[.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]/;
 const SPLIT = new RegExp(`(\\s+|${PUNCTUATION.source}+)`);
-const INDENT = /\n[^\S\n]/;
-const SPACE_RUN = /[^\S\n]{2,}/;
 const NON_ASCII = /[\u0080-\uFFFF]/;
 const CJK = /[\u4E00-\u9FFF\u3400-\u4DBF\u3000-\u30FF\uFF00-\uFFEF\u2E80-\u2EFF\u31C0-\u31EF\u3200-\u32FF\u3300-\u33FF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F\uA960-\uA97F\uD7B0-\uD7FF]/;
 const DIGITS = /^\d+$/;
@@ -70,16 +69,28 @@ function runTokens(run: string): number {
   return Math.ceil(run.length / DEFAULT_CHARS_PER_TOKEN);
 }
 
-function segmentTokens(segment: string, previous: string): number {
-  if (/^\s+$/.test(segment)) {
-    let count = 0;
-    // A line break stands on its own after a word but merges into a preceding punctuation token.
-    if (segment.includes("\n")) count += PUNCTUATION.test(previous.slice(-1)) ? 0 : 1;
-    // o200k holds one token for a run of spaces of any length, so indentation costs one whatever its
-    // width. A lone space between words merges into the word that follows and costs nothing.
-    if (INDENT.test(segment) || SPACE_RUN.test(segment)) count += 1;
-    return count;
+function whitespaceTokens(segment: string, previous: string, next: string): number {
+  let count = 0, context = previous;
+  const parts = segment.match(/\n+|[^\S\n]+/g)!;
+  for (const part of parts) {
+    if (part[0] === "\n") {
+      // Only the first break can merge into preceding punctuation; the rest retain their own cost.
+      const charged = PUNCTUATION.test(context.slice(-1)) ? part.length - 1 : part.length;
+      count += Math.ceil(charged / 16);
+    } else {
+      const alone = parts.length === 1 && !previous && !next;
+      const indented = context.endsWith("\n");
+      // A lone inter-word space still merges into the following word. A standalone whitespace value,
+      // indentation, and every longer horizontal run carry a bounded length-based charge.
+      if (part.length > 1 || indented || alone) count += Math.ceil(part.length / 128);
+    }
+    context = part;
   }
+  return count;
+}
+
+function segmentTokens(segment: string, previous: string, next: string): number {
+  if (/^\s+$/.test(segment)) return whitespaceTokens(segment, previous, next);
   if (NON_ASCII.test(segment)) {
     for (const { pattern, charsPerToken } of SCRIPTS) {
       if (pattern.test(segment)) return Math.ceil([...segment].length / charsPerToken);
@@ -100,9 +111,9 @@ function segmentTokens(segment: string, previous: string): number {
 
 export const tokens = (text: string): number => {
   let total = 0, previous = "";
-  for (const segment of text.split(SPLIT)) {
-    if (!segment) continue;
-    total += segmentTokens(segment, previous);
+  const segments = text.split(SPLIT).filter(Boolean);
+  for (const [index, segment] of segments.entries()) {
+    total += segmentTokens(segment, previous, segments[index + 1] ?? "");
     previous = segment;
   }
   return total;
@@ -124,7 +135,7 @@ export type ResultExtractor = (result: string) => ResultText;
 /** The default extractor: the stored result string as is. A host with an envelope registers its own. */
 export const rawResultText: ResultExtractor = (result) => ({ text: result });
 
-export const ENTRY_VIEW_VERSION = "33-v1-entry-addresses";
+export const ENTRY_VIEW_VERSION = "50-v1-whitespace-pricing";
 // One marker family, Pi's own (`core/compaction/utils.js`: `[... N more characters truncated]`). Every
 // omission in a view is this line — a text part, an argument value, a result text, the whole-part floor
 // of a sealed call — and the honesty clause "the omitted middle was not inspected" is stated once in

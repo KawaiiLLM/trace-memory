@@ -43,9 +43,35 @@ test("the estimate stays within 20% of a real tokenizer on every sample and 10% 
   expect(Math.min(...errors)).toBeGreaterThanOrEqual(-16);
 });
 
-test("no budget can be defeated by padding: a run of spaces costs one token, not its width", () => {
-  expect(tokens(`a${" ".repeat(4)}b`)).toBe(tokens(`a${" ".repeat(400)}b`));
-  expect(tokens("a b")).toBeLessThan(tokens("a  b"));
+test("whitespace runs follow the recorded o200k calibration without losing short-context rules", () => {
+  const lengths = [1, 8, 32, 64, 128, 256, 1024, 10_000, 100_000];
+  const spaces = [1, 1, 1, 1, 1, 2, 8, 79, 782];
+  const newlines = [1, 1, 2, 4, 8, 16, 64, 625, 6250];
+  for (const [index, length] of lengths.entries()) {
+    expect(tokens(" ".repeat(length)), `spaces x${length}`).toBe(spaces[index]);
+    expect(tokens("\n".repeat(length)), `newlines x${length}`).toBe(newlines[index]);
+  }
+  expect(tokens("a b")).toBe(2); // the lone inter-word space merges into the following word
+  expect(tokens("a  b")).toBe(3);
+  expect(tokens("\n ")).toBe(2); // one short line break plus one short indentation
+});
+
+test("mixed whitespace is priced by contiguous part and punctuation merges only the first break", () => {
+  expect(tokens("\n" + " ".repeat(200) + "\n\n\n")).toBe(4);
+  expect(tokens(".\n")).toBe(1);
+  expect(tokens(".\n\n")).toBe(2);
+  expect(tokens(".\n" + " " + "\n")).toBe(3);
+  expect(tokens("\n \n \n ")).toBe(6);
+  expect(tokens(" ".repeat(128))).toBe(1);
+  expect(tokens(" ".repeat(129))).toBe(2);
+  expect(tokens("\n".repeat(16))).toBe(1);
+  expect(tokens("\n".repeat(17))).toBe(2);
+});
+
+test("long whitespace can no longer defeat token budgets", () => {
+  expect(tokens(" ".repeat(2_100_000))).toBe(16_407);
+  expect(tokens(" ".repeat(2_100_000))).toBeGreaterThan(8_000);
+  expect(tokens(" ".repeat(600_000))).toBe(4_688);
 });
 
 test("the estimate counts characters, never UTF-16 code units", () => {

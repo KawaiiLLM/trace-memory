@@ -22,19 +22,19 @@ test("33: fixed realistic fixture prices the exact Raw bytes for status, trigger
     const views = entries.map(entry => renderEntry(entry, memory.config.render).content);
     const actual = views.join("\n\n");
     expect(Buffer.byteLength(actual)).toBe(108406);
-    expect(tokens(actual)).toBe(25500);
+    expect(tokens(actual)).toBe(25739);
     expect(memory.pendingTokens("noting", target)).toEqual({ tokens: tokens(actual), trigger: 10000, state: "known" });
     expect(memory.config.noting).toEqual(DEFAULT_CONFIG.noting);
     expect(memory.taskEligibility("noting", target)).toEqual({ due: true });
     const batch = memory.notingBatch(target);
-    expect(batch).toHaveLength(93);
+    expect(batch).toHaveLength(92);
     expect(tokens(views.slice(0, batch.length).join("\n\n"))).toBeLessThanOrEqual(10000);
     expect(tokens(views.slice(0, batch.length + 1).join("\n\n"))).toBeGreaterThan(10000);
-    for (const count of [93, 94]) {
+    for (const count of [92, 93]) {
       memory.selectEntries(sessionId, "main", entries.slice(0, count).map(entry => entry.id));
       const measured = tokens(views.slice(0, count).join("\n\n"));
       expect(memory.pendingTokens("noting", target).tokens).toBe(measured);
-      expect(memory.taskEligibility("noting", target).due).toBe(count === 94);
+      expect(memory.taskEligibility("noting", target).due).toBe(count === 93);
     }
   } finally { memory.close(); }
 });
