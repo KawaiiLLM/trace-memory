@@ -223,6 +223,59 @@
         "reason": "New evidence changed the final disposition; the archive was not known when survivor work began."
       },
       "review": "Tool feedback or new evidence may justify correction. It must not be used to adopt a competing successor into the frozen family."
+    },
+    {
+      "id": "spec-clauses-kept-whole",
+      "judgment": "avoid",
+      "parents": [
+        {
+          "text": "The user approved the export contract: an export file is UTF-8 JSON Lines with one record per line, and each record carries the session id and a monotonically increasing sequence number.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["export", "file-contract"]
+        }
+      ],
+      "result": {
+        "operations": ["split into a line-format child and a record-fields child"],
+        "reason": "Each clause is a separate sentence."
+      },
+      "review": "The clauses of one approved contract are read and changed together: no later fact would change the record fields while the line format stands, and a reader would always consult both bodies. The split is the compound it started from and is not made; sentence count is not maintenance need."
+    },
+    {
+      "id": "readable-body-left-alone",
+      "judgment": "avoid",
+      "parents": [
+        {
+          "text": "The rollback rehearsal passes on the staging database only; the production rehearsal is deferred (user decision).",
+          "category": "open",
+          "scope": "project",
+          "topics": ["rollback", "production-rehearsal"]
+        }
+      ],
+      "result": {
+        "text": "The user decided to defer the production rehearsal. At present the rollback rehearsal has passed only on the staging database, so the production rehearsal remains deferred until the user decides otherwise.",
+        "category": "open",
+        "scope": "project",
+        "topics": ["rollback", "production-rehearsal"]
+      },
+      "review": "The parent already reads on its own: object, claim, condition, status and attribution are all resolvable by a reader who never saw the conversation. Expanding it into full sentences, spelling out attribution it already carries in a few characters and reordering it is the same class of forbidden edit as shortening-only; the body is left as it is."
+    },
+    {
+      "id": "finished-reference-archived-on-completion-fact",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The export-contract ticket was delivered on its branch, its two review findings were fixed, and the branch was merged; nothing from the ticket remains unresolved.",
+          "category": "reference",
+          "scope": "project",
+          "topics": ["export", "ticket-record"]
+        }
+      ],
+      "result": {
+        "archiveParent": 0,
+        "reason": "Archive on the cited fact recording the merge: the record is a finished work item with nothing unresolved left in it; the archived version and its cited facts keep the completed work retrievable."
+      },
+      "review": "Reason (b): a finished work item — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — is archived on the fact that finishes it, whatever its category. The protected-meaning entry for useful completed work is satisfied by the archived version and its cited facts, not by keeping the record resident. This is first-round resolve work."
     }
   ]
 }

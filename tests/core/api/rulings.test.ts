@@ -2441,6 +2441,29 @@ test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or
 
 /** Ticket 54 (rulings of 2026-09-18): pruning and merging are the Dreamer's work; `check` is the
  * acceptance that sets the next round's intensity. The opening check and finishing on budget grounds are gone. */
+test("56: split by maintenance need, rewrite only what fails the standalone test, archive finished work of every category", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+  // A: the standard's identity test replaces "split again while a child is still compound"; generic examples, no batch ids.
+  expect(prompt).toContain("one object, one independently maintainable claim or state, one identity — a child is warranted only when a later fact would change it while its sibling stands");
+  expect(prompt).toContain("Split: a user's rule and the assistant's choice made under it; a goal and a rule stated beside it; a work item's shared target and each named sub-item; findings about two different mechanisms.");
+  expect(prompt).toContain("Do not split: the clauses of one approved spec or contract that are read and changed together; the findings of one probe about one object; the parts of one dispatch or delivery record; a rule and its stated exception or condition; a state and the identifier it is about.");
+  expect(prompt).toContain("A split that leaves a child unable to stand on its own, or that produces two bodies a reader would always consult together, is the compound it started from and is not made.");
+  expect(prompt).not.toContain("split again while a child is still compound");
+  // C: the trigger narrows to the standalone test; 54's readability rules stay verbatim (pinned there).
+  expect(prompt).toContain("The survivor of a merge or split, and any item whose body fails the standalone test — a clause whose subject, condition or actor cannot be resolved by a reader who never saw the conversation.");
+  expect(prompt).toContain("A body that already reads on its own is left as it is: expanding it into full sentences, adding attribution it already carries in a few characters, or reordering it is the same class of forbidden edit as shortening-only.");
+  expect(prompt).not.toContain("Every survivor the round touched");
+  // B: persistent states update; finished work items of every category archive on the fact that finishes them.
+  expect(prompt).toContain("Persistent object states (an installed version, a pinned exclusion, a configured default) are updated, not archived, when the state changes; finished work items — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — are archived on the fact that finishes them, whatever their category.");
+  expect(prompt).toContain("The protected-meaning entry \"useful completed work that prevents repetition\" is satisfied by the archived version and its cited facts; it does not keep a finished record resident.");
+  expect(prompt).toContain("A record that still names an unresolved item is not finished: split the unresolved item out first (step A), then archive the finished remainder.");
+  expect(prompt).not.toContain("An `open` item whose completion or abandonment a fact states");
+  // Maintainer 2026-09-18: when unsure, read the original through trace, never code; every operation carries a reason (the memory tool schema already requires it).
+  expect(prompt).toContain("When a fact leaves you unsure what a claim means or whether it still holds, read the original: `trace` the fact's source entries. The conversation's Raw outranks the extracted fact, and code is never the authority for what was decided.");
+  expect(prompt).toContain("A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides");
+  expect(prompt).toContain("Each operation has a nonempty reason.");
+});
+
 test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed check sets the intensity; an archive has one of three reasons", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
   // The ruling.
@@ -2454,7 +2477,7 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
   expect(prompt).toContain("A later ruling on an object whose earlier rule or proposal is archived continues that identity — revive and merge, the body states the current rule alone.");
   // B: resolve.
   expect(prompt).toContain("A later ruling (a fact recording the user's decision or correction) wins over an earlier one; a later fact that is a proposal, a report or an assistant's choice never overrides a ruling. The loser is archived with that fact in `supports` and named in `reason`.");
-  expect(prompt).toContain("A conflict the facts do not settle becomes one `dispute` item naming both sides");
+  expect(prompt).toContain("A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides");
   // C: readability, not brevity and not verbosity (ruled 2026-09-18).
   expect(prompt).toContain("full sentences in the conversation's language, present tense for what holds now, the object, the claim, its conditions, its status and who decided it stated in words");
   expect(prompt).toContain("The project's vocabulary counts as understood (CONTEXT.md; N/C/D, claim, placement, path) — what fails is a clause whose subject, condition or actor cannot be resolved; attribution is a few characters (`助手选择`, `用户裁定`), never a sentence; a body states the current rule only — history is for tracing through the version chain and the cited facts, never resident (a body that narrates its own evolution bloats the context).");
