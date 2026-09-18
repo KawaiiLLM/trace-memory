@@ -7,6 +7,7 @@ import { nativeCreatedAt, readCompleteTranscript } from "./transcript.ts";
 import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
 import { ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
+import { declareCcProject, operateCcSession } from "./operator.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -18,6 +19,7 @@ export * from "./tools.ts";
 export * from "./worker.ts";
 export * from "./scheduler.ts";
 export * from "./injection.ts";
+export * from "./operator.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
   const config = resolveCcHostConfig(configInput);
@@ -117,7 +119,8 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
 }
 
 function readConfig(path: string): ResolvedCcHostConfig {
-  return resolveCcHostConfig(JSON.parse(readFileSync(resolve(path), "utf8")));
+  if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
+  return resolveCcHostConfig(JSON.parse(readFileSync(path, "utf8")));
 }
 
 async function readStdin(): Promise<string> {
@@ -127,15 +130,26 @@ async function readStdin(): Promise<string> {
   return input;
 }
 
-const direct = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (direct) void (async () => {
-  const [command, configFlag, configPath] = process.argv.slice(2);
-  if ((command !== "mcp" && command !== "hook") || configFlag !== "--config" || !configPath)
-    throw new Error("usage: node src/hosts/cc/index.ts mcp|hook --config /absolute/path/to/cc.config.json");
+export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
+  const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
+  if ((command !== "mcp" && command !== "hook" && command !== "cli") || configFlag !== "--config" || !configPath)
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|project [name]");
   const config = readConfig(configPath);
-  if (command === "mcp") { await runCcStdioMcp(config); process.exit(process.exitCode ?? 0); }
-  else {
+  if (command === "mcp") { await runCcStdioMcp(config); return; }
+  if (command === "hook") {
     const output = await handleCcHook(config, JSON.parse(await readStdin()));
     if (output) process.stdout.write(`${JSON.stringify(output)}\n`);
+    return;
   }
-})().catch(error => { console.error(`Trace Memory CC: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; });
+  if (sessionFlag !== "--session" || !nativeSessionId || !verb)
+    throw new Error("CLI requires --session <native-id> and on, off, stop, or project <name>");
+  const result = verb === "project" ? await declareCcProject(config, nativeSessionId, rest.join(" "))
+    : verb === "on" || verb === "off" || verb === "stop" ? await operateCcSession(config, nativeSessionId, verb)
+    : (() => { throw new Error(`unknown CC operator command ${verb}`); })();
+  process.stdout.write(`${JSON.stringify(result)}\n`);
+}
+
+const direct = process.argv[1]?.endsWith("/index.ts") && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (direct) void runCcCommand().catch(error => {
+  console.error(`Trace Memory CC: ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1;
+});

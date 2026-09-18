@@ -86,7 +86,22 @@ export function readBinding(config: ResolvedCcHostConfig, nativeSessionId: strin
   }
 }
 
-function writeBinding(config: ResolvedCcHostConfig, binding: CcSessionBinding): void {
+/** Validate the complete operator target before any database write or control message. */
+export function assertOperatorBinding(config: ResolvedCcHostConfig, binding: CcSessionBinding, store: Store): void {
+  if (binding.dbPath !== config.dbPath) throw new Error("Claude Code binding disagrees with the configured database");
+  if (binding.coreSessionId === null) {
+    if (binding.projectId !== null && !store.getProject(binding.projectId))
+      throw new Error("bound Claude Code project is unavailable in the configured database");
+    return;
+  }
+  const session = store.getSession(binding.coreSessionId);
+  if (!session || session.host !== `cc:${binding.nativeSessionId}`)
+    throw new Error("CC binding does not name its authoritative core session");
+  if (binding.projectId === null || session.projectId !== binding.projectId)
+    throw new Error("bound Claude Code core session or project disagrees with the database");
+}
+
+function writeBinding(config: ResolvedCcHostConfig, binding: CcSessionBinding, published?: () => void): void {
   const target = bindingPath(config, binding.nativeSessionId), temporary = `${target}.${process.pid}.${randomUUID()}`;
   const directory = dirname(target); mkdirSync(directory, { recursive: true });
   let descriptor: number | undefined;
@@ -94,6 +109,7 @@ function writeBinding(config: ResolvedCcHostConfig, binding: CcSessionBinding): 
     descriptor = openSync(temporary, "wx", 0o600);
     writeFileSync(descriptor, `${JSON.stringify(binding, null, 2)}\n`); fsyncSync(descriptor); closeSync(descriptor); descriptor = undefined;
     renameSync(temporary, target);
+    published?.();
     const directoryDescriptor = openSync(directory, "r");
     try { fsyncSync(directoryDescriptor); } finally { closeSync(directoryDescriptor); }
   } catch (error) {
@@ -108,8 +124,16 @@ const isSqliteBusy = (error: unknown): error is SqliteBusyError => {
   return value?.code === "ERR_SQLITE_ERROR" && value.errcode === 5;
 };
 
-async function withBindingLock<T>(config: ResolvedCcHostConfig, nativeSessionId: string, action: () => T,
-  timeoutMs = 5_000, signal?: AbortSignal): Promise<T> {
+export interface CcBindingLock {
+  read(): CcSessionBinding | null;
+  update(update: (current: CcSessionBinding | null) => CcSessionBinding): CcSessionBinding;
+}
+
+/** Serialize all native-session projection publishers. The action may scan the transcript and make
+ * per-record Store transactions while this file lock is held; the lock itself is not a Store
+ * transaction. Binding updates made through the supplied interface do not reacquire the lock. */
+export async function withCcBindingLock<T>(config: ResolvedCcHostConfig, nativeSessionId: string,
+  action: (binding: CcBindingLock) => T | Promise<T>, timeoutMs = 5_000, signal?: AbortSignal): Promise<T> {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("CC binding lock timeout must be positive");
   const deadline = Date.now() + timeoutMs, target = bindingPath(config, nativeSessionId);
   const mutex = bindingMutexPath(config, nativeSessionId);
@@ -132,22 +156,54 @@ async function withBindingLock<T>(config: ResolvedCcHostConfig, nativeSessionId:
       }
     }
     checkDeadline();
-    return action();
+    const locked: CcBindingLock = {
+      read: () => readBinding(config, nativeSessionId),
+      update: update => {
+        const current = readBinding(config, nativeSessionId), next = update(current);
+        validateBindingUpdate(config, nativeSessionId, next);
+        if (next !== current) writeBinding(config, next);
+        return next;
+      },
+    };
+    return await action(locked);
   } finally {
     try { if (acquired) database.exec("ROLLBACK"); }
     finally { database.close(); }
   }
 }
 
+function validateBindingUpdate(config: ResolvedCcHostConfig, nativeSessionId: string, next: CcSessionBinding): void {
+  if (next.nativeSessionId !== nativeSessionId || next.dbPath !== config.dbPath)
+    throw new Error("CC binding target changed during update");
+}
+
 export async function updateBinding(config: ResolvedCcHostConfig, nativeSessionId: string,
   update: (current: CcSessionBinding | null) => CcSessionBinding, timeoutMs?: number, signal?: AbortSignal): Promise<CcSessionBinding> {
-  return withBindingLock(config, nativeSessionId, () => {
-    const current = readBinding(config, nativeSessionId), next = update(current);
-    if (next.nativeSessionId !== nativeSessionId || next.dbPath !== config.dbPath) throw new Error("CC binding target changed during update");
-    // Returning the locked current value means there is no durable change. In particular, transcript
-    // reconciliation must not atomically replace an identical binding and wake its own watcher again.
-    if (next !== current) writeBinding(config, next);
-    return next;
+  return withCcBindingLock(config, nativeSessionId, locked => locked.update(update), timeoutMs, signal);
+}
+
+/** Keep a binding file and related Store writes coherent under the existing binding lock and one
+ * Store transaction. A binding write failure rolls the Store back; a Store commit failure restores
+ * the prior binding before the lock is released. */
+export async function updateBindingInStoreTransaction(config: ResolvedCcHostConfig, nativeSessionId: string, store: Store,
+  update: (current: CcSessionBinding | null) => CcSessionBinding, timeoutMs?: number, signal?: AbortSignal): Promise<CcSessionBinding> {
+  return withCcBindingLock(config, nativeSessionId, () => {
+    const current = readBinding(config, nativeSessionId);
+    let next!: CcSessionBinding, wrote = false;
+    try {
+      store.transaction(() => {
+        next = update(current);
+        validateBindingUpdate(config, nativeSessionId, next);
+        if (next !== current) writeBinding(config, next, () => { wrote = true; });
+      });
+      return next;
+    } catch (error) {
+      if (wrote && current) {
+        try { writeBinding(config, current); }
+        catch (restoreError) { throw new AggregateError([error, restoreError], "CC Store transaction failed and its binding could not be restored"); }
+      }
+      throw error;
+    }
   }, timeoutMs, signal);
 }
 

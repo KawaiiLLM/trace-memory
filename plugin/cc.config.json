@@ -1,0 +1,13 @@
+{
+  "dbPath": null,
+  "stateDir": null,
+  "closedSessionScope": "project",
+  "worker": {
+    "claudeExecutable": null,
+    "claudeVersion": "2.1.257",
+    "model": null,
+    "effort": "medium",
+    "contextWindow": null,
+    "cwd": null
+  }
+}

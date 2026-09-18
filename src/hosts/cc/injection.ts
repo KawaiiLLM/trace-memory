@@ -3,7 +3,8 @@ import { statSync } from "node:fs";
 import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { implicitCcProject, readBinding, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
-import { classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
+import { CcProjection } from "./importer.ts";
+import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
 const BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 const HEADER = "TRACE-MEMORY-CC/1 ";
@@ -270,10 +271,17 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
     throw new Error("SessionStart source must be startup, resume, clear or compact");
   const initial = readBinding(config, input.session_id);
   if (!initial) throw new Error("CC SessionStart binding is unavailable after enrollment");
-  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); });
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("CC injection Hook cannot run model work"); },
+    {}, undefined, entry => entry.nativeLineage === initial.nativeSessionId ? ccSourceBlocks(entry) : undefined);
   try {
-    const binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
+    let binding = await lockedInjectionBinding(config, initial.nativeSessionId, initial.transcriptPath, memory);
     if (!enabled(binding, memory)) return null;
+    const projection = new CcProjection(config, binding, memory);
+    const projected = await projection.synchronize();
+    binding = projection.currentBinding();
+    if (projected.state === "disabled") return null;
+    if (projected.state === "not-ready")
+      throw new Error(projected.problems.join("; ") || "native source projection is not ready");
     const snapshot = readCompleteTranscript(binding.transcriptPath);
     if (snapshot.problem || snapshot.incompleteBytes)
       throw new Error(snapshot.problem ?? `native transcript has ${snapshot.incompleteBytes} incomplete trailing bytes`);
@@ -303,5 +311,9 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
     if (!injection.text) return null;
     const additionalContext = encodeCcInjection(visibleBinding, injection);
     return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext } };
-  } finally { memory.close(); }
+  } finally {
+    // SessionStart owns no executor or claim. Closing its Store directly avoids invalidating work
+    // owned by the concurrently running MCP process after projection-only synchronization.
+    memory.store.close();
+  }
 }

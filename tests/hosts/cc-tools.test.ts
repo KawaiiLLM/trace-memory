@@ -1,12 +1,12 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toolDefinitions } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { CcImporter } from "../../src/hosts/cc/importer.ts";
+import { CC_MCP_SERVER_NAME, CC_PLUGIN_NAME, CcImporter } from "../../src/hosts/cc/importer.ts";
 import { CcCoordinator } from "../../src/hosts/cc/lifecycle.ts";
 import { CC_MAX_RESULT_CHARS, CcForegroundTools } from "../../src/hosts/cc/tools.ts";
 
@@ -14,7 +14,7 @@ const directories: string[] = [];
 afterEach(() => { for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 
-async function fixture() {
+async function fixture(nativePrefix = "mcp__traceMemory__") {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-tools-")); directories.push(directory);
   const transcriptPath = join(directory, "native.jsonl"), nativeSessionId = "cc-tools-session";
   const config = resolveCcHostConfig({ dbPath: join(directory, "memory.sqlite"), stateDir: join(directory, "state"),
@@ -24,8 +24,8 @@ async function fixture() {
       message: { role: "user", content: "run a write" } },
     { uuid: "call", parentUuid: "user", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z",
       message: { role: "assistant", content: [
-        { type: "tool_use", id: "call-note", name: "mcp__traceMemory__note", input: {} },
-        { type: "tool_use", id: "call-memory", name: "mcp__traceMemory__memory", input: {} },
+        { type: "tool_use", id: "call-note", name: `${nativePrefix}note`, input: {} },
+        { type: "tool_use", id: "call-memory", name: `${nativePrefix}memory`, input: {} },
       ] } },
   ];
   writeFileSync(transcriptPath, records.map(line).join(""));
@@ -45,6 +45,14 @@ async function fixture() {
 }
 
 const text = (result: Awaited<ReturnType<CcForegroundTools["call"]>>) => result.content[0]!.text;
+
+test("installed native identity stays derived from the fixed plugin manifest and MCP server name", () => {
+  const manifest = JSON.parse(readFileSync("plugin/.claude-plugin/plugin.json", "utf8"));
+  const mcp = JSON.parse(readFileSync("plugin/.mcp.json", "utf8"));
+  expect(manifest.name).toBe(CC_PLUGIN_NAME);
+  expect(Object.keys(mcp)).toEqual([CC_MCP_SERVER_NAME]);
+  expect(`mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__note`).toBe("mcp__plugin_trace-memory_traceMemory__note");
+});
 
 test("CC foreground list reuses exactly the four core schemas and no Dreamer capability", async () => {
   const f = await fixture();
@@ -163,13 +171,24 @@ test("CC foreground writes fail closed on missing, malformed and mismatched nati
   } finally { f.importer.close(); }
 });
 
-test("CC foreground authenticates the canonical native tool name and exact source prefix", async () => {
+test("CC foreground authenticates direct-MCP and installed-plugin identities without suffix matching", async () => {
+  const plugin = await fixture("mcp__plugin_trace-memory_traceMemory__");
+  try {
+    expect(plugin.importer.persistedCall("call-note", "note")).toEqual(plugin.exact);
+    expect(plugin.importer.persistedCall("call-memory", "memory")).not.toBeNull();
+  } finally { plugin.importer.close(); }
+
   const f = await fixture();
   try {
-    f.records.push({ uuid: "later-evidence", parentUuid: "call", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
-      message: { role: "assistant", content: [{ type: "text", text: "later evidence" }] } });
+    f.records.push(
+      { uuid: "lookalike", parentUuid: "call", type: "assistant", timestamp: "2026-01-01T00:00:02.000Z",
+        message: { role: "assistant", content: [{ type: "tool_use", id: "lookalike-note", name: "mcp__another-server_traceMemory__note", input: {} }] } },
+      { uuid: "later-evidence", parentUuid: "lookalike", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z",
+        message: { role: "assistant", content: [{ type: "text", text: "later evidence" }] } },
+    );
     writeFileSync(f.transcriptPath, f.records.map(line).join(""));
     await f.importer.reconcile();
+    expect(() => f.importer.persistedCall("lookalike-note", "note")).toThrow("not mcp__traceMemory__note or mcp__plugin_trace-memory_traceMemory__note");
     const late = await f.tools.call("note", { facts: [{ category: "observation", actor: "agent", text: "too late",
       source: [`T${f.exact.headTurnId}#E3@text`] }] }, { "claudecode/toolUseId": "call-note" });
     expect(late.isError).toBe(true); expect(text(late)).toContain("invalid source");
@@ -186,7 +205,7 @@ test("repeated native call IDs remain ambiguous instead of selecting a carrier",
       { uuid: "u2", parentUuid: "call", type: "user", timestamp: "2026-01-01T00:00:02.000Z", promptSource: "typed",
         message: { role: "user", content: "again" } },
       { uuid: "duplicate", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z",
-        message: { role: "assistant", content: [{ type: "tool_use", id: "call-note", name: "mcp__traceMemory__note", input: {} }] } },
+        message: { role: "assistant", content: [{ type: "tool_use", id: "call-note", name: "mcp__plugin_trace-memory_traceMemory__note", input: {} }] } },
     );
     writeFileSync(f.transcriptPath, f.records.map(line).join("")); await f.importer.reconcile();
     expect(() => f.importer.persistedCall("call-note", "note")).toThrow("ambiguous");

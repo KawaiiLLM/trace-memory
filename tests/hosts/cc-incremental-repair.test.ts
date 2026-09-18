@@ -63,7 +63,7 @@ test("main-session prompt shapes open Turns and own their following assistant an
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: "queued-tool", content: "done" }] } };
   const f = await setup([...base(), compact, notification, notified, crossSession, crossReply, queued, call, result], "prompt-shapes");
   try {
-    const cursor = (f.importer as unknown as { transcript: { scan: Function } }).transcript;
+    const cursor = (f.importer as unknown as { projection: { transcript: { scan: Function } } }).projection.transcript;
     const scan = cursor.scan.bind(cursor); let visits = 0;
     cursor.scan = (path: string, visit: Function, collect?: boolean) => scan(path, (...args: unknown[]) => {
       visits += 1;
@@ -409,7 +409,7 @@ test("bootstrap retains scalars only and a compact boundary can remain the nativ
   let importer = f.importer;
   try {
     const first = await importer.reconcile();
-    const retained = (importer as unknown as { bootstrap: unknown }).bootstrap as Record<string, unknown>;
+    const retained = (importer as unknown as { projection: { bootstrap: unknown } }).projection.bootstrap as Record<string, unknown>;
     expect(retained).toEqual(expect.objectContaining({ createdAt: at(1), firstAssistantAt: at(2) }));
     expect(retained).not.toHaveProperty("snapshot");
     expect(readBinding(f.config, f.nativeSessionId)!.selectedLeafUuid).toBe("compact");

@@ -1,0 +1,29 @@
+{
+  "description": "Trace Memory lifecycle and knowledge injection",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs\" hook --config \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\"",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs\" hook --config \"${CLAUDE_PLUGIN_ROOT}/cc.config.json\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

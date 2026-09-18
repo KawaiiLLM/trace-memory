@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { TraceMemory, noVisibility, type Injection } from "../../src/core/api/index.ts";
+import { Store } from "../../src/core/store/index.ts";
 import { bindingMutexPath, bindingPath, recordSessionStart, readBinding, updateBinding } from "../../src/hosts/cc/binding.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { ccSessionStartInjection, ccVisibleView, encodeCcInjection, handleCcHook, readCompleteTranscript,
@@ -12,7 +13,7 @@ import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import type { CcNativeRecord } from "../../src/hosts/cc/transcript.ts";
 
 const dirs: string[] = [];
-afterEach(() => { while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true }); });
 const time = (second: number) => `2026-09-18T00:00:${String(second).padStart(2, "0")}.000Z`;
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 const binding = { db: "/d", nativeSession: "native-A", coreSession: 7 };
@@ -218,11 +219,10 @@ test("43d a one-character body change in the only retained Hook copy has zero co
   const complete = first!.hookSpecificOutput.additionalContext;
   const changed = complete.replace("hook knowledge", "hook knowledgf");
   expect([...changed].filter((character, index) => character !== complete[index])).toHaveLength(1);
-  const retainedTranscript = (content: string, nativeSession: string): CcNativeRecord[] => [
-    { ...assistant("a", "unused", "answer"), parentUuid: null },
-    attachment("only-carrier", "a", content, nativeSession),
+  const retainedTranscript = (records: CcNativeRecord[], content: string, nativeSession: string): CcNativeRecord[] => [
+    ...records, attachment("only-carrier", "a", content, nativeSession),
   ];
-  writeFileSync(altered.transcriptPath, retainedTranscript(changed, altered.nativeSession).map(line).join(""));
+  writeFileSync(altered.transcriptPath, retainedTranscript(altered.records, changed, altered.nativeSession).map(line).join(""));
 
   const snapshot = readCompleteTranscript(altered.transcriptPath);
   expect(snapshot.problem).toBeUndefined();
@@ -230,13 +230,108 @@ test("43d a one-character body change in the only retained Hook copy has zero co
   const coreSession = readBinding(altered.config, altered.nativeSession)!.coreSessionId;
   const view = ccVisibleView(snapshot.records, { db: `${stat.dev}:${stat.ino}`, nativeSession: altered.nativeSession, coreSession });
   expect([...view.knowledgeCommitIds]).toEqual([]);
-  expect((await handleCcHook(altered.config, alteredInput))?.hookSpecificOutput.additionalContext).toBe(complete);
+  expect((await handleCcHook(altered.config, { ...alteredInput, source: "compact" }))?.hookSpecificOutput.additionalContext).toBe(complete);
 
   const valid = await hookFixture();
   const validInput = { ...alteredInput, session_id: valid.nativeSession, transcript_path: valid.transcriptPath };
   const validFirst = await handleCcHook(valid.config, { ...validInput, source: "compact" });
-  writeFileSync(valid.transcriptPath, retainedTranscript(validFirst!.hookSpecificOutput.additionalContext, valid.nativeSession).map(line).join(""));
+  writeFileSync(valid.transcriptPath, retainedTranscript(valid.records, validFirst!.hookSpecificOutput.additionalContext, valid.nativeSession).map(line).join(""));
   expect(await handleCcHook(valid.config, validInput)).toBeNull();
+});
+
+test("43d Hook-first and MCP-first compact projection are idempotent and preserve lifecycle state", async () => {
+  const f = await hookFixture();
+  const stale = new CcImporter(f.config, readBinding(f.config, f.nativeSession)!);
+  try {
+    const before = await stale.reconcile();
+    const sessionId = before.coreSessionId!, store = stale.memory.store;
+    const claim = store.acquireClaim({ sessionId, branch: before.branch, headTurnId: before.headTurnId! }, "noting", "live-executor");
+    expect(claim).not.toBeNull();
+    const claimBefore = store.getClaim(sessionId, "noting");
+    const executor = { executorId: "live-executor", pid: process.pid, token: "live-token",
+      socketPath: join(f.config.stateDir, "live.sock"), startedAt: time(5) };
+    await updateBinding(f.config, f.nativeSession, current => ({ ...current!, executor }));
+    const closedBefore = store.getSession(sessionId)!.closedAt;
+    appendFileSync(f.transcriptPath, line({ uuid: "compact-one", parentUuid: null, logicalParentUuid: "a",
+      type: "system", subtype: "compact_boundary", timestamp: time(6) }));
+    const input = { hook_event_name: "SessionStart" as const, source: "compact" as const,
+      session_id: f.nativeSession, transcript_path: f.transcriptPath };
+    const first = await handleCcHook(f.config, input);
+    expect(first?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+    expect(readBinding(f.config, f.nativeSession)).toMatchObject({ selectedLeafUuid: "compact-one", executor });
+    expect(store.getClaim(sessionId, "noting")).toEqual(claimBefore);
+    expect(store.getSession(sessionId)!.closedAt).toBe(closedBefore);
+    expect(store.findNativeTurn(sessionId, f.nativeSession, "compact-one")?.kind).toBe("compaction");
+
+    const afterHook = store.listSourceEntries(sessionId).length;
+    const caughtUp = await stale.reconcile();
+    expect(caughtUp.appendedEntryIds).toEqual([]);
+    expect(caughtUp).toMatchObject({ state: "ready", branch: readBinding(f.config, f.nativeSession)!.branch });
+    expect(store.listSourceEntries(sessionId)).toHaveLength(afterHook);
+    expect(store.db.prepare("SELECT COUNT(*) AS count FROM native_turns WHERE session_id = ? AND native_lineage = ? AND native_id = ?")
+      .get(sessionId, f.nativeSession, "compact-one")).toEqual({ count: 1 });
+    expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext)
+      .toBe(first!.hookSpecificOutput.additionalContext);
+
+    appendFileSync(f.transcriptPath, line({ uuid: "compact-two", parentUuid: null, logicalParentUuid: "compact-one",
+      type: "system", subtype: "compact_boundary", timestamp: time(7) }));
+    const mcpFirst = await stale.reconcile();
+    expect(mcpFirst.appendedEntryIds).toEqual([]);
+    const durablePath = store.selectedSourceEntryIds(sessionId, mcpFirst.branch);
+    const afterMcp = store.listSourceEntries(sessionId).length;
+    const afterMcpHook = await handleCcHook(f.config, input);
+    expect(afterMcpHook?.hookSpecificOutput.additionalContext).toBe(first!.hookSpecificOutput.additionalContext);
+    expect(store.selectedSourceEntryIds(sessionId, readBinding(f.config, f.nativeSession)!.branch)).toEqual(durablePath);
+    expect(store.listSourceEntries(sessionId)).toHaveLength(afterMcp);
+    expect(store.getClaim(sessionId, "noting")).toEqual(claimBefore);
+  } finally { stale.close(); }
+});
+
+test("43d Hook projection failure leaves committed records retryable without publishing a stale leaf", async () => {
+  const f = await hookFixture();
+  const before = readBinding(f.config, f.nativeSession)!;
+  appendFileSync(f.transcriptPath, line({ uuid: "retry-compact", parentUuid: null, logicalParentUuid: "a",
+    type: "system", subtype: "compact_boundary", timestamp: time(7) }));
+  const select = Store.prototype.selectSourcePath; let failed = false;
+  vi.spyOn(Store.prototype, "selectSourcePath").mockImplementation(function (this: Store,
+    ...args: Parameters<Store["selectSourcePath"]>) {
+    if (!failed) { failed = true; throw new Error("injected Hook projection failure"); }
+    return select.apply(this, args);
+  });
+  const input = { hook_event_name: "SessionStart" as const, source: "compact" as const,
+    session_id: f.nativeSession, transcript_path: f.transcriptPath };
+  await expect(handleCcHook(f.config, input)).rejects.toThrow("injected Hook projection failure");
+  expect(readBinding(f.config, f.nativeSession)!.selectedLeafUuid).toBe(before.selectedLeafUuid);
+  const store = new Store(f.config.dbPath);
+  expect(store.findNativeTurn(before.coreSessionId!, f.nativeSession, "retry-compact")?.kind).toBe("compaction");
+  expect((await handleCcHook(f.config, input))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+  expect(readBinding(f.config, f.nativeSession)!.selectedLeafUuid).toBe("retry-compact");
+  expect(store.db.prepare("SELECT COUNT(*) AS count FROM native_turns WHERE native_lineage = ? AND native_id = ?")
+    .get(f.nativeSession, "retry-compact")).toEqual({ count: 1 });
+  store.close();
+});
+
+test("43d Hook rejects an incomplete tail without moving the selected projection", async () => {
+  const f = await hookFixture(), before = readBinding(f.config, f.nativeSession)!;
+  appendFileSync(f.transcriptPath, '{"uuid":"incomplete"');
+  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume",
+    session_id: f.nativeSession, transcript_path: f.transcriptPath })).rejects.toThrow("incomplete trailing bytes");
+  expect(readBinding(f.config, f.nativeSession)!.selectedLeafUuid).toBe(before.selectedLeafUuid);
+});
+
+test("43d projection-only Hook preserves a pre-existing closed session", async () => {
+  const f = await hookFixture();
+  const binding = readBinding(f.config, f.nativeSession)!;
+  const store = new Store(f.config.dbPath);
+  const closedAt = time(7);
+  store.closeSession(binding.coreSessionId!, closedAt);
+  appendFileSync(f.transcriptPath, line({ uuid: "closed-compact", parentUuid: null, logicalParentUuid: "a",
+    type: "system", subtype: "compact_boundary", timestamp: time(8) }));
+  try {
+    expect((await handleCcHook(f.config, { hook_event_name: "SessionStart", source: "compact",
+      session_id: f.nativeSession, transcript_path: f.transcriptPath }))?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+    expect(store.getSession(binding.coreSessionId!)!.closedAt).toBe(closedAt);
+  } finally { store.close(); }
 });
 
 test("43d actual SessionStart Hook emits once, resume recognizes it, and compact intentionally reinjects", async () => {
@@ -263,6 +358,14 @@ test("43d complete transcript reader accepts exact duplicate identities and repo
   expect(readCompleteTranscript(path).problem).toBeUndefined();
   appendFileSync(path, line({ ...same, slug: "native-copy", attachment: { ...(same.attachment as object), content: ["changed body"] } }));
   expect(readCompleteTranscript(path).problem).toBe("native transcript UUID same changed within the completed file");
+});
+
+test("43d Hook keeps ancestry failure explicit and leaves the prior branch selected", async () => {
+  const f = await hookFixture(), before = readBinding(f.config, f.nativeSession)!;
+  appendFileSync(f.transcriptPath, line(assistant("broken-leaf", "absent", "broken")));
+  await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume",
+    session_id: f.nativeSession, transcript_path: f.transcriptPath })).rejects.toThrow("native lineage parent absent is missing");
+  expect(readBinding(f.config, f.nativeSession)).toMatchObject({ selectedLeafUuid: before.selectedLeafUuid, branch: before.branch });
 });
 
 test("43d rejects a changed UUID body before it can donate coverage", async () => {
@@ -320,6 +423,76 @@ test("43d refuses a bound project change instead of injecting for a guessed targ
   await updateBinding(f.config, f.nativeSession, current => ({ ...current!, projectId: other.id }));
   await expect(handleCcHook(f.config, { hook_event_name: "SessionStart", source: "resume", session_id: f.nativeSession,
     transcript_path: f.transcriptPath })).rejects.toThrow("core session or project disagrees");
+});
+
+test("43d projection-only Hook teardown performs no executor invalidation on disabled, enabled, or error paths", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm43d-read-close-")); dirs.push(dir);
+  const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z" });
+  const invalidate = vi.spyOn(Store.prototype, "invalidateExecutor");
+  expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "startup", session_id: "read-close",
+    transcript_path: join(dir, "missing.jsonl") })).toBeNull();
+
+  const enabled = await hookFixture();
+  invalidate.mockClear();
+  const output = await handleCcHook(enabled.config, { hook_event_name: "SessionStart", source: "compact",
+    session_id: enabled.nativeSession, transcript_path: enabled.transcriptPath });
+  expect(output?.hookSpecificOutput.additionalContext).toContain("hook knowledge");
+  appendFileSync(enabled.transcriptPath, "{not-json}\n");
+  await expect(handleCcHook(enabled.config, { hook_event_name: "SessionStart", source: "resume",
+    session_id: enabled.nativeSession, transcript_path: enabled.transcriptPath })).rejects.toThrow("invalid completed transcript record");
+  expect(invalidate).not.toHaveBeenCalled();
+  const reopened = new Store(enabled.config.dbPath); reopened.close();
+});
+
+test("43d provisional first prompt injects global knowledge without allocating or reopening a session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm43d-provisional-")); dirs.push(dir);
+  const transcriptPath = join(dir, "native.jsonl"), nativeSession = "hook-provisional";
+  const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z" });
+  const memory = TraceMemory(config.dbPath, async () => { throw new Error("offline"); });
+  const project = memory.store.createProject({ name: "seed", declaredBy: "mark" });
+  const session = memory.store.createSession({ enrollmentChoice: true, host: "fixture", projectId: project.id,
+    startedAt: time(0), firstReplyAt: time(0) });
+  const turn = memory.store.appendTurn({ sessionId: session.id, kind: "turn", startedAt: time(0), userPrompt: "global rule" });
+  const noted = memory.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, createdAt: time(0) },
+    facts: [{ turnId: turn.id, category: "decision", actor: "user", text: "global rule",
+      source: [`T${turn.id}#user`], createdAt: time(0) }] });
+  if (!noted.ok) throw new Error(noted.problems.join("; "));
+  const committed = memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: session.id, createdAt: time(0) },
+    operations: [{ op: "create", topics: [], reason: "fixture", handle: "$global", author: "fixture",
+      text: "global knowledge before first reply", supports: [noted.facts[0]!.id], createdAt: time(0),
+      category: "constraint", scope: "global" }] });
+  if (!committed.ok) throw new Error(committed.problems.join("; "));
+  memory.store.close();
+  writeFileSync(transcriptPath, line(user("first-user", null, "first prompt before any assistant reply")));
+  const reopen = vi.spyOn(Store.prototype, "reopenSession");
+  const output = await handleCcHook(config, { hook_event_name: "SessionStart", source: "startup",
+    session_id: nativeSession, transcript_path: transcriptPath });
+  expect(output?.hookSpecificOutput.additionalContext).toContain("global knowledge before first reply");
+  const provisional = readBinding(config, nativeSession)!;
+  expect(provisional).toMatchObject({ coreSessionId: null, projectId: expect.any(Number), selectedLeafUuid: null, executor: null });
+  const store = new Store(config.dbPath);
+  expect(store.findSessionByHost(`cc:${nativeSession}`)).toBeNull();
+  expect(store.db.prepare("SELECT COUNT(*) AS count FROM task_claims").get()).toEqual({ count: 0 });
+  expect(reopen).not.toHaveBeenCalled();
+  store.close();
+});
+
+test("43d SessionStart allocates and projects without reopening or claiming the new core session", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "tm43d-allocation-")); dirs.push(dir);
+  const transcriptPath = join(dir, "native.jsonl"), nativeSession = "hook-allocation";
+  const config = resolveCcHostConfig({ dbPath: join(dir, "m.sqlite"), stateDir: join(dir, "s"), baseline: "2025-01-01T00:00:00.000Z" });
+  writeFileSync(transcriptPath, [user("alloc-u", null, "allocate"), assistant("alloc-a", "alloc-u", "answer")].map(line).join(""));
+  const reopen = vi.spyOn(Store.prototype, "reopenSession");
+  expect(await handleCcHook(config, { hook_event_name: "SessionStart", source: "startup",
+    session_id: nativeSession, transcript_path: transcriptPath })).toBeNull();
+  const allocated = readBinding(config, nativeSession)!;
+  expect(allocated).toMatchObject({ coreSessionId: expect.any(Number), selectedLeafUuid: "alloc-a", executor: null });
+  const store = new Store(config.dbPath);
+  expect(store.getSession(allocated.coreSessionId!)!.closedAt).toBeNull();
+  expect(store.db.prepare("SELECT COUNT(*) AS count FROM task_claims WHERE session_id = ?").get(allocated.coreSessionId!))
+    .toEqual({ count: 0 });
+  expect(reopen).not.toHaveBeenCalled();
+  store.close();
 });
 
 test("43d startup without a transcript stays disabled unless explicitly enrolled, then provisions only its project", async () => {

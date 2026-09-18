@@ -75,7 +75,7 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     const entry = memory.appendEntry({ sessionId: session.id, turnId: turn.id, nativeLineage: host, nativeId: `${host}-entry`, role: "user", text: "pending", raw: "{}", calls: [] });
     memory.selectEntries(session.id, "main", [entry.id]); return { session, turn };
   };
-  const a = seed(owner, "owner"), b = seed(other, "other");
+  const a = seed(owner, `cc:${f.nativeSessionId}`), b = seed(other, "other");
   await updateBinding(f.config, f.nativeSessionId, current => ({ ...current!, coreSessionId: a.session.id, projectId: project.id }));
   const server = await startControlServer(f.config, readBinding(f.config, f.nativeSessionId)!, owner);
   try {
@@ -362,6 +362,32 @@ test("unrelated files in the transcript directory do not request transcript reco
   await sleep(50);
   expect(diagnostics.some(value => value.includes('"reason":"transcript watch"'))).toBe(false);
   await coordinator.shutdown("test shutdown");
+});
+
+test("live control follows a provisional binding through ordinary core allocation", async () => {
+  const f = fixture("control-allocation");
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-allocation-"); dirs.push(f.config.stateDir);
+  writeFileSync(f.transcriptPath, [
+    { uuid: "u1", parentUuid: null, type: "user", timestamp: now, promptId: "p1", promptSource: "typed", userType: "external", message: { role: "user", content: "question" } },
+    { uuid: "a1", parentUuid: "u1", type: "assistant", timestamp: "2026-01-01T00:00:01.000Z", message: { role: "assistant", content: [{ type: "text", text: "answer" }] } },
+  ].map(record => `${JSON.stringify(record)}\n`).join(""));
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  expect(readBinding(f.config, f.nativeSessionId)?.coreSessionId).toBeNull();
+  const diagnostics: string[] = [];
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, message => diagnostics.push(message));
+  await coordinator.start();
+  try {
+    const result = await coordinator.requestReconcile("test allocation");
+    expect(result, diagnostics.join("\n")).toMatchObject({ state: "ready", coreSessionId: expect.any(Number) });
+    expect(readBinding(f.config, f.nativeSessionId)?.coreSessionId).toEqual(expect.any(Number));
+    await expect(controlSession(f.config, f.nativeSessionId, "stop")).resolves.toMatchObject({
+      state: "acknowledged", reply: { verb: "stop" },
+    });
+    await expect(controlSession(f.config, f.nativeSessionId, "off")).resolves.toMatchObject({
+      state: "acknowledged", reply: { verb: "off" },
+    });
+  } finally { await coordinator.shutdown("test cleanup"); }
 });
 
 test("ordinary wake bursts coalesce to one pending reconciliation", async () => {
