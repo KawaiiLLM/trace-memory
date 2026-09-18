@@ -9,11 +9,11 @@
     ]
   },
   "promptOrder": [
-    "A. Split first.",
-    "A′. Merge.",
-    "B. Resolve.",
-    "C. Rewrite for readability.",
-    "D. Check."
+    "A. Split?",
+    "B. Merge?",
+    "C. Resolve?",
+    "D. Rewrite?",
+    "Check."
   ],
   "examples": [
     {
@@ -276,6 +276,70 @@
         "reason": "Archive on the cited fact recording the merge: the record is a finished work item with nothing unresolved left in it; the archived version and its cited facts keep the completed work retrievable."
       },
       "review": "Reason (b): a finished work item — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — is archived on the fact that finishes it, whatever its category. The protected-meaning entry for useful completed work is satisfied by the archived version and its cited facts, not by keeping the record resident. This is first-round resolve work."
+    },
+    {
+      "id": "split-piece-merges-into-existing-home",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The user ruled that the Knowledge budget is owned by the bound database policy, not a settings file; the migration that moves existing settings-file values into the database is still to be written.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["knowledge-budget", "database-policy"]
+        },
+        {
+          "text": "The migration that moves existing settings-file budget values into the database policy remains to be written; next action is to draft it for review.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["knowledge-budget", "migration"]
+        }
+      ],
+      "result": {
+        "operations": ["split parent 0 into the ruling and the pending-migration piece", "merge the pending-migration child into parent 1, the older identity surviving"],
+        "reason": "The ruling and the pending migration would be read and changed apart, so the item is split; before the migration piece becomes a new identity it is checked for a home, and the current open item already carries it, so it merges there."
+      },
+      "review": "Per-item order: split (A), then the home check (B) for each piece before the item's operations are committed. A piece that would be split out merges into the current item that already carries it instead of becoming a new identity; splitting the whole pool first and searching for duplicates afterwards would have left a split-out duplicate."
+    },
+    {
+      "id": "finished-status-folded-into-ruling",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda. The change removing the opening check passed review and was merged into main; nothing from it remains open.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["dreamer", "check"]
+        }
+      ],
+      "result": {
+        "children": [
+          { "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda (merged into main).", "category": "constraint" },
+          { "text": "The change removing the opening `check` passed review and was merged into main; nothing from it remains open.", "category": "reference" }
+        ],
+        "operations": ["split into the ruling, carrying the finished status as a few characters, and the delivery record", "archive the delivery-record child on the fact recording the merge"],
+        "reason": "The body cannot be given one category: the ruling is a constraint and the delivery status is progress. The status has no follow-up, so it is folded into the ruling as the traceable pointer and its delivery record is archived on the finishing fact."
+      },
+      "review": "Status beside a ruling is compound by the category test. A finished status with no follow-up is folded into the ruling's body in a few characters, and the delivery record it came from is archived on its finishing fact (reason b); the protected-meaning entry for useful completed work is met by those few characters plus the archived version, not by a resident record."
+    },
+    {
+      "id": "over-detailed-body-trimmed-to-claim",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "The Consolidator reads its Knowledge injection capacity from the bound database policy through `knowledgeBudgets().injection` (default 20000) instead of the settings file.",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["consolidator", "knowledge-budget"]
+        }
+      ],
+      "result": {
+        "text": "The Consolidator reads its Knowledge injection capacity from the bound database policy instead of the settings file.",
+        "category": "mechanism",
+        "scope": "project",
+        "topics": ["consolidator", "knowledge-budget"],
+        "reason": "Knowledge is macro: the accessor name and default value are not needed to state the claim; they survive in the cited facts and the original, which `trace` reaches. One rewrite, not a split."
+      },
+      "review": "The body is long by detail, not by holding two things, so it is trimmed to the macro claim rather than split (principle 2). This is not shortening-only: the identifier and default value are removed as detail a body does not carry, and the reason names where they survive."
     }
   ]
 }
