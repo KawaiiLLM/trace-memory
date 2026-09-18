@@ -105,6 +105,8 @@ export interface Injection { text: string; knowledgeCommitIds: number[]; knowled
  * prints — the fact and commit records, the path, the labels the commit graph decided — is immutable
  * or already frozen by the query, so these three annotations are the whole remainder. */
 interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile; /** 59: the batched-search query this hit answers, echoed on its line. */ query?: string }
+/** 59c: a batched-search query with no hit; its line trails the hits and is paged like them. */
+type Miss = { miss: string };
 
 /** One component of a `trace` comma list, in request order: either an interval's immutable fact
  * identity with frozen relations, or a named component's renderer over frozen database values.
@@ -169,7 +171,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
     /** 22c "complete snapshot": run once, on the hits this query defers, to freeze the mutable state
      * their lines will read. The pages formatted at query time need nothing frozen, so the whole
      * hit set is never formatted and no transaction is held; the deferred hits carry their own. */
-    capture?: (deferred: readonly unknown[]) => readonly unknown[] }
+    capture?: (deferred: readonly unknown[]) => readonly unknown[];
+    /** 59c: a batched search's per-query cap; its cursor may repeat it, while the line cap stays the default. */
+    queryCap?: number }
   /** A query's remainder: the frozen hit set of that one query, shared by every page it still owes,
    * plus this cursor's own position in it. `pending` holds the lines of a hit whose formatting
    * crossed the page edge — `cap` counts output lines. Every read freezes the effective page aliases,
@@ -181,7 +185,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
   type FrozenListing = {
     itemBudget: number | null; toolCallBudget: number | null; toolResultBudget: number | null;
     tool?: number; versions?: ReadVersions; category?: KnowledgeCategory;
-    scope?: KnowledgeScope; fields?: readonly ReadField[];
+    scope?: KnowledgeScope; fields?: readonly ReadField[]; queryCap?: number;
   };
   type Remainder = Continuation & { offset: number; pending: readonly string[]; footer: string; cap: number; owner: string; maxTokens?: number; maxChars?: number; reads: KnowledgeRead[]; origin: "trace" | "search"; fragmented: boolean; frozen: FrozenListing };
   // A model asks for page one and usually never asks for page two, so a continuation is a cache
@@ -205,15 +209,17 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       tool: options.tool ?? saved?.frozen.tool,
       versions: options.versions ?? saved?.frozen.versions, category: options.category ?? saved?.frozen.category,
       scope: options.scope ?? saved?.frozen.scope, fields: options.fields ?? saved?.frozen.fields,
+      queryCap: saved ? saved.frozen.queryCap : Array.isArray(source) ? undefined : source.queryCap,
     };
     for (const key of ["itemBudget", "toolCallBudget", "toolResultBudget", "tool", "versions", "category", "scope", "fields"] as const) {
       const same = key === "fields" ? JSON.stringify(frozen.fields) === JSON.stringify(saved?.frozen.fields)
         : frozen[key] === saved?.frozen[key];
       if (saved && !same) throw new Error(`cursor ${key} is frozen; omit it or use the original value`);
     }
-    const cap = options.cap ?? saved?.cap ?? 100;
-    if (!Number.isSafeInteger(cap) || cap < 1) throw new Error("listing cap must be a positive integer");
-    if (saved && cap !== saved.cap) throw new Error("cursor cap is frozen; omit it or use the original value");
+    const requested = options.cap ?? saved?.frozen.queryCap ?? saved?.cap ?? 100;
+    if (!Number.isSafeInteger(requested) || requested < 1) throw new Error("listing cap must be a positive integer");
+    if (saved && requested !== (saved.frozen.queryCap ?? saved.cap)) throw new Error("cursor cap is frozen; omit it or use the original value");
+    const cap = saved?.cap ?? requested;
     const { items, format, capture } = saved ?? (Array.isArray(source)
       ? { items: source, format: (lines: readonly unknown[]) => lines as string[], capture: undefined } : source);
     if (saved) { footer = saved.footer; reads = saved.reads; }
@@ -773,21 +779,26 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const perQuery = input.cap ?? 1;
       if (batched && (!Number.isSafeInteger(perQuery) || perQuery < 1)) throw new Error("listing cap must be a positive integer");
       const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map(address => ({ address, query: batched[index]! }))) : represented[0]!;
-      const empty = batched ? batched.filter((_, index) => !represented[index]!.length) : [];
+      // 59c: a query with no hit is a line after every hit, paged like one, never a footer entry.
+      const items: (string | FrozenHit | Miss)[] = [...addresses, ...(batched ? batched.filter((_, index) => !represented[index]!.length).map(miss => ({ miss })) : [])];
       // The graph freezes what a hit is; this freezes mutable annotations and Raw membership for
       // deferred pages. No open transaction survives the first page.
-      const capture = (deferred: readonly unknown[]): FrozenHit[] => {
-        const queries = deferred.map(item => typeof item === "string" ? undefined : (item as FrozenHit).query);
-        const rest = deferred.map(item => typeof item === "string" ? item : (item as FrozenHit).address);
+      const capture = (deferred: readonly unknown[]): (FrozenHit | Miss)[] => {
+        // The no-hit lines trail every hit and read nothing mutable; only the hits are frozen.
+        const hits = deferred.filter((item): item is string | FrozenHit => typeof item === "string" || !("miss" in (item as object)));
+        const queries = hits.map(item => typeof item === "string" ? undefined : item.query);
+        const rest = hits.map(item => typeof item === "string" ? item : item.address);
         const record = (address: string) => Number(address.slice(1)), commitOf = (address: string) => Number(address.split("@")[1]);
         const ids = (prefix: string, of: (address: string) => number) => rest.filter(a => a.startsWith(prefix)).map(of);
         const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
         const entries = store.listSourceEntryIdsOf(ids("T", record));
-        return rest.map((address, index): FrozenHit => ({ ...(address.startsWith("F") ? { address }
+        return [...rest.map((address, index): FrozenHit => ({ ...(address.startsWith("F") ? { address }
           : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { entryTokens: config.render.entryTokens, toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } }
-          : { address, marks: marks.get(commitOf(address))! }), ...(queries[index] === undefined ? {} : { query: queries[index] }) }));
+          : { address, marks: marks.get(commitOf(address))! }), ...(queries[index] === undefined ? {} : { query: queries[index] }) })),
+          ...deferred.slice(hits.length) as Miss[]];
       };
-      const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
+      const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit | Miss)[]).map((item) => {
+        if (typeof item !== "string" && "miss" in item) return `no hit: ${JSON.stringify(item.miss)}`;
         const frozen: FrozenHit | undefined = typeof item === "string" ? undefined : item;
         const address = frozen?.address ?? item as string;
         const echo = frozen?.query === undefined ? "" : `${JSON.stringify(frozen.query)}: `;
@@ -807,10 +818,9 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const filters = [`searched: ${material}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
       const omitted = READ_FIELDS.filter(field => !fields.has(field));
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
-      const misses = empty.length ? `\nno hit: ${empty.map(q => JSON.stringify(q)).join(", ")}` : "";
-      return page({ items: addresses, format, capture }, { ...options, ...(batched ? { cap: undefined } : {}),
+      return page({ items, format, capture, ...(batched ? { queryCap: perQuery } : {}) }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}${misses}`, [], "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
     },
     mark: (address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string => {
       if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");

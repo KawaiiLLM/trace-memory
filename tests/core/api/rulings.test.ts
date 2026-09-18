@@ -2532,7 +2532,7 @@ test("59: every supplied item is accounted for by an operation or a skip; New it
   // The loop's opening: an item ends the round in an operation or a skip; the check reports the rest; a skip certifies nothing.
   expect(prompt).toContain("Every supplied item ends the round either in an operation or in a skip with a reason, and the check reports the ones that are neither; a skip is not a certificate.");
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
-  expect(prompt).toContain("Before the first `New:` item is decided, one `search` with `queries` — for each New item the shortest common noun of its object, the word an older body would use, one query per object and never the item's own phrase — `layer: knowledge`, `versions: history`, `cap: 3` (the item's own self-hit leads, the older identity follows); a hit is a revival candidate to read in full (`trace`) before deciding whether the New item continues that identity.");
+  expect(prompt).toContain("Before the first `New:` item is decided, one `search` with `queries` — for each New item the shortest common noun of its object, the word an older body would use, one query per object and never the item's own phrase — `layer: knowledge`, `versions: history`, `cap: 3`; a hit is a revival candidate to read in full (`trace`) before deciding whether the New item continues that identity.");
   // The memory call names the skip shape; the empty-skip literal is gone.
   expect(prompt).toContain('Call memory({operations, skipped}); a skip is `{knowledge: "K12@57", because}` naming a supplied item this round leaves without an operation.');
   expect(prompt).not.toContain("skipped: []");
