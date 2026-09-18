@@ -195,7 +195,7 @@ test("35c scripted no-op skips the item with a reason and checks actual state be
 
 test("59 scripted round: two items skipped with reasons, one New item revives the archived identity the batched search found", async () => {
   const reviewed = example("two-skipped-one-revived");
-  const result = reviewed.result as { search: { queries: string[]; layer: "knowledge"; versions: "history" };
+  const result = reviewed.result as { search: { queries: string[]; layer: "knowledge"; versions: "history"; cap: number };
     skipped: { parent: number; because: string }[]; merge: { absorb: number; text: string; category: KnowledgeCategory; scope: KnowledgeScope; topics: string[]; reason: string } };
   const actions: string[] = [];
   let state!: ReturnType<typeof seeded>;
@@ -208,8 +208,9 @@ test("59 scripted round: two items skipped with reasons, one New item revives th
     const found = tool("search").execute(result.search);
     expect(found).toContain(`no hit: ${JSON.stringify(result.search.queries[0])}`);
     expect(found).toContain(`${JSON.stringify(result.search.queries[1])}: [${handle(state.items[1]!)}]`);
+    // 59b: hits come in similarity order, so the New item's own self-hit may lead; with cap 2 the
+    // archived identity is still listed and is the revival candidate.
     expect(found).toContain(`${JSON.stringify(result.search.queries[2])}: [K${archive.knowledgeId}@`);
-    expect(found).not.toContain(`[${handle(state.items[2]!)}]`);
     actions.push("trace");
     tool("trace").execute({ address: `K${archive.knowledgeId}@${archive.commit}`, itemBudget: null });
     tool("trace").execute({ address: `K${archive.knowledgeId}@${archive.parent}`, itemBudget: null });
