@@ -70,6 +70,138 @@ test("production worker serves original schemas and raw arguments, publishes the
   expect(optionsSeen[0]).not.toHaveProperty("hooks");
 });
 
+test("Dreamer uses one streaming child for one repair, accepts stable repeated init, and aggregates pass usage", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const prompts: any[] = [], passEnd = vi.fn().mockReturnValueOnce("repair receipt").mockReturnValueOnce(undefined);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any>; options: Record<string, any> }) => {
+    const stream = (async function* () {
+      const input = request.prompt[Symbol.asyncIterator]();
+      prompts.push((await input.next()).value);
+      const init = { type: "system", subtype: "init", session_id: "native-child", messaging_socket_path: "/tmp/one.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield init;
+      yield { type: "result", subtype: "success", session_id: "native-child", is_error: false, result: "first", errors: [], num_turns: 1,
+        usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 5, cache_creation_input_tokens: 3 },
+        modelUsage: {}, total_cost_usd: 0.125 };
+      prompts.push((await input.next()).value);
+      yield { ...init };
+      yield { type: "result", subtype: "success", session_id: "native-child", is_error: false, result: "final", errors: [], num_turns: 1,
+        usage: { input_tokens: 13, output_tokens: 9, cache_read_input_tokens: 6, cache_creation_input_tokens: 4 },
+        modelUsage: {}, total_cost_usd: 0.25 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "frozen material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50);
+  expect(result).toMatchObject({ outcome: "success", output: "final",
+    usage: { input: 24, output: 16, cacheRead: 11, cacheWrite: 7, cost: { total: 0.25 } } });
+  expect(passEnd).toHaveBeenCalledTimes(2);
+  expect(prompts.map(value => ({ text: value.message.content[0].text, synthetic: value.isSynthetic ?? false })))
+    .toEqual([{ text: "frozen material", synthetic: false }, { text: "repair receipt", synthetic: true }]);
+});
+
+test("Dreamer rejects an unsolicited second pass and does not call passEnd twice", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-unsolicited-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const passEnd = vi.fn(() => undefined);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      await request.prompt[Symbol.asyncIterator]().next();
+      yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      for (const result of ["first", "unsolicited"]) yield { type: "result", subtype: "success", session_id: "one",
+        is_error: false, result, errors: [], usage: { input_tokens: 1, output_tokens: 1,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+  await expect(new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
+    .resolves.toMatchObject({ outcome: "failure", output: expect.stringContaining("after its authorized final pass") });
+  expect(passEnd).toHaveBeenCalledTimes(1);
+});
+
+test("Dreamer fails when a requested repair pass never completes", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-missing-repair-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      await request.prompt[Symbol.asyncIterator]().next();
+      yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "one", is_error: false, result: "first", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
+      await request.prompt[Symbol.asyncIterator]().next();
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+  await expect(new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
+    .resolves.toMatchObject({ outcome: "failure", output: expect.stringContaining("before completing") });
+});
+
+test("Dreamer does not issue a repair after a failed native pass", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-identity-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const passEnd = vi.fn(() => "must not run");
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      const input = request.prompt[Symbol.asyncIterator](); await input.next();
+      yield { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "error_during_execution", session_id: "one", is_error: true, errors: ["provider failed"],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
+    .toMatchObject({ outcome: "failure", output: "provider failed" });
+  expect(passEnd).not.toHaveBeenCalled();
+});
+
+test("Dreamer rejects a repeated init from a different native child", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-dreamer-init-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      const input = request.prompt[Symbol.asyncIterator](); await input.next();
+      const init = { type: "system", subtype: "init", session_id: "one", messaging_socket_path: "/tmp/one.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield init;
+      yield { type: "result", subtype: "success", session_id: "one", is_error: false, result: "first", errors: [],
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.1 };
+      await input.next();
+      yield { ...init, session_id: "two" };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 50))
+    .toMatchObject({ outcome: "failure", output: expect.stringContaining("different native session") });
+});
+
 test("production worker forwards only the isolated operational and session environment", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-env-")); dirs.push(directory);
   const executable = join(directory, "claude");
@@ -433,6 +565,27 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
     expect.stringContaining("noting worker failure"), expect.stringContaining("consolidation worker failure")]));
   expect(memory.pendingEntries(session.id, "main", seed.turn.id)).toHaveLength(1);
   memory.close();
+});
+
+test("scheduler reserves a distinct Dreaming slot without completion-driven draining", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-scheduler-dreaming-")); dirs.push(directory);
+  const starts: string[] = [], releases = new Map<string, () => void>();
+  const phase = (name: string) => async () => {
+    starts.push(name); await new Promise<void>(resolve => releases.set(name, resolve));
+    return { outcome: "failure", runId: 1, problems: ["synthetic"] };
+  };
+  const memory = { config: { closedSessionScope: "project" }, taskEligibility: () => ({ due: true }),
+    store: { enabled: () => true, closedTasks: () => [] }, noting: phase("noting"), consolidate: phase("consolidation"), dream: phase("dreaming") } as any;
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
+  scheduler.trigger(reconcile); scheduler.trigger(reconcile); await tick();
+  expect(new Set(starts)).toEqual(new Set(["noting", "consolidation", "dreaming"]));
+  expect(new Set(scheduler.running())).toEqual(new Set(["noting", "consolidation", "dreaming"]));
+  for (const release of releases.values()) release();
+  await scheduler.settle(); await tick();
+  expect(starts).toHaveLength(3);
 });
 
 test("scheduler diagnoses resolved bounced and successful-but-problemed results", async () => {

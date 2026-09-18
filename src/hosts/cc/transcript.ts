@@ -242,6 +242,15 @@ export class CcTranscriptCursor {
   private lastSnapshot: CcTranscriptSnapshot | null = null;
 
   currentSnapshot(path: string): CcTranscriptSnapshot { return this.lastSnapshot ?? snapshot(path, null); }
+  /** A read-only fast path for a publisher that already owns this exact file snapshot. */
+  unchangedSnapshot(path: string): CcTranscriptSnapshot | null {
+    if (!this.stamp || !this.lastSnapshot) return null;
+    const observed = readTranscriptMetadata(path);
+    if (!observed.exists) return null;
+    const stamp: FileStamp = { size: observed.size!, modifiedMs: observed.modifiedMs!, changedMs: observed.changedMs!,
+      device: observed.device!, inode: observed.inode! };
+    return sameStamp(this.stamp, stamp) ? { ...this.lastSnapshot, records: [], changed: false, reset: false } : null;
+  }
   currentProblems(): string[] {
     const values = [...this.unresolvedProblems];
     const rejected = this.rejected?.snapshot.problem;
@@ -249,14 +258,14 @@ export class CcTranscriptCursor {
     return values;
   }
   node(uuid: string): CcNativeNode | undefined { return this.nodes.get(uuid); }
-  callPath(toolUseId: string, expectedName: string): CcNativeNode[] | null {
+  callPath(toolUseId: string, expectedNames: readonly string[]): CcNativeNode[] | null {
     const carrierIds = this.callCarriers.get(toolUseId);
     if (!carrierIds?.size) return null;
     if (carrierIds.size !== 1) throw new Error(`native tool call ${toolUseId} is ambiguous in this session`);
     const carrier = this.nodes.get([...carrierIds][0]!)!;
     const invocation = carrier.calls.find(call => call.id === toolUseId)!;
-    if (invocation.name !== expectedName)
-      throw new Error(`native tool call ${toolUseId} invoked ${invocation.name}, not ${expectedName}`);
+    if (!expectedNames.includes(invocation.name))
+      throw new Error(`native tool call ${toolUseId} invoked ${invocation.name}, not ${expectedNames.join(" or ")}`);
     const reverse: CcNativeNode[] = [], seen = new Set<string>();
     let current: CcNativeNode | undefined = carrier;
     while (current) {

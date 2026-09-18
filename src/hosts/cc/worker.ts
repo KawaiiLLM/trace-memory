@@ -3,14 +3,14 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, type SDKResultMessage, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import type { ConsolidationAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
+import type { ConsolidationAgentInput, DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, CC_CONTEXT_HEADROOM, type ResolvedCcHostConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
-export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput;
+export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
 const execFileAsync = promisify(execFile);
 const AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
 
@@ -127,7 +127,8 @@ const RESULT_SIZE_META = { "anthropic/maxResultSizeChars": CC_MAX_RESULT_CHARS }
 
 /** SDK tool helpers convert through Zod and parse arguments. Core owns the schemas and validation,
  * so the public low-level MCP handlers advertise the originals and pass arguments through unchanged. */
-function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (value: unknown) => void) {
+function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (value: unknown) => void,
+  toolsAllowed: () => boolean) {
   const config = createSdkMcpServer({ name: "trace_memory", version: "0.1.0-beta.7" });
   const definitions = new Map<string, ToolDefinition>(task.tools.map(definition => [definition.name, definition]));
   config.instance.server.registerCapabilities({ tools: {} });
@@ -138,8 +139,10 @@ function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (va
   config.instance.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const definition = definitions.get(request.params.name);
     if (!definition) throw new Error(`unknown CC worker tool ${request.params.name}`);
+    if (!toolsAllowed()) throw new Error("CC worker received a tool call outside an authorized pass");
     await origins.origin(extra);
     task.signal?.throwIfAborted();
+    if (!toolsAllowed()) throw new Error("CC worker pass authorization ended before its tool call completed");
     const input = request.params.arguments ?? {};
     const text = definition.execute(input);
     record({ type: "tool", name: definition.name, input, result: text });
@@ -148,15 +151,56 @@ function workerServer(task: CcAgentTask, origins: CcResponseOrigins, record: (va
   return config;
 }
 
-function coreUsage(result: SDKResultMessage) {
-  const usage = result.usage as unknown;
-  if (!usage || typeof usage !== "object") return;
-  const counters = usage as Record<string, unknown>;
-  const names = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
-  if (names.some(name => typeof counters[name] !== "number")) return;
-  return { input: counters.input_tokens as number, output: counters.output_tokens as number,
-    cacheRead: counters.cache_read_input_tokens as number, cacheWrite: counters.cache_creation_input_tokens as number,
-    cost: { total: result.total_cost_usd } };
+const USAGE_COUNTERS = ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"] as const;
+
+function coreUsage(results: readonly SDKResultMessage[]) {
+  if (!results.length) return;
+  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const result of results) {
+    const usage = result.usage as unknown;
+    if (!usage || typeof usage !== "object") return;
+    const counters = usage as Record<string, unknown>;
+    if (USAGE_COUNTERS.some(name => typeof counters[name] !== "number")) return;
+    totals.input += counters.input_tokens as number;
+    totals.output += counters.output_tokens as number;
+    totals.cacheRead += counters.cache_read_input_tokens as number;
+    totals.cacheWrite += counters.cache_creation_input_tokens as number;
+  }
+  const cost = results.at(-1)!.total_cost_usd;
+  if (typeof cost !== "number") return;
+  return { ...totals, cost: { total: cost } };
+}
+
+class CcUserInput implements AsyncIterable<SDKUserMessage> {
+  private values: SDKUserMessage[] = [];
+  private waiters: ((value: IteratorResult<SDKUserMessage>) => void)[] = [];
+  private ended = false;
+
+  push(value: SDKUserMessage): void {
+    if (this.ended) throw new Error("CC worker input is already closed");
+    const waiter = this.waiters.shift();
+    if (waiter) waiter({ value, done: false }); else this.values.push(value);
+  }
+
+  close(): void {
+    if (this.ended) return;
+    this.ended = true;
+    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
+    return { next: () => {
+      const value = this.values.shift();
+      if (value) return Promise.resolve({ value, done: false });
+      if (this.ended) return Promise.resolve({ value: undefined, done: true });
+      return new Promise(resolve => this.waiters.push(resolve));
+    } };
+  }
+}
+
+function userMessage(text: string, sessionId = "", synthetic = false): SDKUserMessage {
+  return { type: "user", session_id: sessionId, message: { role: "user", content: [{ type: "text", text }] },
+    parent_tool_use_id: null, ...(synthetic ? { isSynthetic: true } : {}) } as SDKUserMessage;
 }
 
 function nativeVersion(stdout: string): string | null {
@@ -187,7 +231,7 @@ function assertModelMetadata(models: unknown, worker: ResolvedCcWorkerConfig): v
     throw new Error(`CC worker effort ${worker.effort} is not supported by model ${worker.model}`);
 }
 
-/** One fresh-context official-SDK execution implementation for frozen Noting and Consolidation tasks. */
+/** One fresh-context official-SDK execution implementation for all three frozen memory phases. */
 export class CcAgentWorker {
   private readonly config: ResolvedCcHostConfig;
   private readonly worker: ResolvedCcWorkerConfig;
@@ -196,7 +240,7 @@ export class CcAgentWorker {
   private versionCheck: Promise<void> | null = null;
 
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
-    if (!config.worker) throw new Error("CC worker configuration is required for Noting and Consolidation admission");
+    if (!config.worker) throw new Error("CC worker configuration is required for memory-task admission");
     this.config = config; this.worker = config.worker;
     this.environment = productionEnvironment(dependencies.environment ?? process.env);
     this.query = dependencies.query ?? query;
@@ -227,20 +271,26 @@ export class CcAgentWorker {
     const origins = new CcResponseOrigins(task, this.worker.responseOriginTimeoutMs, maxToolRounds, error => {
       protocolError ??= error; controller.abort(error);
     });
-    let result: SDKResultMessage | null = null;
-    let initialized = false;
+    const results: SDKResultMessage[] = [];
+    const input = task.kind === "dreaming" ? new CcUserInput() : null;
+    input?.push(userMessage(task.text));
+    let initIdentity: string | null = null, nativeSessionId: string | null = null;
+    let output = "CC worker ended without an SDK result message";
+    let outcome: "success" | "failure" = "failure";
+    let dreamState: "first" | "repair-authorized" | "complete" = "first";
+    const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
     try {
       task.signal?.throwIfAborted();
       await this.verifyExecutable();
       const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
-      const execution = this.query({ prompt: task.text, options: {
+      const execution = this.query({ prompt: input ?? task.text, options: {
         model: this.worker.model,
         cwd: this.worker.cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
         tools: [],
         allowedTools,
-        mcpServers: { trace_memory: workerServer(task, origins, record) },
+        mcpServers: { trace_memory: workerServer(task, origins, record, toolsAllowed) },
         abortController: controller,
         systemPrompt: task.prompt,
         settingSources: [],
@@ -252,20 +302,55 @@ export class CcAgentWorker {
       } });
       for await (const message of execution) {
         record(message);
+        if (task.kind === "dreaming" && dreamState === "complete")
+          throw new Error("CC Dreamer emitted protocol activity after its authorized final pass");
         if (message.type === "system" && message.subtype === "init") {
-          if (initialized) throw new Error("CC worker emitted more than one init message");
-          initialized = true; assertInit(message, this.worker, allowedTools);
-          assertModelMetadata(await execution.supportedModels(), this.worker);
-        } else if (message.type === "assistant") origins.observe(message);
-        else if (message.type === "result") result = message;
+          assertInit(message, this.worker, allowedTools);
+          const identity = JSON.stringify({ sessionId: message.session_id,
+            messagingSocketPath: (message as unknown as { messaging_socket_path?: unknown }).messaging_socket_path });
+          if (initIdentity === null) {
+            initIdentity = identity;
+            nativeSessionId = message.session_id;
+            assertModelMetadata(await execution.supportedModels(), this.worker);
+          } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
+        } else if (message.type === "assistant") {
+          origins.observe(message);
+          if (task.kind === "dreaming") task.reportRounds(origins.rounds());
+        } else if (message.type === "result") {
+          if (nativeSessionId !== null && message.session_id !== nativeSessionId)
+            throw new Error("CC worker result came from a different native session");
+          results.push(message);
+          if (task.kind !== "dreaming") {
+            outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
+            output = message.subtype === "success" ? message.result : message.errors.join("; ");
+          } else {
+            const pass = results.length;
+            if ((pass === 1 && dreamState !== "first") || (pass === 2 && dreamState !== "repair-authorized") || pass > 2)
+              throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
+            const succeeded = message.subtype === "success" && !message.is_error;
+            output = message.subtype === "success" ? message.result : message.errors.join("; ");
+            outcome = succeeded ? "success" : "failure";
+            if (!succeeded) { dreamState = "complete"; input!.close(); }
+            else {
+              const repair = task.passEnd(origins.rounds());
+              if (pass === 1 && typeof repair === "string" && repair.length > 0) {
+                dreamState = "repair-authorized";
+                input!.push(userMessage(repair, message.session_id, true));
+              } else {
+                dreamState = "complete";
+                input!.close();
+              }
+            }
+          }
+        }
       }
-      if (!initialized) throw new Error("CC worker ended without native init metadata");
+      if (task.kind === "dreaming" && dreamState === "repair-authorized")
+        throw new Error("CC Dreamer ended before completing the core-requested repair pass");
+      if (initIdentity === null) throw new Error("CC worker ended without native init metadata");
       if (protocolError) throw protocolError;
-      if (!result) throw new Error("CC worker ended without an SDK result message");
-      const usage = coreUsage(result);
-      const success = result.subtype === "success" && !result.is_error;
-      const output = result.subtype === "success" ? result.result : result.errors.join("; ");
-      return { outcome: success ? "success" : "failure", output, ...(usage ? { usage } : {}), mode: "subagent", nativeLog,
+      if (!results.length) throw new Error("CC worker ended without an SDK result message");
+      const usage = coreUsage(results);
+      return { outcome, output, ...(usage ? { usage } : {}), mode: "subagent", nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
         thinking: { requested: this.worker.effort, effective: this.worker.effort } };
     } catch (error) {
@@ -276,7 +361,7 @@ export class CcAgentWorker {
         mode: "subagent", nativeLog, audit: { available: false, reason: AUDIT_UNAVAILABLE },
         verification: { rounds: origins.rounds() }, thinking: { requested: this.worker.effort, effective: this.worker.effort } };
     } finally {
-      origins.close(); task.signal?.removeEventListener("abort", cancel);
+      input?.close(); origins.close(); task.signal?.removeEventListener("abort", cancel);
     }
   }
 }
@@ -288,7 +373,7 @@ export function createCcRunAgent(config: ResolvedCcHostConfig, dependencies: CcW
   const worker = new CcAgentWorker(config, dependencies);
   return { runAgent: (input: unknown) => {
     const task = input as CcAgentTask;
-    if (task.kind !== "noting" && task.kind !== "consolidation")
+    if (task.kind !== "noting" && task.kind !== "consolidation" && task.kind !== "dreaming")
       return Promise.resolve({ outcome: "failure", output: `CC worker does not support ${String((input as { kind?: unknown })?.kind)}`,
         audit: { available: false, reason: AUDIT_UNAVAILABLE } });
     return worker.run(task, maxToolRounds(task.kind));

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { TraceMemory } from "../../core/api/index.ts";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { readBinding, updateBinding, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
+import { assertOperatorBinding, readBinding, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
 
 export type ControlVerb = "stop" | "off";
 export interface ControlReply {
@@ -36,15 +36,15 @@ const executorLiveness = (executor: CcExecutorBinding): "alive" | "dead" | "unkn
   }
 };
 
-type EnrollmentStore = Pick<Store, "setEnrollment" | "enrollment">;
 type DisableResult = { state: "disabled"; changed: boolean } | { state: "live-executor"; executor: CcExecutorBinding } |
   { state: "unknown-executor"; executor: CcExecutorBinding };
 
-async function disableEnrollment(config: ResolvedCcHostConfig, nativeSessionId: string, store: EnrollmentStore,
+async function disableEnrollment(config: ResolvedCcHostConfig, nativeSessionId: string, store: Store,
   expectedToken: string | null): Promise<DisableResult> {
   let result: DisableResult = { state: "disabled", changed: false };
-  await updateBinding(config, nativeSessionId, current => {
+  await updateBindingInStoreTransaction(config, nativeSessionId, store, current => {
     if (!current) throw new Error("CC binding disappeared during off");
+    assertOperatorBinding(config, current, store);
     if (expectedToken === null && current.executor) {
       const liveness = executorLiveness(current.executor);
       if (liveness !== "dead") {
@@ -91,6 +91,15 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
         try {
           const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown };
           if (request.token !== token || (request.verb !== "stop" && request.verb !== "off")) throw new Error("invalid CC control request");
+          const current = readBinding(config, binding.nativeSessionId);
+          if (!current) throw new Error("CC binding disappeared before control");
+          assertOperatorBinding(config, current, memory.store);
+          // The control server is attached before the first reconciliation, so its starting
+          // binding may legitimately be provisional. Once allocated, the authoritative host,
+          // project and database checks above plus the executor token fence the same target.
+          if ((binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId) ||
+              current.executor?.token !== token)
+            throw new Error("CC core or executor identity changed before control");
           const verb = request.verb;
           const aborted = memory.cancelTasks(false);
           if (verb === "off") await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
@@ -149,11 +158,21 @@ export type OperatorControlResult =
   | { state: "not-running"; enrollmentChanged: boolean }
   | { state: "unknown"; diagnostic: string };
 
+async function validatedOperatorBinding(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<CcSessionBinding> {
+  const store = new Store(config.dbPath);
+  try {
+    return updateBinding(config, nativeSessionId, current => {
+      if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+      assertOperatorBinding(config, current, store);
+      return current;
+    });
+  } finally { store.close(); }
+}
+
 /** Trusted operator boundary used by 43e's future CLI; it never accepts identity from an MCP tool. */
 export async function controlSession(config: ResolvedCcHostConfig, nativeSessionId: string, verb: ControlVerb,
   timeoutMs = 2_000): Promise<OperatorControlResult> {
-  const binding = readBinding(config, nativeSessionId);
-  if (!binding) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
+  const binding = await validatedOperatorBinding(config, nativeSessionId);
   let executor = binding.executor;
   if (!executor || executorLiveness(executor) === "dead") {
     if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
@@ -177,6 +196,9 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
         : { state: "unknown", diagnostic: "CC executor ownership changed repeatedly during off" };
     } finally { store.close(); }
   }
+  const finalBinding = await validatedOperatorBinding(config, nativeSessionId);
+  if (finalBinding.executor?.token !== executor.token)
+    throw new Error(`CC executor binding changed before ${verb}`);
   try { return { state: "acknowledged", reply: await request(executor, verb, timeoutMs) }; }
   catch (error) { return { state: "unknown", diagnostic: `executor is live but ${verb} communication failed: ${String(error)}` }; }
 }

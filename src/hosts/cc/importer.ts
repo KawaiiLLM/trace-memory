@@ -2,13 +2,13 @@ import { TraceMemory, type TraceMemory as TraceMemoryFacade } from "../../core/a
 import type { SourceEntry } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
-import { implicitCcProject, readBinding, updateBinding, type CcSessionBinding } from "./binding.ts";
+import { implicitCcProject, readBinding, withCcBindingLock, type CcBindingLock, type CcSessionBinding } from "./binding.ts";
 import { CcTranscriptCursor, CcTranscriptScan, CcTranscriptScanFailure, ccSourceBlocks, classifySourceRecord,
   nativeParentId, readTranscriptBootstrap, readTranscriptMetadata, type CcNativeRecord, type CcSourceRecord,
   type CcTranscriptSnapshot } from "./transcript.ts";
 
 export interface CcReconcileResult {
-  state: "ready" | "disabled" | "not-ready" | "unavailable";
+  state: "ready" | "provisional" | "disabled" | "not-ready" | "unavailable";
   snapshot: CcTranscriptSnapshot;
   coreSessionId: number | null;
   branch: string;
@@ -42,31 +42,25 @@ interface BootstrapSummary {
   incompleteBytes: number;
 }
 const snapshotKey = (value: CcTranscriptSnapshot) => JSON.stringify([value.exists, value.device, value.inode, value.size, value.modifiedMs, value.changedMs]);
+export const CC_PLUGIN_NAME = "trace-memory";
+export const CC_MCP_SERVER_NAME = "traceMemory";
 
-export class CcImporter {
+export class CcProjection {
   readonly memory: TraceMemoryFacade;
-  readonly workerCapacity?: { inputTokens: number; prefixTokens: 0 };
   private readonly config: ResolvedCcHostConfig;
   private binding: CcSessionBinding;
-  private reopened = false;
-  private readonly transcript = new CcTranscriptCursor();
+  private lockedBinding: CcBindingLock | null = null;
+  private transcript = new CcTranscriptCursor();
   private bootstrap: BootstrapSummary | null = null;
   private callsByTurn = new Map<number, Map<string, CallIdentity>>();
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
 
-  constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
+  constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
     if (binding.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
     this.config = config;
     this.binding = binding;
-    let memory!: TraceMemoryFacade;
-    const prepared = config.worker ? createCcRunAgent(config, workerDependencies,
-      kind => memory.config[kind].maxToolRounds) : undefined;
-    memory = TraceMemory(config.dbPath, prepared?.runAgent ?? unavailableRunner,
-      { closedSessionScope: config.closedSessionScope }, undefined,
-      entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
-    this.workerCapacity = prepared?.capacity;
   }
 
   currentBinding(): CcSessionBinding { return this.binding; }
@@ -75,8 +69,13 @@ export class CcImporter {
    * identity; source_paths only names the already-published branch that owns that ancestry. */
   persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
     if (!toolUseId || this.binding.coreSessionId === null) return null;
-    const nativeToolName = `mcp__traceMemory__${toolName}`;
-    const ancestry = this.transcript.callPath(toolUseId, nativeToolName);
+    // Claude Code records direct MCP and installed-plugin calls under distinct, stable identities.
+    // Keep both identities exact: accepting a suffix would let another server impersonate this one.
+    const nativeToolNames = [
+      `mcp__${CC_MCP_SERVER_NAME}__${toolName}`,
+      `mcp__plugin_${CC_PLUGIN_NAME}_${CC_MCP_SERVER_NAME}__${toolName}`,
+    ];
+    const ancestry = this.transcript.callPath(toolUseId, nativeToolNames);
     if (!ancestry) return null;
     const entryIds: number[] = [];
     for (const node of ancestry) if (node.sourceKind && node.sourceKind !== "compaction") {
@@ -84,16 +83,18 @@ export class CcImporter {
       entryIds.push(node.entryId);
     }
     const carrierNode = ancestry.at(-1)!;
-    if (!carrierNode.calls.some(call => call.id === toolUseId && call.name === nativeToolName) || carrierNode.entryId === undefined) return null;
+    const invocation = carrierNode.calls.find(call => call.id === toolUseId);
+    if (!invocation || !nativeToolNames.includes(invocation.name) || carrierNode.entryId === undefined) return null;
     const carrier = this.memory.store.getSourceEntry(carrierNode.entryId);
-    if (!carrier || !carrier.calls.some(call => call.callId === toolUseId && call.name === nativeToolName)) return null;
+    if (!carrier || !carrier.calls.some(call => call.callId === toolUseId && call.name === invocation.name)) return null;
     const branch = this.memory.store.sourceBranchForPrefix(this.binding.coreSessionId, entryIds, this.binding.branch);
     if (!branch) return null;
     return { coreSessionId: this.binding.coreSessionId, branch, headTurnId: carrier.turnId, triggerEntryId: carrier.id, entryIds };
   }
 
-  private async persist(update: (binding: CcSessionBinding) => CcSessionBinding): Promise<void> {
-    this.binding = await updateBinding(this.config, this.binding.nativeSessionId, current => {
+  private persist(update: (binding: CcSessionBinding) => CcSessionBinding): void {
+    if (!this.lockedBinding) throw new Error("CC projection binding lock is unavailable");
+    this.binding = this.lockedBinding.update(current => {
       if (!current) throw new Error("CC binding disappeared");
       return update(current);
     });
@@ -132,13 +133,6 @@ export class CcImporter {
     });
   }
 
-  private ensureReopened(): void {
-    if (!this.reopened && this.binding.coreSessionId !== null) {
-      this.memory.store.reopenSession(this.binding.coreSessionId, this.memory.executorId);
-      this.reopened = true;
-    }
-  }
-
   private result(state: CcReconcileResult["state"], snapshot: CcTranscriptSnapshot, problems: string[] = [],
     values: Partial<CcReconcileResult> = {}): CcReconcileResult {
     return { state, snapshot, coreSessionId: this.binding.coreSessionId, branch: this.binding.branch,
@@ -146,11 +140,40 @@ export class CcImporter {
       appendedEntryIds: [], problems, ...values };
   }
 
-  async reconcile(): Promise<CcReconcileResult> {
-    const current = readBinding(this.config, this.binding.nativeSessionId);
+  async synchronize(): Promise<CcReconcileResult> {
+    const observedBinding = readBinding(this.config, this.binding.nativeSessionId);
+    if (this.lastResult && observedBinding && JSON.stringify(observedBinding) === JSON.stringify(this.binding) &&
+        (observedBinding.coreSessionId === null || this.memory.store.enabled(observedBinding.coreSessionId))) {
+      const unchanged = this.transcript.unchangedSnapshot(observedBinding.transcriptPath);
+      if (unchanged) {
+        const problems = this.transcript.currentProblems();
+        return { ...this.lastResult, state: problems.length ? "not-ready" : this.lastResult.state,
+          snapshot: problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
+          appendedEntryIds: [], problems };
+      }
+    }
+    return withCcBindingLock(this.config, this.binding.nativeSessionId, async locked => {
+      this.lockedBinding = locked;
+      try { return await this.reconcileLocked(); }
+      finally { this.lockedBinding = null; }
+    });
+  }
+
+  private async reconcileLocked(): Promise<CcReconcileResult> {
+    if (!this.lockedBinding) throw new Error("CC projection binding lock is unavailable");
+    const current = this.lockedBinding.read();
     if (!current || current.dbPath !== this.config.dbPath || current.transcriptPath !== this.binding.transcriptPath)
       throw new Error("CC binding changed or disappeared before reconciliation");
+    const staleProjection = current.coreSessionId !== this.binding.coreSessionId || current.branch !== this.binding.branch ||
+      current.selectedLeafUuid !== this.binding.selectedLeafUuid;
     this.binding = current;
+    if (staleProjection) {
+      this.transcript = new CcTranscriptCursor();
+      this.bootstrap = null;
+      this.callsByTurn.clear();
+      this.loadedCallTurns.clear();
+      this.lastResult = null;
+    }
 
     let summary: BootstrapSummary | null = null, bootstrapSnapshot: CcTranscriptSnapshot | null = null;
     if (this.binding.nativeCreatedAt === null || this.binding.coreSessionId === null) {
@@ -166,9 +189,8 @@ export class CcImporter {
     if (this.binding.coreSessionId === null ? !provisionalEnabled(this.binding) : !this.memory.store.enabled(this.binding.coreSessionId))
       return this.result("disabled", bootstrapSnapshot ?? this.transcript.currentSnapshot(this.binding.transcriptPath));
     if (this.binding.coreSessionId === null) await this.allocate(summary!);
-    if (this.binding.coreSessionId === null) return this.result("not-ready", bootstrapSnapshot!, ["first completed assistant source is not persisted yet"]);
+    if (this.binding.coreSessionId === null) return this.result("provisional", bootstrapSnapshot!);
     if (!this.memory.store.enabled(this.binding.coreSessionId)) return this.result("disabled", bootstrapSnapshot ?? this.transcript.currentSnapshot(this.binding.transcriptPath));
-    this.ensureReopened();
 
     const sessionId = this.binding.coreSessionId, lineage = this.binding.nativeSessionId;
     const appendedEntryIds: number[] = [], problems: string[] = [], failedNativeIds = new Set<string>();
@@ -377,6 +399,38 @@ export class CcImporter {
     return ready;
   }
 
+}
+
+export class CcImporter {
+  readonly memory: TraceMemoryFacade;
+  readonly workerCapacity?: { inputTokens: number; prefixTokens: 0 };
+  private readonly projection: CcProjection;
+  private reopened = false;
+
+  constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
+    let memory!: TraceMemoryFacade;
+    const prepared = config.worker ? createCcRunAgent(config, workerDependencies,
+      kind => memory.config[kind].maxToolRounds) : undefined;
+    memory = TraceMemory(config.dbPath, prepared?.runAgent ?? unavailableRunner,
+      { closedSessionScope: config.closedSessionScope }, undefined,
+      entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
+    this.memory = memory;
+    this.workerCapacity = prepared?.capacity;
+    this.projection = new CcProjection(config, binding, memory);
+  }
+
+  currentBinding(): CcSessionBinding { return this.projection.currentBinding(); }
+  persistedCall(toolUseId: string, toolName: "note" | "memory"): CcPersistedCall | null {
+    return this.projection.persistedCall(toolUseId, toolName);
+  }
+  async reconcile(): Promise<CcReconcileResult> {
+    const result = await this.projection.synchronize();
+    if (!this.reopened && result.coreSessionId !== null && result.state !== "disabled") {
+      this.memory.store.reopenSession(result.coreSessionId, this.memory.executorId);
+      this.reopened = true;
+    }
+    return result;
+  }
   close(): void { this.memory.close(); }
 }
 

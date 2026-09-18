@@ -30,7 +30,7 @@ test("a 30k transcript has sub-millisecond unchanged wakes and suffix-proportion
   const importer = new CcImporter(config, binding);
   try {
     expect((await importer.reconcile()).appendedEntryIds).toHaveLength(30_000);
-    const nodes = (importer as unknown as { transcript: { nodes: Map<string, unknown> } }).transcript.nodes;
+    const nodes = (importer as unknown as { projection: { transcript: { nodes: Map<string, unknown> } } }).projection.transcript.nodes;
     const values = nodes.values.bind(nodes); let historicalNodeVisits = 0;
     nodes.values = function* () { for (const node of values()) { historicalNodeVisits += 1; yield node; } } as typeof nodes.values;
     const database = importer.memory.store.db as typeof importer.memory.store.db & { prepare: typeof importer.memory.store.db.prepare };

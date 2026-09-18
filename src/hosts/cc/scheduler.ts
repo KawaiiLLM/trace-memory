@@ -1,12 +1,12 @@
-import type { ConsolidateResult, NotingResult, TraceMemory, TaskTarget } from "../../core/api/index.ts";
+import type { ConsolidateResult, DreamingResult, NotingResult, TraceMemory, TaskTarget } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
-export type CcWorkerPhase = "noting" | "consolidation";
-type CcTaskResult = NotingResult | ConsolidateResult;
+export type CcWorkerPhase = "noting" | "consolidation" | "dreaming";
+type CcTaskResult = NotingResult | ConsolidateResult | DreamingResult;
 
-/** CC-local N/C slots. Core remains the authority for eligibility, claims, borrowing and settlement. */
+/** One CC-local slot per phase. Core remains the authority for eligibility, claims, borrowing and settlement. */
 export class CcTaskScheduler {
   private readonly memory: TraceMemory;
   private readonly worker: ResolvedCcWorkerConfig | undefined;
@@ -29,7 +29,7 @@ export class CcTaskScheduler {
         reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
     const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
       headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
-    for (const phase of ["noting", "consolidation"] as const) this.start(phase, own);
+    for (const phase of ["noting", "consolidation", "dreaming"] as const) this.start(phase, own);
   }
 
   private start(phase: CcWorkerPhase, own: TaskTarget): void {
@@ -60,7 +60,8 @@ export class CcTaskScheduler {
         const common = { ...target, borrowed, automatic: true, executorSessionId, mode: "subagent" as const,
           effectiveMode: "subagent" as const, model: this.worker!.model, capacity: this.capacity!, maxReadChars: CC_MAX_RESULT_CHARS,
           thinkingLevel: this.worker!.effort, subagentThinkingLevel: this.worker!.effort };
-        const result = phase === "noting" ? await this.memory.noting(common) : await this.memory.consolidate(common);
+        const result = phase === "noting" ? await this.memory.noting(common)
+          : phase === "consolidation" ? await this.memory.consolidate(common) : await this.memory.dream(common);
         if (result.automaticOff) this.diagnostic(result.automaticOff);
         const problems = "problems" in result ? result.problems ?? [] : [];
         if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)

@@ -1,0 +1,11 @@
+{
+  "traceMemory": {
+    "command": "node",
+    "args": [
+      "${CLAUDE_PLUGIN_ROOT}/dist/cc.cjs",
+      "mcp",
+      "--config",
+      "${CLAUDE_PLUGIN_ROOT}/cc.config.json"
+    ]
+  }
+}
