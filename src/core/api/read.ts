@@ -104,7 +104,7 @@ export interface Injection { text: string; knowledgeCommitIds: number[]; knowled
  * the mutable state its line would otherwise read from the database then. Everything else a hit
  * prints — the fact and commit records, the path, the labels the commit graph decided — is immutable
  * or already frozen by the query, so these three annotations are the whole remainder. */
-interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile }
+interface FrozenHit { address: string; relations?: FactRelation[]; marks?: KnowledgeMark[]; entryIds?: number[]; profile?: EntryProfile; /** 59: the batched-search query this hit answers, echoed on its line. */ query?: string }
 
 /** One component of a `trace` comma list, in request order: either an interval's immutable fact
  * identity with frozen relations, or a named component's renderer over frozen database values.
@@ -729,7 +729,7 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
         title, ...raw.map(r => r.content), ...raw.flatMap(r => r.receipts), ...receipt()].join("\n");
       return xmlBlock("branch_carry", content); // Tags delimit; content stays byte-identical to shared trace lines.
     },
-    search: (query: string, requestedScope?: SearchScope, input: ListingOptions & { sessionId?: number } = {}): string => {
+    search: (query: string | readonly string[], requestedScope?: SearchScope, input: ListingOptions & { sessionId?: number } = {}): string => {
       validateBudgets(input);
       let scope = requestedScope;
       if (input.category !== undefined && scope === undefined) scope = "knowledge";
@@ -747,10 +747,13 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       if (options.scope === "project" && !reader) throw new Error("scope:project requires a project context");
       const sessionIds = options.scope === "global" || !reader ? undefined : options.scope === "session" ? [reader.id]
         : store.projectSessionIds(reader.projectId);
-      let addresses = store.searchAddresses(query, scope, sessionIds);
+      // 59: the batched form runs each query under the shared options; per query at most `cap` hits
+      // (default 1), the line cap of the page left at its default. Everything else is the single form.
+      const batched = typeof query === "string" ? undefined : [...query];
+      const found = (batched ?? [query as string]).map(q => store.searchAddresses(q, scope, sessionIds));
       // 22c: the path, applicable set, tips and ancestry are resolved once. Filtering happens over
       // that same graph before paging, so a page spends no budget on a status the query excluded.
-      const selection = addresses.some(a => a.startsWith("K")) ? knowledgeReadSelection(store, options) : null;
+      const selection = found.some(list => list.some(a => a.startsWith("K"))) ? knowledgeReadSelection(store, options) : null;
       const graphInput = selection?.input;
       const graph = selection?.graph;
       const byCommit = selection?.byCommit ?? new Map<number, KnowledgeRevision>();
@@ -760,31 +763,39 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const revision = (address: string) => byCommit.get(Number(address.split("@")[1]))!;
       const fields = new Set(options.fields!.filter(field => field !== "reason"
         || ((scope === "knowledge" || scope === "all") && options.versions !== "current")));
-      const selected = new Set(selection?.representatives(addresses.filter(a => a.startsWith("K")).map(revision), query).map(r => r.id));
-      addresses = addresses.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
+      const represented = found.map((list, index) => {
+        const selected = new Set(selection?.representatives(list.filter(a => a.startsWith("K")).map(revision), (batched ?? [query as string])[index]).map(r => r.id));
+        return list.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
+      });
+      const perQuery = input.cap ?? 1;
+      if (batched && (!Number.isSafeInteger(perQuery) || perQuery < 1)) throw new Error("listing cap must be a positive integer");
+      const addresses = batched ? represented.flatMap((list, index) => list.slice(0, perQuery).map(address => ({ address, query: batched[index]! }))) : represented[0]!;
+      const empty = batched ? batched.filter((_, index) => !represented[index]!.length) : [];
       // The graph freezes what a hit is; this freezes mutable annotations and Raw membership for
       // deferred pages. No open transaction survives the first page.
       const capture = (deferred: readonly unknown[]): FrozenHit[] => {
-        const rest = deferred as string[];
+        const queries = deferred.map(item => typeof item === "string" ? undefined : (item as FrozenHit).query);
+        const rest = deferred.map(item => typeof item === "string" ? item : (item as FrozenHit).address);
         const record = (address: string) => Number(address.slice(1)), commitOf = (address: string) => Number(address.split("@")[1]);
         const ids = (prefix: string, of: (address: string) => number) => rest.filter(a => a.startsWith(prefix)).map(of);
         const marks = store.listKnowledgeMarksOf(ids("K", commitOf));
         const entries = store.listSourceEntryIdsOf(ids("T", record));
-        return rest.map(address => address.startsWith("F") ? { address }
+        return rest.map((address, index): FrozenHit => ({ ...(address.startsWith("F") ? { address }
           : address.startsWith("T") ? { address, entryIds: entries.get(record(address))!, profile: { entryTokens: config.render.entryTokens, toolInputTokens: config.render.toolInputTokens, toolResultTokens: config.render.toolResultTokens } }
-          : { address, marks: marks.get(commitOf(address))! });
+          : { address, marks: marks.get(commitOf(address))! }), ...(queries[index] === undefined ? {} : { query: queries[index] }) }));
       };
       const format = (hits: readonly unknown[]) => (hits as (string | FrozenHit)[]).map((item) => {
         const frozen: FrozenHit | undefined = typeof item === "string" ? undefined : item;
         const address = frozen?.address ?? item as string;
-        if (address.startsWith("F")) return renderFactPreview(store.getFact(Number(address.slice(1)))!, fields, options.itemBudget === null ? Infinity : options.itemBudget!);
-        if (address.startsWith("T")) return expand(address, frozen && { entryIds: frozen.entryIds, profile: frozen.profile });
+        const echo = frozen?.query === undefined ? "" : `${JSON.stringify(frozen.query)}: `;
+        if (address.startsWith("F")) return echo + renderFactPreview(store.getFact(Number(address.slice(1)))!, fields, options.itemBudget === null ? Infinity : options.itemBudget!);
+        if (address.startsWith("T")) return echo + expand(address, frozen?.entryIds && { entryIds: frozen.entryIds, profile: frozen.profile });
         const [id, commit] = address.slice(1).split("@").map(Number);
         const knowledge = store.getKnowledge(id!)!;
         const hit = revision(address);
         const status = selection!.status(hit);
         const parents = (graphInput!.parents.get(hit.id) ?? []).map(parent => byCommit.get(parent)!).filter(Boolean);
-        return renderKnowledgePreview({ knowledge, revision: hit }, frozen?.marks ?? store.listKnowledgeMarks(id!), status, fields,
+        return echo + renderKnowledgePreview({ knowledge, revision: hit }, frozen?.marks ?? store.listKnowledgeMarks(id!), status, fields,
           options.itemBudget === null ? Infinity : options.itemBudget!, parents, children.get(hit.id) ?? []);
       }).map(listingLine);
       const material = options.scope === "session" ? "this session; session knowledge" : options.scope === "project"
@@ -793,9 +804,10 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const filters = [`searched: ${material}, ${options.versions} versions`, ...(options.category ? [`category=${options.category}`] : []), ...(options.scope ? [`scope=${options.scope}`] : [])].join(", ");
       const omitted = READ_FIELDS.filter(field => !fields.has(field));
       const preview = `preview: ${fields.size === 0 ? "identity only" : fields.size === 1 && fields.has("text") ? "text only" : `fields ${[...fields].join(", ")}`}; omitted fields: ${omitted.join(", ") || "none"}`;
-      return page({ items: addresses, format, capture }, { ...options,
+      const misses = empty.length ? `\nno hit: ${empty.map(q => JSON.stringify(q)).join(", ")}` : "";
+      return page({ items: addresses, format, capture }, { ...options, ...(batched ? { cap: undefined } : {}),
         maxTokens: options.pageBudget === null ? undefined : options.pageBudget ?? options.maxTokens ?? DEFAULT_READ_TOKENS },
-        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}`, [], "search").text;
+        `Search uses literal substring search. No hit does not mean absent.\n${filters}\n${KNOWLEDGE_REPRESENTATIVE_RECEIPT}\n${preview}${misses}`, [], "search").text;
     },
     mark: (address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string => {
       if (!["verified", "flagged", "clear"].includes(kind)) throw new Error("invalid mark kind");

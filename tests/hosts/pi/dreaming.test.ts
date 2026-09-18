@@ -7,6 +7,8 @@ import { Store } from "../../../src/core/store/index.ts";
 
 const workflowHeadings = (JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as { promptOrder: string[] }).promptOrder;
 const call = (id: string, name: string, args: unknown): Reply => ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id, name, arguments: args as Record<string, unknown> }] });
+// 59: a scripted Dreamer accounts for the supplied handles it leaves untouched with one explicit skip batch.
+const skip = (...handles: string[]): Reply => call("skip", "memory", { operations: [], skipped: handles.map(knowledge => ({ knowledge, because: "reviewed; no operation needed" })) });
 async function seeded(config: Record<string, unknown> = {}, text = "Keep the user constraint") {
   const h = host({ "noting.triggerTokens": 1000000, "consolidation.triggerTokens": 1000000, "dreaming.triggerTokens": 1, ...config });
   await h.emit("session_start"); await h.turn();
@@ -43,7 +45,9 @@ test("Dreamer pre-request capacity failure names its own phase and retains its w
 test("32d native host: entry completion starts fresh Dreamer; no tool check still certifies", async () => {
   const { h, store, item } = await seeded({ "dreaming.model": "fake/test-thinking", "dreaming.thinking": "high", compaction: { enabled: true } });
   try {
-    h.provider(async c => { expect(c.systemPrompt).toContain("# Dreamer"); expect(c.tools?.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]); return reply("Reviewed without changes"); }, { autoStop: false });
+    let requests = 0;
+    h.provider(async c => { expect(c.systemPrompt).toContain("# Dreamer"); expect(c.tools?.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]);
+      return ++requests === 1 ? skip(`K${item.knowledgeId}@${item.commit}`) : reply("Reviewed without changes"); }, { autoStop: false });
     await h.turn();
     const run = await terminal(h);
     expect(run.outcome).toBe("success"); expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test-thinking");
@@ -61,7 +65,7 @@ test("32d native host: entry completion starts fresh Dreamer; no tool check stil
     expect({ sessionId: execution.origin_session_id, entryIds: JSON.parse(String(execution.origin_entry_ids)) }).toEqual(run.origin);
     expect(store.isKnowledgeProcessed(item.commit)).toBe(true);
     expect(JSON.parse(readFileSync(join(h.dir, "agent", "settings.json"), "utf8")).compaction.enabled).toBe(true);
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2);
   } finally { await h.dispose(); }
 });
 
@@ -189,20 +193,22 @@ test("34b native host: unchanged indivisible retained work stops relaunching unt
         knowledgeId: oversized.knowledgeId, baseCommit: oversized.id, ...content, text: "fitting successor" }] });
     if (!repaired.ok) throw new Error(repaired.problems.join("; "));
     expect(h.memory.taskEligibility("dreaming", target)).toEqual({ due: true });
-    h.provider(async () => { requests++; return reply("Reviewed fitting successor"); }, { autoStop: false });
+    h.provider(async () => ++requests === blockedAt + 1 ? skip(`K${repaired.committed[0]!.knowledgeId}@${repaired.committed[0]!.commit}`) : reply("Reviewed fitting successor"), { autoStop: false });
     await h.turn(); await h.drain();
     expect(store.isKnowledgeProcessed(repaired.committed[0]!.commit)).toBe(true);
-    expect(requests).toBe(blockedAt + 1);
+    expect(requests).toBe(blockedAt + 2);
   } finally { other?.close(); await h.dispose(); }
 });
 
 test("32d native host: Consolidator and Dreamer occupy independent seats", async () => {
-  const { h, store } = await seeded({ "consolidation.triggerTokens": 1 });
+  const { h, store, item } = await seeded({ "consolidation.triggerTokens": 1 });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   try {
     const phases = new Set<string>();
-    h.provider(async c => { phases.add(c.systemPrompt!.startsWith("# Dreamer") ? "D" : "C"); await held; return reply("Done"); }, { autoStop: false });
+    let dreamerRequests = 0;
+    h.provider(async c => { const dreamer = c.systemPrompt!.startsWith("# Dreamer"); phases.add(dreamer ? "D" : "C"); await held;
+      return dreamer && ++dreamerRequests === 1 ? skip(`K${item.knowledgeId}@${item.commit}`) : reply("Done"); }, { autoStop: false });
     await h.turn();
     await vi.waitFor(() => expect([...phases].sort()).toEqual(["C", "D"]));
     expect(store.getClaim(1, "dreaming")).not.toBeNull(); expect(store.getClaim(1, "consolidation")).not.toBeNull();
@@ -233,7 +239,8 @@ test("32d native host: stop preserves partial commits, cancels the claim and ret
     expect(store.retryDreamingRange({ sessionId: 1, branch: "main", headTurnId: null })?.anchor).toBe(item.commit);
     expect(store.taskFailures(1).every(f => f.count === 0)).toBe(true);
     release();
-    h.provider(async () => reply("Reviewed retry without further changes"), { autoStop: false });
+    let retry = 0;
+    h.provider(async () => ++retry === 1 ? skip(`K${changed.knowledgeId}@${changed.id}`) : reply("Reviewed retry without further changes"), { autoStop: false });
     await h.turn(); await h.drain();
     expect(store.listRuns(1).filter(r => r.kind === "dreaming")).toHaveLength(2);
     expect(store.isKnowledgeProcessed(changed.id)).toBe(true);
@@ -296,9 +303,10 @@ test.each([false, true])("external merge=%s consumes the exact input without com
     await h.drain();
     expect(requests).toBe(1);
     expect(store.retryDreamingRange(store.knowledgePath(1, "main"))).toBeNull();
+    let second = 0;
     h.provider(async conversation => {
       expect(JSON.stringify(conversation.messages)).toContain(`K${external.knowledgeId}@${external.commit}`);
-      return reply("Maintained the freshly frozen external version");
+      return ++second === 1 ? skip(`K${external.knowledgeId}@${external.commit}`) : reply("Maintained the freshly frozen external version");
     }, { autoStop: false });
     await h.turn(); await h.drain();
     const runs = store.listRuns(1).filter(r => r.kind === "dreaming");

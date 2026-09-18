@@ -1337,7 +1337,7 @@ export default function (pi: ExtensionAPI) {
         if (bound) return result(bound.find(t => t.name === definition.name)!.execute(input));
         const options = { ...input, sessionId: state.sessionId, headTurnId: state.head, branch: state.branch };
         return result(definition.name === "trace" ? memory.trace(input.address as string, options)
-          : memory.search(input.query as string, input.layer as import("../../core/api/index.ts").SearchScope, options));
+          : memory.search((input.queries ?? input.query) as string | string[], input.layer as import("../../core/api/index.ts").SearchScope, options));
       }
       if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");

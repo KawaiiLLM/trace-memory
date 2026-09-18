@@ -13,12 +13,13 @@ const numbers = (text: string) => text.match(/\d+(?:,\d{3})*(?:\.\d+)?/g) ?? [];
 /** Validate the complete batch before writes, including every merge participant. */
 export function prepareMemory(store: Store, sessionId: number, raw: unknown, run: RunInput,
   frozen?: ReturnType<typeof freezeConsolidation>, path: KnowledgePath = store.knowledgePath(sessionId), reads?: KnowledgeWithRevision[],
-  eligibleSupport?: (factId: number) => boolean) {
+  eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined) {
   const results: string[] = [], operations: KnowledgeOperationInput[] = [];
   const batch = raw as MemoryBatch;
   const projectId = store.getSession(sessionId)!.projectId;
   const knowledge = reads ?? [];
   const touched = new Set<number>();
+  const dreaming = store.isDreamingRun(run);
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
     return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as ConsolidationDiagnostic[] };
   }
@@ -48,7 +49,6 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     const errors: string[] = [];
     const value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {} as MemoryBatch["operations"][number];
     const op = value.op;
-    const dreaming = store.isDreamingRun(run);
     const allowed = dreaming ? ["update", "merge", "split", "archive"]
       : run.kind === "consolidation" ? ["create", "update"] : ["create", "update", "merge", "archive"];
     if (!allowed.includes(op)) errors.push(run.kind === "consolidation" && op === "archive"
@@ -109,7 +109,19 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   for (const skipped of batch.skipped) {
     const errors: string[] = [];
     if (!skipped || typeof skipped !== "object" || Array.isArray(skipped)) errors.push("invalid skipped item");
-    else {
+    else if (dreaming) {
+      // 59: a Dreamer skip accounts for one supplied handle (a frozen-block version or an own result)
+      // without processing it; an unknown or consumed handle is an illegal write like any other.
+      const handle = (skipped as { knowledge?: unknown }).knowledge;
+      const match = typeof handle === "string" ? /^K([1-9]\d*)@([1-9]\d*)$/.exec(handle) : null;
+      const commit = match ? Number(match[2]) : NaN;
+      if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires knowledge and non-empty because only");
+      const problem = !match || store.knowledgeRevision(commit)?.knowledgeId !== Number(match[1]) ? "not a supplied handle of this run"
+        : touched.has(commit) ? "already consumed by an operation of this batch" : skippable ? skippable(commit) : "not a supplied handle of this run";
+      if (problem) errors.push(`${handle}: ${problem}`);
+      else if (declined.has(commit)) errors.push("duplicate skipped knowledge");
+      declined.add(commit);
+    } else {
       const ids = facts([skipped.fact], errors);
       if (Object.keys(skipped).some(k => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
       if (!frozen?.rangeFacts.some(f => f.id === ids[0])) errors.push("skipped fact must belong to this run's range");

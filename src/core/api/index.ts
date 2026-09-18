@@ -441,7 +441,7 @@ export interface TraceMemory {
    * default empty view is the whole applicable set, which is what a fresh context always got. */
   injection(target: number | { projectId: number } | KnowledgePath, visible?: VisibleView): Injection;
   trace(address: string, options?: ListingOptions): string;
-  search(query: string, scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
+  search(query: string | readonly string[], scope?: SearchScope, options?: ListingOptions & { sessionId?: number }): string;
   mark(address: number | string, kind: "verified" | "flagged" | "clear", path?: KnowledgePath): string;
   declareProject(sessionId: number, name: string, source?: "marker" | "mark", path?: KnowledgePath): string;
   status(sessionId: number, branch?: string, headTurnId?: number | null): string;

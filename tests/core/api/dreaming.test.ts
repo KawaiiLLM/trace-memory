@@ -8,6 +8,7 @@ import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 import { processedBlock } from "../../../src/core/store/processing.ts";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 
+import { skipRest } from "../../dreaming-skips.ts";
 const memories: ReturnType<typeof TraceMemory>[] = [], directories: string[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); for (const dir of directories.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, body = "durable rule", db = ":memory:", scope: "global" | "project" = "project") {
@@ -50,6 +51,7 @@ test("Dreamer exposes payload-free acknowledgement without fabricating audit and
   const reported = fixture(async task => {
     task.reportRequest(exact);
     task.acknowledgeRequest();
+    skipRest(task);
     return { outcome: "success", output: "done", request: exact };
   });
   const second = await reported.memory.dream(reported.target);
@@ -204,6 +206,7 @@ test.each(["failure", "cancelled"] as const)("a %s after reference writes recove
       return { ...success, outcome: firstOutcome, output: `${firstOutcome} after write` };
     }
     expect(task.material.changed).toContain(`K${reference.knowledgeId}@${partialOutput}`);
+    skipRest(task);
     return success;
   });
   const prior = addProcessedReference(f);
@@ -225,7 +228,7 @@ test.each(["failure", "cancelled"] as const)("a %s after reference writes recove
 });
 
 test("32d: no-change completion runs the host check without a check tool call", async () => {
-  const f = fixture(async task => { expect(task.tools.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]); return success; });
+  const f = fixture(async task => { expect(task.tools.map(t => t.name)).toEqual(["trace", "search", "check", "memory"]); skipRest(task); return success; });
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
   expect(f.store.pendingKnowledgeEvents(f.target)).toEqual([]);
   expect(f.store.isKnowledgeProcessed(f.item.commit)).toBe(true);
@@ -285,7 +288,7 @@ test("32d: scope overflow permits one concrete repair but an unreduced remainder
 test("34b: successive consumed inputs settle independently; a later unchanged leaf is certified", async () => {
   let reread = false;
   const f = fixture(async task => {
-    if (reread && f.store.listKnowledgeRevisions().length === 3) return success;
+    if (reread && f.store.listKnowledgeRevisions().length === 3) { skipRest(task); return success; }
     const current = f.store.currentCommit(f.item.knowledgeId, f.target)[0]!;
     const updated = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)), operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: current.id, ...f.content, text: "external successor" }] });
     expect(updated.ok).toBe(true);
@@ -373,9 +376,9 @@ test("32d: shared scope completion through two connections cannot certify a comb
   let releaseFirst!: () => void, releaseSecond!: () => void;
   const firstHeld = new Promise<void>(resolve => { releaseFirst = resolve; });
   const secondHeld = new Promise<void>(resolve => { releaseSecond = resolve; });
-  const first = fixture(async () => { await firstHeld; return success; }, "global ".repeat(3000), db, "global");
+  const first = fixture(async task => { await firstHeld; skipRest(task); return success; }, "global ".repeat(3000), db, "global");
   const firstTask = first.memory.dream(first.target);
-  const other = TraceMemory(db, async () => { await secondHeld; return success; }, { dreaming: { triggerTokens: 1 } }); memories.push(other);
+  const other = TraceMemory(db, async task => { await secondHeld; skipRest(task as DreamingAgentInput); return success; }, { dreaming: { triggerTokens: 1 } }); memories.push(other);
   const session = other.store.createSession({ host: "test", enrollmentChoice: true, projectId: first.store.getSession(first.target.sessionId)!.projectId, startedAt: "now", firstReplyAt: "now" });
   const turn = other.store.appendTurn({ sessionId: session.id, kind: "turn", userPrompt: "other", startedAt: "now" });
   const added = other.store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$2", author: "test", ...first.content }] });
@@ -406,6 +409,7 @@ test("35 final check uses one policy snapshot for canonical totals and derived c
   const dir = mkdtempSync(join(tmpdir(), "dreamer-policy-snapshot-")); directories.push(dir);
   const db = join(dir, "memory.sqlite");
   const f = fixture(async task => {
+    skipRest(task);
     const original = f.store.knowledgeBudgets.bind(f.store);
     let reads = 0;
     const peer = new DatabaseSync(db);
@@ -429,7 +433,8 @@ test("35 final check uses one policy snapshot for canonical totals and derived c
 });
 
 test.each(["policy", "graph"] as const)("35 rejecting final %s race persists the exact transactional check", async race => {
-  const f = fixture(async () => {
+  const f = fixture(async task => {
+    skipRest(task);
     if (race === "policy") f.store.setKnowledgeBudget("project", 20_000);
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
@@ -459,7 +464,8 @@ test.each(["policy", "graph"] as const)("35 rejecting final %s race persists the
 
 test("final completion reuses its one authoritative processed projection for audit and quota enforcement", async () => {
   let finalGraphInputs = 0;
-  const f = fixture(async () => {
+  const f = fixture(async task => {
+    skipRest(task);
     const graphInputs = vi.spyOn(f.store, "commitGraphInput");
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
@@ -478,7 +484,8 @@ test("final completion reuses its one authoritative processed projection for aud
 
 test("a post-race completion insert failure retains the exact final audit and original cause", async () => {
   let completionError: unknown;
-  const f = fixture(async () => {
+  const f = fixture(async task => {
+    skipRest(task);
     const complete = f.store.completeDreamingWithScopeAudit.bind(f.store);
     vi.spyOn(f.store, "completeDreamingWithScopeAudit").mockImplementation((...args) => {
       try { return complete(...args); }
@@ -513,7 +520,8 @@ test("a post-race completion insert failure retains the exact final audit and or
 });
 
 test("35 a downstream range-closure failure keeps the successful final check distinct and rolls back certification", async () => {
-  const f = fixture(async () => {
+  const f = fixture(async task => {
+    skipRest(task);
     f.store.db.exec(`CREATE TRIGGER reject_dreaming_range_closure BEFORE UPDATE OF completed_run ON dreaming_ranges
       BEGIN SELECT RAISE(ABORT, 'injected range closure failure'); END`);
     return success;
@@ -529,7 +537,8 @@ test("35 a downstream range-closure failure keeps the successful final check dis
 });
 
 test("34b: a successor arriving before the final transaction consumes the input without being certified", async () => {
-  const f = fixture(async () => {
+  const f = fixture(async task => {
+    skipRest(task);
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
       const moved = f.store.commitConsolidationRun({ path: f.target, run: f.store.bindRunOrigin({ kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, f.store.triggerOrigin(f.target)), operations: [{ op: "update", knowledgeId: f.item.knowledgeId, baseCommit: f.item.commit, ...f.content, text: "external after check" }] });
@@ -608,6 +617,7 @@ test("32d: direct facts are deduplicated whole bodies within 10k, with honest om
     expect(task.material.facts).toContain("Omitted whole direct facts beyond 10000: F3");
     expect(task.material.facts).not.toContain("second-direct-fact");
     expect(task.material.changed.match(/\[K1@2\]/g)).toHaveLength(1);
+    skipRest(task);
     return success;
   });
   const facts = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.target.sessionId, createdAt: "now" }, facts: ["first-direct-fact", "second-direct-fact"].map(label => ({ turnId: f.target.headTurnId, category: "decision" as const, actor: "user" as const, text: `${label} ${"evidence ".repeat(8000)}`, source: [`T${f.target.headTurnId}#user`], createdAt: "now" })) });
@@ -623,6 +633,7 @@ test("32d: a legacy over-10k processed project passes only after valid maintenan
     const item = f.store.currentCommit(retire, f.target)[0]!;
     const result = task.tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "archive", id: `K${retire}@${item.id}`, supports: [], reason: "Hard-budget tradeoff: retire a lower-priority active rule while retaining history" }], skipped: [] });
     expect(result).toContain('"committed"');
+    skipRest(task);
     expect(task.passEnd(1)).toBeUndefined();
     return success;
   }, "legacy ".repeat(6000));
@@ -735,6 +746,7 @@ test("44: a newer external identity cannot absorb the selected older result", as
     expect(merged.ok).toBe(false);
     if (!merged.ok) expect(merged.problems.join(" ")).toContain(`use K${f.item.knowledgeId}@${f.item.commit} as the survivor`);
     expect(f.store.listKnowledgeRevisions()).toEqual(before);
+    skipRest(task);
     const receipt = task.tools.find(t => t.name === "check")!.execute({});
     expect(receipt).toContain("- successor-free results: 1");
     return success;
@@ -768,7 +780,7 @@ test("32d: rereading a later external version permits a deliberate own update, n
 test("32d: retained split outputs can finish unchanged on retry without losing either identity", async () => {
   let first = true;
   const f = fixture(async task => {
-    if (!first) return success;
+    if (!first) { skipRest(task); return success; }
     first = false;
     const content = { supports: ["F1"], reason: "Separate claims" };
     expect(JSON.parse(task.tools.find(t => t.name === "memory")!.execute({ operations: [{ op: "split", id: `K${f.item.knowledgeId}@${f.item.commit}`, ...content,

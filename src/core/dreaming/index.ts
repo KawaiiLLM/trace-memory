@@ -136,13 +136,19 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     const failures: string[] = [...operationFailures, ...(certificationFailure ? [certificationFailure] : [])];
     try { family = store.validateDreamingRun(run, path, true).knowledgeIds; } catch (error) { failures.push(String(error)); }
 
+    // 59: a root result is accounted when consumed, when an own candidate descends from it, or when
+    // this run skipped it with a reason; an untouched result no longer accounts for itself.
+    const skipped = new Set(binding.memory.skipped.map(skip => Number(skip.knowledge.split("@")[1])));
+    const unaccountedRoots = new Set<number>();
     const accountedEventIds = eventIds.filter(eventId => {
       const roots = eventResults.get(eventId) ?? [];
-      return roots.length > 0 && roots.every(id => formal.has(id) && (resultIds.includes(id) || consumers.get(id)!.length > 0 ||
-        ownCandidates.some(own => graph.descendants(id).has(own))));
+      const missing = roots.filter(id => !(formal.has(id) && (consumers.get(id)!.length > 0 || skipped.has(id) ||
+        ownCandidates.some(own => graph.descendants(id).has(own)))));
+      for (const id of missing) unaccountedRoots.add(id);
+      return roots.length > 0 && !missing.length;
     });
     if (accountedEventIds.length !== eventIds.length)
-      failures.push(`Dreamer did not account for supplied events: ${eventIds.filter(id => !accountedEventIds.includes(id)).map(id => `K@${id}`).join(", ")}`);
+      failures.push(`unaccounted: ${[...unaccountedRoots].sort((a, b) => a - b).map(id => `K${store.knowledgeRevision(id)?.knowledgeId}@${id}`).join(", ") || eventIds.filter(id => !accountedEventIds.includes(id)).map(id => `K@${id}`).join(", ")}`);
 
     // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only
     // processed material. Consumed formal inputs and filtered leaves are successful dispositions.
@@ -192,7 +198,15 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   };
   const binding = bind({ kind: "dreaming", sessionId, branch, headTurnId: path.headTurnId,
     range: { from: run.rangeFrom!, to: run.rangeTo! }, readKnowledgeCommits }, run, undefined,
-    { path, check: () => renderDreamingCheckReceipt(check()) });
+    { path, check: () => renderDreamingCheckReceipt(check()),
+      // 59: a skip names a version of the frozen block or an own result of this run, not yet consumed
+      // by this run's own operations; a successor written elsewhere is the check's business, not the skip's.
+      skippable: commit => {
+        const own = new Set(store.listCommitsByRun(store.dreamingRunId(run)!).map(revision => revision.id));
+        if (!formal.has(commit) && !own.has(commit)) return "not a supplied handle of this run";
+        if (store.consumingSuccessors([commit]).get(commit)!.some(id => own.has(id))) return "already consumed by an operation of this run; a skip names an untouched handle";
+        return undefined;
+      } });
   const passEnd = (used: number): string | undefined => {
     rounds = used;
     const checked = check();
@@ -214,7 +228,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   recordAttempt(run, result, "subagent", { toolCalls: binding.sequence, fetched: binding.fetched, material: frozen.material,
     profile: frozen.profile, admittedProcessedInputCap: frozen.admittedProcessedInputCap,
     readKnowledgeCommits, commitBoundary: frozen.commitBoundary,
-    committed: binding.memory.allCommitted, check: checked, rounds, repaired, problems });
+    committed: binding.memory.allCommitted, skipped: binding.memory.skipped, check: checked, rounds, repaired, problems });
   const runId = store.dreamingRunId(run)!;
   let finalCheck: DreamingCheckResult | undefined;
   let finalization: { stage: "canonical-check" | "settlement"; error: string } | undefined;

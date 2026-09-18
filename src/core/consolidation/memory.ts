@@ -8,7 +8,7 @@ export interface MemoryReview {
   feedback(batch: MemoryBatch): { text: string; near: NearPair[]; completed: KnowledgeRead[] };
 }
 export function bindMemory(store: Store, sessionId: number, run: RunInput, review?: MemoryReview, path: KnowledgePath = store.knowledgePath(sessionId),
-  reads = new Map<number, KnowledgeWithRevision>(), eligibleSupport?: (factId: number) => boolean) {
+  reads = new Map<number, KnowledgeWithRevision>(), eligibleSupport?: (factId: number) => boolean, skippable?: (commit: number) => string | undefined) {
   for (const handle of review?.frozen.prepared?.readKnowledgeCommits ?? []) {
     const revision = store.getKnowledgeRevision(handle.knowledgeId, handle.commit)!;
     reads.set(handle.commit, { knowledge: store.getKnowledge(handle.knowledgeId)!, revision });
@@ -23,6 +23,8 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     }
   };
   const allCommitted: import("../store/index.ts").CommittedKnowledgeOp[] = [];
+  // 59: the Dreamer's accepted skips (handle, because), recorded with the run; a skip accounts, never certifies.
+  const skipped: { knowledge: string; because: string }[] = [];
   let candidate: MemoryBatch | undefined, near: NearPair[] = [], problems: string[] = [];
   // Ruling 18:39: the second submission answers the checklist. A request counter, advanced by the
   // host on every provider request, tells whether the model has seen the feedback since the candidate.
@@ -33,7 +35,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
   const execute = (input: unknown) => {
     if (committed && review) return "rejected: already committed";
     if (review && candidate && requests === candidateRequest) return "rejected: the review feedback has not been read yet; resubmit after the feedback message";
-    const prepared = prepareMemory(store, sessionId, input, run, review?.frozen, path, [...reads.values()], eligibleSupport);
+    const prepared = prepareMemory(store, sessionId, input, run, review?.frozen, path, [...reads.values()], eligibleSupport, skippable);
     problems = prepared.results.filter(r => r.startsWith("rejected:"));
     if (problems.length) { failure = undefined; return JSON.stringify({ results: prepared.results }); }
     if (review && !candidate) {
@@ -57,9 +59,10 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
     allCommitted.push(...result.committed);
+    if (skippable) skipped.push(...(prepared.batch.skipped as unknown as typeof skipped));
     // A receipt names the new version but does not supply its complete rendered body.
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, allCommitted, get readCommits() { return [...reads.keys()]; }, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; }, get competitiveConflicts() { return failure?.conflicts ?? []; } };
+  return { execute, reread, sequence, allCommitted, skipped, get readCommits() { return [...reads.keys()]; }, requestSeen: () => { requests++; if (pendingFeedback !== undefined) { reread(pendingFeedback); pendingFeedback = undefined; } }, get candidate() { return candidate; }, get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; }, get competitiveConflicts() { return failure?.conflicts ?? []; } };
 }

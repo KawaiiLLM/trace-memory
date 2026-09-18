@@ -12,7 +12,7 @@ import * as api from "../../source-fixture.ts";
 import { tokens } from "../../source-fixture.ts";
 import { countPathSnapshots } from "../../perf/fixture.ts";
 import { freezeConsolidation } from "../../../src/core/consolidation/index.ts";
-import { consolidationToolDefinitions } from "../../../src/core/api/tools.ts";
+import { consolidationToolDefinitions, dreamingToolDefinitions } from "../../../src/core/api/tools.ts";
 import { freezeNoting } from "../../../src/core/noting/index.ts";
 import { setKnowledgeInjection } from "../../knowledge-budget-fixture.ts";
 import { visibleView } from "../../../src/hosts/pi/visible.ts";
@@ -2525,6 +2525,19 @@ test("57: the Dreamer deliberates one item at a time on two principles; status b
   // The first round is the per-item work; its only archives are C's, on a cited fact.
   expect(prompt).toContain("First round: A–D over every item, closed by `check`; its only archives are C's, on a cited fact.");
   expect(prompt).not.toContain("closed by D");
+});
+
+test("59: every supplied item is accounted for by an operation or a skip; New items search history once, in a batch", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+  // The loop's opening: an item ends the round in an operation or a skip; the check reports the rest; a skip certifies nothing.
+  expect(prompt).toContain("Every supplied item ends the round either in an operation or in a skip with a reason, and the check reports the ones that are neither; a skip is not a certificate.");
+  // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
+  expect(prompt).toContain("Before the first `New:` item is decided, one `search` with `queries` — each New item's object in a few words — `layer: knowledge`, `versions: history`; a hit is a revival candidate to read in full (`trace`) before deciding whether the New item continues that identity.");
+  // The memory call names the skip shape; the empty-skip literal is gone.
+  expect(prompt).toContain('Call memory({operations, skipped}); a skip is `{knowledge: "K12@57", because}` naming a supplied item this round leaves without an operation.');
+  expect(prompt).not.toContain("skipped: []");
+  // The check tool's receipt and the memory tool's description carry the same contract.
+  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("a skip accounts for the item and never certifies it");
 });
 
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
