@@ -7,6 +7,7 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 import { tokens } from "../../../src/core/render/index.ts";
 import { freezeDreaming } from "../../../src/core/dreaming/index.ts";
 
+import { skipRest } from "../../dreaming-skips.ts";
 const memories: ReturnType<typeof TraceMemory>[] = [], dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) m.close(); for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
 const success = { outcome: "success", request: { exact: "offline request" }, output: "reviewed", usage: { input: 10, output: 5, cost: { total: 0.25 } } } as const;
@@ -17,7 +18,7 @@ class Barrier {
 function fixture(body = "durable rule") {
   const dir = mkdtempSync(join(tmpdir(), "dreamer-external-conflict-")); dirs.push(dir);
   const db = join(dir, "memory.sqlite");
-  let agent: (task: DreamingAgentInput) => Promise<RunAgentResult> = async () => success;
+  let agent: (task: DreamingAgentInput) => Promise<RunAgentResult> = async task => { skipRest(task); return success; };
   const memory = TraceMemory(db, task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
   const store = memory.store;
   const p = store.createProject({ name: "shared", declaredBy: "mark" });
@@ -53,7 +54,7 @@ function fixture(body = "durable rule") {
   const count = () => store.taskFailures(s.id).find(f => f.phase === "dreaming")?.count ?? 0;
   const race = async (options: { merge?: boolean; before?: (task: DreamingAgentInput) => void; after?: (task: DreamingAgentInput) => void; result?: RunAgentResult; signal?: AbortSignal } = {}) => {
     const frozen = new Barrier(), changed = new Barrier();
-    setAgent(async task => { options.before?.(task); frozen.release(); await changed.wait; options.after?.(task); return options.result ?? success; });
+    setAgent(async task => { skipRest(task); options.before?.(task); frozen.release(); await changed.wait; options.after?.(task); return options.result ?? success; });
     const pending = memory.dream({ ...target, signal: options.signal });
     await frozen.wait;
     let external!: ReturnType<typeof write>;
@@ -121,6 +122,7 @@ test.each([false, true])("own intermediate consumed by external merge=%s keeps a
   const reopened = TraceMemory(f.db, async raw => {
     const task = raw as DreamingAgentInput;
     expect(task.material.changed).toContain(`K${external.knowledgeId}@${external.commit}`);
+    skipRest(task);
     const receipt = tool(task, "check").execute({});
     expect(receipt).toContain("- successor-free results: 1");
     expect(receipt).toContain("Blockers: none");
@@ -137,6 +139,7 @@ test.each([false, true])("own intermediate consumed by external merge=%s keeps a
   const catchup = TraceMemory(f.db, async raw => {
     const task = raw as DreamingAgentInput;
     expect(task.material.changed).toContain(`K${external.knowledgeId}@${external.commit}`);
+    skipRest(task);
     return success;
   }, { dreaming: { triggerTokens: 1 } }); memories.push(catchup);
   expect((await catchup.dream(f.target)).outcome).toBe("success");
@@ -162,6 +165,7 @@ test.each([false, true])("a successor of processed read-only material does not e
   let attempt = 0;
   f.setAgent(async task => {
     materials.push(task.material.changed);
+    skipRest(task);
     if (attempt++ === 0) { frozen.release(); await changed.wait; }
     expect(task.material.changed).toContain(`K${f.item.knowledgeId}@${f.item.commit}`);
     return success;
@@ -217,7 +221,7 @@ test("consumed original events close exactly and their enlarged outside events a
   }
   const originalEventIds = originals.map(item => item.commit);
   const frozen = new Barrier(), changed = new Barrier();
-  f.setAgent(async () => { frozen.release(); await changed.wait; return success; });
+  f.setAgent(async task => { skipRest(task); frozen.release(); await changed.wait; return success; });
   const first = f.memory.dream(f.target);
   await frozen.wait;
   const successors = [];
@@ -275,7 +279,7 @@ test("one consumed input's indivisible oversized successor stays pending without
     originals.push(created.committed[0]!);
   }
   const frozen = new Barrier(), changed = new Barrier();
-  f.setAgent(async () => { frozen.release(); await changed.wait; return success; });
+  f.setAgent(async task => { skipRest(task); frozen.release(); await changed.wait; return success; });
   const first = f.memory.dream(f.target);
   await frozen.wait;
   const base = f.other.store.currentCommit(f.item.knowledgeId, f.otherPath)[0]!;
@@ -309,6 +313,7 @@ test.each([false, true])("an oversized consumer of a legal own output does not p
   }
   let own = 0, oversized = 0, outsideEvent = 0;
   f.setAgent(async task => {
+    skipRest(task);
     const receipt = JSON.parse(tool(task, "memory").execute({ operations: [{ op: "update", id: `K${f.item.knowledgeId}@${f.item.commit}`,
       text: "own maintained", category: "constraint", scope: "project", supports: ["F1"], topics: [], reason: "legal maintenance" }], skipped: [] }));
     own = receipt.committed[0].commit;
@@ -348,6 +353,7 @@ test.each([false, true])("an oversized consumer of a legal own output does not p
   f.setAgent(async task => {
     expect(tokens(task.material.changed)).toBeLessThanOrEqual(10000);
     expect(task.material.changed).toContain(`K${recovered.committed[0]!.knowledgeId}@${recovered.committed[0]!.commit}`);
+    skipRest(task);
     return success;
   });
   expect((await f.memory.dream(f.target)).outcome).toBe("success");
@@ -473,7 +479,7 @@ test("untrusted provider result and public settlement cannot manufacture the exc
 
 test("another target's Dreamer waits while the database seat is occupied", async () => {
   const f = fixture(), frozen = new Barrier(), finished = new Barrier();
-  f.setAgent(async () => { frozen.release(); await finished.wait; return success; });
+  f.setAgent(async task => { skipRest(task); frozen.release(); await finished.wait; return success; });
   const pending = f.memory.dream(f.target);
   await frozen.wait;
   const other = TraceMemory(f.db, async () => { throw new Error("the occupied seat must prevent a second worker"); },
@@ -490,7 +496,8 @@ test("another target's Dreamer waits while the database seat is occupied", async
 test("a second connection consuming input before finalization yields successful exact settlement without a certificate", async () => {
   const f = fixture();
   let external = 0;
-  f.setAgent(async () => {
+  f.setAgent(async task => {
+    skipRest(task);
     const transaction = f.store.transaction.bind(f.store);
     vi.spyOn(f.store, "transaction").mockImplementationOnce(fn => {
       external = f.write().commit;
@@ -523,7 +530,7 @@ test("narrow reference conflict survives close/reopen and replay; the next real 
   await f.memory.dream(f.target); await f.memory.dream(f.target);
   const before = f.store.taskFailures(f.target.sessionId);
   const frozen = new Barrier(), changed = new Barrier();
-  f.setAgent(async () => { frozen.release(); await changed.wait; return success; });
+  f.setAgent(async task => { skipRest(task); frozen.release(); await changed.wait; return success; });
   const pending = f.memory.dream(f.target);
   await frozen.wait;
   const updated = f.other.store.commitConsolidationRun({ path: f.otherPath,

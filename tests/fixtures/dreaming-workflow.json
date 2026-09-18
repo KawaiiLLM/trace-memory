@@ -340,6 +340,55 @@
         "reason": "Knowledge is macro: the accessor name and default value are not needed to state the claim; they survive in the cited facts and the original, which `trace` reaches. One rewrite, not a split."
       },
       "review": "The body is long by detail, not by holding two things, so it is trimmed to the macro claim rather than split (principle 2). This is not shortening-only: the identifier and default value are removed as detail a body does not carry, and the reason names where they survive."
+    },
+    {
+      "id": "two-skipped-one-revived",
+      "judgment": "faithful",
+      "archived": {
+        "text": "The widget cache is cleared on every deploy; the user ruled that stale widget state must never survive a release.",
+        "category": "constraint",
+        "scope": "project",
+        "topics": ["widget", "deploy"],
+        "reason": "Widget cache retired with the old release pipeline"
+      },
+      "parents": [
+        {
+          "text": "The user decided that deployment must remain offline; required runtime assets must be bundled.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["deployment", "offline-runtime"]
+        },
+        {
+          "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
+          "category": "open",
+          "scope": "project",
+          "topics": ["schema-migration", "rollback"]
+        },
+        {
+          "text": "The user ruled again that the widget cache is cleared on every deploy, now under the new release pipeline; stale widget state must never survive a release.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["widget", "deploy"]
+        }
+      ],
+      "result": {
+        "search": { "queries": ["offline deployment", "schema migration", "widget cache"], "layer": "knowledge", "versions": "history" },
+        "hits": ["\"offline deployment\": no hit", "\"schema migration\": the item itself, current, not a revival candidate", "\"widget cache\": the archived identity, read in full with trace before the decision"],
+        "skipped": [
+          { "parent": 0, "because": "Readable on its own, one thing, no duplicate or overlap, no conflicting fact on the path; nothing to split, merge, resolve or rewrite." },
+          { "parent": 1, "because": "Still open and still qualified; the rehearsal has not run, so no fact resolves it and the body already states the next action." }
+        ],
+        "merge": {
+          "survivor": "archived",
+          "absorb": 2,
+          "text": "The user ruled that the widget cache is cleared on every deploy under the current release pipeline; stale widget state must never survive a release.",
+          "category": "constraint",
+          "scope": "project",
+          "topics": ["widget", "deploy"],
+          "reason": "The returning ruling continues the archived widget-cache identity: same object, same independently maintainable rule; revived by merging the New item into it, the body stating the current rule alone."
+        }
+      },
+      "review": "Every supplied item ends the round accounted for: two in an explicit skip with a reason, one in an operation; the check reports nothing unaccounted, and a skip is accounting only — the skipped leaves are certified because they are successor-free, not because they were skipped. The batched history search runs once, before the first New item is decided, with each item's object in a few words; a query with no hit is named in the receipt, a current self-hit is not a revival, and the archived hit is read in full before the New item is merged into that identity (48)."
     }
   ]
 }

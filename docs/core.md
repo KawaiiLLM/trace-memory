@@ -124,8 +124,12 @@ originals and intermediates do not. Existing certificates are never revoked. The
 validates the complete resulting accepted processed pool against current shared caps before inserting
 any certificate or event settlement.
 
-Each supplied event is accounted separately by an accepted candidate or verified consumption of its
-selected base. Successful completion may therefore settle an all-consumed batch with no new
+Each supplied event is accounted separately when its root results are consumed, have own-candidate
+descendants, or were skipped with a reason by this run (ticket 59); an untouched result no longer
+accounts for itself, and the check reports `unaccounted: K12@57, …` as a blocker until it is operated
+on or skipped. A skip accounts and never certifies: a skipped successor-free leaf is certified as any
+other, and a skipped root with a path successor is accounted but not certified. Successful
+completion may therefore settle an all-consumed batch with no new
 certificate. It settles only accounted supplied events and certifies only successor-free candidates;
 the rival result and its own event remain pending. Claim, graph, candidates, exact settlements,
 certificates, processed caps, completion and execution outcome are rechecked and written in one
@@ -156,7 +160,7 @@ version obligations are selected as whole shared-result components; an oversized
 partially supplied and does not pin an independent fitting retained component. No scheduler, worker
 completion trigger or retry loop is added.
 
-### Maintenance loop (35c, 54, 56, 57)
+### Maintenance loop (35c, 54, 56, 57, 59)
 
 The Dreamer prompt (tickets 54–57, rulings of 2026-09-18) makes pruning and merging the work and
 `check` the acceptance. The unit of work is one item: each `New:`/`Changed:` item is taken through
@@ -177,7 +181,16 @@ never overrides a ruling, the loser is archived with that fact in `supports`, a 
 state is updated rather than archived, a finished work item of any category is archived on the fact
 that finishes it, and an unsettled conflict becomes one `dispute` item. Rewrite: only the survivor of
 a merge or split and a body that fails the standalone test; a body that already reads on its own is
-left as it is. Then `check`. There is no opening `check`: the receipt must not set the agenda. No
+left as it is. Then `check`. There is no opening `check`: the receipt must not set the agenda. Every
+supplied item ends the round either in an operation or in an explicit skip with a reason (ticket 59:
+`memory({operations, skipped: [{knowledge: "K12@57", because}]})`, a supplied `New:`/`Changed:`
+handle or an own result of this run, rejected when unknown or already consumed by this run's
+operations); the check lists the rest under one `unaccounted:` blocker, and the skips are recorded
+with the run. Before the first `New:` item is decided, one `search` with `queries` (each New item's
+object in a few words, `layer: knowledge`, `versions: history`) finds revival candidates in one
+response — one best revision per K per query, at most `cap` per query (default 1), the query echoed
+on each hit line and queries with no hit named in the receipt; a hit is read in full with `trace`
+before the New item is merged into that identity. No
 blocker finishes the run; a cap exceeded starts another round at the next intensity; a round with
 nothing to do is reported with the changed block named, never as a budget figure. Immutable prompt
 text does not turn current configured amounts, estimated body savings, or item and topic counts into

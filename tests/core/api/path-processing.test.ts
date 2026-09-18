@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TraceMemory, type DreamingAgentInput } from "../../../src/core/api/index.ts";
+import { skipRest } from "../../dreaming-skips.ts";
 
 const memories: ReturnType<typeof TraceMemory>[] = [], dirs: string[] = [];
 afterEach(() => {
@@ -308,6 +309,7 @@ test("34b: shared-result peer propagation blocks the whole oversized group while
     expect(task.material.changed).toContain(`K${independent.knowledgeId}@${independent.commit}`);
     expect(task.material.changed).not.toContain(`K${merged.knowledgeId}@${merged.commit}`);
     expect(task.material.changed).not.toContain(`K${peer.knowledgeId}@${peer.commit}`);
+    skipRest(task);
     const receipt = task.tools.find(tool => tool.name === "check")!.execute({});
     expect(receipt).toContain("- supplied formal events: 1");
     expect(receipt).toContain("Blockers: none");
@@ -357,7 +359,8 @@ test.each([
   { name: "descendant inapplicable", support: "right" as const, target: "root" as const, certified: false },
 ])("47 certification: $name successor follows lineage-or-applicable", async ({ support, target, certified }) => {
   let f!: ReturnType<typeof pathFixture>, successorCommit = 0;
-  f = pathFixture(async () => {
+  f = pathFixture(async task => {
+    skipRest(task);
     let fact = f.fact;
     if (support === "right") {
       const noted = f.store.commitNotingRun({ run: { kind: "manual", sessionId: f.session.id, branch: "right", createdAt: at }, facts: [{
