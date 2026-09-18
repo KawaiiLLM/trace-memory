@@ -6,7 +6,8 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const temporary = mkdtempSync(join(tmpdir(), "trace-memory-cc-package-"));
+// Leave room for the control socket beneath macOS's long per-user temporary directory.
+const temporary = mkdtempSync(join(tmpdir(), "tmcc-"));
 try {
   execFileSync(process.execPath, [join(root, "scripts/build-cc.mjs")], { cwd: root, stdio: "pipe" });
   const builtOutput = join(root, "plugin/dist/cc.cjs"), lastGood = readFileSync(builtOutput, "utf8");
@@ -18,6 +19,14 @@ try {
   assert.equal(readFileSync(builtOutput, "utf8"), lastGood, "failed build must preserve the last good artifact");
   const plugin = join(temporary, "plugin"); cpSync(join(root, "plugin"), plugin, { recursive: true });
   assert.match(readFileSync(join(plugin, "README.md"), "utf8"), /Node >=24\.6\.0/);
+  const skill = readFileSync(join(plugin, "skills/trace/SKILL.md"), "utf8");
+  assert.match(skill, /^---\nname: trace\n/);
+  assert.match(skill, /disable-model-invocation: true/);
+  for (const parameter of ["${CLAUDE_PLUGIN_ROOT}", "${CLAUDE_SESSION_ID}", "$ARGUMENTS"])
+    assert.ok(skill.includes(parameter), `operator skill must receive ${parameter} from the native host`);
+  assert.ok(skill.includes("catchup"));
+  assert.ok(skill.includes("dist/cc.cjs"));
+  assert.equal(/^allowed-tools:/m.test(skill), false, "operator skill must retain normal native tool permissions");
   assert.match(readFileSync(join(plugin, "dist/cc.cjs"), "utf8"), /Trace Memory CC requires Node >=24\.6\.0/);
   assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(root), false, "bundle must not contain a checkout path");
   for (const phrase of ["You are the Noter", "You are the Consolidator", "You maintain the coherence, nonredundancy and atomicity"])
@@ -45,16 +54,34 @@ try {
   let stdout = "", stderr = ""; child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
   child.stdout.on("data", value => stdout += value); child.stderr.on("data", value => stderr += value);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25" } })}\n`);
-  await new Promise((resolveReady, reject) => {
-    const deadline = setTimeout(() => reject(new Error(`packed MCP did not initialize: ${stderr}`)), 5_000);
-    const poll = setInterval(() => { if (stdout.includes('"id":1')) { clearTimeout(deadline); clearInterval(poll); resolveReady(); } }, 10);
-  });
-  const mcpInitLatencyMs = performance.now() - mcpStarted;
-  child.stdin.end();
-  await new Promise((resolveExit, reject) => {
-    const deadline = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`packed MCP did not stop: ${stderr}`)); }, 5_000);
-    child.once("exit", code => { clearTimeout(deadline); code === 0 || code === 1 ? resolveExit() : reject(new Error(`packed MCP exit ${code}: ${stderr}`)); });
-  });
+  let mcpInitLatencyMs;
+  try {
+    await new Promise((resolveReady, reject) => {
+      const deadline = setTimeout(() => { clearInterval(poll); reject(new Error(`packed MCP did not initialize: ${stderr}`)); }, 5_000);
+      const poll = setInterval(() => { if (stdout.includes('"id":1')) { clearTimeout(deadline); clearInterval(poll); resolveReady(); } }, 10);
+    });
+    mcpInitLatencyMs = performance.now() - mcpStarted;
+    // Initialization replies before executor attachment. Wait for the authoritative control socket,
+    // not a fixed sleep, then exercise the copied CLI's new command without configuring a provider.
+    const bindingPath = join(temporary, "state/bindings", `${session}.json`);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && !JSON.parse(readFileSync(bindingPath, "utf8")).executor)
+      await new Promise(resolveReady => setTimeout(resolveReady, 10));
+    assert.ok(JSON.parse(readFileSync(bindingPath, "utf8")).executor, `packed MCP executor did not attach: ${stderr}`);
+    const catchup = JSON.parse(execFileSync(process.execPath,
+      [entry, "cli", "--config", config, "--session", session, "catchup"], { encoding: "utf8", timeout: 5_000 }));
+    assert.equal(catchup.command, "catchup");
+    assert.equal(catchup.control.state, "acknowledged");
+    assert.equal(catchup.control.reply.verb, "catchup");
+    assert.equal(catchup.control.reply.catchup.state, "failed");
+    assert.match(catchup.control.reply.catchup.diagnostic, /not configured/);
+  } finally {
+    child.stdin.end();
+    if (child.exitCode === null && child.signalCode === null) await new Promise((resolveExit, reject) => {
+      const deadline = setTimeout(() => { child.kill("SIGKILL"); reject(new Error(`packed MCP did not stop: ${stderr}`)); }, 5_000);
+      child.once("exit", code => { clearTimeout(deadline); code === 0 || code === 1 ? resolveExit() : reject(new Error(`packed MCP exit ${code}: ${stderr}`)); });
+    });
+  }
   assert.match(stdout, /"serverInfo":\{"name":"trace-memory"/);
   assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes("@earendil-works/pi-coding-agent"), false);
   console.log(`Packed CC smoke passed: ${readFileSync(entry).byteLength} bytes, copied outside checkout, Hook/CLI/MCP loaded without node_modules; Hook ${hookLatencyMs.toFixed(1)} ms, MCP init ${mcpInitLatencyMs.toFixed(1)} ms.`);
