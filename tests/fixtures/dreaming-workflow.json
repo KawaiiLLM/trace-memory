@@ -372,7 +372,8 @@
         }
       ],
       "result": {
-        "search": { "queries": ["offline deployment", "schema migration", "widget cache"], "layer": "knowledge", "versions": "history" },
+        "search": { "queries": ["offline deployment", "schema migration", "widget cache"], "layer": "knowledge", "versions": "history",
+        "cap": 2 },
         "hits": ["\"offline deployment\": no hit", "\"schema migration\": the item itself, current, not a revival candidate", "\"widget cache\": the archived identity, read in full with trace before the decision"],
         "skipped": [
           { "parent": 0, "because": "Readable on its own, one thing, no duplicate or overlap, no conflicting fact on the path; nothing to split, merge, resolve or rewrite." },

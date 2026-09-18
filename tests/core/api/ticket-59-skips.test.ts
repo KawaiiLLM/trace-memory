@@ -128,9 +128,10 @@ test("59: a batched search returns one best hit per query under the shared optio
   const who = { sessionId: f.target.sessionId, headTurnId: f.target.headTurnId, branch: "main" };
   const batched = f.memory.search(["widget cache", "schema", "nothing here"], "knowledge", who);
   const lines = batched.split("\n");
-  expect(lines.filter(line => line.startsWith('"widget cache": '))).toEqual([expect.stringContaining(`[${handle(f.items[0]!)}]`)]);
+  // 59b: hits are in similarity order — the shorter "beta" body is the closer match for "widget cache".
+  expect(lines.filter(line => line.startsWith('"widget cache": '))).toEqual([expect.stringContaining(`[${handle(f.items[1]!)}]`)]);
   expect(lines.filter(line => line.startsWith('"schema": '))).toEqual([expect.stringContaining(`[${handle(f.items[2]!)}]`)]);
-  expect(batched).not.toContain(`[${handle(f.items[1]!)}]`);
+  expect(batched).not.toContain(`[${handle(f.items[0]!)}]`);
   expect(batched).toContain('no hit: "nothing here"');
   expect(batched).toContain("searched: project sessions; global/project/session knowledge, current versions");
   const two = f.memory.search(["widget cache"], "knowledge", { ...who, cap: 2 });
@@ -142,6 +143,14 @@ test("59: a batched search returns one best hit per query under the shared optio
   expect(single).toContain(`[${handle(f.items[0]!)}]`); expect(single).toContain(`[${handle(f.items[1]!)}]`);
   expect(single).not.toContain('"widget cache": '); expect(single).not.toContain("no hit");
   expect(f.memory.search("absent everywhere", "knowledge", who)).not.toContain("no hit");
+  // 59b: the batched form orders each query's hits by lexical similarity, so cap 1 keeps the closest
+  // match rather than the lowest K id; the single form keeps K-id order.
+  const g = fixture(async () => success, ["cache seat rule for the whole widget family and every worker", "seat", "the seat rule"]);
+  const whoG = { sessionId: g.target.sessionId, headTurnId: g.target.headTurnId, branch: "main" };
+  const ranked = g.memory.search(["seat"], "knowledge", whoG).split("\n").filter(line => line.startsWith('"seat": '));
+  expect(ranked).toEqual([expect.stringContaining(`[${handle(g.items[1]!)}]`)]);
+  const singleOrder = g.memory.search("seat", "knowledge", whoG);
+  expect(singleOrder.indexOf(`[${handle(g.items[0]!)}]`)).toBeLessThan(singleOrder.indexOf(`[${handle(g.items[1]!)}]`));
   // The Dreamer's bound tool takes the same form.
   const bound = f.memory.tools({ kind: "manual", sessionId: f.target.sessionId, branch: "main", currentTurnId: f.target.headTurnId });
   const search = bound.find(t => t.name === "search")!;

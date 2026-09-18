@@ -406,7 +406,8 @@ test.each([20, 40, 79, 80, 100, 160].flatMap(width => ["fullscreen", "regular"].
     })), 0);
     const total = toolTokens + 12;
     expect(toolTokens).toBeGreaterThanOrEqual(1000); expect(toolTokens).toBeLessThan(10000);
-    const toolLabel = `Tools ~${(toolTokens / 1000).toFixed(1)}k (${(100 * toolTokens / total).toFixed(1)}% local)`;
+    // The panel drops a trailing ".0" (session-status.ts), so the label follows the same rule.
+    const toolLabel = `Tools ~${(toolTokens / 1000).toFixed(1).replace(/\.0$/, "")}k (${(100 * toolTokens / total).toFixed(1)}% local)`;
     const conversationLabel = `Conversation ~12 (${(1200 / total).toFixed(1)}% local)`;
     for (const phrase of ["S1 | On(default) | $0.0000", "Project: pi:pi-test (undeclared)",
       "Noting ███████░░░ 72.0% 36/50", "Dreaming ░░░░░░░░░░", "Consolidation ░░░░░░░░░░",

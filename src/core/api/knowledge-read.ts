@@ -27,7 +27,9 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
   const eligible = (r: KnowledgeRevision) => matches(r) && ((options.versions ?? "current") === "all"
     || options.versions === "history" && graph.applicable.has(r.id)
     || (options.versions ?? "current") === "current" && current.has(r.id) && r.op !== "archive");
-  const representatives = (candidates: readonly KnowledgeRevision[], query = "") => {
+  // 59b: the batched search orders each query's hits by that similarity (rarest match first), so
+  // `cap` keeps the most relevant K rather than the lowest id; the single form keeps K-id order.
+  const representatives = (candidates: readonly KnowledgeRevision[], query = "", order: "id" | "score" = "id") => {
     const chosen = new Map<number, { revision: KnowledgeRevision; score: number }>();
     for (const revision of candidates) {
       if (!eligible(revision)) continue;
@@ -38,7 +40,10 @@ export function knowledgeReadSelection(store: Store, options: ListingOptions, na
           || current.has(revision.id) === current.has(previous.revision.id) && revision.id > previous.revision.id))
         chosen.set(revision.knowledgeId, { revision, score });
     }
-    return [...chosen.values()].map(value => value.revision).sort((a, b) => a.knowledgeId - b.knowledgeId);
+    const ranked = [...chosen.values()];
+    if (order === "score") ranked.sort((a, b) => b.score - a.score || Number(current.has(b.revision.id)) - Number(current.has(a.revision.id)) || b.revision.id - a.revision.id);
+    else ranked.sort((a, b) => a.revision.knowledgeId - b.revision.knowledgeId);
+    return ranked.map(value => value.revision);
   };
   const status = (hit: KnowledgeRevision) => {
     if (!graph.applicable.has(hit.id)) return "another branch";

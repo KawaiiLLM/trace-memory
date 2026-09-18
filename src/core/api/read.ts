@@ -764,8 +764,11 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       const fields = new Set(options.fields!.filter(field => field !== "reason"
         || ((scope === "knowledge" || scope === "all") && options.versions !== "current")));
       const represented = found.map((list, index) => {
-        const selected = new Set(selection?.representatives(list.filter(a => a.startsWith("K")).map(revision), (batched ?? [query as string])[index]).map(r => r.id));
-        return list.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
+        const ranked = selection?.representatives(list.filter(a => a.startsWith("K")).map(revision), (batched ?? [query as string])[index], batched ? "score" : "id") ?? [];
+        const selected = new Set(ranked.map(r => r.id));
+        if (!batched) return list.filter(address => !address.startsWith("K") || selected.has(revision(address).id));
+        // 59b: knowledge hits in similarity order, then the query's fact and Raw hits as listed.
+        return [...ranked.map(r => `K${r.knowledgeId}@${r.id}`), ...list.filter(address => !address.startsWith("K"))];
       });
       const perQuery = input.cap ?? 1;
       if (batched && (!Number.isSafeInteger(perQuery) || perQuery < 1)) throw new Error("listing cap must be a positive integer");
