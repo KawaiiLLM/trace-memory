@@ -156,18 +156,21 @@ version obligations are selected as whole shared-result components; an oversized
 partially supplied and does not pin an independent fitting retained component. No scheduler, worker
 completion trigger or retry loop is added.
 
-### Maintenance loop (35c, 54)
+### Maintenance loop (35c, 54, 56)
 
 The Dreamer prompt (ticket 54, rulings of 2026-09-18) makes pruning and merging the work and `check`
-the acceptance. One round is: split first — every `New:`/`Changed:` item is split while a child is
-still compound, because only atomic items compare for overlap; merge — only the same claim stated
+the acceptance. One round is: split first — every `New:`/`Changed:` item is split by maintenance need
+(one object, one independently maintainable claim or state, one identity; ticket 56), because only
+atomic items compare for overlap; merge — only the same claim stated
 twice, never two claims about one subject (a definition and the rules that use it, a rule and the
 record of the fix that applied it, a sub-ticket and its umbrella stay separate), with 48's revival
 merge unchanged; resolve — conflicting claims about one object, or items a fact on the path shows
 obsolete, completed or abandoned: a later user ruling wins over an earlier one, a later proposal,
 report or assistant choice never overrides a ruling, the loser is archived with that fact in
-`supports`, and an unsettled conflict becomes one `dispute` item; rewrite for readability — every
-touched survivor and any changed item not readable on its own; then `check`. There is no opening
+`supports`, a persistent object state is updated rather than archived, a finished work item of any
+category is archived on the fact that finishes it, and an unsettled conflict becomes one `dispute`
+item; rewrite for readability — the survivor of a merge or split and any item whose body fails the
+standalone test, a body that already reads on its own left as it is; then `check`. There is no opening
 `check`: the receipt must not set the agenda. No blocker finishes the run; a cap exceeded starts
 another round at the next intensity; a round with nothing to do is reported with the changed block
 named, never as a budget figure. Immutable prompt text does not turn current configured amounts,
