@@ -137,9 +137,9 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     }
     expect(initialSystem).toContain("user-versus-agent attribution");
     expect(initialSystem).toContain("attempted, reported, completed and verified distinctions");
-    expect(initialSystem).toContain("historical retrievability is not equivalent to future automatic coverage");
+    expect(initialSystem).toContain("An archive has exactly one of three reasons, stated in `reason`:");
     expect(initialSystem).toContain("invalid budget stripping");
-    expect(initialSystem).toContain("still-valid lower-priority information only when the hard limit requires deliberate loss");
+    expect(initialSystem).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems.length).toBeGreaterThan(1);
     expect(repairSystems.every(system => system === initialSystem),
