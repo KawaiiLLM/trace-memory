@@ -62,6 +62,8 @@ If the test does not answer "yes", it is not that category; if none does, it sta
 - **open**: what has no clear outcome, would be re-investigated by the next agent, or needs the user's ruling? Say what and whom it is waiting for.
 - **dispute**: do two accounts of the same object under the same conditions coexist with no basis to rule? Write both sides and the object to re-check; do not pick a side.
 
+Status — what is running, waiting, dispatched, pending acceptance, installed, pinned — lives in `open`, `dispute`, `reference` or `term`, never in `constraint`, `mechanism` or `goal`: those three hold the claim alone, and a status worth keeping is its own item.
+
 ## Part one: admission (net growth allowed)
 
 ### Procedure
