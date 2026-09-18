@@ -4,8 +4,8 @@
   "worker": {
     "claudeExecutable": null,
     "claudeVersion": "2.1.257",
-    "model": null,
-    "effort": "medium",
+    "model": "opus",
+    "effort": "high",
     "contextWindow": null,
     "cwd": null
   }

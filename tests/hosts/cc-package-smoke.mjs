@@ -19,6 +19,10 @@ try {
   assert.equal(readFileSync(builtOutput, "utf8"), lastGood, "failed build must preserve the last good artifact");
   const plugin = join(temporary, "plugin"); cpSync(join(root, "plugin"), plugin, { recursive: true });
   assert.match(readFileSync(join(plugin, "README.md"), "utf8"), /Node >=24\.6\.0/);
+  const defaults = JSON.parse(readFileSync(join(plugin, "cc.config.json"), "utf8"));
+  assert.equal(defaults.worker.model, "opus");
+  assert.equal(defaults.worker.effort, "high");
+  assert.equal(Object.hasOwn(defaults, "dbPath"), false, "CC shares Pi's default database without sharing model preferences");
   const skill = readFileSync(join(plugin, "skills/trace/SKILL.md"), "utf8");
   assert.match(skill, /^---\nname: trace\n/);
   assert.match(skill, /disable-model-invocation: true/);

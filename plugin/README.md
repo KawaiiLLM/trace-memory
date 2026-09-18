@@ -2,7 +2,7 @@
 
 The standalone plugin requires Node >=24.6.0 and fails at its bundled entry before loading adapter or SDK code on an older runtime. It never downloads or installs a replacement runtime.
 
-Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`; set an installed model id and its finite `contextWindow`. The adapter is pinned to Claude Code 2.1.257. Missing required values fail explicitly. The file is the only mutable plugin configuration surface and must not contain credentials.
+Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`; set the prepared model's finite `contextWindow`. CC defaults to `worker.model: "opus"` and `worker.effort: "high"` for all three memory phases. These settings belong only to CC: they neither read nor change Pi's model/thinking preferences, and do not inherit the foreground CC session's selection. The adapter is pinned to Claude Code 2.1.257. Missing required values fail explicitly. The file is the only mutable plugin configuration surface and must not contain credentials.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. Project knowledge still requires the same explicitly declared project name on both hosts.
 
