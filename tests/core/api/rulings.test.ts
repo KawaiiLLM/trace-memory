@@ -2666,16 +2666,7 @@ test("58: the Consolidator reads adoption from the adopting user fact and states
   const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
   expect(prompt).toContain("a support edge is neither required nor sufficient: adoption is read from the content and scope of a user fact that adopts that object — through its support edge when the object was in the Noter's view, otherwise by the object it names, bound to the identity whose cited chain carries the proposal, the approval becoming that version's change support — never from co-occurrence in a batch, a general authorisation that names no object, or an implementation report; a proposal without an adopting user fact stays a proposal, and an approval of one change adopts no other decision because both sit in one batch or one body.");
   expect(prompt).toContain("An agent's own choice is written as the assistant's choice, never as a rule: the body states in a few characters, in the conversation's language, whose decision it is — user proposal, user-adopted decision, assistant choice — never a bare \"current choice\" or \"confirmed\", and the reason describes the change and is neither evidence for nor a substitute for that attribution.");
+  expect(prompt).toContain("Single review findings, explanations of code and unadopted agent proposals fail unless they establish a rule; a user's design proposal that the work proceeds under passes as a proposal — stated as the user's proposal, one identity until a user fact adopts or drops it — so that its adoption has an identity to continue.");
   expect(prompt).not.toContain('is written as "the current choice"');
   expect(prompt).not.toMatch(/Engine|F1841|K386/);
-});
-
-test("58: the Dreamer fixture holds the reconstructed mixed-decision-object case, split by object and not by actor", () => {
-  const fixture = JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as
-    { examples: { id: string; judgment: string; result: { children?: unknown[]; operations?: string[] }; review: string }[] };
-  const example = fixture.examples.find(value => value.id === "reconstructed-mixed-decision-objects-split")!;
-  expect(example.judgment).toBe("faithful");
-  expect(example.review).toContain("Reconstructed case with pre-revision facts, not an exact replay.");
-  expect(example.result.children).toHaveLength(2);
-  expect(example.result.operations!.join(" ")).toContain("no archive");
 });

@@ -420,7 +420,40 @@
         ],
         "reason": "The body holds two objects a later fact would change apart — a tool-shape change leaves the lifecycle standing — and its bare current choice and confirmed cannot be assigned to either, so it is split by object, not by actor; the lifecycle child states whose decision each stage is and that the continuing-context change was not adopted."
       },
-      "review": "Reconstructed case with pre-revision facts, not an exact replay. Mixed actors alone do not split, and the proposal, adoption and implementation stages of one design stay on one identity; the split is by decision object, made only because the interface detail and the lifecycle would be read and changed apart and the compound body left the makers and approval scopes unassignable. The cited user approval behind the parent's confirmed was of a different change and adopts nothing here; the assistant's later choice does not override the user's design, and that design is never retired as disposable implementation detail."
+      "review": "Reconstructed case with pre-revision facts, not an exact replay. Mixed actors alone do not split, and the proposal, adoption and implementation stages of one design stay on one identity; the split is by decision object, made only because the interface detail and the lifecycle would be read and changed apart and the compound body left the makers and approval scopes unassignable. The cited user approval behind the parent's confirmed was of a different change and adopts nothing here; the assistant's later choice does not override the user's design, and that design is never retired as disposable implementation detail. Anchors in the read-only production copy: the user's proposal F1841 (T1032#E1) admitted as K386@1037; the approval F1978 is of the spec and tickets (F1966, F1977), not of F1841 directly; implementation F2176 (T1166#E3..E4); the assistant's proposal F3364 and choice F3395; the user's approval F3390 is of a different change; F4255 negates F3395. The harness seeds one user decision fact per parent, so this round is reviewed against those anchors, not against seeded facts."
+    },
+    {
+      "id": "reconstructed-architecture-decision-not-an-implementation-snapshot",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        },
+        {
+          "text": "LLMEngine 每次裁决新建 Agent 实例，不继承上一次 Engine 会话；实例经 EngineAdapter 挂接到 Runtime，工具表在构造时注入。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        }
+      ],
+      "result": {
+        "children": [
+          {
+            "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈；已实现（每次裁决新建实例，不继承上次会话）。",
+            "category": "mechanism"
+          }
+        ],
+        "operations": [
+          "merge the implementation item into the lifecycle identity: its design clause is that identity's implementation evidence, folded in a few characters with the implementation fact as the change support",
+          "the adapter and tool-table topology leaves the body under principle 2 (identifiers stay in the facts); nothing is archived, since it never was a separate record",
+          "no archive of the implementation item as an implementation snapshot at any intensity: the body carried the user's adopted design, and the label does not make that design disposable"
+        ],
+        "reason": "Under budget pressure the second item reads like an implementation snapshot, but its first clause is the only resident statement of the user's independent-context design; archiving it on that label loses the design (KEEP), so the design folds into the lifecycle identity and only the topology detail leaves."
+      },
+      "review": "Reconstructed from K436@1605's archive by Dreamer R311 (reason: an implementation snapshot, information loss acknowledged) while K386's body had already stopped stating statelessness. Retirement respects the underlying design: 57's per-item order asks merge before archive, and the KEEP list protects a user's adopted design whatever the body looks like; a finished delivery record with nothing unique left may still be archived on its fact."
     }
   ]
 }
