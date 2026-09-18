@@ -156,26 +156,33 @@ version obligations are selected as whole shared-result components; an oversized
 partially supplied and does not pin an independent fitting retained component. No scheduler, worker
 completion trigger or retry loop is added.
 
-### Maintenance loop (35c, 54, 56)
+### Maintenance loop (35c, 54, 56, 57)
 
-The Dreamer prompt (ticket 54, rulings of 2026-09-18) makes pruning and merging the work and `check`
-the acceptance. One round is: split first — every `New:`/`Changed:` item is split by maintenance need
-(one object, one independently maintainable claim or state, one identity; ticket 56), because only
-atomic items compare for overlap; merge — only the same claim stated
-twice, never two claims about one subject (a definition and the rules that use it, a rule and the
-record of the fix that applied it, a sub-ticket and its umbrella stay separate), with 48's revival
-merge unchanged; resolve — conflicting claims about one object, or items a fact on the path shows
-obsolete, completed or abandoned: a later user ruling wins over an earlier one, a later proposal,
-report or assistant choice never overrides a ruling, the loser is archived with that fact in
-`supports`, a persistent object state is updated rather than archived, a finished work item of any
-category is archived on the fact that finishes it, and an unsettled conflict becomes one `dispute`
-item; rewrite for readability — the survivor of a merge or split and any item whose body fails the
-standalone test, a body that already reads on its own left as it is; then `check`. There is no opening
-`check`: the receipt must not set the agenda. No blocker finishes the run; a cap exceeded starts
-another round at the next intensity; a round with nothing to do is reported with the changed block
-named, never as a budget figure. Immutable prompt text does not turn current configured amounts,
-estimated body savings, or item and topic counts into budget authority. The final receipt, followed
-by core's transactional validation, establishes completion.
+The Dreamer prompt (tickets 54–57, rulings of 2026-09-18) makes pruning and merging the work and
+`check` the acceptance. The unit of work is one item: each `New:`/`Changed:` item is taken through
+split, merge, resolve and rewrite in that order, deciding once, and its operations are committed
+before the next item is taken — never a split pass over the whole pool followed by a search for
+duplicates. Two principles replace lists of cases (ticket 57): one item is one thing, sized by what a
+clear description of it needs — a split when the two pieces would be read and changed apart, a merge
+when one body would describe the thing more clearly than two; and knowledge is macro — decisions,
+mechanisms, constraints and their reasons, with identifiers, names, counts and hashes left in the
+facts and the original unless the claim cannot be stated without them (an over-detailed body is a
+rewrite, not a split). A body mixing a ruling with implementation status is compound: a finished
+status with no follow-up is folded into the ruling's body in a few characters and its delivery record
+archived on the finishing fact; a status with follow-up is its own `open`. Merge: a split-out piece
+that a current item already carries merges there instead of becoming a new identity; only the same
+claim stated twice merges, never two claims about one subject; 48's revival merge is unchanged.
+Resolve: a later user ruling wins over an earlier one, a later proposal, report or assistant choice
+never overrides a ruling, the loser is archived with that fact in `supports`, a persistent object
+state is updated rather than archived, a finished work item of any category is archived on the fact
+that finishes it, and an unsettled conflict becomes one `dispute` item. Rewrite: only the survivor of
+a merge or split and a body that fails the standalone test; a body that already reads on its own is
+left as it is. Then `check`. There is no opening `check`: the receipt must not set the agenda. No
+blocker finishes the run; a cap exceeded starts another round at the next intensity; a round with
+nothing to do is reported with the changed block named, never as a budget figure. Immutable prompt
+text does not turn current configured amounts, estimated body savings, or item and topic counts into
+budget authority. The final receipt, followed by core's transactional validation, establishes
+completion.
 
 Protection includes user-versus-agent attribution, proposal-versus-decision status,
 attempted/reported/completed/verified distinctions, uncertainty, conditions, exceptions, rationale,

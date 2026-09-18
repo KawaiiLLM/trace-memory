@@ -74,6 +74,7 @@ test("35c reviewed fixtures label semantic judgments and non-semantic limits hon
     "verified-obsolete-progress-retirement", "deliberate-valid-information-loss",
     "avoidable-rewrite-then-archive", "legitimate-disposition-correction",
     "spec-clauses-kept-whole", "readable-body-left-alone", "finished-reference-archived-on-completion-fact",
+    "split-piece-merges-into-existing-home", "finished-status-folded-into-ruling", "over-detailed-body-trimmed-to-claim",
   ]));
   expect(fixture.examples.filter(value => value.archivePriority !== undefined).map(value => value.archivePriority)).toEqual([1, 2, 3]);
 });

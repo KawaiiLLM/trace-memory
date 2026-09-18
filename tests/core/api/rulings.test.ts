@@ -2445,8 +2445,7 @@ test("56: split by maintenance need, rewrite only what fails the standalone test
   const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
   // A: the standard's identity test replaces "split again while a child is still compound"; generic examples, no batch ids.
   expect(prompt).toContain("one object, one independently maintainable claim or state, one identity — a child is warranted only when a later fact would change it while its sibling stands");
-  expect(prompt).toContain("Split: a user's rule and the assistant's choice made under it; a goal and a rule stated beside it; a work item's shared target and each named sub-item; findings about two different mechanisms.");
-  expect(prompt).toContain("Do not split: the clauses of one approved spec or contract that are read and changed together; the findings of one probe about one object; the parts of one dispatch or delivery record; a rule and its stated exception or condition; a state and the identifier it is about.");
+  // 57 replaced the "Split: … Do not split: …" example lists with two principles (pinned there).
   expect(prompt).toContain("A split that leaves a child unable to stand on its own, or that produces two bodies a reader would always consult together, is the compound it started from and is not made.");
   expect(prompt).not.toContain("split again while a child is still compound");
   // C: the trigger narrows to the standalone test; 54's readability rules stay verbatim (pinned there).
@@ -2455,7 +2454,7 @@ test("56: split by maintenance need, rewrite only what fails the standalone test
   expect(prompt).not.toContain("Every survivor the round touched");
   // B: persistent states update; finished work items of every category archive on the fact that finishes them.
   expect(prompt).toContain("Persistent object states (an installed version, a pinned exclusion, a configured default) are updated, not archived, when the state changes; finished work items — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — are archived on the fact that finishes them, whatever their category.");
-  expect(prompt).toContain("The protected-meaning entry \"useful completed work that prevents repetition\" is satisfied by the archived version and its cited facts; it does not keep a finished record resident.");
+  // 57 rewords the protected-meaning sentence (the folded pointer counts too; pinned there).
   expect(prompt).toContain("A record that still names an unresolved item is not finished: split the unresolved item out first (step A), then archive the finished remainder.");
   expect(prompt).not.toContain("An `open` item whose completion or abandonment a fact states");
   // Maintainer 2026-09-18: when unsure, read the original through trace, never code; every operation carries a reason (the memory tool schema already requires it).
@@ -2470,19 +2469,18 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
   expect(prompt).toContain("The goal is a readable, non-redundant, non-contradictory memory; the caps are acceptance criteria, not the objective.");
   expect(prompt).toContain("`check` is the final acceptance; when acceptance fails, run another pruning round. Pruning is never done for `check`'s sake — `check` judges the intensity of pruning.");
   expect(prompt).toContain("Do not call `check` before the round: nothing in core needs it, and the receipt must not set the agenda.");
-  // A: split first (ruled 2026-09-18).
-  expect(prompt).toContain("splitting precedes merging because only atomic items compare for overlap");
-  // A′: only the same claim stated twice merges; the three production merges are the anti-pattern (ruled 2026-09-18 on revival).
+  // A: split first (ruled 2026-09-18); 57 rewords the precedence clause to the per-item form (pinned there).
+  // B: only the same claim stated twice merges; the three production merges are the anti-pattern (ruled 2026-09-18 on revival).
   expect(prompt).toContain("the same claim stated twice, never two claims about one subject: a definition and the rules that use it, a rule and the record of the fix that applied it, a sub-ticket's state and the umbrella that lists the sub-tickets, stay separate");
   expect(prompt).toContain("A later ruling on an object whose earlier rule or proposal is archived continues that identity — revive and merge, the body states the current rule alone.");
-  // B: resolve.
+  // C: resolve.
   expect(prompt).toContain("A later ruling (a fact recording the user's decision or correction) wins over an earlier one; a later fact that is a proposal, a report or an assistant's choice never overrides a ruling. The loser is archived with that fact in `supports` and named in `reason`.");
   expect(prompt).toContain("A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides");
-  // C: readability, not brevity and not verbosity (ruled 2026-09-18).
+  // D: readability, not brevity and not verbosity (ruled 2026-09-18).
   expect(prompt).toContain("full sentences in the conversation's language, present tense for what holds now, the object, the claim, its conditions, its status and who decided it stated in words");
   expect(prompt).toContain("The project's vocabulary counts as understood (CONTEXT.md; N/C/D, claim, placement, path) — what fails is a clause whose subject, condition or actor cannot be resolved; attribution is a few characters (`助手选择`, `用户裁定`), never a sentence; a body states the current rule only — history is for tracing through the version chain and the cited facts, never resident (a body that narrates its own evolution bloats the context).");
   expect(prompt).toContain("Shortening is never a goal: an update whose only change is fewer characters is forbidden; a rewrite that removes more than half of a body must name in its reason where the removed detail survives; a rewrite that lengthens a body beyond what its missing attribution or specifics need is forbidden too.");
-  // D: check closes the round; a round with nothing to do names the changed block.
+  // Check closes the round; a round with nothing to do names the changed block.
   expect(prompt).toContain("No blocker: finish. A cap exceeded: another round at the next intensity below.");
   expect(prompt).toContain("A round with nothing to consolidate, resolve or rewrite is reported as such — with the changed block named — never as \"budget fine\".");
   // Protected meaning kept verbatim; a survivor preserves scope; exactly three archive reasons.
@@ -2492,12 +2490,41 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
   expect(prompt).toContain("An archive has exactly one of three reasons, stated in `reason`:");
   expect(prompt).toContain("(c) at the second intensity only, low value under the KEEP test");
   expect(prompt).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
-  // Intensity and KEEP.
-  expect(prompt).toContain("First round: A–C, closed by D; its only archives are B's, on a cited fact. Second round (a cap still exceeded): archive redundancy into named survivors across categories, retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test. Third: report to the maintainer with the numbers and finish on the final `check` without further loss; that run ends uncertified");
+  // Intensity and KEEP (57 rewords the first-round sentence to the per-item form; pinned there).
+  expect(prompt).toContain("Second round (a cap still exceeded): archive redundancy into named survivors across categories, retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test. Third: report to the maintainer with the numbers and finish on the final `check` without further loss; that run ends uncertified");
   expect(prompt).toContain("KEEP, never retired for a cap: user rulings and corrections, rule language (must/never/always), a body that states why, external-system limits, an item whose object is likely to return, unresolved decisions and blockers.");
   // Removed: the opening check as the agenda, and finishing because the budget is fine.
   expect(prompt).not.toContain("Actual check first");
   expect(prompt).not.toContain("budget work");
+});
+
+/** Ticket 57 (rulings of 2026-09-18, second set): one item at a time through split → merge → resolve → rewrite,
+ * deciding once and committing before the next item; two principles replace the example lists; status beside a ruling. */
+test("57: the Dreamer deliberates one item at a time on two principles; status beside a ruling is compound", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+  // The unit of work is one item; splitting precedes merging within it, never as a pool-wide pass.
+  expect(prompt).toContain("The unit of work is one item: take each item under `New:` and `Changed:` through A–D below in this order, deciding once, then commit that item's operations and take the next item.");
+  expect(prompt).toContain("Splitting precedes merging within an item, because only atomic items compare for overlap, and never as a pass over the whole pool followed by a search for duplicates.");
+  for (const heading of ["### A. Split?", "### B. Merge?", "### C. Resolve?", "### D. Rewrite?", "### Check."]) expect(prompt).toContain(heading);
+  expect(prompt).toContain("Call `check` after the last item's operations are committed.");
+  // Principle 1: one item, one thing, sized by a clear description; the illustrations, not rules.
+  expect(prompt).toContain("Two principles decide, not a list of cases. (1) One item, one thing, sized by what a clear description of that thing needs: too long when a reader hunts for the subject or when one change would force rewriting the whole body, too short when a piece cannot be read without its sibling; a split is warranted when the two pieces would be read and changed apart, a merge when one body would describe the thing more clearly than two.");
+  expect(prompt).toContain("Findings about different mechanisms are different things; the clauses of one contract read and changed together are one.");
+  // Principle 2: knowledge is macro; an over-detailed body is a rewrite, not a split.
+  expect(prompt).toContain("(2) Knowledge is macro: a body holds decisions, mechanisms, constraints and their reasons; identifiers, function and parameter names, counts and hashes stay in the facts and the original and enter a body only when the claim cannot be stated without them (`trace` reaches them when needed). A body long only by such detail is trimmed (D), not split.");
+  expect(prompt).toContain("session-local narration, step-by-step history and the detail principle 2 keeps out of a body dropped unless they are the point");
+  // The example lists are gone.
+  expect(prompt).not.toContain("Split: a user's rule");
+  expect(prompt).not.toContain("Do not split: the clauses");
+  // A split-out piece is checked for a home before it becomes a new identity.
+  expect(prompt).toContain("A piece that would be split out is checked for an existing home before it is created: if a current item already carries it, the piece merges there instead of becoming a new identity.");
+  // Status beside a ruling: compound by the category test; finished status folded, its record archived; follow-up is its own open.
+  expect(prompt).toContain("A body that mixes a ruling or mechanism with implementation status is compound — the category test says so: status and progress are `open`, rulings are `constraint`/`mechanism`/…; a body that cannot be given one category is two things.");
+  expect(prompt).toContain("A finished status with no follow-up (merged, implemented, installed) is folded into the ruling's body in a few characters (`已合入main`, `已实现`) as the traceable pointer, and the delivery record it came from is archived on its finishing fact (C); a status with follow-up is its own `open` item, created only after the home check (B).");
+  expect(prompt).toContain("The protected-meaning entry \"useful completed work that prevents repetition\" is met by the archived version and its cited facts, plus the few characters folded into the ruling the status stood beside; it does not keep a finished record resident.");
+  // The first round is the per-item work; its only archives are C's, on a cited fact.
+  expect(prompt).toContain("First round: A–D over every item, closed by `check`; its only archives are C's, on a cited fact.");
+  expect(prompt).not.toContain("closed by D");
 });
 
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
