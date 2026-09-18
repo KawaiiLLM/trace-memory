@@ -405,20 +405,20 @@
       "result": {
         "children": [
           {
-            "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈；助手选择在当前实现中跨批次保留上下文，该变更未经用户采纳。",
+            "text": "Engine 接口经工具调用接收观察并返回动作结果；上下文生命周期为用户裁决：每批裁决新建独立上下文、只保留批内工具反馈（已实现）。",
             "category": "mechanism"
           },
           {
-            "text": "Engine 接口：助手选择经工具调用接收观察并返回动作结果。",
-            "category": "mechanism"
+            "text": "助手提出并已落地的 Engine 跨批次保留上下文：用户批准去事件时未单独确认这一变更，批准范围不明，待用户确认后才能并入上下文生命周期机制。",
+            "category": "open"
           }
         ],
         "operations": [
-          "split into the context-lifecycle decision and the interface detail",
-          "keep the design's proposal, adoption and the assistant's later continuing-context choice on the lifecycle child, each attributed in a few characters",
-          "no archive: the lifecycle child is a user design under KEEP, not an implementation snapshot"
+          "split the ambiguously adopted assistant change out of the ruling: the user's design stays a mechanism marked as the user's ruling, the implemented-but-unconfirmed change becomes an open naming its proposer and the approval's unclear scope",
+          "no merge of the open into the mechanism until a user fact adopts the change explicitly",
+          "no archive: the lifecycle mechanism is a user ruling under KEEP, not an implementation snapshot"
         ],
-        "reason": "The body holds two objects a later fact would change apart — a tool-shape change leaves the lifecycle standing — and its bare current choice and confirmed cannot be assigned to either, so it is split by object, not by actor; the lifecycle child states whose decision each stage is and that the continuing-context change was not adopted."
+        "reason": "The body mixes a user ruling with an assistant change the user approved only ambiguously, and its bare current choice and confirmed hide that; the ruling stays a mechanism with its attribution, the unconfirmed change is an open that names the proposer and what was and was not approved, and the category test decides the split — not the number of actors."
       },
       "review": "Reconstructed case with pre-revision facts, not an exact replay. Mixed actors alone do not split, and the proposal, adoption and implementation stages of one design stay on one identity; the split is by decision object, made only because the interface detail and the lifecycle would be read and changed apart and the compound body left the makers and approval scopes unassignable. The cited user approval behind the parent's confirmed was of a different change and adopts nothing here; the assistant's later choice does not override the user's design, and that design is never retired as disposable implementation detail. Anchors in the read-only production copy: the user's proposal F1841 (T1032#E1) admitted as K386@1037; the approval F1978 is of the spec and tickets (F1966, F1977), not of F1841 directly; implementation F2176 (T1166#E3..E4); the assistant's proposal F3364 and choice F3395; the user's approval F3390 is of a different change; F4255 negates F3395. The harness seeds one user decision fact per parent, so this round is reviewed against those anchors, not against seeded facts."
     },

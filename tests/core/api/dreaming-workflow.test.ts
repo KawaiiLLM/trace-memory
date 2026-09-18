@@ -248,12 +248,14 @@ test("59 scripted round: two items skipped with reasons, one New item revives th
 // design folded into its identity instead of archived as an implementation snapshot. Reviewed
 // semantic expectations with their production anchors, not runtime validation.
 test("58: the reconstructed decision-provenance rounds are labelled, anchored, split by object and never archive the design", () => {
-  const result = (value: WorkflowExample) => value.result as { children: { text: string }[]; operations: string[] };
+  const result = (value: WorkflowExample) => value.result as { children: { text: string; category: string }[]; operations: string[] };
   const mixed = example("reconstructed-mixed-decision-objects-split");
   expect(mixed.judgment).toBe("faithful");
   expect(mixed.review).toContain("Reconstructed case with pre-revision facts, not an exact replay.");
   expect(mixed.review).toContain("F1841");
   expect(result(mixed).children).toHaveLength(2);
+  expect(result(mixed).children.map(child => child.category)).toEqual(["mechanism", "open"]);
+  expect(result(mixed).operations.join(" ")).toContain("no merge of the open into the mechanism");
   expect(result(mixed).operations.join(" ")).toContain("no archive");
   const snapshot = example("reconstructed-architecture-decision-not-an-implementation-snapshot");
   expect(snapshot.judgment).toBe("faithful");
