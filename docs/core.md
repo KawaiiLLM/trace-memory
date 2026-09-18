@@ -156,15 +156,23 @@ version obligations are selected as whole shared-result components; an oversized
 partially supplied and does not pin an independent fitting retained component. No scheduler, worker
 completion trigger or retry loop is added.
 
-### Ordered maintenance workflow (35c)
+### Maintenance loop (35c, 54)
 
-The Dreamer prompt requires one sequence: actual `check` before write planning; a protection pass
-for unique meaning; complete-claim comparison; final dispositions chosen before broad mutation;
-useful restructuring and preservation-ordered retirement; tightening only final survivors; and an
-actual `check` after the last committed operation. The first receipt supplies the effective limits,
-headroom and blockers. Immutable prompt text does not turn current configured amounts, estimated
-body savings, or item and topic counts into budget authority. The final receipt, followed by core's
-transactional validation, establishes completion.
+The Dreamer prompt (ticket 54, rulings of 2026-09-18) makes pruning and merging the work and `check`
+the acceptance. One round is: split first — every `New:`/`Changed:` item is split while a child is
+still compound, because only atomic items compare for overlap; merge — only the same claim stated
+twice, never two claims about one subject (a definition and the rules that use it, a rule and the
+record of the fix that applied it, a sub-ticket and its umbrella stay separate), with 48's revival
+merge unchanged; resolve — conflicting claims about one object, or items a fact on the path shows
+obsolete, completed or abandoned: a later user ruling wins over an earlier one, a later proposal,
+report or assistant choice never overrides a ruling, the loser is archived with that fact in
+`supports`, and an unsettled conflict becomes one `dispute` item; rewrite for readability — every
+touched survivor and any changed item not readable on its own; then `check`. There is no opening
+`check`: the receipt must not set the agenda. No blocker finishes the run; a cap exceeded starts
+another round at the next intensity; a round with nothing to do is reported with the changed block
+named, never as a budget figure. Immutable prompt text does not turn current configured amounts,
+estimated body savings, or item and topic counts into budget authority. The final receipt, followed
+by core's transactional validation, establishes completion.
 
 Protection includes user-versus-agent attribution, proposal-versus-decision status,
 attempted/reported/completed/verified distinctions, uncertainty, conditions, exceptions, rationale,
@@ -183,19 +191,24 @@ Certificates are globally shared, but an inapplicable sibling version is outside
 stay in commit order within each group, each result appears once, and group headings are charged in
 the existing 10k changed-material selection.
 
-The worker chooses unchanged, tightened, merged, split or archived dispositions before broad writes,
-so it does not polish a known archive target. Tool feedback and new evidence may correct that choice,
-but cannot adopt a competing successor into the frozen family. Useful loss-free restructuring comes
-before archive. Archive priority is equivalent information already preserved at equal fidelity;
-then evidence-verified obsolete/superseded material or historical progress without unique future use;
-then explicit loss of still-valid lower-priority information only for a hard limit. Age, completion,
-shortness and formatting alone prove none of those judgments. A shorter open reminder retains its
-unresolved condition and next action. Historical traceability is not future automatic coverage, so a
-hard-budget loss is named honestly rather than disguised as replacement or obsolescence.
+Readability is the rewrite test, not brevity and not verbosity: full sentences in the conversation's
+language, present tense, the actor stated in a few characters, the project's vocabulary counted as
+understood, the body stating the current rule only. An update whose only change is fewer characters
+is forbidden; a rewrite that removes more than half of a body names in its reason where the detail
+survives. An archive has exactly one of three reasons: a named survivor whose current body preserves
+the information at a scope no narrower than the archived item's; a cited fact showing the item
+obsolete, contradicted, completed or abandoned; or, at the second intensity only, low value under
+the KEEP test. Intensity is set by the failed `check`: the first round splits, merges, resolves and
+rewrites; the second archives redundancy into named survivors and retires low-value items under
+KEEP (user rulings and corrections, rule language, a body that states why, external-system limits,
+an object likely to return, unresolved decisions and blockers are never retired for a cap); the
+third reports to the maintainer and ends uncertified, counted under 32's three-failures rule. Tool
+feedback and new evidence may correct a disposition, but cannot adopt a competing successor into the
+frozen family. Age, completion, shortness and formatting alone prove none of these judgments.
 
-No phase machine, planning message, persisted plan or semantic store gate enforces this sequence.
+No phase machine, planning message, persisted plan or semantic store gate enforces this loop.
 `tests/fixtures/dreaming-workflow.json` records parent/result examples for human semantic review of authority,
-qualifiers, open reminders, topics, archival priority and rewrite-then-archive timing. Scripted fake
+qualifiers, open reminders, topics, archive reasons and rewrite-then-archive timing. Scripted fake
 workers exercise deterministic rendering and legal tool sequences, but do not prove real-model
 compliance, semantic equivalence, better recall or lower cost. Those claims require separately
 authorized live-model evaluation.
@@ -203,12 +216,18 @@ authorized live-model evaluation.
 Prompt lineage: pi-observational-memory `ce9fc982b3a219a7839f07c9f4a3e054e81a2b21`,
 `src/agents/dropper/prompts.ts`; Magic Context `246a1c390e9a81944b867c1cd94ae5b7166e26e3`,
 `packages/plugin/src/features/magic-context/dreamer/task-prompts.ts` and
-`curate-memory-safety.ts`. The prompt borrows their conservative preservation and explicit comparison;
-it does not claim to copy either workflow. Trace Memory deliberately chooses final dispositions before
-survivor tightening and does not import their scheduler, taxonomy, same-category survivor gate,
-mandatory edits, item targets, age/coverage rankings, citation-count scores or refusal heuristics.
-This project's explicit hard-budget retirement can deliberately lose active information with an
-honest reason and retained history; it does not require Magic Context's same-category survivor.
+`curate-memory-safety.ts`. From Magic Context's curate task the prompt adopts, as prompt rules rather
+than host gates, the survivor rule (an archive names the surviving item whose body preserves the
+information; a bare "redundant" verdict is deletion), the content-loss rule (a rewrite that removes
+more than half of a body names where the detail survives) and its KEEP list. Earlier the project had
+declined the survivor gate because hard-budget retirement needed deliberate loss; ticket 54 narrows
+deliberate loss to the second intensity under the KEEP test, so the survivor rule is the ordinary
+archive and loss the exception. The intensity loop closed by `check` and fact-grounded resolution
+(ruling over proposal, the loser archived on the cited fact, an unsettled conflict kept as one
+`dispute`) are this project's own, as is the scope-preserving survivor. Neither reference's
+scheduler, taxonomy, item targets, age/coverage rankings or citation-count scores is imported.
+Magic Context's separate code-verification task (read-only tools, four outcomes) is not part of the
+Dreamer; it is noted as a possible later ticket.
 
 ## Runtime and verification
 

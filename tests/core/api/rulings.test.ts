@@ -2439,6 +2439,44 @@ test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or
   expect(prompt).not.toContain("re-derivable from code or git");
 });
 
+/** Ticket 54 (rulings of 2026-09-18): pruning and merging are the Dreamer's work; `check` is the
+ * acceptance that sets the next round's intensity. The opening check and finishing on budget grounds are gone. */
+test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed check sets the intensity; an archive has one of three reasons", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+  // The ruling.
+  expect(prompt).toContain("The goal is a readable, non-redundant, non-contradictory memory; the caps are acceptance criteria, not the objective.");
+  expect(prompt).toContain("`check` is the final acceptance; when acceptance fails, run another pruning round. Pruning is never done for `check`'s sake — `check` judges the intensity of pruning.");
+  expect(prompt).toContain("Do not call `check` before the round: nothing in core needs it, and the receipt must not set the agenda.");
+  // A: split first (ruled 2026-09-18).
+  expect(prompt).toContain("splitting precedes merging because only atomic items compare for overlap");
+  // A′: only the same claim stated twice merges; the three production merges are the anti-pattern (ruled 2026-09-18 on revival).
+  expect(prompt).toContain("the same claim stated twice, never two claims about one subject: a definition and the rules that use it, a rule and the record of the fix that applied it, a sub-ticket's state and the umbrella that lists the sub-tickets, stay separate");
+  expect(prompt).toContain("A later ruling on an object whose earlier rule or proposal is archived continues that identity — revive and merge, the body states the current rule alone.");
+  // B: resolve.
+  expect(prompt).toContain("A later ruling (a fact recording the user's decision or correction) wins over an earlier one; a later fact that is a proposal, a report or an assistant's choice never overrides a ruling. The loser is archived with that fact in `supports` and named in `reason`.");
+  expect(prompt).toContain("A conflict the facts do not settle becomes one `dispute` item naming both sides");
+  // C: readability, not brevity and not verbosity (ruled 2026-09-18).
+  expect(prompt).toContain("full sentences in the conversation's language, present tense for what holds now, the object, the claim, its conditions, its status and who decided it stated in words");
+  expect(prompt).toContain("The project's vocabulary counts as understood (CONTEXT.md; N/C/D, claim, placement, path) — what fails is a clause whose subject, condition or actor cannot be resolved; attribution is a few characters (`助手选择`, `用户裁定`), never a sentence; a body states the current rule only — history is for tracing through the version chain and the cited facts, never resident (a body that narrates its own evolution bloats the context).");
+  expect(prompt).toContain("Shortening is never a goal: an update whose only change is fewer characters is forbidden; a rewrite that removes more than half of a body must name in its reason where the removed detail survives; a rewrite that lengthens a body beyond what its missing attribution or specifics need is forbidden too.");
+  // D: check closes the round; a round with nothing to do names the changed block.
+  expect(prompt).toContain("No blocker: finish. A cap exceeded: another round at the next intensity below.");
+  expect(prompt).toContain("A round with nothing to consolidate, resolve or rewrite is reported as such — with the changed block named — never as \"budget fine\".");
+  // Protected meaning kept verbatim; a survivor preserves scope; exactly three archive reasons.
+  expect(prompt).toContain("Every split, merge, rewrite and archive must preserve — a split across its two children together, an archive through its named survivor or the cited fact, and at the second intensity by stating in the reason what reason (c) loses, which is never a KEEP item: ");
+  expect(prompt).toContain("unique user constraints and corrections; user-versus-agent attribution; proposal-versus-decision status; attempted, reported, completed and verified distinctions; uncertainty; conditions; exceptions; rationale; identifiers; exact errors and diagnostics; useful completed work that prevents repetition; unresolved decisions, blockers and next actions; and still-valid subject labels.");
+  expect(prompt).toContain("a `global` item is never archived into a `project` twin, a project item never into a session one — and states every unique qualification; categories may differ, scope may not narrow");
+  expect(prompt).toContain("An archive has exactly one of three reasons, stated in `reason`:");
+  expect(prompt).toContain("(c) at the second intensity only, low value under the KEEP test");
+  expect(prompt).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
+  // Intensity and KEEP.
+  expect(prompt).toContain("First round: A–C, closed by D; its only archives are B's, on a cited fact. Second round (a cap still exceeded): archive redundancy into named survivors across categories, retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test. Third: report to the maintainer with the numbers and finish on the final `check` without further loss; that run ends uncertified");
+  expect(prompt).toContain("KEEP, never retired for a cap: user rulings and corrections, rule language (must/never/always), a body that states why, external-system limits, an item whose object is likely to return, unresolved decisions and blockers.");
+  // Removed: the opening check as the agenda, and finishing because the budget is fine.
+  expect(prompt).not.toContain("Actual check first");
+  expect(prompt).not.toContain("budget work");
+});
+
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
   const trace = toolDefinitions.find(tool => tool.name === "trace")!;
   const search = toolDefinitions.find(tool => tool.name === "search")!;

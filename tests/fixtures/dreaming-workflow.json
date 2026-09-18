@@ -9,13 +9,11 @@
     ]
   },
   "promptOrder": [
-    "1. Actual check first.",
-    "2. Protect meaning before selecting operations.",
-    "3. Compare complete candidates.",
-    "4. Choose final dispositions before writing.",
-    "5. Restructure and retire in preservation order.",
-    "6. Tighten only final survivors.",
-    "7. Check the actual final state."
+    "A. Split first.",
+    "A′. Merge.",
+    "B. Resolve.",
+    "C. Rewrite for readability.",
+    "D. Check."
   ],
   "examples": [
     {
@@ -45,7 +43,7 @@
     },
     {
       "id": "qualified-open-reminder",
-      "judgment": "faithful",
+      "judgment": "avoid",
       "parents": [
         {
           "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
@@ -60,7 +58,7 @@
         "scope": "project",
         "topics": ["schema-migration", "rollback"]
       },
-      "review": "The shorter reminder keeps uncertainty, the controlling condition, unresolved authority, and next action."
+      "review": "The parent is already readable on its own; the result changes nothing but its length. An update whose only change is fewer characters is forbidden, even when it keeps uncertainty, the controlling condition, unresolved authority and next action."
     },
     {
       "id": "budget-only-topic-stripping",
@@ -146,9 +144,9 @@
       "result": {
         "archiveParent": 1,
         "survivorParent": 0,
-        "reason": "Archive an equivalent duplicate after comparing both complete claims; the survivor preserves the same rule, scope, and topics."
+        "reason": "Archive into the named survivor: after comparing both complete claims, the survivor's current body preserves the same rule at the same scope and topics."
       },
-      "review": "Equivalent information already preserved at equal fidelity is the first archival candidate."
+      "review": "Reason (a): a named survivor whose current body preserves the information at a scope no narrower than the archived item's. In the first round the same pair is a merge; archiving redundancy into a named survivor is the second round's work."
     },
     {
       "id": "verified-obsolete-progress-retirement",
@@ -170,9 +168,9 @@
       ],
       "result": {
         "archiveParent": 0,
-        "reason": "Archive the former open state only after evidence verifies the retry and preserves the exact prior diagnostic in the completed record."
+        "reason": "Archive the former open state on the cited fact that states the retry completed and was verified against the row-count audit; the exact prior diagnostic survives in the completed record."
       },
-      "review": "Evidence-verified obsolete state or historical progress without unique future use follows equivalent-information retirement."
+      "review": "Reason (b): an open item whose completion a fact on the path states is archived with that fact in supports and named in reason. This is first-round resolve work, not a budget measure."
     },
     {
       "id": "deliberate-valid-information-loss",
@@ -180,17 +178,17 @@
       "archivePriority": 3,
       "parents": [
         {
-          "text": "The valid but low-priority staging color preference is slate blue.",
+          "text": "The agent reported that the staging deploy of 2026-09-10 finished and its smoke test passed; nothing remains open from it.",
           "category": "reference",
           "scope": "project",
-          "topics": ["staging-ui"]
+          "topics": ["staging-deploy"]
         }
       ],
       "result": {
         "archiveParent": 0,
-        "reason": "Hard-budget retirement: this still-valid staging preference has no equivalent active replacement and will leave future automatic coverage; retained history remains explicitly retrievable."
+        "reason": "Second intensity, after a failed check: low value under the KEEP test. The item is a routine progress note with no unresolved decision, no rule language, no rationale and no external limit, and its object will not return. Lost: the record that the 2026-09-10 staging deploy was reported finished with a passing smoke test."
       },
-      "review": "Still-valid lower-priority information is a last resort. The reason admits semantic loss and does not call the preference obsolete."
+      "review": "Reason (c): only at the second intensity, after a failed check, is a still-valid item retired, and the reason states why it is not KEEP-protected and what is lost. \"Still valid, lower priority, needed for the budget\" is not a reason."
     },
     {
       "id": "avoidable-rewrite-then-archive",
