@@ -157,3 +157,78 @@ test("59: a batched search returns one best hit per query under the shared optio
   expect(search.execute({ queries: ["schema"], layer: "knowledge" })).toContain(`"schema": [${handle(f.items[2]!)}]`);
   expect(search.execute({ query: "schema", queries: ["schema"] })).toContain("rejected: query and queries are exclusive");
 });
+
+/** 59c: settle the item's change event without certifying it, so the next Dreamer run freezes the
+ * still-current version as an exact version obligation (kind `version`) rather than a change event. */
+function asVersionObligation(f: ReturnType<typeof fixture>, item: { knowledgeId: number; commit: number }) {
+  const range = f.store.retainDreamingRange(f.target, [item.commit]);
+  const run = f.store.recordRun({ kind: "dreaming", sessionId: f.target.sessionId, branch: f.target.branch, dreamingRangeId: range.id, outcome: "success", createdAt: "now" });
+  f.store.completeDreaming(run.id, [item.commit], []);
+  expect(f.store.pendingKnowledgeEvents(f.target)).toMatchObject([{ id: item.commit, kind: "version" }]);
+}
+
+test("59c: an untouched frozen version obligation is unaccounted and blocks the check; a skipped one is accounted and certified", async () => {
+  let receipt = "";
+  const f = fixture(async task => {
+    expect(task.material.changed).toContain(`Exact version obligations: ${handle(f.items[0]!)}`);
+    receipt = tool(task, "check").execute({});
+    return success;
+  });
+  asVersionObligation(f, f.items[0]!);
+  const untouched = await f.memory.dream(f.target);
+  expect(receipt).toContain(`- unaccounted: ${handle(f.items[0]!)}`);
+  expect(untouched.outcome).toBe("failure");
+  if (!("runId" in untouched)) throw Error("missing run");
+  expect(untouched.problems).toContain(`unaccounted: ${handle(f.items[0]!)}`);
+  expect(f.store.isKnowledgeProcessed(f.items[0]!.commit)).toBe(false);
+  const g = fixture(async task => {
+    expect(JSON.parse(tool(task, "memory").execute({ operations: [], skipped: [{ knowledge: handle(g.items[0]!), because: "reads on its own; no duplicate, no conflicting fact" }] })).results).toEqual(["ok"]);
+    expect(tool(task, "check").execute({})).toContain("Blockers: none");
+    return success;
+  });
+  asVersionObligation(g, g.items[0]!);
+  const skipped = await g.memory.dream(g.target);
+  expect(skipped.outcome).toBe("success");
+  if (!("runId" in skipped)) throw Error("missing run");
+  expect(JSON.parse(g.store.getRun(skipped.runId)!.response!).check).toMatchObject({ suppliedEventIds: [], eventIds: [], resultIds: [g.items[0]!.commit], problems: [] });
+  expect(g.store.isKnowledgeProcessed(g.items[0]!.commit)).toBe(true);
+  expect(g.store.pendingKnowledgeEvents(g.target)).toEqual([]);
+});
+
+const cursorOf = (text: string) => /cursor=(\S+)/.exec(text)?.[1];
+const body = (text: string) => text.slice(0, text.lastIndexOf("\n\nReceipts:"));
+const receipts = (text: string) => text.slice(text.lastIndexOf("\n\nReceipts:"));
+
+test("59c: a batched cursor accepts the original per-query cap or its omission, refuses another value, and keeps the default line cap", () => {
+  const f = fixture(async () => success, ["alpha widget cache rule", "beta widget cache rule", "gamma schema migration rule"]);
+  const who = { sessionId: f.target.sessionId, headTurnId: f.target.headTurnId, branch: "main" };
+  const queries = ["widget cache", ...Array.from({ length: 120 }, (_, i) => `nothing ${i}`)];
+  const first = f.memory.search(queries, "knowledge", { ...who, cap: 2 });
+  const cursor = cursorOf(first)!;
+  expect(body(first).split("\n")).toHaveLength(100); // the line cap stays the default, not the per-query 2
+  expect(() => f.memory.search("", "knowledge", { ...who, cursor, cap: 3 })).toThrow("cursor cap is frozen; omit it or use the original value");
+  expect(() => f.memory.search("", "knowledge", { ...who, cursor, cap: 100 })).toThrow("cursor cap is frozen; omit it or use the original value");
+  const repeated = f.memory.search("", "knowledge", { ...who, cursor, cap: 2 });
+  expect(body(repeated).split("\n")).toHaveLength(22);
+  expect(cursorOf(repeated)).toBeUndefined();
+  const omitted = f.memory.search("", "knowledge", { ...who, cursor: cursorOf(f.memory.search(queries, "knowledge", { ...who, cap: 2 }))! });
+  expect(body(omitted)).toBe(body(repeated));
+});
+
+test("59c: no-hit queries are lines after the hits, paged like them, and never the footer", () => {
+  const f = fixture(async () => success, ["alpha widget cache rule", "beta widget cache rule", "gamma schema migration rule"]);
+  const who = { sessionId: f.target.sessionId, headTurnId: f.target.headTurnId, branch: "main" };
+  const queries = ["widget cache", ...Array.from({ length: 120 }, (_, i) => `nothing ${i}`), "schema"];
+  const first = f.memory.search(queries, "knowledge", who);
+  const lines = body(first).split("\n");
+  expect(lines.slice(0, 2)).toEqual([expect.stringContaining(`"widget cache": [${handle(f.items[1]!)}]`), expect.stringContaining(`"schema": [${handle(f.items[2]!)}]`)]);
+  expect(lines.slice(2)).toEqual(Array.from({ length: 98 }, (_, i) => `no hit: "nothing ${i}"`));
+  expect(receipts(first)).not.toContain("no hit:");
+  const second = f.memory.search("", "knowledge", { ...who, cursor: cursorOf(first)! });
+  expect(body(second).split("\n")).toEqual(Array.from({ length: 22 }, (_, i) => `no hit: "nothing ${98 + i}"`));
+  expect(cursorOf(second)).toBeUndefined();
+  // A token budget the old footer alone would have exceeded now pages instead of failing without a cursor.
+  const small = f.memory.search(queries, "knowledge", { ...who, maxTokens: 320 });
+  expect(cursorOf(small)).toBeDefined();
+  expect(body(small)).toContain('no hit: "nothing 0"');
+});

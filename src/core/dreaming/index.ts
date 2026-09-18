@@ -140,14 +140,18 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
     // this run skipped it with a reason; an untouched result no longer accounts for itself.
     const skipped = new Set(binding.memory.skipped.map(skip => Number(skip.knowledge.split("@")[1])));
     const unaccountedRoots = new Set<number>();
+    const accounted = (id: number) => formal.has(id) && (consumers.get(id)!.length > 0 || skipped.has(id) ||
+      ownCandidates.some(own => graph.descendants(id).has(own)));
     const accountedEventIds = eventIds.filter(eventId => {
       const roots = eventResults.get(eventId) ?? [];
-      const missing = roots.filter(id => !(formal.has(id) && (consumers.get(id)!.length > 0 || skipped.has(id) ||
-        ownCandidates.some(own => graph.descendants(id).has(own)))));
+      const missing = roots.filter(id => !accounted(id));
       for (const id of missing) unaccountedRoots.add(id);
       return roots.length > 0 && !missing.length;
     });
-    if (accountedEventIds.length !== eventIds.length)
+    // 59c: a frozen version obligation is its own root result and owes the same accounting.
+    const unaccountedVersionIds = frozen.versionIds.filter(id => !accounted(id));
+    for (const id of unaccountedVersionIds) unaccountedRoots.add(id);
+    if (accountedEventIds.length !== eventIds.length || unaccountedVersionIds.length)
       failures.push(`unaccounted: ${[...unaccountedRoots].sort((a, b) => a - b).map(id => `K${store.knowledgeRevision(id)?.knowledgeId}@${id}`).join(", ") || eventIds.filter(id => !accountedEventIds.includes(id)).map(id => `K@${id}`).join(", ")}`);
 
     // Preserve the sole neutral outcome only for a post-freeze external successor of reference-only

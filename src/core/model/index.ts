@@ -315,5 +315,6 @@ export interface MemoryOperation {
 }
 export interface MemoryBatch {
   operations: MemoryOperation[];
-  skipped: { fact: string; because: string }[];
+  /** The Consolidator skips a range fact; the Dreamer skips a supplied knowledge handle (59). */
+  skipped: (({ fact: string } | { knowledge: string }) & { because: string })[];
 }

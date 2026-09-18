@@ -59,7 +59,7 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput, revie
     if (!result.ok) { failure = result; problems = result.problems; return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch), unansweredNear };
     allCommitted.push(...result.committed);
-    if (skippable) skipped.push(...(prepared.batch.skipped as unknown as typeof skipped));
+    if (skippable) skipped.push(...prepared.batch.skipped.flatMap(skip => "knowledge" in skip ? [skip] : []));
     // A receipt names the new version but does not supply its complete rendered body.
     problems = []; failure = undefined;
     return receipt(result.committed);

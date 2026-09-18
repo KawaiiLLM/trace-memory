@@ -112,7 +112,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     else if (dreaming) {
       // 59: a Dreamer skip accounts for one supplied handle (a frozen-block version or an own result)
       // without processing it; an unknown or consumed handle is an illegal write like any other.
-      const handle = (skipped as { knowledge?: unknown }).knowledge;
+      const handle = "knowledge" in skipped ? skipped.knowledge : undefined;
       const match = typeof handle === "string" ? /^K([1-9]\d*)@([1-9]\d*)$/.exec(handle) : null;
       const commit = match ? Number(match[2]) : NaN;
       if (Object.keys(skipped).some(k => !["knowledge", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires knowledge and non-empty because only");
@@ -122,7 +122,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       else if (declined.has(commit)) errors.push("duplicate skipped knowledge");
       declined.add(commit);
     } else {
-      const ids = facts([skipped.fact], errors);
+      const ids = facts(["fact" in skipped ? skipped.fact : undefined], errors);
       if (Object.keys(skipped).some(k => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
       if (!frozen?.rangeFacts.some(f => f.id === ids[0])) errors.push("skipped fact must belong to this run's range");
       if (declined.has(ids[0]!)) errors.push("duplicate skipped fact");
@@ -157,7 +157,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
 export function accounting(store: Store, batch: MemoryBatch, range: { id: number; actor: string; category: string }[], path: KnowledgePath): ConsolidationDiagnostic[] {
   const lineageMemo = new Map<number, Set<number>>();
   const cited = new Set(store.listCurrentKnowledge(path).flatMap(k => [...store.revisionGrounds(k.revision, lineageMemo)]));
-  const skipped = new Set(batch.skipped.map(s => s.fact));
+  const skipped = new Set(batch.skipped.flatMap(s => "fact" in s ? [s.fact] : []));
   const uncited = range.filter(f => (f.actor === "user" || f.category === "question") && !cited.has(f.id) && !skipped.has(`F${f.id}`));
   return uncited.length ? [{ kind: "uncited_facts", facts: uncited.map(f => `F${f.id}`) }] : [];
 }
