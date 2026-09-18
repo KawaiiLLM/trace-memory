@@ -3,17 +3,31 @@ import { createConnection, createServer } from "node:net";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { TraceMemory } from "../../core/api/index.ts";
+import type { CcCatchupStatus } from "./scheduler.ts";
 import { Store } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { assertOperatorBinding, readBinding, updateBinding, updateBindingInStoreTransaction, type CcExecutorBinding, type CcSessionBinding } from "./binding.ts";
 
-export type ControlVerb = "stop" | "off";
-export interface ControlReply {
+export type ControlVerb = "stop" | "off" | "catchup";
+export interface CancellationControlReply {
   ok: true;
-  verb: ControlVerb;
+  verb: "stop" | "off";
   abortRequested: { sessionId: number; phase: string; executionId: string }[];
   /** Abort/fencing is acknowledged; worker termination is observed separately by its owner. */
   termination: "pending-observation";
+}
+export interface CatchupControlReply {
+  ok: true;
+  verb: "catchup";
+  catchup: CcCatchupStatus;
+  /** Catchup starts no cancellation; retained so existing reply consumers can inspect one stable field. */
+  abortRequested: [];
+}
+export type ControlReply = CancellationControlReply | CatchupControlReply;
+export interface CcControlHandlers {
+  catchup(): Promise<CcCatchupStatus>;
+  /** Must mark the finite drain stopped before core cancellation can settle a worker. */
+  beforeCancel(): void;
 }
 
 export interface CcControlServer {
@@ -72,7 +86,7 @@ const closeServer = (server: ReturnType<typeof createServer>): Promise<void> => 
 });
 
 export async function startControlServer(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemory,
-  bindingTimeoutMs?: number, signal?: AbortSignal): Promise<CcControlServer> {
+  bindingTimeoutMs?: number, signal?: AbortSignal, handlers?: CcControlHandlers): Promise<CcControlServer> {
   const token = randomUUID(), path = socketPath(config, token);
   const executor: CcExecutorBinding = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: new Date().toISOString() };
   mkdirSync(dirname(path), { recursive: true });
@@ -90,7 +104,9 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
       void (async () => {
         try {
           const request = JSON.parse(input.slice(0, newline)) as { verb?: unknown; token?: unknown };
-          if (request.token !== token || (request.verb !== "stop" && request.verb !== "off")) throw new Error("invalid CC control request");
+          if (request.token !== token || typeof request.verb !== "string" ||
+              (request.verb !== "stop" && request.verb !== "off" && request.verb !== "catchup"))
+            throw new Error("invalid CC control request");
           const current = readBinding(config, binding.nativeSessionId);
           if (!current) throw new Error("CC binding disappeared before control");
           assertOperatorBinding(config, current, memory.store);
@@ -100,10 +116,23 @@ export async function startControlServer(config: ResolvedCcHostConfig, binding: 
           if ((binding.coreSessionId !== null && current.coreSessionId !== binding.coreSessionId) ||
               current.executor?.token !== token)
             throw new Error("CC core or executor identity changed before control");
-          const verb = request.verb;
+          const verb = request.verb as ControlVerb;
+          if (verb === "catchup") {
+            if (!handlers) throw new Error("catchup is unavailable on this executor");
+            const reply: CatchupControlReply = { ok: true, verb, catchup: await handlers.catchup(), abortRequested: [] };
+            connection.end(`${JSON.stringify(reply)}\n`); return;
+          }
+          handlers?.beforeCancel();
           const aborted = memory.cancelTasks(false);
-          if (verb === "off") await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
-          const reply: ControlReply = { ok: true, verb, abortRequested: aborted, termination: "pending-observation" };
+          if (verb === "off") {
+            await disableEnrollment(config, binding.nativeSessionId, memory.store, token);
+            // Binding-lock contention can leave a window between the first fence and durable disable.
+            // Fence once more before acknowledgement so work admitted in that window cannot survive off.
+            handlers?.beforeCancel();
+            for (const task of memory.cancelTasks(false))
+              if (!aborted.some(previous => previous.executionId === task.executionId)) aborted.push(task);
+          }
+          const reply: CancellationControlReply = { ok: true, verb, abortRequested: aborted, termination: "pending-observation" };
           connection.end(`${JSON.stringify(reply)}\n`);
         } catch (error) { connection.end(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`); }
       })();
@@ -156,12 +185,13 @@ function request(executor: CcExecutorBinding, verb: ControlVerb, timeoutMs: numb
 export type OperatorControlResult =
   | { state: "acknowledged"; reply: ControlReply }
   | { state: "not-running"; enrollmentChanged: boolean }
+  | { state: "unavailable"; diagnostic: string }
   | { state: "unknown"; diagnostic: string };
 
 async function validatedOperatorBinding(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<CcSessionBinding> {
   const store = new Store(config.dbPath);
   try {
-    return updateBinding(config, nativeSessionId, current => {
+    return await updateBinding(config, nativeSessionId, current => {
       if (!current) throw new Error(`Claude Code session ${nativeSessionId} is not bound`);
       assertOperatorBinding(config, current, store);
       return current;
@@ -176,6 +206,7 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
   let executor = binding.executor;
   if (!executor || executorLiveness(executor) === "dead") {
     if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
+    if (verb === "catchup") return { state: "unavailable", diagnostic: "CC catchup requires the session's live executor" };
     const store = new Store(config.dbPath);
     try {
       const disabled = await disableEnrollment(config, nativeSessionId, store, null);
@@ -189,6 +220,7 @@ export async function controlSession(config: ResolvedCcHostConfig, nativeSession
   if (liveness === "unknown") return { state: "unknown", diagnostic: `cannot establish executor liveness for process ${executor.pid}` };
   if (liveness === "dead") {
     if (verb === "stop") return { state: "not-running", enrollmentChanged: false };
+    if (verb === "catchup") return { state: "unavailable", diagnostic: "CC catchup requires the session's live executor" };
     const store = new Store(config.dbPath);
     try {
       const disabled = await disableEnrollment(config, nativeSessionId, store, null);

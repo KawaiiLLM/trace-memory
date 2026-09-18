@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { TraceMemory, toolDefinitions, type NotingAgentInput, type RunAgentResult, type ToolDefinition } from "../../src/core/api/index.ts";
+import { TraceMemory, toolDefinitions, type ConsolidationAgentInput, type NotingAgentInput, type RunAgentResult, type ToolDefinition } from "../../src/core/api/index.ts";
 import { resolveCcHostConfig, CC_CONTEXT_HEADROOM } from "../../src/hosts/cc/config.ts";
 import { CcAgentWorker, CcResponseOrigins, type CcAgentTask } from "../../src/hosts/cc/worker.ts";
 import { CC_MAX_RESULT_CHARS } from "../../src/hosts/cc/tools.ts";
@@ -551,8 +551,8 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
     { inputTokens: 190_000, prefixTokens: 0 }, message => diagnostics.push(message));
   const reconcile = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: seed.turn.id,
     selectedEntryIds: seed.ids, appendedEntryIds: [seed.entry.id], problems: [], snapshot: {} as any };
-  scheduler.trigger(reconcile);
-  scheduler.trigger(reconcile);
+  scheduler.reconcile(reconcile);
+  scheduler.reconcile(reconcile);
   await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "consolidation"]));
   expect(starts).toHaveLength(2);
@@ -565,6 +565,187 @@ test("scheduler reserves independent N/C slots and worker completion does not dr
     expect.stringContaining("noting worker failure"), expect.stringContaining("consolidation worker failure")]));
   expect(memory.pendingEntries(session.id, "main", seed.turn.id)).toHaveLength(1);
   memory.close();
+});
+
+test("manual catchup reports missing worker, disabled enrollment, and unavailable persisted path", () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-preflight-")); dirs.push(directory);
+  const memory = { store: { enabled: () => true }, pendingEntries: () => [] } as any;
+  const ready = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
+  const missing = new CcTaskScheduler(memory, undefined, undefined, () => {});
+  expect(missing.startCatchup(ready)).toMatchObject({ state: "failed", diagnostic: expect.stringContaining("not configured") });
+  const config = workerConfig(directory), configured = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  expect(configured.startCatchup({ ...ready, state: "disabled" })).toMatchObject({ state: "failed", diagnostic: expect.stringContaining("disabled") });
+  expect(configured.startCatchup({ ...ready, state: "unavailable", coreSessionId: null, headTurnId: null,
+    selectedEntryIds: [], problems: ["native transcript is unavailable"] })).toMatchObject({ state: "failed",
+      diagnostic: "native transcript is unavailable" });
+});
+
+test("manual catchup finitely drains bounded Noting into Consolidation without Dreaming or later input", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-")); dirs.push(directory);
+  const phases: string[] = [];
+  const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
+    const input = raw as NotingAgentInput | ConsolidationAgentInput; phases.push(input.kind);
+    if (input.kind === "noting") {
+      const facts = input.material.entries.map((entry, index) => ({ category: "observation" as const, actor: "user" as const,
+        text: `Observed catchup item ${entry.id}.`, source: [entry.view.match(/\[T\d+#E\d+/)![0].slice(1)] }));
+      const note = input.tools.find(tool => tool.name === "note")!, batch = { facts };
+      const feedback = input.reviewFeedback(note.execute(batch));
+      if (feedback) { input.reportRequest({ exact: true }); note.execute(batch); }
+    } else {
+      const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
+      const write = input.tools.find(tool => tool.name === "memory")!;
+      input.reviewFeedback(write.execute(batch)); input.reportRequest({ exact: true }); write.execute(batch);
+    }
+    return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000, batchTokens: 20 }, consolidation: { triggerTokens: 1_000_000, batchTokens: 10_000 } });
+  const project = memory.store.createProject({ name: "catchup", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:catchup", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
+    firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
+  const first = append(memory, session.id, "c1", "first catchup source with enough text for one bounded batch");
+  const second = append(memory, session.id, "c2", "second catchup source with enough text for another bounded batch");
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const projection = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: second.turn.id,
+    selectedEntryIds: second.ids, appendedEntryIds: [], problems: [], snapshot: {} as any };
+  expect(scheduler.startCatchup(projection).state).toBe("running");
+  const late = append(memory, session.id, "late", "late input must remain outside the frozen catchup boundary");
+  for (let i = 0; i < 100 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 2, entriesTotal: 2, factsDone: 2, factsTotal: 2 });
+  expect(phases.filter(phase => phase === "noting")).toHaveLength(2);
+  expect(phases.filter(phase => phase === "consolidation")).toHaveLength(1);
+  expect(phases).not.toContain("dreaming");
+  expect(memory.pendingEntries(session.id, "main", late.turn.id).map(entry => entry.id)).toEqual([late.entry.id]);
+  expect(scheduler.startCatchup({ ...projection, headTurnId: late.turn.id, selectedEntryIds: late.ids }))
+    .toMatchObject({ state: "running", entriesTotal: 1 });
+  scheduler.stopCatchup(); memory.cancelTasks();
+  expect(scheduler.catchupStatus().state).toBe("stopped");
+  memory.close();
+});
+
+test("manual catchup reports waiting on a foreign claim and resumes only on a later opportunity", async () => {
+  const calls: string[] = []; let foreign = true, pending = true;
+  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+    pendingEntries: () => pending ? [{ id: 1 }] : [],
+    store: { enabled: () => true, consolidationBatch: () => [], closedTasks: () => [],
+      getClaim: () => foreign ? ({ executorId: "foreign", expiresAt: Date.now() + 60_000 }) : null },
+    noting: async () => { calls.push("noting"); pending = false; return { outcome: "success", facts: [] }; },
+    consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
+    taskEligibility: () => ({ due: false }) } as any;
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-wait-")); dirs.push(directory);
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
+  expect(scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase: "noting" });
+  for (let i = 0; i < 10; i++) scheduler.reconcile(projection);
+  expect(calls).toEqual([]);
+  foreign = false; scheduler.reconcile(projection, false); await tick();
+  expect(calls).toEqual(["noting"]);
+  expect(scheduler.catchupStatus().state).toBe("completed");
+  pending = true; scheduler.startCatchup(projection);
+  const ticket = scheduler.catchupTicket();
+  scheduler.stopCatchup();
+  expect(scheduler.startCatchup(projection, ticket)).toMatchObject({ state: "failed", diagnostic: "catchup was cancelled before admission" });
+  expect(calls).toEqual(["noting"]);
+});
+
+test("stop preserves a real core partial Noting commit and a later catchup integrates its facts", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-resume-")); dirs.push(directory);
+  let noted!: () => void; const committed = new Promise<void>(resolve => { noted = resolve; });
+  const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
+    const input = raw as NotingAgentInput | ConsolidationAgentInput;
+    if (input.kind === "noting") {
+      const source = input.material.entries[0]!.view.match(/\[T\d+#E\d+/)![0].slice(1);
+      input.tools.find(tool => tool.name === "note")!.execute({ facts: [{ category: "observation", actor: "user",
+        text: "A committed fact survives stop.", source: [source] }] });
+      noted();
+      await new Promise<void>(resolve => input.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      return { outcome: "cancelled", output: "stopped", audit: { available: false, reason: "test" } };
+    }
+    const write = input.tools.find(tool => tool.name === "memory")!;
+    const batch = { operations: [], skipped: input.range.facts.map(fact => ({ fact: `F${fact.id}`, because: "Synthetic test fact." })) };
+    input.reviewFeedback(write.execute(batch)); input.reportRequest({ exact: true }); write.execute(batch);
+    return { outcome: "success", output: "done", audit: { available: false, reason: "test" } };
+  }, { noting: { triggerTokens: 1_000_000 }, consolidation: { triggerTokens: 1_000_000 } });
+  const project = memory.store.createProject({ name: "resume", declaredBy: "mark" });
+  const session = memory.store.createSession({ host: "cc:resume", projectId: project.id, startedAt: "2026-01-01T00:00:00Z",
+    firstReplyAt: "2026-01-01T00:00:01Z", enrollmentChoice: true });
+  const source = append(memory, session.id, "resume", "source whose fact commits before cancellation");
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const projection = { state: "ready" as const, coreSessionId: session.id, branch: "main", headTurnId: source.turn.id,
+    selectedEntryIds: source.ids, appendedEntryIds: [], problems: [], snapshot: {} as any };
+  scheduler.startCatchup(projection); await committed;
+  scheduler.stopCatchup(); memory.cancelTasks();
+  for (let i = 0; i < 20 && scheduler.running().length; i++) await tick();
+  expect(memory.pendingEntries(session.id, "main", source.turn.id)).toEqual([]);
+  expect(memory.store.consolidationBatch(session.id, "main", source.turn.id)).toHaveLength(1);
+  expect(scheduler.catchupStatus().state).toBe("stopped");
+  scheduler.startCatchup(projection);
+  for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 0, factsTotal: 1, factsDone: 1 });
+  memory.close();
+});
+
+test("manual catchup fences pre-admission cancellation, concurrent status, dropped retries, and observed path changes", async () => {
+  const calls: string[] = []; let dropped = true, pending = true, cancelled = 0;
+  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+    pendingEntries: () => pending ? [{ id: 1 }] : [],
+    cancelTasks: () => { cancelled++; return []; },
+    store: { enabled: () => true, consolidationBatch: () => [], closedTasks: () => [], getClaim: () => null },
+    noting: async () => { calls.push("noting"); if (!dropped) pending = false; return { outcome: dropped ? "dropped" : "success", facts: [] }; },
+    consolidate: async () => ({ outcome: "success" }), dream: async () => ({ outcome: "success" }),
+    taskEligibility: () => ({ due: false }) } as any;
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-races-")); dirs.push(directory);
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedEntryIds: [1], appendedEntryIds: [], problems: [], snapshot: {} as any };
+
+  const sharedTicket = scheduler.catchupTicket();
+  expect(scheduler.startCatchup(projection, sharedTicket).state).toBe("running");
+  expect(scheduler.startCatchup(projection, sharedTicket).state).toBe("running");
+  scheduler.stopCatchup(); memory.cancelTasks(); await tick();
+  expect(calls).toEqual([]);
+
+  dropped = true;
+  scheduler.startCatchup(projection); await tick(); await tick();
+  expect(calls).toEqual(["noting"]);
+  await tick(); expect(calls).toHaveLength(1);
+  dropped = false;
+  scheduler.reconcile(projection, false); await tick();
+  expect(calls).toHaveLength(2);
+
+  pending = true;
+  scheduler.startCatchup(projection);
+  scheduler.reconcile({ ...projection, branch: "other" }, false);
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "stopped", diagnostic: "selected branch changed" });
+  expect(cancelled).toBe(2);
+});
+
+test("stop before the reservation microtask fences all ordinary phases and later triggers remain usable", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-ordinary-stop-race-")); dirs.push(directory);
+  const calls: string[] = [];
+  const result = (phase: string) => async () => { calls.push(phase); return { outcome: "success" }; };
+  const memory = { executorId: "ours", config: { closedSessionScope: "project" },
+    taskEligibility: () => ({ due: true }), cancelTasks: vi.fn(() => []),
+    store: { enabled: () => true, closedTasks: () => [] },
+    noting: result("noting"), consolidate: result("consolidation"), dream: result("dreaming") } as any;
+  const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
+    { inputTokens: 190_000, prefixTokens: 0 }, () => {});
+  const projection = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
+    selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
+  scheduler.reconcile(projection);
+  scheduler.stopCatchup(); memory.cancelTasks(false);
+  await tick(); await tick();
+  expect(calls).toEqual([]);
+  expect(scheduler.running()).toEqual([]);
+
+  scheduler.reconcile(projection);
+  await scheduler.settle(); await tick();
+  expect(new Set(calls)).toEqual(new Set(["noting", "consolidation", "dreaming"]));
 });
 
 test("scheduler reserves a distinct Dreaming slot without completion-driven draining", async () => {
@@ -580,7 +761,7 @@ test("scheduler reserves a distinct Dreaming slot without completion-driven drai
     { inputTokens: 190_000, prefixTokens: 0 }, () => {});
   const reconcile = { state: "ready" as const, coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any };
-  scheduler.trigger(reconcile); scheduler.trigger(reconcile); await tick();
+  scheduler.reconcile(reconcile); scheduler.reconcile(reconcile); await tick();
   expect(new Set(starts)).toEqual(new Set(["noting", "consolidation", "dreaming"]));
   expect(new Set(scheduler.running())).toEqual(new Set(["noting", "consolidation", "dreaming"]));
   for (const release of releases.values()) release();
@@ -596,7 +777,7 @@ test("scheduler diagnoses resolved bounced and successful-but-problemed results"
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-diagnostics-")); dirs.push(directory);
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
     { inputTokens: 190_000, prefixTokens: 0 }, message => diagnostics.push(message));
-  scheduler.trigger({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
+  scheduler.reconcile({ state: "ready", coreSessionId: 1, branch: "main", headTurnId: 1,
     selectedEntryIds: [1], appendedEntryIds: [1], problems: [], snapshot: {} as any });
   await scheduler.settle();
   expect(diagnostics).toEqual(expect.arrayContaining([
@@ -622,10 +803,10 @@ test("scheduler borrows an eligible closed target only at an executor entry-comp
   memory.store.closeSession(closed.id);
   const config = workerConfig(directory), scheduler = new CcTaskScheduler(memory, config.worker,
     { inputTokens: 190_000, prefixTokens: 0 }, () => {});
-  scheduler.trigger({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
+  scheduler.reconcile({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
     selectedEntryIds: own.ids, appendedEntryIds: [], problems: [], snapshot: {} as any });
   await tick(); expect(targets).toEqual([]);
-  scheduler.trigger({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
+  scheduler.reconcile({ state: "ready", coreSessionId: executor.id, branch: "main", headTurnId: own.turn.id,
     selectedEntryIds: own.ids, appendedEntryIds: [own.entry.id], problems: [], snapshot: {} as any });
   await scheduler.settle(); await tick();
   expect(targets).toEqual([closed.id]);

@@ -1,4 +1,5 @@
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import type { ClosedSessionScope } from "../../core/api/index.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
@@ -26,7 +27,8 @@ export interface ResolvedCcWorkerConfig extends Omit<CcWorkerConfig, "responseOr
 }
 
 export interface CcHostConfig {
-  dbPath: string;
+  /** Omitted uses the same ~/.trace-memory/trace.db default as the Pi host. */
+  dbPath?: string;
   stateDir: string;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
@@ -59,9 +61,10 @@ const positive = (name: string, value: number): number => {
 
 export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   if (!input || typeof input !== "object") throw new Error("CC configuration is required");
-  if (typeof input.dbPath !== "string" || !input.dbPath.trim()) throw new Error("CC dbPath is required");
+  const dbPath = input.dbPath === undefined ? join(homedir(), ".trace-memory", "trace.db") : input.dbPath;
+  if (typeof dbPath !== "string" || !dbPath.trim()) throw new Error("CC dbPath must be a non-empty absolute path when specified");
   if (typeof input.stateDir !== "string" || !input.stateDir.trim()) throw new Error("CC stateDir is required");
-  if (!isAbsolute(input.dbPath) || !isAbsolute(input.stateDir)) throw new Error("CC dbPath and stateDir must be absolute");
+  if (!isAbsolute(dbPath) || !isAbsolute(input.stateDir)) throw new Error("CC dbPath and stateDir must be absolute");
   if (input.baseline !== undefined && (typeof input.baseline !== "string" || !Number.isFinite(Date.parse(input.baseline))))
     throw new Error("Invalid CC baseline: expected an ISO timestamp");
   const closedSessionScope = input.closedSessionScope ?? "project";
@@ -89,7 +92,7 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
       responseOriginTimeoutMs: positive("worker.responseOriginTimeoutMs", value.responseOriginTimeoutMs ?? 5_000) };
   }
   return {
-    dbPath: resolve(input.dbPath),
+    dbPath: resolve(dbPath),
     stateDir: resolve(input.stateDir),
     ...(input.baseline === undefined ? {} : { baseline: input.baseline }),
     pollIntervalMs: positive("pollIntervalMs", input.pollIntervalMs ?? 2_000),

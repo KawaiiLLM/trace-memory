@@ -6,7 +6,7 @@ import { controlSession, type OperatorControlResult } from "./control.ts";
 
 export type CcOperatorResult =
   | { command: "on"; nativeSessionId: string; coreSessionId: number | null; enrollment: "enabled" }
-  | { command: "off" | "stop"; nativeSessionId: string; control: OperatorControlResult }
+  | { command: "off" | "stop" | "catchup"; nativeSessionId: string; control: OperatorControlResult }
   | { command: "project"; nativeSessionId: string; coreSessionId: number; result: string };
 
 export async function enableCcSession(config: ResolvedCcHostConfig, nativeSessionId: string): Promise<CcOperatorResult> {
@@ -28,7 +28,7 @@ export async function enableCcSession(config: ResolvedCcHostConfig, nativeSessio
 }
 
 export async function operateCcSession(config: ResolvedCcHostConfig, nativeSessionId: string,
-  command: "on" | "off" | "stop", timeoutMs?: number): Promise<CcOperatorResult> {
+  command: "on" | "off" | "stop" | "catchup", timeoutMs?: number): Promise<CcOperatorResult> {
   const id = validateNativeSessionId(nativeSessionId);
   if (command === "on") return enableCcSession(config, id);
   return { command, nativeSessionId: id, control: await controlSession(config, id, command, timeoutMs) };

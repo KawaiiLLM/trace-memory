@@ -1,13 +1,14 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
+import { createConnection } from "node:net";
 import { TraceMemory } from "../../src/core/api/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
-import { bindingMutexPath, bindingPath, readBinding, recordSessionStart, updateBinding } from "../../src/hosts/cc/binding.ts";
+import { bindingMutexPath, bindingPath, readBinding, recordSessionStart, updateBinding, type CcExecutorBinding } from "../../src/hosts/cc/binding.ts";
 import { controlSession, startControlServer } from "../../src/hosts/cc/control.ts";
 import { CcCoordinator, recordCcSessionEnd } from "../../src/hosts/cc/lifecycle.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
@@ -30,6 +31,15 @@ function fixture(label = "lifecycle") {
   return { dir, transcriptPath, nativeSessionId, config, records, write: () => writeFileSync(transcriptPath, records.map(record => `${JSON.stringify(record)}\n`).join("")) };
 }
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
+const directControl = (executor: CcExecutorBinding, verb: unknown) =>
+  new Promise<any>((resolveReply, reject) => {
+    const socket = createConnection(executor.socketPath); let output = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(`${JSON.stringify({ verb, token: executor.token })}\n`));
+    socket.on("data", chunk => output += chunk);
+    socket.on("end", () => { try { resolveReply(JSON.parse(output)); } catch (error) { reject(error); } });
+    socket.on("error", reject);
+  });
 const childScript = resolve("tests/hosts/cc-binding-child.ts");
 const spawnBindingChild = (mode: "update" | "control", input: Record<string, unknown>): ChildProcess => spawn(process.execPath,
   [childScript, mode], { cwd: resolve("."), env: { ...process.env, CC_BINDING_CHILD_INPUT: JSON.stringify(input) },
@@ -96,6 +106,160 @@ test("owner-token stop uses the facade's owned task path and leaves another exec
     expect(otherAborted).toBe(false); expect(other.store.getClaim(b.session.id, "noting")?.executorId).toBe(other.executorId);
     releaseOther(); await otherRun;
   } finally { await server.close(); owner.close(); other.close(); }
+});
+
+test("control socket routes catchup to the live executor and never creates an operator worker", async () => {
+  const f = fixture("control-catchup"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-catchup-"); dirs.push(f.config.stateDir);
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
+  let calls = 0;
+  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
+    catchup: async () => { calls++; return { state: "waiting", phase: "noting", entriesDone: 0, entriesTotal: 2, factsDone: 0, factsTotal: 0 }; },
+    beforeCancel: () => {},
+  });
+  try {
+    const result = await controlSession(f.config, f.nativeSessionId, "catchup");
+    expect(result).toMatchObject({ state: "acknowledged", reply: { verb: "catchup", abortRequested: [],
+      catchup: { state: "waiting", phase: "noting", entriesTotal: 2 } } });
+    expect(calls).toBe(1);
+    await expect(directControl(server.executor, ["off"])).resolves.toMatchObject({ ok: false, error: "invalid CC control request" });
+  } finally { await server.close(); memory.close(); }
+});
+
+test("off fences again after a contended disable before acknowledging", async () => {
+  const f = fixture("off-disable-window"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-off-window-"); dirs.push(f.config.stateDir);
+  const binding = await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const memory = TraceMemory(f.config.dbPath, async () => ({ outcome: "failure" as const, output: "must not run" }));
+  let cancellations = 0;
+  const before = { sessionId: 1, phase: "noting" as const, executionId: "before-disable" };
+  const during = { sessionId: 1, phase: "consolidation" as const, executionId: "during-disable" };
+  const cancel = vi.spyOn(memory, "cancelTasks").mockReturnValueOnce([before]).mockReturnValueOnce([before, during]);
+  const server = await startControlServer(f.config, binding, memory, undefined, undefined, {
+    catchup: async () => ({ state: "completed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0 }),
+    beforeCancel: () => { cancellations++; },
+  });
+  const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
+  try {
+    const disabling = directControl(server.executor, "off");
+    for (let i = 0; i < 100 && cancellations < 1; i++) await sleep(2);
+    expect(cancellations).toBe(1);
+    mutex.exec("ROLLBACK"); mutex.close();
+    await expect(disabling).resolves.toMatchObject({ ok: true, verb: "off", abortRequested: [before, during] });
+    expect(cancellations).toBe(2);
+    expect(cancel).toHaveBeenCalledTimes(2);
+  } finally {
+    try { mutex.exec("ROLLBACK"); } catch {}
+    try { mutex.close(); } catch {}
+    cancel.mockRestore(); await server.close(); memory.close();
+  }
+});
+
+test("control stop fences catchup while coordinator reconciliation is blocked", async () => {
+  const f = fixture("catchup-stop-race"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-race-"); dirs.push(f.config.stateDir);
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  await coordinator.start();
+  const executor = readBinding(f.config, f.nativeSessionId)!.executor!;
+  f.records.splice(-1, 1,
+    { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: "later" } },
+    { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", content: [{ type: "text", text: "later answer" }] } },
+    { type: "last-prompt", leafUuid: "a2" });
+  f.write();
+  const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
+  try {
+    const catching = directControl(executor, "catchup");
+    await sleep(20);
+    const stopped = await directControl(executor, "stop");
+    expect(stopped).toMatchObject({ ok: true, verb: "stop" });
+    mutex.exec("ROLLBACK"); mutex.close();
+    await expect(catching).resolves.toMatchObject({ ok: true, verb: "catchup",
+      catchup: { state: "failed", diagnostic: "catchup was cancelled before admission" } });
+  } finally {
+    try { mutex.exec("ROLLBACK"); } catch {}
+    try { mutex.close(); } catch {}
+    await coordinator.shutdown("test");
+  }
+});
+
+test("stop also fences the first attach opportunity while initial import is in flight", async () => {
+  const f = fixture("initial-reconcile-stop");
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-initial-"); dirs.push(f.config.stateDir);
+  f.config.pollIntervalMs = 100_000;
+  f.config.worker = { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", model: "synthetic",
+    effort: "medium", contextWindow: 200_000, cwd: f.dir, responseOriginTimeoutMs: 20 };
+  f.records[0]!.message = { role: "user", content: "pending ".repeat(12_000) }; f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  let release!: () => void, reached!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const imported = new Promise<void>(resolve => { reached = resolve; });
+  const original = CcImporter.prototype.reconcile;
+  const spy = vi.spyOn(CcImporter.prototype, "reconcile").mockImplementation(async function (this: CcImporter) {
+    const result = await original.call(this); reached(); await held; return result;
+  });
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  try {
+    const starting = coordinator.start(); await imported;
+    const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+    ((coordinator as any).importer.memory as any).noting = noting;
+    ((coordinator as any).importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
+    expect(await directControl(readBinding(f.config, f.nativeSessionId)!.executor!, "stop")).toMatchObject({ ok: true, verb: "stop" });
+    release(); await starting; await sleep(0);
+    expect(noting).not.toHaveBeenCalled();
+  } finally { release(); spy.mockRestore(); await coordinator.shutdown("test"); }
+});
+
+test("stop invalidates an entry opportunity frozen before an in-flight reconcile result", async () => {
+  const f = fixture("reconcile-stop-epoch"); f.write();
+  f.config.stateDir = mkdtempSync("/tmp/tmcc-epoch-"); dirs.push(f.config.stateDir);
+  f.config.pollIntervalMs = 100_000;
+  f.config.worker = { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", model: "synthetic",
+    effort: "medium", contextWindow: 200_000, cwd: f.dir, responseOriginTimeoutMs: 20 };
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});
+  await coordinator.start();
+  const internal = coordinator as any, importer = internal.importer as CcImporter;
+  const noting = vi.fn(async () => ({ outcome: "success", facts: [] }));
+  (importer.memory as any).noting = noting;
+  (importer.memory as any).taskEligibility = (phase: string) => ({ due: phase === "noting" });
+  const original = importer.reconcile.bind(importer);
+  let release!: () => void, reached!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const imported = new Promise<void>(resolve => { reached = resolve; });
+  let gate = true;
+  (importer as any).reconcile = async () => {
+    const result = await original();
+    if (gate) { reached(); await held; }
+    return result;
+  };
+  const long = "pending ".repeat(12_000);
+  f.records.splice(-1, 1,
+    { uuid: "u2", parentUuid: "a1", type: "user", timestamp: "2026-01-01T00:00:02.000Z", ...sdkPrompt("p2"), message: { role: "user", content: long } },
+    { uuid: "a2", parentUuid: "u2", type: "assistant", timestamp: "2026-01-01T00:00:03.000Z", message: { role: "assistant", content: [{ type: "text", text: "later answer" }] } },
+    { type: "last-prompt", leafUuid: "a2" });
+  f.write();
+  const opportunity = coordinator.requestReconcile("held entry opportunity");
+  await imported;
+  expect(await directControl(readBinding(f.config, f.nativeSessionId)!.executor!, "stop")).toMatchObject({ ok: true, verb: "stop" });
+  gate = false; release(); await opportunity; await sleep(0);
+  expect(noting).not.toHaveBeenCalled();
+
+  f.records.splice(-1, 1,
+    { uuid: "u3", parentUuid: "a2", type: "user", timestamp: "2026-01-01T00:00:04.000Z", ...sdkPrompt("p3"), message: { role: "user", content: long } },
+    { uuid: "a3", parentUuid: "u3", type: "assistant", timestamp: "2026-01-01T00:00:05.000Z", message: { role: "assistant", content: [{ type: "text", text: "new answer" }] } },
+    { type: "last-prompt", leafUuid: "a3" });
+  try {
+    f.write(); await coordinator.requestReconcile("new entry opportunity");
+    // Watch events can coalesce with this request; admission is asynchronous, not a one-tick contract.
+    await vi.waitFor(() => expect(noting).toHaveBeenCalledTimes(1));
+  } finally { await coordinator.shutdown("test"); }
 });
 
 test("separate-process same-session contenders publish one live executor and losing cleanup preserves its socket", async () => {
@@ -179,9 +343,26 @@ test("off and executor startup serialize through the binding lock without revivi
   } finally { await server.close(); memory.close(); }
 });
 
+test("operator validation keeps its Store open through a contended binding lock for an allocated session", async () => {
+  const f = fixture("operator-store-lock"); f.write();
+  await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
+    transcript_path: f.transcriptPath }, now);
+  const importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);
+  try { expect((await importer.reconcile()).coreSessionId).not.toBeNull(); } finally { importer.close(); }
+  const mutex = new DatabaseSync(bindingMutexPath(f.config, f.nativeSessionId), { timeout: 0 }); mutex.exec("BEGIN IMMEDIATE");
+  const disabling = controlSession(f.config, f.nativeSessionId, "off");
+  await sleep(20); mutex.exec("ROLLBACK"); mutex.close();
+  await expect(disabling).resolves.toMatchObject({ state: "not-running", enrollmentChanged: true });
+  const store = new Store(f.config.dbPath);
+  try { expect(store.enabled(readBinding(f.config, f.nativeSessionId)!.coreSessionId!)).toBe(false); }
+  finally { store.close(); }
+});
+
 test("off persists without a live executor and live communication failure is not called not-running", async () => {
   const f = fixture("off"); f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId, transcript_path: f.transcriptPath }, now);
+  expect(await controlSession(f.config, f.nativeSessionId, "catchup")).toEqual({ state: "unavailable",
+    diagnostic: "CC catchup requires the session's live executor" });
   expect(await controlSession(f.config, f.nativeSessionId, "off")).toEqual({ state: "not-running", enrollmentChanged: true });
   expect(readBinding(f.config, f.nativeSessionId)!.enrollment.choice).toBe(false);
   await updateBinding(f.config, f.nativeSessionId, binding => ({ ...binding!, executor: { executorId: "missing", pid: process.pid,

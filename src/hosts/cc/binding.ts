@@ -219,6 +219,9 @@ export async function recordSessionStart(config: ResolvedCcHostConfig, input: Cc
         throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
       return current;
     }
+    // Prepare the database's parent, never the database itself. Store opens an existing file in
+    // place or creates it on first use, just as the Pi host does.
+    mkdirSync(dirname(config.dbPath), { recursive: true });
     return {
       version: 1,
       nativeSessionId,

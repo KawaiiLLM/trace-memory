@@ -163,8 +163,19 @@ export class CcCoordinator {
     this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.importer.workerCapacity, this.diagnostic);
     try {
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
-      await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal)
-        .then(control => { this.control = control; });
+      await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {
+        catchup: async () => {
+          const scheduler = this.scheduler;
+          if (!scheduler) return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+            diagnostic: "CC executor scheduler is unavailable" };
+          const ticket = scheduler.catchupTicket();
+          const projection = await this.requestReconcile("manual catchup");
+          if (!projection) return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0,
+            diagnostic: "authoritative transcript reconciliation is unavailable" };
+          return scheduler.startCatchup(projection, ticket);
+        },
+        beforeCancel: () => this.scheduler?.stopCatchup(),
+      }).then(control => { this.control = control; });
     } catch (error) { this.scheduler.stop(); this.scheduler = null; this.importer.close(); this.importer = null; throw error; }
     this.watchTranscript(binding);
     if (final) this.importer.memory.cancelTasks(true);
@@ -205,14 +216,24 @@ export class CcCoordinator {
   requestReconcile(reason: string, final = false, deadline?: number): Promise<CcReconcileResult | null> {
     if (!final && this.wakeQueued) return this.queue;
     if (!final) this.wakeQueued = true;
+    // Freeze the cancellation epoch at the opportunity, before importer reconciliation can wait.
+    // A stop/off acknowledged while import is in flight invalidates only this opportunity; a later
+    // transcript wake captures the new epoch and remains eligible.
+    const opportunityEpoch = this.scheduler?.catchupTicket();
     this.queue = this.queue.then(async () => {
       if (!final) this.wakeQueued = false;
       if (this.closed || this.closing && !final) return null;
       try {
-        await this.attach(final, deadline);
+        const attaching = this.attach(final, deadline);
+        // attach() constructs the scheduler synchronously before its first await. Capture that first
+        // scheduler's epoch now, not after control can acknowledge a stop while initial import waits.
+        const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
+        await attaching;
         const result = await this.importer?.reconcile() ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
-        if (!final && result) this.scheduler?.trigger(result);
+        // The explicit drain still observes path/enrollment changes, but its reconciliation must
+        // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
+        if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
         if (reason !== "stat wake-up") this.observe("reconcile", { reason, final, state: result?.state ?? "unbound",
           coreSessionId: result?.coreSessionId ?? null, appended: result?.appendedEntryIds.length ?? 0 });
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);

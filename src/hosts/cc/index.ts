@@ -133,7 +133,7 @@ async function readStdin(): Promise<string> {
 export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> {
   const [command, configFlag, configPath, sessionFlag, nativeSessionId, verb, ...rest] = argv;
   if ((command !== "mcp" && command !== "hook" && command !== "cli") || configFlag !== "--config" || !configPath)
-    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|project [name]");
+    throw new Error("usage: cc.cjs mcp|hook --config /absolute/path/to/cc.config.json | cc.cjs cli --config /absolute/path/to/cc.config.json --session <native-id> on|off|stop|catchup|project [name]");
   const config = readConfig(configPath);
   if (command === "mcp") { await runCcStdioMcp(config); return; }
   if (command === "hook") {
@@ -142,9 +142,10 @@ export async function runCcCommand(argv = process.argv.slice(2)): Promise<void> 
     return;
   }
   if (sessionFlag !== "--session" || !nativeSessionId || !verb)
-    throw new Error("CLI requires --session <native-id> and on, off, stop, or project <name>");
+    throw new Error("CLI requires --session <native-id> and on, off, stop, catchup, or project <name>");
+  if (verb !== "project" && rest.length) throw new Error(`CC operator command ${verb} accepts no arguments`);
   const result = verb === "project" ? await declareCcProject(config, nativeSessionId, rest.join(" "))
-    : verb === "on" || verb === "off" || verb === "stop" ? await operateCcSession(config, nativeSessionId, verb)
+    : verb === "on" || verb === "off" || verb === "stop" || verb === "catchup" ? await operateCcSession(config, nativeSessionId, verb)
     : (() => { throw new Error(`unknown CC operator command ${verb}`); })();
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

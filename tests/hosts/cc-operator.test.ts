@@ -7,7 +7,7 @@ import { resolveCcHostConfig } from "../../src/hosts/cc/config.ts";
 import { bindingPath, readBinding, recordSessionStart } from "../../src/hosts/cc/binding.ts";
 import { CcImporter } from "../../src/hosts/cc/importer.ts";
 import { declareCcProject, operateCcSession } from "../../src/hosts/cc/operator.ts";
-import { handleCcHook } from "../../src/hosts/cc/index.ts";
+import { handleCcHook, runCcCommand } from "../../src/hosts/cc/index.ts";
 import { Store } from "../../src/core/store/index.ts";
 
 const dirs: string[] = [];
@@ -23,6 +23,14 @@ function fixture(label: string) {
 
 const hook = (nativeSessionId: string, transcriptPath: string) => ({ hook_event_name: "SessionStart" as const,
   session_id: nativeSessionId, transcript_path: transcriptPath, source: "startup" as const });
+
+test.each(["catchup", "stop"])("CLI rejects trailing arguments for %s", async command => {
+  const f = fixture(`args-${command}`), configPath = join(f.directory, "cc.config.json");
+  writeFileSync(configPath, JSON.stringify({ dbPath: f.config.dbPath, stateDir: f.config.stateDir,
+    baseline: "2025-01-01T00:00:00.000Z" }));
+  await expect(runCcCommand(["cli", "--config", configPath, "--session", f.nativeSessionId, command, "garbage"]))
+    .rejects.toThrow(`CC operator command ${command} accepts no arguments`);
+});
 
 test("operator on enrolls only and off persists without a live executor", async () => {
   const f = fixture("enrollment");
@@ -89,7 +97,7 @@ test("project restores the prior binding when directory fsync fails after public
   expect(calls).toBeGreaterThanOrEqual(4);
 });
 
-test.each(["on", "off", "stop"] as const)("operator %s rejects a foreign database before mutation or control", async command => {
+test.each(["on", "off", "stop", "catchup"] as const)("operator %s rejects a foreign database before mutation or control", async command => {
   const f = fixture(`wrong-db-${command}`);
   await recordSessionStart(f.config, hook(f.nativeSessionId, f.transcriptPath), null);
   const foreign = resolveCcHostConfig({ ...f.config, dbPath: join(f.directory, "foreign.sqlite") });
@@ -111,7 +119,7 @@ test("operator rejects a foreign core identity without mutating that session", a
   const binding = readBinding(f.config, f.nativeSessionId)!;
   writeFileSync(bindingPath(f.config, f.nativeSessionId), `${JSON.stringify({ ...binding, coreSessionId: victim.id, projectId: project.id }, null, 2)}\n`);
   try {
-    for (const command of ["on", "off", "stop"] as const)
+    for (const command of ["on", "off", "stop", "catchup"] as const)
       await expect(operateCcSession(f.config, f.nativeSessionId, command)).rejects.toThrow("authoritative core session");
     expect(store.enabled(victim.id)).toBe(false);
   } finally { store.close(); }

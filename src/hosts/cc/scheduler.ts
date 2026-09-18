@@ -1,10 +1,30 @@
-import type { ConsolidateResult, DreamingResult, NotingResult, TraceMemory, TaskTarget } from "../../core/api/index.ts";
+import type { ConsolidateResult, DreamingResult, NotingResult, TraceMemory, TaskBoundary, TaskTarget } from "../../core/api/index.ts";
 import type { CcReconcileResult } from "./importer.ts";
 import type { ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcWorkerPhase = "noting" | "consolidation" | "dreaming";
 type CcTaskResult = NotingResult | ConsolidateResult | DreamingResult;
+export type CcCatchupState = "running" | "waiting" | "completed" | "stopped" | "failed";
+export interface CcCatchupStatus {
+  state: CcCatchupState;
+  phase?: "noting" | "consolidation";
+  entriesDone: number;
+  entriesTotal: number;
+  factsDone: number;
+  factsTotal: number;
+  diagnostic?: string;
+}
+interface Catchup {
+  target: TaskTarget;
+  maxEntryId?: number;
+  entryTotal: number;
+  factIds: Set<number>;
+  factTotal: number;
+  state: CcCatchupState;
+  phase?: "noting" | "consolidation";
+  diagnostic?: string;
+}
 
 /** One CC-local slot per phase. Core remains the authority for eligibility, claims, borrowing and settlement. */
 export class CcTaskScheduler {
@@ -14,6 +34,8 @@ export class CcTaskScheduler {
   private readonly diagnostic: (message: string) => void;
   private readonly slots = new Map<CcWorkerPhase, Promise<CcTaskResult | undefined>>();
   private stopped = false;
+  private catchup?: Catchup;
+  private cancellationEpoch = 0;
 
   constructor(memory: TraceMemory, worker: ResolvedCcWorkerConfig | undefined,
     capacity: { inputTokens: number; prefixTokens: 0 } | undefined,
@@ -23,16 +45,76 @@ export class CcTaskScheduler {
 
   running(): CcWorkerPhase[] { return [...this.slots.keys()]; }
 
-  /** One completed-entry opportunity. Repeated stat/watch reconciliations with no new source do nothing. */
-  trigger(reconcile: CcReconcileResult): void {
-    if (this.stopped || reconcile.state !== "ready" || !reconcile.appendedEntryIds.length ||
-        reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
-    const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
-      headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
-    for (const phase of ["noting", "consolidation", "dreaming"] as const) this.start(phase, own);
+  /** Observe every authoritative projection. Polls can resume a waiting drain after claim expiry. */
+  reconcile(reconcile: CcReconcileResult, admitAutomatic = true, opportunityEpoch = this.cancellationEpoch): void {
+    const drain = this.catchup;
+    if (drain && (drain.state === "running" || drain.state === "waiting")) {
+      const pathChanged = reconcile.coreSessionId !== null &&
+        (reconcile.coreSessionId !== drain.target.sessionId || reconcile.branch !== drain.target.branch);
+      if (pathChanged || reconcile.state === "disabled") {
+        this.stopCatchup(pathChanged ? "selected branch changed" : "Trace Memory was disabled");
+        this.memory.cancelTasks();
+      }
+    }
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
+    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
+      const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
+        headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
+      for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
+    }
+    this.driveCatchup();
   }
 
-  private start(phase: CcWorkerPhase, own: TaskTarget): void {
+  catchupTicket(): number { return this.cancellationEpoch; }
+
+  startCatchup(reconcile: CcReconcileResult, ticket = this.cancellationEpoch): CcCatchupStatus {
+    if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
+    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) return this.catchupStatus();
+    if (this.stopped) return this.failedStatus("CC executor is shutting down");
+    if (!this.worker || !this.capacity)
+      return this.failedStatus("CC worker model, effort, executable version and finite context capacity are not configured");
+    if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
+    if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length)
+      return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
+    if (!this.memory.store.enabled(reconcile.coreSessionId)) return this.failedStatus("Trace Memory is disabled for this session");
+    const target: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
+      headTurnId: reconcile.headTurnId, triggerEntryId: reconcile.selectedEntryIds.at(-1)! };
+    const entries = this.memory.pendingEntries(target.sessionId, target.branch, target.headTurnId);
+    const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map(fact => fact.id);
+    this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries.map(entry => entry.id)) : undefined,
+      entryTotal: entries.length, factIds: new Set(facts), factTotal: facts.length,
+      state: entries.length || facts.length ? "running" : "completed" };
+    this.driveCatchup();
+    return this.catchupStatus();
+  }
+
+  catchupStatus(): CcCatchupStatus {
+    if (!this.catchup) return this.failedStatus("no catchup has been started");
+    const drain = this.catchup;
+    const remainingEntries = drain.maxEntryId === undefined ? 0 : this.memory
+      .pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
+      .filter(entry => entry.id <= drain.maxEntryId!).length;
+    const remainingFacts = this.memory.store
+      .consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
+      .filter(fact => drain.factIds.has(fact.id)).length;
+    return { state: drain.state, ...(drain.phase ? { phase: drain.phase } : {}),
+      entriesDone: drain.entryTotal - remainingEntries, entriesTotal: drain.entryTotal,
+      factsDone: drain.factTotal - remainingFacts, factsTotal: drain.factTotal,
+      ...(drain.diagnostic ? { diagnostic: drain.diagnostic } : {}) };
+  }
+
+  /** Mark first, then the caller fences core tasks. This prevents completion chaining in the race. */
+  stopCatchup(diagnostic = "stop requested"): void {
+    this.cancellationEpoch++;
+    if (!this.catchup || this.catchup.state === "completed" || this.catchup.state === "failed" || this.catchup.state === "stopped") return;
+    this.catchup.state = "stopped"; this.catchup.phase = undefined; this.catchup.diagnostic = diagnostic;
+  }
+
+  private failedStatus(diagnostic: string): CcCatchupStatus {
+    return { state: "failed", entriesDone: 0, entriesTotal: 0, factsDone: 0, factsTotal: 0, diagnostic };
+  }
+
+  private startAutomatic(phase: CcWorkerPhase, own: TaskTarget): void {
     if (this.slots.has(phase) || this.stopped) return;
     let due = false;
     try { due = this.memory.taskEligibility(phase, own).due; }
@@ -45,27 +127,36 @@ export class CcTaskScheduler {
       this.diagnostic(`${phase} admission failed: CC worker model, effort, executable version and finite context capacity are not configured`);
       return;
     }
-    // Reserve synchronously before the async function can reach core admission or the native SDK.
-    const work = Promise.resolve().then(() => this.runCandidates(phase, own.sessionId, candidates));
+    const cancellationEpoch = this.cancellationEpoch;
+    this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
+  }
+
+  private reserve(phase: CcWorkerPhase, run: () => Promise<CcTaskResult | undefined>,
+    shouldDrive: () => boolean = () => true): void {
+    const work = Promise.resolve().then(run);
     this.slots.set(phase, work);
     void work.catch(error => this.diagnostic(`${phase} worker failed: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(() => this.slots.delete(phase));
+      .finally(() => { this.slots.delete(phase); if (shouldDrive()) this.driveCatchup(); });
+  }
+
+  private common(target: TaskTarget, borrowed: boolean, automatic: boolean, boundary?: TaskBoundary) {
+    return { ...target, borrowed, automatic, executorSessionId: target.sessionId, mode: "subagent" as const,
+      effectiveMode: "subagent" as const, model: this.worker!.model, capacity: this.capacity!, maxReadChars: CC_MAX_RESULT_CHARS,
+      thinkingLevel: this.worker!.effort, subagentThinkingLevel: this.worker!.effort, ...(boundary ? { boundary } : {}) };
   }
 
   private async runCandidates(phase: CcWorkerPhase, executorSessionId: number,
-    candidates: (TaskTarget & { borrowed: boolean })[]): Promise<CcTaskResult | undefined> {
+    candidates: (TaskTarget & { borrowed: boolean })[], cancellationEpoch: number): Promise<CcTaskResult | undefined> {
     for (const { borrowed, ...target } of candidates) {
-      if (this.stopped || !this.memory.store.enabled(executorSessionId)) return;
+      // Slots are reserved synchronously but provider admission starts in a microtask. The same
+      // cancellation epoch that fences manual catchup also fences ordinary and borrowed candidates,
+      // including continuation after an earlier candidate drops or loses admission.
+      if (this.stopped || this.cancellationEpoch !== cancellationEpoch || !this.memory.store.enabled(executorSessionId)) return;
       try {
-        const common = { ...target, borrowed, automatic: true, executorSessionId, mode: "subagent" as const,
-          effectiveMode: "subagent" as const, model: this.worker!.model, capacity: this.capacity!, maxReadChars: CC_MAX_RESULT_CHARS,
-          thinkingLevel: this.worker!.effort, subagentThinkingLevel: this.worker!.effort };
-        const result = phase === "noting" ? await this.memory.noting(common)
-          : phase === "consolidation" ? await this.memory.consolidate(common) : await this.memory.dream(common);
-        if (result.automaticOff) this.diagnostic(result.automaticOff);
-        const problems = "problems" in result ? result.problems ?? [] : [];
-        if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)
-          this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
+        const options = { ...this.common(target, borrowed, true), executorSessionId };
+        const result = phase === "noting" ? await this.memory.noting(options)
+          : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
+        this.report(phase, target, result);
         if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
@@ -74,9 +165,63 @@ export class CcTaskScheduler {
     }
   }
 
-  stop(): void { this.stopped = true; }
-
-  async settle(): Promise<void> {
-    await Promise.allSettled([...this.slots.values()]);
+  private report(phase: CcWorkerPhase, target: TaskTarget, result: CcTaskResult): void {
+    if (result.automaticOff) this.diagnostic(result.automaticOff);
+    const problems = "problems" in result ? result.problems ?? [] : [];
+    if (result.outcome === "failure" || result.outcome === "bounced" || result.outcome === "cancelled" || problems.length)
+      this.diagnostic(`${phase} worker ${result.outcome} for S${target.sessionId}${"runId" in result ? ` R${result.runId}` : ""}: ${problems.join("; ") || result.outcome}`);
   }
+
+  private driveCatchup(): void {
+    const drain = this.catchup;
+    if (!drain || this.stopped || (drain.state !== "running" && drain.state !== "waiting")) return;
+    if (!this.memory.store.enabled(drain.target.sessionId)) { this.stopCatchup("Trace Memory was disabled"); return; }
+    const remainingEntries = drain.maxEntryId === undefined ? [] : this.memory
+      .pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
+      .filter(entry => entry.id <= drain.maxEntryId!);
+    const remainingFacts = this.memory.store
+      .consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
+      .filter(fact => drain.factIds.has(fact.id));
+    const phase = remainingEntries.length ? "noting" : remainingFacts.length ? "consolidation" : undefined;
+    if (!phase) { drain.state = "completed"; drain.phase = undefined; return; }
+    drain.phase = phase;
+    if (this.slots.has(phase)) { drain.state = "waiting"; return; }
+    const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
+    if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) { drain.state = "waiting"; return; }
+    drain.state = "running";
+    const cancellationEpoch = this.cancellationEpoch;
+    const boundary: TaskBoundary = phase === "noting" ? { maxEntryId: drain.maxEntryId } : { allowedFactIds: [...drain.factIds] };
+    let chain = true;
+    const drainActive = () => drain.state === "running" || drain.state === "waiting";
+    this.reserve(phase, async () => {
+      // Reservation is synchronous, admission is not. Recheck the exact drain after the microtask
+      // boundary so stop/off/path changes cannot launch a task after their cancellation acknowledgement.
+      if (this.stopped || this.catchup !== drain || this.cancellationEpoch !== cancellationEpoch ||
+          !drainActive()) { chain = false; return; }
+      let result: NotingResult | ConsolidateResult;
+      try {
+        result = phase === "noting" ? await this.memory.noting(this.common(drain.target, false, false, boundary))
+          : await this.memory.consolidate(this.common(drain.target, false, false, boundary));
+      } catch (error) {
+        if (this.catchup === drain && drainActive()) {
+          drain.state = "failed"; drain.phase = undefined; drain.diagnostic = error instanceof Error ? error.message : String(error);
+        }
+        return;
+      }
+      const produced = phase === "noting" && "facts" in result && Array.isArray(result.facts) ? result.facts : [];
+      for (const fact of produced) if (!drain.factIds.has(fact.id)) { drain.factIds.add(fact.id); drain.factTotal++; }
+      this.report(phase, drain.target, result);
+      if (this.catchup !== drain || !drainActive()) return result;
+      if (result.outcome === "dropped") { drain.state = "waiting"; chain = false; return result; }
+      if (result.outcome !== "success" && result.outcome !== "empty") {
+        drain.state = result.outcome === "cancelled" ? "stopped" : "failed"; drain.phase = undefined;
+        drain.diagnostic = result.problems?.join("; ") || result.outcome;
+      }
+      return result;
+    }, () => chain);
+  }
+
+  stop(): void { this.stopCatchup("executor shutdown"); this.stopped = true; }
+
+  async settle(): Promise<void> { await Promise.allSettled([...this.slots.values()]); }
 }
