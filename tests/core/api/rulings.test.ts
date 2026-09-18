@@ -2651,3 +2651,31 @@ test("40 N4: the user's instruction, question or plan approval that starts work 
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
   expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.");
 });
+
+/** Ticket 58 (2026-09-18): an approval or implementation fact names its object and supports it when
+ * the object is in view; the Consolidator reads adoption from the adopting user fact's content and
+ * scope, never from co-occurrence, a general authorisation or an implementation report, and the body
+ * says whose decision it is in a few characters. Neither prompt names the case. */
+test("58: an approval or implementation fact names its object and supports it when it is in view", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("An approval or an implementation fact states the object it approves or carries out — the proposal, the spec, the design, the ruling — and supports that fact when it is in view, in this batch or in the fact slice; a general authorisation supports the facts recording what it names, not every proposal made under them; an approval or implementation that names no object supports nothing, so the text must name it.");
+  expect(prompt).not.toMatch(/Engine|F1841|K386/);
+});
+
+test("58: the Consolidator reads adoption from the adopting user fact and states whose decision it is", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("a support edge is neither required nor sufficient: adoption is read from a user fact that adopts that object — its content and approval scope, with a support edge when the object was in the Noter's view, and when the proposal lay beyond that view bound by its named object to the identity whose cited chain carries it, the approval becoming that version's change support — and is never inferred from co-occurrence in a batch, a general authorisation that does not name the object or an implementation report, so a proposal without an adopting user fact stays a proposal and a user decision cited in supports must adopt that specific proposal, approval of one change authorising no other decision merely because both are in the batch or the body.");
+  expect(prompt).toContain("An agent's own choice is written as the assistant's choice, never as a rule: the body states in a few characters, in the conversation's language, whose decision it is — user proposal, user-adopted decision, assistant choice — never a bare \"current choice\" or \"confirmed\", and the reason describes the change and is neither evidence for nor a substitute for that attribution.");
+  expect(prompt).not.toContain('is written as "the current choice"');
+  expect(prompt).not.toMatch(/Engine|F1841|K386/);
+});
+
+test("58: the Dreamer fixture holds the reconstructed mixed-decision-object case, split by object and not by actor", () => {
+  const fixture = JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as
+    { examples: { id: string; judgment: string; result: { children?: unknown[]; operations?: string[] }; review: string }[] };
+  const example = fixture.examples.find(value => value.id === "reconstructed-mixed-decision-objects-split")!;
+  expect(example.judgment).toBe("faithful");
+  expect(example.review).toContain("Reconstructed case with pre-revision facts, not an exact replay.");
+  expect(example.result.children).toHaveLength(2);
+  expect(example.result.operations!.join(" ")).toContain("no archive");
+});

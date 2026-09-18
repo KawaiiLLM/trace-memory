@@ -390,6 +390,37 @@
         }
       },
       "review": "Every supplied item ends the round accounted for: two in an explicit skip with a reason, one in an operation; the check reports nothing unaccounted, and a skip is accounting only — the skipped leaves are certified because they are successor-free, not because they were skipped. The batched history search runs once, before the first New item is decided, with each item's object in a few words; a query with no hit is named in the receipt, a current self-hit is not a revival, and the archived hit is read in full before the New item is merged into that identity (48)."
+    },
+    {
+      "id": "reconstructed-mixed-decision-objects-split",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "Engine 接口经工具调用接收观察并返回动作结果；上下文当前选择为跨批次保留（已确认），此前为每批裁决新建独立上下文、只保留批内工具反馈。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        }
+      ],
+      "result": {
+        "children": [
+          {
+            "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈；助手选择在当前实现中跨批次保留上下文，该变更未经用户采纳。",
+            "category": "mechanism"
+          },
+          {
+            "text": "Engine 接口：助手选择经工具调用接收观察并返回动作结果。",
+            "category": "mechanism"
+          }
+        ],
+        "operations": [
+          "split into the context-lifecycle decision and the interface detail",
+          "keep the design's proposal, adoption and the assistant's later continuing-context choice on the lifecycle child, each attributed in a few characters",
+          "no archive: the lifecycle child is a user design under KEEP, not an implementation snapshot"
+        ],
+        "reason": "The body holds two objects a later fact would change apart — a tool-shape change leaves the lifecycle standing — and its bare current choice and confirmed cannot be assigned to either, so it is split by object, not by actor; the lifecycle child states whose decision each stage is and that the continuing-context change was not adopted."
+      },
+      "review": "Reconstructed case with pre-revision facts, not an exact replay. Mixed actors alone do not split, and the proposal, adoption and implementation stages of one design stay on one identity; the split is by decision object, made only because the interface detail and the lifecycle would be read and changed apart and the compound body left the makers and approval scopes unassignable. The cited user approval behind the parent's confirmed was of a different change and adopts nothing here; the assistant's later choice does not override the user's design, and that design is never retired as disposable implementation detail."
     }
   ]
 }
