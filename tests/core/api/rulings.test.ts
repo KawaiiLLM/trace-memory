@@ -2658,7 +2658,7 @@ test("40 N4: the user's instruction, question or plan approval that starts work 
  * says whose decision it is in a few characters. Neither prompt names the case. */
 test("58: an approval or implementation fact names its object and supports it when it is in view", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
-  expect(prompt).toContain("An approval or an implementation fact states the object it approves or carries out — the proposal, the spec, the design, the ruling — and supports that fact when it is in view, in this batch or in the fact slice; a general authorisation supports the facts recording what it names, not every proposal made under them; an approval or implementation that names no object supports nothing, so the text must name it.");
+  expect(prompt).toContain("An approval or an implementation fact states the object it approves or carries out — the proposal, the spec, the design, the ruling — and supports that fact when it is in view, in this batch or in the fact slice: \"implement the spec and the tickets\" supports the fact that recorded the spec and the fact that recorded the tickets, both in view, and none of the proposals made under them; an approval or implementation that names no object supports nothing, so the text must name it, and a user decision left with no support is a check failure unless its object is genuinely out of view.");
   expect(prompt).not.toMatch(/Engine|F1841|K386/);
 });
 

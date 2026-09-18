@@ -427,7 +427,7 @@
       "judgment": "faithful",
       "parents": [
         {
-          "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈。",
+          "text": "Engine 分初始化开场输入与裁决两操作，裁决由临时 Agent 完成，内部步骤不向 Runtime 暴露；裁决读取当前 World、本轮行动及角色信息。",
           "category": "mechanism",
           "scope": "project",
           "topics": ["engine", "context-lifecycle"]
@@ -442,16 +442,16 @@
       "result": {
         "children": [
           {
-            "text": "Engine 上下文生命周期：用户提案并采纳为每批裁决新建独立上下文、只保留批内工具反馈；已实现（每次裁决新建实例，不继承上次会话）。",
+            "text": "Engine 分初始化开场输入与裁决两操作，内部步骤不向 Runtime 暴露；裁决由每批新建的独立上下文完成、只保留批内工具反馈（用户提案并采纳，已实现：每次裁决新建实例，不继承上次会话），读取当前 World、本轮行动及角色信息。",
             "category": "mechanism"
           }
         ],
         "operations": [
           "merge the implementation item into the lifecycle identity: its design clause is that identity's implementation evidence, folded in a few characters with the implementation fact as the change support",
-          "the adapter and tool-table topology leaves the body under principle 2 (identifiers stay in the facts); nothing is archived, since it never was a separate record",
+          "the lifecycle identity is updated to state the design again, attributed and marked implemented, the design clause being that identity's own claim carried in its cited chain; the adapter and tool-table topology leaves the body under principle 2 (identifiers stay in the facts); nothing is archived, since it never was a separate record",
           "no archive of the implementation item as an implementation snapshot at any intensity: the body carried the user's adopted design, and the label does not make that design disposable"
         ],
-        "reason": "Under budget pressure the second item reads like an implementation snapshot, but its first clause is the only resident statement of the user's independent-context design; archiving it on that label loses the design (KEEP), so the design folds into the lifecycle identity and only the topology detail leaves."
+        "reason": "The first item only calls the Agent temporary — the identity has stopped stating the design it carries in its chain — and under budget pressure the second item reads like an implementation snapshot, but its first clause is the only resident statement of the user's independent-context design; archiving it on that label loses the design (KEEP), so the design folds into the lifecycle identity and only the topology detail leaves."
       },
       "review": "Reconstructed from K436@1605's archive by Dreamer R311 (reason: an implementation snapshot, information loss acknowledged) while K386's body had already stopped stating statelessness. Retirement respects the underlying design: 57's per-item order asks merge before archive, and the KEEP list protects a user's adopted design whatever the body looks like; a finished delivery record with nothing unique left may still be archived on its fact."
     }
