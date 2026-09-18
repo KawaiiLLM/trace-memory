@@ -189,7 +189,7 @@ operations); the check lists the rest under one `unaccounted:` blocker, and the 
 with the run. Before the first `New:` item is decided, one `search` with `queries` (each New item's
 object in a few words, `layer: knowledge`, `versions: history`) finds revival candidates in one
 response — one best revision per K per query, at most `cap` per query (default 1), the query echoed
-on each hit line and queries with no hit named in the receipt; a hit is read in full with `trace`
+on each hit line and queries with no hit listed as lines after the hits, paged like them; a hit is read in full with `trace`
 before the New item is merged into that identity. No
 blocker finishes the run; a cap exceeded starts another round at the next intensity; a round with
 nothing to do is reported with the changed block named, never as a budget figure. Immutable prompt
