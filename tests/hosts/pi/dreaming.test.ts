@@ -139,8 +139,8 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
       expect(position, `effective prompt missing ordered stage: ${heading}`).toBeGreaterThan(priorStage);
       priorStage = position;
     }
-    expect(initialSystem).toContain("user-versus-agent attribution");
-    expect(initialSystem).toContain("attempted, reported, completed and verified distinctions");
+    expect(initialSystem).toContain("user-versus-assistant attribution");
+    expect(initialSystem).toContain("attempted, reported, completed, verified distinctions");
     expect(initialSystem).toContain("Exactly one of three, stated in `reason`:");
     expect(initialSystem).toContain("is budget stripping, not maintenance");
     expect(initialSystem).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");

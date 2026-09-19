@@ -7,9 +7,9 @@ A knowledge item is the versioned arc of one object: one object, one independent
 - Different claims about one object are different items. A piece is its own item only where a later fact would change it while its sibling stands.
 
 **Three kinds.**
-- **Established decision knowledge** — `goal`, `constraint`, `mechanism`. Create it, update it or enter it by a category change only when every core claim comes directly from a valid user or observation fact, or from an assistant claim that a valid user or observation fact strongly supports. Which claims are core, and whether scattered evidence suffices, is your judgment: not every cited fact needs its own strong support, and repeated facts of one claim are not supported one by one. Grounding once valid is inherited along the versions; a core claim itself strongly negated does not survive on its old supports.
-- **Pending decision knowledge** — `open`, and `dispute` where two accounts conflict. A decision that fails the condition stays here. When a valid fact establishes it, it changes category on its own id or merges into the established item of its object, under the same condition.
-- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it. A pending and an established item about one object's decision are not duplicates: one is a proposal not yet confirmed, the other the reality in force.
+- **Established decision knowledge** — `goal`, `constraint`, `mechanism`. Created, updated or entered by a category change only under the grounding condition (Principles).
+- **Pending decision knowledge** — `open`, and `dispute` where two accounts conflict. A decision that fails the condition stays here; when a valid fact establishes it, it changes category on its own id or merges into the established item of its object, under the same condition.
+- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it.
 - **Auxiliary knowledge** — `term`, `reference`. Create and update it without condition.
 
 **Seven categories, one test each.** If no test answers yes, it stays in the fact layer.
