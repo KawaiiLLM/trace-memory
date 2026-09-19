@@ -4,6 +4,7 @@
 // structured material plus prepared text and reports what it can and cannot audit. Every test here
 // names the ruling it pins.
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +16,7 @@ let directory: string, memory: ReturnType<typeof sourceSeededMemory>;
 let calls: (NotingAgentInput | ConsolidationAgentInput)[];
 let runAgent: (input: NotingAgentInput | ConsolidationAgentInput) => Promise<RunAgentResult>;
 const time = "2026-09-08T00:00:00Z";
-const notingPrompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+const notingPrompt = loadPrompt("noting.md");
 
 function open() {
   memory = sourceSeededMemory(join(directory, "test.sqlite"), async raw => {

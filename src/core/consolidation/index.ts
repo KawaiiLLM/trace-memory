@@ -19,7 +19,8 @@ export { similarity } from "./similarity.ts";
 const prompt = loadPrompt("consolidation.md");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
-const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));
+const sectionEnd = prompt.indexOf("\n### ", sectionStart);
+const checklist = prompt.slice(sectionStart, sectionEnd === -1 ? undefined : sectionEnd);
 // 22d, as in Noting: the instructions and role-specialized tool definitions are the same bytes for
 // the life of the process, so they are estimated once instead of once per re-freeze. Lazily, because
 // the tool definitions reach this module through an import cycle during initialization.

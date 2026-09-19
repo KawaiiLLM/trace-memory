@@ -1,6 +1,7 @@
 // Fixed synthetic fixture, not real conversation logs. Compare against an isolated pre-repair archive.
 // node tests/perf/unified-entry-sol.ts .scratch/sol-repair/prior > .scratch/sol-repair/source-index.json
 import assert from "node:assert/strict";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -48,7 +49,7 @@ const measure = (implementation: typeof api, freeze: typeof noting.freezeNoting,
   } finally { m.close(); }
 };
 const oldPrompt = readFileSync(resolve(directory, "src/core/prompts/noting.md"), "utf8");
-const prompt = readFileSync(new URL("../../src/core/prompts/noting.md", import.meta.url), "utf8");
+const prompt = loadPrompt("noting.md");
 console.log(JSON.stringify({ prior: "94bdf393c979748bb6638148926b8e863b995f53", syntheticEntries: 240,
   allVisible: { before: measure(oldApi, oldNoting.freezeNoting, oldRender, oldPrompt, false), after: measure(api, noting.freezeNoting, render, prompt, false) },
   mixed: { before: measure(oldApi, oldNoting.freezeNoting, oldRender, oldPrompt, true), after: measure(api, noting.freezeNoting, render, prompt, true) } }, null, 2));

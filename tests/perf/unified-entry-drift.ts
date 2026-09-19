@@ -1,6 +1,7 @@
 // Run after extracting the baseline into .scratch/baseline (never the main worktree).
 // node tests/perf/unified-entry-drift.ts .scratch/baseline > .scratch/unified-drift.json
 import assert from "node:assert/strict";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -41,7 +42,7 @@ const afterRaw = entries.map(entry => current.renderEntry(entry, DEFAULT_CONFIG.
 // Same claims and selected facts, with old source labels versus newly authored exact citations.
 const before = metrics(beforeRaw, facts.map(fact => ({ ...fact, source: [`T${fact.turnId}#t1`] })), baseline);
 const after = metrics(afterRaw, facts, current);
-const currentPrompt = readFileSync(new URL("../../src/core/prompts/noting.md", import.meta.url), "utf8");
+const currentPrompt = loadPrompt("noting.md");
 const oldPrompt = readFileSync(resolve(directory, "src/core/prompts/noting.md"), "utf8");
 const fixed = (prompt: string, tools: typeof toolDefinitions) => ({
   promptBytes: Buffer.byteLength(prompt), promptTokens: current.tokens(prompt),

@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { wholeTrace } from "../../trace-pages.ts";
 import { join } from "node:path";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
@@ -505,7 +506,7 @@ test("33: the Noter carries exact entry/block labels with opaque call IDs, not n
 });
 
 test("23c/30: the Noter prompt names the labels, the independent part budgets and the honesty clause once", () => {
-  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  const prompt = loadPrompt("noting.md");
   for (const named of ["`[T<n>#E<m>@text] user: <text>`", "`assistant: <text>`",
     "`[T<n>#E<m>@<callId>] <tool>(<key>=<value>, …)`", "`[T<n>#E<r>@<callId>] <tool> <status>: <result text>`",
     "one tool-call part is worth at most 100 tokens and one tool-result part at most 100, each an independent allowance",

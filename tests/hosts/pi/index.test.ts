@@ -1,4 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { host as createHost, reply, notingFact, noteCommitted, consolidationReply, usage, type Reply } from "./test-host.ts";
@@ -69,7 +70,7 @@ test("noting through runAgent commits the exact provider request, prompt, model,
   expect(run.mode).toBe("subagent"); expect(run.model).toBe("fake/test");
   expect(JSON.parse(run.request!)).toEqual(h.requests.at(-1));
   expect(h.conversations.at(-1)!.messages.map(m => m.role)).toEqual(["user", "assistant", "toolResult"]);
-  expect(h.conversations[0]!.systemPrompt).toBe(readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8"));
+  expect(h.conversations[0]!.systemPrompt).toBe(loadPrompt("noting.md"));
   expect(h.conversations[0]!.messages).toHaveLength(1);
   expect(h.conversations[0]!.tools!.map(t => t.name)).toEqual(["trace", "search", "note", "memory"]);
   // Usage is summed over every model call of the run, not the last reply's alone.

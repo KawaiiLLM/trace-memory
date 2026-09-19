@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "vitest";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { readFileSync } from "node:fs";
 import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../../../src/core/api/index.ts";
 import type { KnowledgeCategory, KnowledgeScope } from "../../../src/core/model/index.ts";
@@ -27,7 +28,7 @@ interface WorkflowFixture {
 }
 
 const fixture = JSON.parse(readFileSync(new URL("../../fixtures/dreaming-workflow.json", import.meta.url), "utf8")) as WorkflowFixture;
-const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+const prompt = loadPrompt("dreaming.md");
 const active: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of active.splice(0)) memory.close(); });
 const success = { outcome: "success", output: "scripted fixture complete", request: { fixture: "dreaming-workflow" } } as const satisfies RunAgentResult;

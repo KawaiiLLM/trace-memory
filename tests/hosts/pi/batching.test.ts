@@ -87,9 +87,10 @@ test("17b 2026-09-08: model capacity reduces the prefix and an oversized oldest 
     h.persist(reply("word ".repeat(15000)));
     await h.emit("session_start");
     // The larger exact-address guidance raises fixed prompt/tool cost (40's Noter rules again, to
-    // about 6,000). This fixture allows 9,500 input tokens: one 2,000-token entry fits beside it,
-    // but two do not. Production headroom, triggers and material windows remain unchanged.
-    h.ctx.model = { ...h.ctx.model!, contextWindow: 19500 };
+    // about 6,000; 61's shared reading block adds about 300). This fixture allows 9,800 input tokens:
+    // one 2,000-token entry fits beside it, but two do not. Production headroom, triggers and
+    // material windows remain unchanged.
+    h.ctx.model = { ...h.ctx.model!, contextWindow: 19800 };
     h.persist(reply("completion")); await h.emit("agent_end"); await h.drain();
     expect(h.requests).toHaveLength(2); // 26a: the submitting round and its closing reply
     expect(JSON.parse(h.memory.store.listRuns(1)[0]!.response!).entryAudit.entries).toHaveLength(1);
