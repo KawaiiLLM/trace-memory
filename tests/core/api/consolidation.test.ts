@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, tokens, type ConsolidationAgentInput as CoreInput, type RunAgentResult, type ConfigOverride } from "../../source-fixture.ts";
@@ -175,8 +176,7 @@ test("feedback contains NEAR, CLOSER, an exact checklist section and continuatio
   expect(second.request.rounds.at(-1)).toEqual({ role: "user", content: second.feedback });
   expect(second.feedback).toContain("NEAR:"); expect(second.feedback).toContain("CLOSER:");
   expect(second.feedback).toContain("System-generated review guidance; not a human ruling or adoption evidence.");
-  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
-  const section = prompt.split("### Second-round user message\n")[1]!.split("\n### ")[0]!;
+  const section = loadPrompt("consolidation.md").split("### Second-round user message\n")[1]!.split("\n### ")[0]!;
   expect(second.feedback!.endsWith(section)).toBe(true);
   expect(second.feedback!.split(section)).toHaveLength(2);
   const closer = second.feedback!.split("CLOSER:\n\n")[1]!.split(section)[0]!;

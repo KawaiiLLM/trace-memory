@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type Turn } from "../model/index.ts";
 import type { Store, RunInput, SourceEntry } from "../store/index.ts";
@@ -11,7 +11,7 @@ import { budgetMaterial, notingText, BLOCK, FACTS_TITLE, RAW_TITLE, SOURCES_TITL
 import { noVisibility, type InitialContext, type SuppliedMaterial } from "../api/visible.ts";
 import type { NotingDiagnostic } from "./review.ts";
 
-const prompt = readFileSync(new URL("../prompts/noting.md", import.meta.url), "utf8");
+const prompt = loadPrompt("noting.md");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 // 22d: what every candidate of every freeze pays before any material is added. The instructions and
 // the tool definitions are the same bytes for the life of the process, so they are estimated once
