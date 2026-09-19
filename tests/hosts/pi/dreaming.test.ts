@@ -141,7 +141,7 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     }
     expect(initialSystem).toContain("user-versus-assistant attribution");
     expect(initialSystem).toContain("attempted, reported, completed, verified distinctions");
-    expect(initialSystem).toContain("Exactly one of three, stated in `reason`:");
+    expect(initialSystem).toContain("Exactly one of four, stated in `reason`:");
     expect(initialSystem).toContain("is budget stripping, not maintenance");
     expect(initialSystem).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);

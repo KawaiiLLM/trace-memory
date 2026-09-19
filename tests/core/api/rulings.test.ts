@@ -2466,7 +2466,7 @@ test("56: split by maintenance need, rewrite only what fails the standalone test
   expect(prompt).toContain("and has a non-empty `reason`");
 });
 
-test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed check sets the intensity; an archive has one of three reasons", () => {
+test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed check sets the intensity; an archive has one of four reasons", () => {
   const prompt = loadPrompt("dreaming.md");
   // The ruling.
   expect(prompt).toContain("Pruning and merging are the work; the caps are acceptance criteria, not the objective.");
@@ -2493,7 +2493,7 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
   expect(prompt).toContain("Protect unique information:");
   expect(prompt).toContain("user constraints and corrections; user-versus-assistant attribution; proposal-versus-decision and attempted, reported, completed, verified distinctions;");
   expect(prompt).toContain("Categories may differ; scope may not narrow; a `global` item is never archived into a `project` twin, nor a project item into a session one.");
-  expect(prompt).toContain("Exactly one of three, stated in `reason`:");
+  expect(prompt).toContain("Exactly one of four, stated in `reason`:");
   expect(prompt).toContain("(c) at the second intensity only, low value, stating why the item is not protected and what is lost.");
   expect(prompt).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
   // Intensity and KEEP (57 rewords the first-round sentence to the per-item form; pinned there).
