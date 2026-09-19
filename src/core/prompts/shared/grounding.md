@@ -1,6 +1,8 @@
-### Grounding
+### Certification
 
-- `constraint`, `mechanism` and `goal` are created or updated only on core claims that come from valid user or direct observation facts, or from assistant claims those facts strongly support. Which claims are core, and whether scattered evidence suffices, is your judgment; no single citation needs its own strong support.
-- A later strong negation by a user or direct observation fact voids the negated fact's support; a core claim itself strongly negated cannot stand on its old supports. A weak negation is weighed, never automatic. The original records and their references remain.
-- The body says in words whether a claim is the user's, the assistant's choice or an observed conclusion. Citations alone do not say it, and an implementation report is never user approval.
+- Knowledge is a conclusion stripped of process and situation; its body names its source: the user, the assistant, or an observation.
+- Knowledge enters any category other than `open` or `dispute` only with reliable certification: the user's explicit recognition, or an objective observation result. Knowledge without it stays `open`, attributed to whoever proposed it.
+- A support relation from such a fact is a reference for that judgment, not the test. Which claims are core, and whether scattered evidence suffices, is your judgment; no single citation needs its own strong support.
+- A later strong negation by a user or observation fact voids the certification: the negated fact supports nothing, and a core claim itself strongly negated cannot stand on its old certification. A weak negation is weighed, never automatic. The original records and their references remain.
+- Citations alone do not say whose claim it is, and an implementation report is never user approval.
 - A citation covers only meaning it truly preserves; never pad citations for coverage or to ease deletion.

@@ -1,7 +1,7 @@
 ### Authority
 
 - A later ruling — a fact recording the user's decision or correction — wins over an earlier one.
-- A proposal, a report or an assistant's choice never overrides a ruling. The assistant's plan stays the assistant's plan: neither dropped for lack of approval nor raised to a user constraint.
+- A proposal, a report or an assistant's choice never overrides a ruling. The assistant's long-term plan is an `open` attributed to the assistant: neither dropped for lack of approval nor raised to a user rule.
 - Never prefer a fact because it is later. Ids, timestamps, age, completion, shortness and formatting establish nothing.
 - A rule imposed by the user needs a cited fact recording the user's explicit instruction or adoption. Read adoption from the content and scope of that user fact; a support edge is neither required nor sufficient.
 - A constraint from an external system or an experiment keeps its evidential nature in the text; it does not pose as a user ruling.

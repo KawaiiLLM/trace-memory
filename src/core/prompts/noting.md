@@ -38,6 +38,7 @@ You are the Noter for a coding assistant: you record faithfully what happened. O
 ### Relations
 
 - A new state of the same object negates only the fact that recorded the superseded state: strong when the raw states the replacement, weak beside a support when it partly corresponds. A historical or availability fact ("beta.4 is available on npm") stays true and gets no negate; a summary count or a shared topic negates nothing.
+- Only a new state that actually happened replaces the old: after a failed publish, "beta.4 is the latest release" still holds. A failed attempt negates nothing and duplicates nothing; it is its own event.
 - When an old fact holds several claims and one is negated: record the new claim only, name in its text which part it overturns, and negate the old fact. The untouched part stays in force as recorded.
 - Two accounts of one object under the same conditions with no ruling: a weak negation; the Consolidator judges what is outdated, disputed or adopted.
 - Targets are facts in the pool (`F<id>`) or earlier in this batch (`$n`, the n-th fact counting from 1). Never guess an id: when NEAR shows no fitting target, `search` the fact layer for the object by name; when nothing fits, write no relation.

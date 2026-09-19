@@ -6,11 +6,10 @@ A knowledge item is the versioned arc of one object: one object, one independent
 - Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A ticket-specific override is its own item; implementation and review roles are separate claims.
 - Different claims about one object are different items. A piece is its own item only where a later fact would change it while its sibling stands.
 
-**Three kinds.**
-- **Established decision knowledge** — `goal`, `constraint`, `mechanism`. Created, updated or entered by a category change only under the grounding condition (Principles).
-- **Pending decision knowledge** — `open`, and `dispute` where two accounts conflict. A decision that fails the condition stays here; when a valid fact establishes it, it changes category on its own id or merges into the established item of its object, under the same condition.
-- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it.
-- **Auxiliary knowledge** — `term`, `reference`. Create and update it without condition.
+**Two kinds.**
+- **Established knowledge** — `goal`, `constraint`, `mechanism`, `term`, `reference`. Created, updated or entered by a category change only with reliable certification (Principles).
+- **Pending knowledge** — `open`, and `dispute` where two accounts conflict. Knowledge worth keeping that lacks certification stays here; when a certifying fact arrives, it changes category on its own id or merges into the established item of its object.
+- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a certifying fact changes or archives it.
 
 **Seven categories, one test each.** If no test answers yes, it stays in the fact layer.
 - **goal** — what is this work meant to achieve? Current intent and acceptance criteria; not a step's plan.

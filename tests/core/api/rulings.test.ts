@@ -2679,13 +2679,13 @@ test("58/61: the category definitions and the grounding principle are shared blo
   const grounding = readFileSync(new URL("../../../src/core/prompts/shared/grounding.md", import.meta.url), "utf8");
   expect(facts).toContain("- observation — an `observation` or `event` fact. Direct when its evidence is a tool result or the user's own account; relayed when its text says according to whom or its status is `reported` or `dispatched`. A relayed observation is its reporter's claim and weighs as an assistant claim.");
   expect(facts).toContain("**Validity.** A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it. A negated fact supports nothing. A weak negate is doubt or partial conflict: weigh it. The original facts and their references remain.");
-  expect(knowledge).toContain("- **Established decision knowledge** — `goal`, `constraint`, `mechanism`. Created, updated or entered by a category change only under the grounding condition (Principles).");
-  expect(knowledge).toContain("- **Pending decision knowledge** — `open`, and `dispute` where two accounts conflict. A decision that fails the condition stays here; when a valid fact establishes it, it changes category on its own id or merges into the established item of its object, under the same condition.");
-  expect(knowledge).toContain("- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it.");
-  expect(knowledge).toContain("- **Auxiliary knowledge** — `term`, `reference`. Create and update it without condition.");
+  expect(knowledge).toContain("- **Established knowledge** — `goal`, `constraint`, `mechanism`, `term`, `reference`. Created, updated or entered by a category change only with reliable certification (Principles).");
+  expect(knowledge).toContain("- **Pending knowledge** — `open`, and `dispute` where two accounts conflict. Knowledge worth keeping that lacks certification stays here; when a certifying fact arrives, it changes category on its own id or merges into the established item of its object.");
+  expect(knowledge).toContain("- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a certifying fact changes or archives it.");
   expect(knowledge).toContain("- **open** — what has no clear outcome, would be re-investigated by the next agent, or needs the user's ruling? Say what and whom it waits for, and keep the change it is about: what stood before, what is proposed instead, who proposed each. Settled categories state only what holds now; their past is in their versions.");
-  expect(grounding).toContain("- `constraint`, `mechanism` and `goal` are created or updated only on core claims that come from valid user or direct observation facts, or from assistant claims those facts strongly support. Which claims are core, and whether scattered evidence suffices, is your judgment; no single citation needs its own strong support.");
-  expect(grounding).toContain("The body says in words whether a claim is the user's, the assistant's choice or an observed conclusion. Citations alone do not say it, and an implementation report is never user approval.");
+  expect(grounding).toContain("- Knowledge enters any category other than `open` or `dispute` only with reliable certification: the user's explicit recognition, or an objective observation result. Knowledge without it stays `open`, attributed to whoever proposed it.");
+  expect(grounding).toContain("- A support relation from such a fact is a reference for that judgment, not the test.");
+  expect(grounding).toContain("Citations alone do not say whose claim it is, and an implementation report is never user approval.");
   expect(facts + knowledge + grounding).not.toMatch(/Engine|F1841|K386/);
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
@@ -2699,8 +2699,8 @@ test("58/61: the category definitions and the grounding principle are shared blo
 
 test("58: the Dreamer merges within a kind and never makes an established item pending", () => {
   const prompt = loadPrompt("dreaming.md");
-  expect(prompt).toContain("Merge within a kind: pending with pending, established and auxiliary among themselves; a pending item enters an established one only under the grounding condition.");
-  expect(prompt).toContain("An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it.");
+  expect(prompt).toContain("Merge within a kind: pending with pending, established with established; a pending item enters an established one only once certified.");
+  expect(prompt).toContain("An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a certifying fact changes or archives it.");
   expect(prompt).not.toContain("An established item whose core claim a later user or direct observation fact strongly negates");
   expect(prompt).toContain("becomes one `dispute` item naming both sides.");
   expect(prompt).not.toContain("two pending items merge into it");
@@ -2714,7 +2714,7 @@ test("58: the Consolidator reads adoption from the adopting user fact and states
   expect(prompt).not.toContain("a user's proposal that the work proceeds under");
   expect(prompt).toContain("Read adoption from the content and scope of that user fact; a support edge is neither required nor sufficient.");
   expect(prompt).not.toContain("never from co-occurrence in a batch");
-  expect(prompt).toContain("Attribution is a few characters, never a sentence: who proposed the decision and how explicitly the user adopted it. Never a bare \"current choice\" or \"confirmed\".");
+  expect(prompt).toContain("Attribution is a few characters, never a sentence: whether the claim is the user's, the assistant's or an observation's, who proposed it and how explicitly the user adopted it. Never a bare \"current choice\" or \"confirmed\".");
   expect(prompt).not.toContain('"the current choice"');
   expect(prompt).not.toContain("Status — what is running");
   expect(prompt).not.toMatch(/Engine|F1841|K386/);
@@ -2757,7 +2757,7 @@ test("61: every stage prompt is composed from the shared blocks in one section o
 });
 
 test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
-  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /certif/i, /\bneutral conflict\b/, /\bpost-freeze\b/,
+  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /\buncertified\b/, /\bcertificate\b/, /\bneutral conflict\b/, /\bpost-freeze\b/,
     /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
   for (const file of STAGE_PROMPTS) {
     const prompt = loadPrompt(file);
