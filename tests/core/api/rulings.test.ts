@@ -2436,7 +2436,7 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
 test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or-git exclusion", () => {
   const prompt = loadPrompt("noting.md");
   expect(prompt).toContain("A decision or ruling with its reason is one claim, recorded even when it lands in code in the same batch; code keeps only the current value.");
-  expect(prompt).toContain("What an artifact answers (git, the files, the package registry, one command) is not kept.");
+  expect(prompt).toContain("What an artifact answers is not kept: how the code is written now, file reads, commits, the package registry, one command.");
   expect(prompt).not.toContain("re-derivable from code or git");
 });
 
@@ -2569,7 +2569,7 @@ test("46: a rule and the choice under it are two items; sub-items are their own 
   const prompt = loadPrompt("consolidation.md");
   // The two atomicity sentences sit beside 44's, which stay as they are.
   expect(prompt).toContain("When the same independent claim changes, update its item — content, category or wording, on the same id.");
-  expect(prompt).toContain("A practice the assistant derives from a user rule or an observation is such a consequence, not knowledge.");
+  expect(prompt).toContain("Implementation detail that follows from a decision is the decision's consequence, not knowledge, until a fact changes the decision.");
   expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own.");
   // The empty receipt is a complete block; 45's sentences around it stay as they are.
   expect(prompt).toContain("An empty receipt means the block, with the versions already visible in an inherited context, is the whole applicable set.");
@@ -2619,11 +2619,11 @@ test("40 C2: knowledge text carries no completion narrative but keeps the qualif
 test("44 C6 reverses 40 C5: approval updates same K and atomizes intent, baseline and staffing", () => {
   const prompt = loadPrompt("consolidation.md");
   expect(prompt).toContain("update its item — content, category or wording, on the same id");
-  expect(prompt).toContain("A practice the assistant derives from a user rule or an observation is such a consequence, not knowledge.");
+  expect(prompt).toContain("Implementation detail that follows from a decision is the decision's consequence, not knowledge, until a fact changes the decision.");
   expect(prompt).toContain("One `reference` item per persistent object the agent acts on");
   expect(prompt).toContain("one role's default of Sol high, then Astra high, then Sol medium is one item in three versions");
   expect(prompt).toContain("a second item for it is never created");
-  expect(prompt).toContain("Keep only what, if deleted, would make a future agent decide wrongly, redo finished work, violate a rule or preference, or re-investigate a settled question.");
+  expect(prompt).toContain("Knowledge is a conclusion that could change how future work is understood or done: a decision, a mechanism, a constraint, a term, a lookup value, an open question. It must be present without being fetched.");
   expect(prompt).not.toContain("archives the constraint that forbade it and creates a `goal`");
 });
 
