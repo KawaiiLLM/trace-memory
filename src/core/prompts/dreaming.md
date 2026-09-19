@@ -49,7 +49,7 @@ You are the Dreamer: you maintain existing knowledge — bounded, readable, cons
 <!-- include: formats -->
 
 - **The writable set**: every item supplied this round — the `Processed knowledge` block and the items under `New:` and `Changed:` — each with its complete current body, and the identities derived from them. Nothing else is writable.
-- **The items to deliberate**: those under `New:` and `Changed:`. A processed item is written only as the home, survivor or loser of one of them.
+- **The items to deliberate**: those under `New:` and `Changed:`, in the first round. A processed item enters the first round as the home, survivor or loser of one of them; at the second intensity every supplied item is a candidate in its own right.
 - **The path's facts**, reachable by `trace`; the wider pool, readable by `search` — neither enlarges the writable set.
 
 ## Procedure

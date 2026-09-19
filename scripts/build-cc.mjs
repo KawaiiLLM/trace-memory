@@ -13,20 +13,11 @@ mkdirSync(dirname(output), { recursive: true });
 const promptLoader = {
   name: "trace-memory-prompts",
   setup(build) {
-    // The bundle carries the composed prompts as constants: the stage files and their shared blocks
-    // are spliced here, exactly as `src/core/prompts/load.ts` does at runtime, so the bundle needs no files.
-    build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, () => {
-      const promptsDir = resolve(root, "src/core/prompts");
-      const compose = file => {
-        const template = readFileSync(resolve(promptsDir, file), "utf8");
-        const composed = template.replace(/<!-- include:\s*([^\s>]+)\s*-->/g, (_, name) => {
-          if (!/^[a-z]+$/.test(name)) throw new Error(`${file}: malformed include marker "${name}"`);
-          return readFileSync(resolve(promptsDir, "shared", `${name}.md`), "utf8").trimEnd();
-        });
-        if (/<!--\s*include/.test(composed)) throw new Error(`${file}: malformed include marker`);
-        return composed;
-      };
-      const prompts = Object.fromEntries(["noting.md", "consolidation.md", "dreaming.md"].map(file => [file, compose(file)]));
+    // The bundle carries the composed prompts as constants, composed by the same `loadPrompt` the
+    // runtime uses (Node strips the types), so the bundle needs no prompt files and cannot drift.
+    build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, async () => {
+      const { loadPrompt } = await import(pathToFileURL(resolve(root, "src/core/prompts/load.ts")).href);
+      const prompts = Object.fromEntries(["noting.md", "consolidation.md", "dreaming.md"].map(file => [file, loadPrompt(file)]));
       return { contents: `const PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return prompt; }\n`, loader: "ts" };
     });
   },
