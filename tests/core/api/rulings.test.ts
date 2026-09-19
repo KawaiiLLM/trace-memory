@@ -2497,7 +2497,7 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
   expect(prompt).toContain("(c) at the second intensity only, low value, stating why the item is not protected and what is lost.");
   expect(prompt).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
   // Intensity and KEEP (57 rewords the first-round sentence to the per-item form; pinned there).
-  expect(prompt).toContain("Second round, a cap still exceeded: archive redundancy into named survivors across categories; retire what Preservation removes first, under its protection list.");
+  expect(prompt).toContain("Second round, a cap still exceeded: archive redundancy into named survivors across categories; retire routine progress with no unique value and expired knowledge with no follow-up, under Protection.");
   expect(prompt).toContain("The budget proves nothing: old, short, rarely used or finished does not mean worthless.");
   // Removed: the opening check as the agenda, and finishing because the budget is fine.
   expect(prompt).not.toContain("Actual check first");
@@ -2569,7 +2569,7 @@ test("46: a rule and the choice under it are two items; sub-items are their own 
   const prompt = loadPrompt("consolidation.md");
   // The two atomicity sentences sit beside 44's, which stay as they are.
   expect(prompt).toContain("When the same independent claim changes, update its item — content, category or wording, on the same id.");
-  expect(prompt).toContain("Different claims about one object are separate items.");
+  expect(prompt).toContain("a user's rule and the assistant's choice, practice or implementation under it are two.");
   expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own.");
   // The empty receipt is a complete block; 45's sentences around it stay as they are.
   expect(prompt).toContain("An empty receipt means the block, with the versions already visible in an inherited context, is the whole applicable set.");
@@ -2609,7 +2609,7 @@ test("44 C6 reverses 40 C1: state and finished-work arcs update one identity", (
 test("40 C2: knowledge text carries no completion narrative but keeps the qualifiers", () => {
   const prompt = loadPrompt("consolidation.md");
   expect(prompt).toContain("No completion or verification narrative of the work behind the claim");
-  expect(prompt).toContain("a rule stands on its own, a state item states the state, the event stays in the cited facts");
+  expect(prompt).toContain("A rule stands on its own, a state item states the state, the event stays in the cited facts.");
   expect(prompt).toContain("Keep a qualifier that governs the next action or the evidence level");
   expect(prompt).toContain("(\"installed on disk, loaded only after Pi restarts\"; \"reported by the subagent, not verified\")");
 });
@@ -2619,7 +2619,7 @@ test("40 C2: knowledge text carries no completion narrative but keeps the qualif
 test("44 C6 reverses 40 C5: approval updates same K and atomizes intent, baseline and staffing", () => {
   const prompt = loadPrompt("consolidation.md");
   expect(prompt).toContain("update its item — content, category or wording, on the same id");
-  expect(prompt).toContain("Different claims about one object are separate items.");
+  expect(prompt).toContain("a user's rule and the assistant's choice, practice or implementation under it are two.");
   expect(prompt).toContain("One `reference` item per persistent object the agent acts on");
   expect(prompt).toContain("one role's default of Sol high, then Astra high, then Sol medium is one item in three versions");
   expect(prompt).toContain("a second item for it is never created");
@@ -2659,7 +2659,7 @@ test("40 N1: claims that could be acted on separately are split, one fact per fi
  * recorded, because the answer and the event support it and the accounting checks it. */
 test("40 N4: the user's instruction, question or plan approval that starts work is recorded even when the work completes in the same batch", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("The user's instruction that starts a piece of work and the user's approval of a plan are recorded even when the work completes in the same batch.");
+  expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch.");
 });
 
 /** Ticket 58 (2026-09-18): an approval or implementation fact names its object and supports it when
@@ -2765,8 +2765,8 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
     const walls = sentences.filter(s => s.startsWith("WALL:"));
     expect(walls, `${file}: paragraphs over four sentences`).toEqual([]);
     const lengths = sentences.filter(s => !s.startsWith("WALL:")).map(s => s.split(/\s+/).length);
-    const longest = sentences.filter(s => s.split(/\s+/).length > 40);
-    expect(longest, `${file}: sentences over 40 words`).toEqual([]);
+    const longest = sentences.filter(s => s.split(/\s+/).length > 35);
+    expect(longest, `${file}: sentences over 35 words`).toEqual([]);
     expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
     for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
     expect(prompt).not.toMatch(/[一-鿿]/);
@@ -2774,7 +2774,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 });
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = ["model", "facts", "knowledge", "admission", "atomicity", "evidence", "grounding", "identity", "authority", "preservation", "body", "reading", "formats", "live"]
+  const shared = ["model", "facts", "knowledge", "admission", "atomicity", "evidence", "grounding", "identity", "authority", "protection", "body", "reading", "formats", "live"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
   const defined = new Set(["goal", "constraint", "mechanism", "term", "reference", "open", "dispute", "question", "proposal", "decision",
     "observation", "interpretation", "event", "completed", "reported", "dispatched", "attempted", "user", "agent", "session", "project", "global",

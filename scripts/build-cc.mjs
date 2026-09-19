@@ -13,13 +13,21 @@ mkdirSync(dirname(output), { recursive: true });
 const promptLoader = {
   name: "trace-memory-prompts",
   setup(build) {
-    build.onLoad({ filter: /src\/core\/(noting|consolidation|dreaming)\/index\.ts$/ }, ({ path }) => {
-      const phase = /\/(noting|consolidation|dreaming)\/index\.ts$/.exec(path)?.[1];
-      if (!phase) throw new Error(`Cannot identify prompt owner ${path}`);
-      const source = readFileSync(path, "utf8");
-      const expression = `readFileSync(new URL("../prompts/${phase}.md", import.meta.url), "utf8")`;
-      if (!source.includes(expression)) throw new Error(`Prompt load expression changed in ${path}`);
-      return { contents: source.replace(expression, JSON.stringify(readFileSync(resolve(root, `src/core/prompts/${phase}.md`), "utf8"))), loader: "ts" };
+    // The bundle carries the composed prompts as constants: the stage files and their shared blocks
+    // are spliced here, exactly as `src/core/prompts/load.ts` does at runtime, so the bundle needs no files.
+    build.onLoad({ filter: /src\/core\/prompts\/load\.ts$/ }, () => {
+      const promptsDir = resolve(root, "src/core/prompts");
+      const compose = file => {
+        const template = readFileSync(resolve(promptsDir, file), "utf8");
+        const composed = template.replace(/<!-- include:\s*([^\s>]+)\s*-->/g, (_, name) => {
+          if (!/^[a-z]+$/.test(name)) throw new Error(`${file}: malformed include marker "${name}"`);
+          return readFileSync(resolve(promptsDir, "shared", `${name}.md`), "utf8").trimEnd();
+        });
+        if (/<!--\s*include/.test(composed)) throw new Error(`${file}: malformed include marker`);
+        return composed;
+      };
+      const prompts = Object.fromEntries(["noting.md", "consolidation.md", "dreaming.md"].map(file => [file, compose(file)]));
+      return { contents: `const PROMPTS = ${JSON.stringify(prompts)};\nexport function loadPrompt(file) { const prompt = PROMPTS[file]; if (prompt === undefined) throw new Error("unknown prompt " + file); return prompt; }\n`, loader: "ts" };
     });
   },
 };

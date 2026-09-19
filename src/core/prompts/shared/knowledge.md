@@ -1,7 +1,7 @@
 ### Knowledge
 
 A knowledge item is the versioned arc of one object: one object, one independently changeable claim or state, one identity.
-- A version has a `text` (the body), a `category`, a `scope`, `topics`, `supports` — the facts that moved the item to this version, earlier versions' supports being inherited, not copied — and a `reason`, the commit message.
+- A version has a `text` (the body), a `category`, a `scope`, `topics`, `supports` and a `reason` (the commit message). `supports` are the facts that moved the item to this version; earlier versions' supports are inherited, not copied.
 - While the object exists, a change to that claim or state — its content, its category or its wording — is an update of the same id.
 - Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A ticket-specific override is its own item; implementation and review roles are separate claims.
 - Different claims about one object are different items. A piece is its own item only where a later fact would change it while its sibling stands.

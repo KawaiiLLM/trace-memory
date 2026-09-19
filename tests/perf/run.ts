@@ -9,6 +9,7 @@
 //   npm run perf -- --repeats=3  fewer samples per scenario (the first is always the cold one)
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { generate, nativeAncestry, countSourceReads, countGraphResolutions, countRunBodies, runAudit, searchCorpus, type Fixture } from "./fixture.ts";
@@ -252,7 +253,7 @@ async function capacityScenarios(fixture: Fixture, size: string, main: ReturnTyp
   prepared.close();
   const memory = TraceMemory(copy, async () => { throw new Error("the performance suite must not call a model"); });
   const store = memory.store, samples: Sample[] = [];
-  const instructions = (file: string) => tokens(readFileSync(new URL(`../../src/core/prompts/${file}`, import.meta.url), "utf8"));
+  const instructions = (file: "noting.md" | "consolidation.md" | "dreaming.md") => tokens(loadPrompt(file));
   const toolCost = tokens(JSON.stringify(toolDefinitions));
   const rejected = (name: string, note: string, run: () => unknown) => samples.push(measure(name, () => {
     try { run(); } catch (error) { if (/capacity/.test(String(error))) return; throw error; }

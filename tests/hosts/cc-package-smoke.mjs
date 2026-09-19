@@ -33,7 +33,7 @@ try {
   assert.equal(/^allowed-tools:/m.test(skill), false, "operator skill must retain normal native tool permissions");
   assert.match(readFileSync(join(plugin, "dist/cc.cjs"), "utf8"), /Trace Memory CC requires Node >=24\.6\.0/);
   assert.equal(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(root), false, "bundle must not contain a checkout path");
-  for (const phrase of ["You are the Noter", "You are the Consolidator", "You maintain the coherence, nonredundancy and atomicity"])
+  for (const phrase of ["You are the Noter", "You are the Consolidator", "You are the Dreamer"])
     assert.ok(readFileSync(join(plugin, "dist/cc.cjs"), "utf8").includes(phrase), `missing bundled prompt: ${phrase}`);
   const hooks = JSON.parse(readFileSync(join(plugin, "hooks/hooks.json"), "utf8"));
   assert.equal(hooks.hooks.SessionStart[0].hooks.length, 1);

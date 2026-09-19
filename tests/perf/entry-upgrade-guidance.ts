@@ -1,6 +1,7 @@
 // node tests/perf/entry-upgrade-guidance.ts <isolated git archive of 862e406>
 // Synthetic temporary databases only. No provider calls, configuration writes or installation.
 import assert from "node:assert/strict";
+import { loadPrompt } from "../../src/core/prompts/load.ts";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -19,7 +20,7 @@ const oldSource = await moduleAt("src/hosts/pi/source.ts") as typeof import("../
 const size = (text: string) => ({ bytes: Buffer.byteLength(text), tokens: tokens(text) });
 const prompts = Object.fromEntries(["noting", "consolidation", "dreaming"].map(role => [role, {
   before: size(readFileSync(resolve(baseline, `src/core/prompts/${role}.md`), "utf8")),
-  after: size(readFileSync(new URL(`../../src/core/prompts/${role}.md`, import.meta.url), "utf8")),
+  after: size(loadPrompt(`${role}.md` as "noting.md" | "consolidation.md" | "dreaming.md")),
 }]));
 const metadata = (tools: typeof toolDefinitions) => size(JSON.stringify(tools));
 const samples = [];
