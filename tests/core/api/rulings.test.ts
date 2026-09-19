@@ -2430,7 +2430,7 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
   expect(prompt).toContain("A read grants nothing and is never a fact source.");
   expect(prompt).not.toContain("within its own 10,000-token allowance");
   expect(prompt).not.toContain("the `open`, `goal` and `reference` ones are traced before deciding what this range closes");
-  expect(prompt.indexOf("## Procedure")).toBeLessThan(prompt.indexOf("### Review cues"));
+  expect(prompt).toMatch(/## Procedure\n\n1\. Read the knowledge block first/);
 });
 
 test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or-git exclusion", () => {
@@ -2737,7 +2737,7 @@ const promptSentences = (text: string) => {
 };
 
 test("61: every stage prompt is composed from the shared blocks in one section order, with a numbered procedure", () => {
-  const order = ["## Role", "## Definitions", "## Inputs", "## Procedure", "## Judgment", "## Contract"];
+  const order = ["## Role", "## Definitions", "## Principles", "## Inputs", "## Procedure", "## Output"];
   for (const file of STAGE_PROMPTS) {
     const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8");
     let last = -1;
@@ -2747,7 +2747,8 @@ test("61: every stage prompt is composed from the shared blocks in one section o
       last = at;
     }
     expect(raw).toMatch(/\n## Procedure\n\n1\. /);
-    expect(raw).toMatch(/<!-- include: model -->/);
+    expect(raw).toMatch(/## Definitions\n\n<!-- include: model -->/);
+    expect(raw).toMatch(/## Inputs\n\n<!-- include: formats -->/);
     expect(loadPrompt(file)).not.toContain("<!-- include:");
   }
 });
@@ -2770,7 +2771,7 @@ test("61: sentences are short, paragraphs are not walls, and no internal referen
 });
 
 test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
-  const shared = ["model", "facts", "knowledge", "authority", "body", "reading"]
+  const shared = ["model", "facts", "knowledge", "authority", "body", "reading", "formats"]
     .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
   const defined = new Set(["goal", "constraint", "mechanism", "term", "reference", "open", "dispute", "question", "proposal", "decision",
     "observation", "interpretation", "event", "completed", "reported", "dispatched", "attempted", "user", "agent", "session", "project", "global",

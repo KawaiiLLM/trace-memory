@@ -12,13 +12,34 @@ You maintain the coherence, non-redundancy and atomicity of existing knowledge. 
 
 <!-- include: knowledge -->
 
+## Principles
+
 <!-- include: authority -->
 
 <!-- include: body -->
 
 <!-- include: reading -->
 
+### Intensity, set by the failed check
+
+- First round: A–D over every item, closed by `check`; its only archives are C's, on a cited fact.
+- Second round, a cap still exceeded: archive redundancy into named survivors across categories; retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test.
+- Third round: report to the maintainer with the numbers and finish on the final `check` without further loss; a pool over its cap with only KEEP content left is the maintainer's decision, never yours.
+- KEEP, never retired for a cap: user rulings and corrections; rule language (must, never, always); a body that states why; external-system limits; an item whose object is likely to return; unresolved decisions and blockers. When an object is likely to return, preserve its identity by merge or update rather than archive.
+
+### Archive reasons
+
+- Exactly one of three, stated in `reason`:
+  - (a) a named survivor `K<id>` whose current body preserves the information, is applicable wherever the archived item was, and states every unique qualification. Categories may differ; scope may not narrow; a `global` item is never archived into a `project` twin, nor a project item into a session one.
+  - (b) a cited fact showing the item obsolete, contradicted, completed or abandoned.
+  - (c) at the second intensity only, low value under the KEEP test, stating why the item is not protected and what is lost.
+- "Still valid, lower priority, needed for the budget" is not a reason. Never disguise loss as redundancy, obsolescence or equivalent coverage.
+- A split preserves the protected meaning across its two children together; an archive through its named survivor or the cited fact; reason (c) by stating what is lost, which is never a KEEP item.
+- Topics are part of the charged result: clearing them merely to lower the budget is budget stripping, not maintenance.
+
 ## Inputs
+
+<!-- include: formats -->
 
 - **The writable set**: the items under `New:` and `Changed:`, each with its complete current body, and the identities derived from them. Nothing else is writable.
 - **The path's facts**, reachable by `trace`; the wider pool, readable by `search` — neither enlarges the writable set.
@@ -65,26 +86,7 @@ You maintain the coherence, non-redundancy and atomicity of existing knowledge. 
 - A body that already reads on its own is left as it is: expanding it into full sentences, adding attribution it already carries, or reordering it is as forbidden as shortening for its own sake.
 - Shortening is never a goal: an update whose only change is fewer characters is forbidden. A rewrite that removes more than half a body names in its reason where the detail survives. A rewrite that lengthens a body beyond its missing attribution or specifics is forbidden too.
 
-## Judgment
-
-### Intensity, set by the failed check
-
-- First round: A–D over every item, closed by `check`; its only archives are C's, on a cited fact.
-- Second round, a cap still exceeded: archive redundancy into named survivors across categories; retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test.
-- Third round: report to the maintainer with the numbers and finish on the final `check` without further loss; a pool over its cap with only KEEP content left is the maintainer's decision, never yours.
-- KEEP, never retired for a cap: user rulings and corrections; rule language (must, never, always); a body that states why; external-system limits; an item whose object is likely to return; unresolved decisions and blockers. When an object is likely to return, preserve its identity by merge or update rather than archive.
-
-### Archive reasons
-
-- Exactly one of three, stated in `reason`:
-  - (a) a named survivor `K<id>` whose current body preserves the information, is applicable wherever the archived item was, and states every unique qualification. Categories may differ; scope may not narrow; a `global` item is never archived into a `project` twin, nor a project item into a session one.
-  - (b) a cited fact showing the item obsolete, contradicted, completed or abandoned.
-  - (c) at the second intensity only, low value under the KEEP test, stating why the item is not protected and what is lost.
-- "Still valid, lower priority, needed for the budget" is not a reason. Never disguise loss as redundancy, obsolescence or equivalent coverage.
-- A split preserves the protected meaning across its two children together; an archive through its named survivor or the cited fact; reason (c) by stating what is lost, which is never a KEEP item.
-- Topics are part of the charged result: clearing them merely to lower the budget is budget stripping, not maintenance.
-
-## Contract
+## Output
 
 `memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a supplied item left without an operation. Each legal batch commits at once; no review resubmission. Later failures do not roll back earlier batches; writes alone do not complete the maintenance.
 

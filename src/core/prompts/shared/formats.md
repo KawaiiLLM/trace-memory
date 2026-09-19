@@ -1,0 +1,7 @@
+### Formats
+
+- A fact renders as `[F<id>] time [category/actor] text · relations`, then `quote:` and `source:` lines; inbound relations are labelled `inbound`. Facts are grouped under `[T<id>] <Turn start time> (selected facts)`, Turns in order, ids ascending; a group need not be the whole Turn, and a fact with several source Turns appears once, under its owning Turn, with all its citations.
+- A knowledge item renders as `[K1@57] [category/scope] text`, then `supports: F… · topics: ["subject", "subject"]`; topics are absent when it has none.
+- A source entry is `[T<n>#E<m>@text] user: <text>` or `assistant: <text>`; a call is `[T<n>#E<m>@<callId>] <tool>(<key>=<value>, …)` and its result a separate entry `[T<n>#E<r>@<callId>] <tool> <status>: <result text>`. E ordinals are stable within a Turn, branch gaps included; the opaque call id links call and result. Copy the complete label, JSON quotes included. Arguments are `key=JSON` in stored order; dropped structured data is marked by its size, non-text content by its type (`[<type> omitted]`).
+- An omission is `[... N characters truncated]` or `[... N characters of details truncated]`; what a marker stands for was not inspected. `trace` with `full: true` (or itemBudget, toolCallBudget and toolResultBudget all null) returns the original; pages stay bounded, so follow every cursor.
+- `search` matches one contiguous literal substring over the versions applicable here; several words match only that exact sequence. On no hit, change the word; never add one.
