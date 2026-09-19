@@ -38,7 +38,8 @@ test("59: the memory schema branches on the phase — Dreamer skips name knowled
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description).toContain("a skip accounts for the item and never certifies it");
   const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf: unknown[] };
   expect(search.properties.queries).toMatchObject({ type: "array", minItems: 1 });
-  expect(search.oneOf).toEqual([{ required: ["query"] }, { required: ["queries"] }]);
+  // No top-level oneOf: headless Claude Code in offline mode (DISABLE_TELEMETRY / CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) drops MCP tools whose input schema has one; query/queries exclusivity is enforced at execute time.
+  expect((search as { oneOf?: unknown }).oneOf).toBeUndefined();
   expect(() => validateReadInput("search", { query: "a", queries: ["a"] })).toThrow("query and queries are exclusive");
   expect(() => validateReadInput("search", { queries: [] })).toThrow("queries must be a non-empty array of strings");
   expect(() => validateReadInput("search", {})).toThrow("query must be a string");
