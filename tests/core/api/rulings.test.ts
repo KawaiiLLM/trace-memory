@@ -2436,7 +2436,7 @@ test("45: Consolidator reads the bounded supplied block first and preserves nece
 test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or-git exclusion", () => {
   const prompt = loadPrompt("noting.md");
   expect(prompt).toContain("A decision or ruling with its reason is one claim, recorded even when it lands in code in the same batch; code keeps only the current value.");
-  expect(prompt).toContain("What an artifact answers is not kept: how the code is written now, file reads, commits, the package registry, one command.");
+  expect(prompt).toContain("What an artifact answers is not kept: how the code is written now, file reads, commits, the package registry, one command. The state of a persistent object the agent acts on is the exception");
   expect(prompt).not.toContain("re-derivable from code or git");
 });
 
@@ -2711,7 +2711,7 @@ test("58: the Dreamer merges within a kind and never makes an established item p
 
 test("58: the Consolidator reads adoption from the adopting user fact and states whose decision it is", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("Single review findings, explanations of code and unadopted agent proposals fail unless they establish a rule.");
+  expect(prompt).toContain("Single review findings and explanations of code are not knowledge.");
   expect(prompt).not.toContain("a user's proposal that the work proceeds under");
   expect(prompt).toContain("Read adoption from the content and scope of that user fact; a support edge is neither required nor sufficient.");
   expect(prompt).not.toContain("never from co-occurrence in a batch");

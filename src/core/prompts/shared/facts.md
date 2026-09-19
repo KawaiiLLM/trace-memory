@@ -10,11 +10,11 @@ A fact is one line of plain text with a `category`, an `actor`, a `status` for e
 **Validity.** A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it. A negated fact supports nothing. A weak negate is doubt or partial conflict: weigh it. The original facts and their references remain.
 
 **Six categories, one test each.** The category says what the sentence does, not whether it is right, resolved, or who said it. If no test answers yes, it is not that category.
-- **question** — what information or confirmation is sought, by the user or by the assistant asking the user? One question per fact. A course of action phrased as a question is a proposal.
+- **question** — what information or confirmation is sought, by the user or by the assistant asking the user? A course of action phrased as a question is a proposal.
 - **proposal** — what course of action is put forward without commitment? "Suggest", "recommend", "could try".
 - **decision** — what was explicitly required, chosen, approved or rejected? Instructions, rulings, vetoes, rules laid down. Record exactly the item that was approved.
 - **observation** — what was found, measured or explicitly reported? Name the object and the conditions. A relayed report says "according to X" (a peer session, a subagent, the assistant's own account); relaying does not make it a measurement.
-- **interpretation** — what inference, attribution or evaluation was made? Record only inferences that appear in the raw; "suspected same cause" keeps "suspected". Whether a mechanism holds is not decided here.
+- **interpretation** — what inference, attribution or evaluation was made, as the raw states it? "Suspected same cause" keeps "suspected".
 - **event** — what was done, and how far did it get? `status` says how far:
   - `completed` — result evidence is in this batch (tool return, test output, user confirmation)
   - `reported` — the assistant or a peer claims completion; no result evidence is in this batch
