@@ -9,10 +9,10 @@
     ]
   },
   "promptOrder": [
-    "**Split?**",
-    "**Merge?**",
-    "**Resolve?**",
-    "**Rewrite?**",
+    "### A. Split?",
+    "### B. Merge?",
+    "### C. Resolve?",
+    "### D. Rewrite?",
     "### Intensity, set by the failed check"
   ],
   "examples": [
