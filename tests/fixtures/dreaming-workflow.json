@@ -9,10 +9,11 @@
     ]
   },
   "promptOrder": [
-    "A. Split?",
-    "B. Merge?",
-    "C. Resolve?",
-    "D. Rewrite?"
+    "**Split?**",
+    "**Merge?**",
+    "**Resolve?**",
+    "**Rewrite?**",
+    "### Intensity, set by the failed check"
   ],
   "examples": [
     {
@@ -23,20 +24,30 @@
           "text": "The user decided that deployment must remain offline; required runtime assets must be bundled.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["deployment", "offline-runtime"]
+          "topics": [
+            "deployment",
+            "offline-runtime"
+          ]
         },
         {
           "text": "The user's offline-deployment decision forbids runtime downloads. Exception: artifacts may be prepared before deployment.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["deployment", "artifact-preparation"]
+          "topics": [
+            "deployment",
+            "artifact-preparation"
+          ]
         }
       ],
       "result": {
         "text": "The user decided that deployment must remain offline: required runtime assets must be bundled and runtime downloads are forbidden; artifacts may be prepared before deployment.",
         "category": "constraint",
         "scope": "project",
-        "topics": ["deployment", "offline-runtime", "artifact-preparation"]
+        "topics": [
+          "deployment",
+          "offline-runtime",
+          "artifact-preparation"
+        ]
       },
       "review": "The result retains user authority, decision status, the runtime condition, the preparation exception, and all still-valid subjects."
     },
@@ -48,14 +59,20 @@
           "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
           "category": "open",
           "scope": "project",
-          "topics": ["schema-migration", "rollback"]
+          "topics": [
+            "schema-migration",
+            "rollback"
+          ]
         }
       ],
       "result": {
         "text": "Schema migration remains unapproved pending a passing rollback rehearsal; next present the result to the user for a decision.",
         "category": "open",
         "scope": "project",
-        "topics": ["schema-migration", "rollback"]
+        "topics": [
+          "schema-migration",
+          "rollback"
+        ]
       },
       "review": "The parent is already readable on its own; the result changes nothing but its length. An update whose only change is fewer characters is forbidden, even when it keeps uncertainty, the controlling condition, unresolved authority and next action."
     },
@@ -67,14 +84,19 @@
           "text": "The effective Knowledge budget must be read from the canonical check result.",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["dreamer", "knowledge-budget"]
+          "topics": [
+            "dreamer",
+            "knowledge-budget"
+          ]
         }
       ],
       "result": {
         "text": "The effective Knowledge budget must be read from the canonical check result.",
         "category": "mechanism",
         "scope": "project",
-        "topics": ["dreamer"]
+        "topics": [
+          "dreamer"
+        ]
       },
       "review": "The body is unchanged and remains about the Knowledge budget, so dropping knowledge-budget is classification damage, not tightening. Topics remain charged."
     },
@@ -86,14 +108,20 @@
           "text": "The Knowledge budget is now owned by the bound database policy rather than a settings file.",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["settings-file", "knowledge-budget"]
+          "topics": [
+            "settings-file",
+            "knowledge-budget"
+          ]
         }
       ],
       "result": {
         "text": "The Knowledge budget is now owned by the bound database policy rather than a settings file.",
         "category": "mechanism",
         "scope": "project",
-        "topics": ["database-policy", "knowledge-budget"]
+        "topics": [
+          "database-policy",
+          "knowledge-budget"
+        ]
       },
       "review": "Removing the obsolete owner label and adding the current owner label corrects classification; it is not budget stripping."
     },
@@ -105,20 +133,26 @@
           "text": "The user requires offline deployment.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["deployment"]
+          "topics": [
+            "deployment"
+          ]
         },
         {
           "text": "The agent reported that the deployment smoke test passed, but macOS verification remains pending.",
           "category": "open",
           "scope": "project",
-          "topics": ["deployment"]
+          "topics": [
+            "deployment"
+          ]
         }
       ],
       "result": {
         "text": "Deployment must be offline and its smoke test passed, with macOS verification pending.",
         "category": "constraint",
         "scope": "project",
-        "topics": ["deployment"]
+        "topics": [
+          "deployment"
+        ]
       },
       "review": "A shared subject label only identifies a comparison candidate. The independently changing constraint and reported test state should not be concatenated."
     },
@@ -131,13 +165,19 @@
           "text": "Use exact K@commit handles for every Dreamer write parent.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["dreamer", "write-authority"]
+          "topics": [
+            "dreamer",
+            "write-authority"
+          ]
         },
         {
           "text": "Every Dreamer write parent must use an exact K@commit handle.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["dreamer", "write-authority"]
+          "topics": [
+            "dreamer",
+            "write-authority"
+          ]
         }
       ],
       "result": {
@@ -156,13 +196,19 @@
           "text": "The migration was attempted and stopped at SQLITE_BUSY; retry remains pending.",
           "category": "open",
           "scope": "project",
-          "topics": ["migration", "sqlite"]
+          "topics": [
+            "migration",
+            "sqlite"
+          ]
         },
         {
           "text": "The migration retry completed and was verified against the row-count audit; SQLITE_BUSY is no longer unresolved.",
           "category": "reference",
           "scope": "project",
-          "topics": ["migration", "sqlite"]
+          "topics": [
+            "migration",
+            "sqlite"
+          ]
         }
       ],
       "result": {
@@ -180,7 +226,9 @@
           "text": "The agent reported that the staging deploy of 2026-09-10 finished and its smoke test passed; nothing remains open from it.",
           "category": "reference",
           "scope": "project",
-          "topics": ["staging-deploy"]
+          "topics": [
+            "staging-deploy"
+          ]
         }
       ],
       "result": {
@@ -197,11 +245,17 @@
           "text": "The agent reported an old build passed; no independent verification was recorded.",
           "category": "reference",
           "scope": "project",
-          "topics": ["build", "provenance"]
+          "topics": [
+            "build",
+            "provenance"
+          ]
         }
       ],
       "result": {
-        "operations": ["tighten parent wording", "archive tightened successor"],
+        "operations": [
+          "tighten parent wording",
+          "archive tightened successor"
+        ],
         "reason": "The item was already intended for archive before either operation."
       },
       "review": "Polishing a known archive target creates avoidable churn and risks flattening reported versus verified status."
@@ -214,11 +268,17 @@
           "text": "Package verification remains pending after an attempted smoke test failed with ENOENT.",
           "category": "open",
           "scope": "project",
-          "topics": ["package", "verification"]
+          "topics": [
+            "package",
+            "verification"
+          ]
         }
       ],
       "result": {
-        "operations": ["retain while the failure is unresolved", "archive only after new evidence verifies a superseding package result"],
+        "operations": [
+          "retain while the failure is unresolved",
+          "archive only after new evidence verifies a superseding package result"
+        ],
         "reason": "New evidence changed the final disposition; the archive was not known when survivor work began."
       },
       "review": "Tool feedback or new evidence may justify correction. It must not be used to adopt a competing successor into the frozen family."
@@ -231,11 +291,16 @@
           "text": "The user approved the export contract: an export file is UTF-8 JSON Lines with one record per line, and each record carries the session id and a monotonically increasing sequence number.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["export", "file-contract"]
+          "topics": [
+            "export",
+            "file-contract"
+          ]
         }
       ],
       "result": {
-        "operations": ["split into a line-format child and a record-fields child"],
+        "operations": [
+          "split into a line-format child and a record-fields child"
+        ],
         "reason": "Each clause is a separate sentence."
       },
       "review": "The clauses of one approved contract are read and changed together: no later fact would change the record fields while the line format stands, and a reader would always consult both bodies. The split is the compound it started from and is not made; sentence count is not maintenance need."
@@ -248,14 +313,20 @@
           "text": "The rollback rehearsal passes on the staging database only; the production rehearsal is deferred (user decision).",
           "category": "open",
           "scope": "project",
-          "topics": ["rollback", "production-rehearsal"]
+          "topics": [
+            "rollback",
+            "production-rehearsal"
+          ]
         }
       ],
       "result": {
         "text": "The user decided to defer the production rehearsal. At present the rollback rehearsal has passed only on the staging database, so the production rehearsal remains deferred until the user decides otherwise.",
         "category": "open",
         "scope": "project",
-        "topics": ["rollback", "production-rehearsal"]
+        "topics": [
+          "rollback",
+          "production-rehearsal"
+        ]
       },
       "review": "The parent already reads on its own: object, claim, condition, status and attribution are all resolvable by a reader who never saw the conversation. Expanding it into full sentences, spelling out attribution it already carries in a few characters and reordering it is the same class of forbidden edit as shortening-only; the body is left as it is."
     },
@@ -267,7 +338,10 @@
           "text": "The export-contract ticket was delivered on its branch, its two review findings were fixed, and the branch was merged; nothing from the ticket remains unresolved.",
           "category": "reference",
           "scope": "project",
-          "topics": ["export", "ticket-record"]
+          "topics": [
+            "export",
+            "ticket-record"
+          ]
         }
       ],
       "result": {
@@ -284,17 +358,26 @@
           "text": "The user ruled that the Knowledge budget is owned by the bound database policy, not a settings file; the migration that moves existing settings-file values into the database is still to be written.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["knowledge-budget", "database-policy"]
+          "topics": [
+            "knowledge-budget",
+            "database-policy"
+          ]
         },
         {
           "text": "The migration that moves existing settings-file budget values into the database policy remains to be written; next action is to draft it for review.",
           "category": "open",
           "scope": "project",
-          "topics": ["knowledge-budget", "migration"]
+          "topics": [
+            "knowledge-budget",
+            "migration"
+          ]
         }
       ],
       "result": {
-        "operations": ["split parent 0 into the ruling and the pending-migration piece", "merge the pending-migration child into parent 1, the older identity surviving"],
+        "operations": [
+          "split parent 0 into the ruling and the pending-migration piece",
+          "merge the pending-migration child into parent 1, the older identity surviving"
+        ],
         "reason": "The ruling and the pending migration would be read and changed apart, so the item is split; before the migration piece becomes a new identity it is checked for a home, and the current open item already carries it, so it merges there."
       },
       "review": "Per-item order: split (A), then the home check (B) for each piece before the item's operations are committed. A piece that would be split out merges into the current item that already carries it instead of becoming a new identity; splitting the whole pool first and searching for duplicates afterwards would have left a split-out duplicate."
@@ -307,15 +390,27 @@
           "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda. The change removing the opening check passed review and was merged into main; nothing from it remains open.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["dreamer", "check"]
+          "topics": [
+            "dreamer",
+            "check"
+          ]
         }
       ],
       "result": {
         "children": [
-          { "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda (merged into main).", "category": "constraint" },
-          { "text": "The change removing the opening `check` passed review and was merged into main; nothing from it remains open.", "category": "reference" }
+          {
+            "text": "The user ruled that `check` is never called before a maintenance round, because the receipt must not set the agenda (merged into main).",
+            "category": "constraint"
+          },
+          {
+            "text": "The change removing the opening `check` passed review and was merged into main; nothing from it remains open.",
+            "category": "reference"
+          }
         ],
-        "operations": ["split into the ruling, carrying the finished status as a few characters, and the delivery record", "archive the delivery-record child on the fact recording the merge"],
+        "operations": [
+          "split into the ruling, carrying the finished status as a few characters, and the delivery record",
+          "archive the delivery-record child on the fact recording the merge"
+        ],
         "reason": "The body cannot be given one category: the ruling is a constraint and the delivery status is progress. The status has no follow-up, so it is folded into the ruling as the traceable pointer and its delivery record is archived on the finishing fact."
       },
       "review": "Status beside a ruling is compound by the category test. A finished status with no follow-up is folded into the ruling's body in a few characters, and the delivery record it came from is archived on its finishing fact (reason b); the protected-meaning entry for useful completed work is met by those few characters plus the archived version, not by a resident record."
@@ -328,14 +423,20 @@
           "text": "The Consolidator reads its Knowledge injection capacity from the bound database policy through `knowledgeBudgets().injection` (default 20000) instead of the settings file.",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["consolidator", "knowledge-budget"]
+          "topics": [
+            "consolidator",
+            "knowledge-budget"
+          ]
         }
       ],
       "result": {
         "text": "The Consolidator reads its Knowledge injection capacity from the bound database policy instead of the settings file.",
         "category": "mechanism",
         "scope": "project",
-        "topics": ["consolidator", "knowledge-budget"],
+        "topics": [
+          "consolidator",
+          "knowledge-budget"
+        ],
         "reason": "Knowledge is macro: the accessor name and default value are not needed to state the claim; they survive in the cited facts and the original, which `trace` reaches. One rewrite, not a split."
       },
       "review": "The body is long by detail, not by holding two things, so it is trimmed to the macro claim rather than split (principle 2). This is not shortening-only: the identifier and default value are removed as detail a body does not carry, and the reason names where they survive."
@@ -347,7 +448,10 @@
         "text": "The widget cache is cleared on every deploy; the user ruled that stale widget state must never survive a release.",
         "category": "constraint",
         "scope": "project",
-        "topics": ["widget", "deploy"],
+        "topics": [
+          "widget",
+          "deploy"
+        ],
         "reason": "Widget cache retired with the old release pipeline"
       },
       "parents": [
@@ -355,28 +459,55 @@
           "text": "The user decided that deployment must remain offline; required runtime assets must be bundled.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["deployment", "offline-runtime"]
+          "topics": [
+            "deployment",
+            "offline-runtime"
+          ]
         },
         {
           "text": "The user has not approved the schema migration. It may proceed only after the rollback rehearsal passes; next action is to present the rehearsal result for a decision.",
           "category": "open",
           "scope": "project",
-          "topics": ["schema-migration", "rollback"]
+          "topics": [
+            "schema-migration",
+            "rollback"
+          ]
         },
         {
           "text": "The user ruled again that the widget cache is cleared on every deploy, now under the new release pipeline; stale widget state must never survive a release.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["widget", "deploy"]
+          "topics": [
+            "widget",
+            "deploy"
+          ]
         }
       ],
       "result": {
-        "search": { "queries": ["offline deployment", "schema migration", "widget cache"], "layer": "knowledge", "versions": "history",
-        "cap": 2 },
-        "hits": ["\"offline deployment\": no hit", "\"schema migration\": the item itself, current, not a revival candidate", "\"widget cache\": the archived identity, read in full with trace before the decision"],
+        "search": {
+          "queries": [
+            "offline deployment",
+            "schema migration",
+            "widget cache"
+          ],
+          "layer": "knowledge",
+          "versions": "history",
+          "cap": 2
+        },
+        "hits": [
+          "\"offline deployment\": no hit",
+          "\"schema migration\": the item itself, current, not a revival candidate",
+          "\"widget cache\": the archived identity, read in full with trace before the decision"
+        ],
         "skipped": [
-          { "parent": 0, "because": "Readable on its own, one thing, no duplicate or overlap, no conflicting fact on the path; nothing to split, merge, resolve or rewrite." },
-          { "parent": 1, "because": "Still open and still qualified; the rehearsal has not run, so no fact resolves it and the body already states the next action." }
+          {
+            "parent": 0,
+            "because": "Readable on its own, one thing, no duplicate or overlap, no conflicting fact on the path; nothing to split, merge, resolve or rewrite."
+          },
+          {
+            "parent": 1,
+            "because": "Still open and still qualified; the rehearsal has not run, so no fact resolves it and the body already states the next action."
+          }
         ],
         "merge": {
           "survivor": "archived",
@@ -384,7 +515,10 @@
           "text": "The user ruled that the widget cache is cleared on every deploy under the current release pipeline; stale widget state must never survive a release.",
           "category": "constraint",
           "scope": "project",
-          "topics": ["widget", "deploy"],
+          "topics": [
+            "widget",
+            "deploy"
+          ],
           "reason": "The returning ruling continues the archived widget-cache identity: same object, same independently maintainable rule; revived by merging the New item into it, the body stating the current rule alone."
         }
       },
@@ -398,7 +532,10 @@
           "text": "Engine 接口经工具调用接收观察并返回动作结果；上下文当前选择为跨批次保留（已确认），此前为每批裁决新建独立上下文、只保留批内工具反馈。",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["engine", "context-lifecycle"]
+          "topics": [
+            "engine",
+            "context-lifecycle"
+          ]
         }
       ],
       "result": {
@@ -429,13 +566,19 @@
           "text": "Engine 分初始化开场输入与裁决两操作，裁决由临时 Agent 完成，内部步骤不向 Runtime 暴露；裁决读取当前 World、本轮行动及角色信息。",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["engine", "context-lifecycle"]
+          "topics": [
+            "engine",
+            "context-lifecycle"
+          ]
         },
         {
           "text": "LLMEngine 每次裁决新建 Agent 实例，不继承上一次 Engine 会话；实例经 EngineAdapter 挂接到 Runtime，工具表在构造时注入。",
           "category": "mechanism",
           "scope": "project",
-          "topics": ["engine", "context-lifecycle"]
+          "topics": [
+            "engine",
+            "context-lifecycle"
+          ]
         }
       ],
       "result": {

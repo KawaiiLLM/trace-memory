@@ -139,11 +139,9 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
       expect(position, `effective prompt missing ordered stage: ${heading}`).toBeGreaterThan(priorStage);
       priorStage = position;
     }
-    expect(initialSystem).toContain("user-versus-assistant attribution");
-    expect(initialSystem).toContain("attempted, reported, completed, verified distinctions");
-    expect(initialSystem).toContain("Exactly one of four, stated in `reason`:");
-    expect(initialSystem).toContain("is budget stripping, not maintenance");
-    expect(initialSystem).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
+    expect(initialSystem).toContain("Protect first: user constraints and corrections, milestone results, errors and lessons, designs and their reasons, important deadlines, open matters.");
+    expect(initialSystem).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost.");
+    expect(initialSystem).toContain("Old, short, rarely used or finished is by itself no proof of no value.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems.length).toBeGreaterThan(1);
     expect(repairSystems.every(system => system === initialSystem),
