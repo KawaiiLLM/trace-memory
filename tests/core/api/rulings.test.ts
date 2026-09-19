@@ -2683,8 +2683,14 @@ test("58/61: the category definitions and the grounding principle are shared blo
   expect(knowledge).toContain("- **Pending knowledge** — `open` holds unresolved matters worth tracking, `dispute` conflicts that cannot yet be ruled. Neither is a home for low-quality knowledge: first decide whether a claim is worth keeping resident, then whether it is unresolved.");
   expect(knowledge).toContain("- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a certifying fact changes or archives it.");
   expect(knowledge).toContain("- **open** — what is still missing before this can be settled or closed? An unanswered question, a proposal awaiting approval, a conclusion awaiting verification, important work to do. State what is unresolved, what is known, who proposed it, and what decision or evidence it waits for; keep the change it is about — what stood before, what is proposed instead.");
-  expect(grounding).toContain("- Knowledge enters any category other than `open` or `dispute` only with reliable certification: the user's explicit recognition, or an objective observation result. Knowledge worth keeping without it stays `open`, attributed to whoever proposed it; what is not worth keeping stays in the facts.");
-  expect(grounding).toContain("- A support relation from such a fact is a reference for that judgment, not the test.");
+  expect(grounding).toContain("- Knowledge enters any category other than `open` or `dispute` only on reliable evidence. A core claim needs the user's explicit recognition or a direct observation, within the scope it claims. Knowledge worth keeping without it stays `open`, attributed to whoever proposed it; what is not worth keeping stays in the facts.");
+  expect(grounding).toContain("- Relation chains help trace the evidence; they never raise a source's authority or its degree of proof.");
+  expect(grounding).toContain("- The user's approval of a plan certifies the decision, not the plan's technical effect; that is for an observation to show.");
+  expect(grounding).toContain("- Every change to a claim cites the valid facts that caused it; a change that only maintains wording cites nothing new.");
+  expect(knowledge).toContain("- A certifying fact changes a pending item's category on its own id; it merges only where an established item already holds the same claim. Duplicate pending items may merge and stay pending; no merge makes a pending claim established.");
+  const atomicity = readFileSync(new URL("../../../src/core/prompts/shared/atomicity.md", import.meta.url), "utf8");
+  expect(atomicity).toContain("- One record, one source. A fact carries the claim of one source — the user, the assistant or an observation — never a claim held jointly by several. Established knowledge carries the certified claim of one source; a `dispute` cites the conflicting facts and states the conflict, it fuses nothing.");
+  expect(atomicity).not.toContain("side by side");
   expect(grounding).toContain("Citations alone do not say whose claim it is, and an implementation report is never user approval.");
   expect(facts + knowledge + grounding).not.toMatch(/Engine|F1841|K386/);
   const admission = readFileSync(new URL("../../../src/core/prompts/shared/admission.md", import.meta.url), "utf8");

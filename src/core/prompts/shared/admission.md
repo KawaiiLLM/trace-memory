@@ -1,6 +1,6 @@
 ### Admission
 
-- A fact is a conclusion that could change knowledge: record it only if it could create, ground, update, close or negate a knowledge item.
+- A fact is a conclusion that could change knowledge — create, ground, update, close or negate an item — or that a later judgment of the work could turn on.
 - Knowledge is a conclusion that could change how future work is understood or done: a decision, a mechanism, a constraint, a term, a lookup value, an open question. It must be present without being fetched.
 - Importance is the cost of forgetting — never the effort spent, the length of the discussion or the kind of task.
 - What an artifact answers is not kept: how the code is written now, file reads, commits, the package registry, one command. The state of a persistent object the agent acts on is the exception — one `reference` item, not a lookup each time.
