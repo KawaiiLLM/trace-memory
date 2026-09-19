@@ -2,16 +2,9 @@
 
 A knowledge item is the versioned arc of one object: one object, one independently changeable claim or state, one identity.
 - A version has a `text` (the body), a `category`, a `scope`, `topics`, `supports` and a `reason` (the commit message). `supports` are the facts that moved the item to this version; earlier versions' supports are inherited, not copied.
-- While the object exists, a change to that claim or state — its content, its category or its wording — is an update of the same id.
-- Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A ticket-specific override is its own item; implementation and review roles are separate claims.
-- Different claims about one object are different items. A piece is its own item only where a later fact would change it while its sibling stands.
+- Identity is the claim or state itself, not a label, a category or a current value: one role's default of Sol high, then Astra high, then Sol medium is one item in three versions. A change to that claim or state — its content, its category or its wording — is an update of the same id.
 
-**Two kinds.**
-- **Established knowledge** — `goal`, `constraint`, `mechanism`, `term`, `reference`. Created, updated or entered by a category change only with reliable certification (Principles).
-- **Pending knowledge** — `open` holds unresolved matters worth tracking, `dispute` conflicts that cannot yet be ruled. Neither is a home for low-quality knowledge: first decide whether a claim is worth keeping resident, then whether it is unresolved. Knowledge worth keeping without reliable evidence stays here; what is not worth keeping stays in the facts.
-- A certifying fact changes a pending item's category on its own id; it merges only where an established item already holds the same claim. Duplicate pending items may merge and stay pending; no merge makes a pending claim established.
-- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a certifying fact changes or archives it.
-- An `open` ends when its matter is answered, adopted, verified, completed or abandoned: updated on its own identity, then moved to its category or archived. A `dispute` ends when a fact or ruling explains or decides the conflict: the surviving conclusion stays with its conditions; the conflict's course stays in the versions and the facts.
+**Two kinds.** Established knowledge: `goal`, `constraint`, `mechanism`, `term`, `reference`. Pending knowledge: `open`, `dispute`.
 
 **Seven categories, one test each.** If no test answers yes, it stays in the fact layer.
 - **goal** — what is this work meant to achieve? Current intent and acceptance criteria; not a step's plan.
@@ -19,13 +12,9 @@ A knowledge item is the versioned arc of one object: one object, one independent
 - **mechanism** — when explaining why the system looks like this, would you cite it? Load-bearing design choices and root causes; not what it merely does now.
 - **term** — without knowing what this word refers to, would you misread the user or the code? Project names, references, the user's coinages and their meaning.
 - **reference** — where is the value or location you need when acting? Config values, paths, endpoints, specs, URLs; lookup facts, not explanations.
-- **open** — what is still missing before this can be settled or closed? An unanswered question, a proposal awaiting approval, a conclusion awaiting verification, important work to do. State what is unresolved, what is known, who proposed it, and what decision or evidence it waits for; keep the change it is about — what stood before, what is proposed instead. Settled categories state only what holds now; their past is in their versions.
-- **dispute** — which claims conflict, and why can no side be chosen yet? Two accounts of one object under the same conditions, incompatible, with no sufficient basis to rule. State both sides, their grounds, the conditions each applies to, and what to re-check; do not pick a side; evidence that the conflict exists suffices, no side has to be proven first. Lacking verification is `open`, not `dispute`; results that differ by version, condition or object are told apart by scope before any dispute exists.
-
-**Status.** A finished status with no follow-up (merged, implemented, installed) is a few characters in the ruling's body, pointing at its fact. A status with follow-up is its own `open`.
-
-**Object state.** One `reference` item per persistent object the agent acts on (an installed version, a published version, a pinned exclusion); its body is the current state and nothing of the event that produced it. A new state updates that item, citing the new-state fact alone. Never create a second item for it or archive it while the object exists.
+- **open** — what is still missing before this can be settled or closed? An unanswered question, a proposal awaiting approval, a conclusion awaiting verification, important work to do.
+- **dispute** — which claims conflict, and why can no side be chosen yet? Two accounts of one object under the same conditions, incompatible, with no sufficient basis to rule.
 
 **scope.** `session`: holds only in this session (paths and checksums of this run, numbers from one experiment, a reply being waited on). `project`: holds in this project; something narrower than the project but needed across sessions (this snapshot, this ticket) is `project` with the range stated in the text. `global`: holds across projects (the user, the general environment, general working method).
 
-**topics.** Subject labels, never kinds: concrete module names or domain terms (`core/store`, extraction, billing), never category words or the project's own name. A label classifies only: it grants no scope, evidence, lifecycle or coverage, and sharing one merges nothing.
+**topics.** Subject labels, never kinds: concrete module names or domain terms (`core/store`, extraction, billing), never category words or the project's own name. A label classifies only: it grants no scope, evidence, lifecycle or coverage.

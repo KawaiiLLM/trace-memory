@@ -4,7 +4,5 @@
 - Bare `K1` reads the current commit on this conversation path. Without a path, a read lists the tips newest-created first; none of them is a winner.
 - Reads are unrestricted.
 - A knowledge commit cites facts on its own path, plus other sessions' facts its scope allows; a sibling fact needs an adoption fact from this path first.
-- Facts are immutable evidence. Correct a fact by writing a new fact with a relation.
+- Facts are immutable. A fact is corrected by a new fact with a relation to it.
 - Relations are annotations: they hide or retire nothing and change no fact's state.
-- Raw turns are evidence for facts, not for knowledge. Raw outranks the extracted fact; code never says what was decided.
-- Write in the conversation's language: facts in the user's language, knowledge in the language of its facts. Field names, category names and status words stay as given here.
