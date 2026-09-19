@@ -1,5 +1,5 @@
 import type { bindTools } from "../api/tools.ts";
-import { readFileSync } from "node:fs";
+import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import { type Fact, type MemoryBatch } from "../model/index.ts";
 import { type ConsolidationDiagnostic } from "./commit.ts";
@@ -16,7 +16,7 @@ import { similarity } from "./similarity.ts";
 
 export { similarity } from "./similarity.ts";
 
-const prompt = readFileSync(new URL("../prompts/consolidation.md", import.meta.url), "utf8");
+const prompt = loadPrompt("consolidation.md");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 const sectionStart = prompt.indexOf("### Second-round user message\n") + "### Second-round user message\n".length;
 const checklist = prompt.slice(sectionStart, prompt.indexOf("\n### ", sectionStart));

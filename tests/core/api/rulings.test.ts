@@ -5,6 +5,7 @@ import { compacted, recorded } from "../../source-fixture.ts";
 // from. Names identify the ruling and its conversation date.
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { loadPrompt } from "../../../src/core/prompts/load.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, REMOVED_SETTINGS, sourceSeededMemory, visibleTarget, canonicalFlatConfig, renderEntry, runMode, toolDefinitions, type NotingAgentInput, type RunAgentResult } from "../../source-fixture.ts";
@@ -2650,4 +2651,47 @@ test("40 N1: claims that could be acted on separately are split, one fact per fi
 test("40 N4: the user's instruction, question or plan approval that starts work is recorded even when the work completes in the same batch", () => {
   const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
   expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.");
+});
+
+/** Ticket 58 (2026-09-18): an approval or implementation fact names its object and supports it when
+ * the object is in view; the Consolidator reads adoption from the adopting user fact's content and
+ * scope, never from co-occurrence, a general authorisation or an implementation report, and the body
+ * says whose decision it is in a few characters. Neither prompt names the case. */
+test("58: an approval or implementation fact names its object and supports it when it is in view", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/noting.md", import.meta.url), "utf8");
+  expect(prompt).toContain("Relations are written so that a reader can reconstruct approval, rejection, execution, verification and contradiction from the facts' text and their references alone: each text keeps the objects, scope, conditions and degree of evidence its relations rest on; an approval or an implementation names the object it approves or carries out and supports that object's record when it is in view; a relation is strong when the source states it, weak for a grounded inference or a partial correspondence, absent without grounds, and never guessed toward a target outside the visible range.");
+  expect(prompt).not.toMatch(/Engine|F1841|K386/);
+});
+
+test("58: the category definitions are one shared block, spliced into the Consolidator and the Dreamer", () => {
+  const block = readFileSync(new URL("../../../src/core/prompts/categories.md", import.meta.url), "utf8");
+  expect(block).toContain("Facts have three sources: the user's facts; observation — an `observation` or `event` fact stating what was found, measured or done, direct when its evidence is a tool result or the user's own account, relayed when its text says according to whom or its status is reported or dispatched, and a relayed one is its reporter's claim, weighed as an assistant claim; and the assistant's own claims — its proposals, decisions and interpretations. A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it: a negated fact supports nothing, a weak negate is doubt or partial conflict that you weigh, and the original facts and their references remain.");
+  expect(block).toContain("Knowledge is of three kinds. Established decision knowledge — `goal`, `constraint`, `mechanism` — is created, updated or entered by a category change only when its core claims come directly from valid user or observation facts, or, where a core claim comes from an assistant claim, that claim has strong support from a valid user or observation fact; which claims are core and whether scattered evidence suffices is your judgment — not every cited fact needs its own strong support, and repeated facts of one claim are not supported one by one; grounding already valid is inherited along the item's versions, and a core claim that is itself strongly negated does not survive on its old supports. A decision that does not meet the condition stays pending. Pending decision knowledge — `open`, and `dispute` where two accounts conflict — holds claims not yet accepted; once a valid fact establishes one, it changes category on its own id or merges into the established item of its object, under the same condition. An established item never becomes pending: a doubt, an alternative or unfinished work concerning it is its own pending item, and the established item stands until a valid fact changes or archives it; a pending and an established item about the same object's decision are not duplicates — the one is a proposal not yet confirmed, the other the reality in force. Auxiliary knowledge — `term`, `reference` — is created and updated without condition.");
+  expect(block).toContain("- **open**: what has no clear outcome, would be re-investigated by the next agent, or needs the user's ruling? Say what and whom it is waiting for, and keep the change it is about — what stood before, what is proposed instead, and who proposed each — since the settled categories state only what holds now and leave the past to their versions.");
+  expect(block).not.toMatch(/Engine|F1841|K386/);
+  for (const file of ["consolidation.md", "dreaming.md"] as const) {
+    const composed = loadPrompt(file);
+    expect(composed).toContain(block.trimEnd());
+    expect(composed).not.toContain("<!-- categories -->");
+    expect(readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8")).not.toContain("Knowledge is of three kinds");
+  }
+  expect(loadPrompt("noting.md")).not.toContain("Knowledge is of three kinds");
+});
+
+test("58: the Dreamer merges within a kind and never makes an established item pending", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/dreaming.md", import.meta.url), "utf8");
+  expect(prompt).toContain("Merging stays within a kind — pending with pending, established and auxiliary among themselves — a pending item entering an established one only under the categories' condition.");
+  expect(prompt).toContain("An established item whose core claim a later user or direct observation fact strongly negates is not kept on its old supports: it is updated by that fact or archived on it.");
+  expect(prompt).toContain("becomes one `dispute` item naming both sides: two pending items merge into it; beside an established item it is its own item.");
+  expect(prompt).not.toContain("moved to `open` or `dispute`");
+  expect(prompt).not.toMatch(/Engine|F1841|K386/);
+});
+
+test("58: the Consolidator reads adoption from the adopting user fact and states whose decision it is", () => {
+  const prompt = readFileSync(new URL("../../../src/core/prompts/consolidation.md", import.meta.url), "utf8");
+  expect(prompt).toContain("Single review findings, explanations of code and unadopted agent proposals fail unless they establish a rule; a user's proposal that the work proceeds under is kept as the user's proposal, one identity until a user fact adopts or drops it.");
+  expect(prompt).toContain("a support edge is neither required nor sufficient: adoption is read from the content and scope of the user fact — never from co-occurrence in a batch, a general authorisation that names no object, or an implementation report — and an approval of one change adopts no other. A constraint from an external system or confirmed by experiment keeps its evidential nature in the text rather than posing as a user ruling. The body states in a few characters, in the conversation's language, who proposed each decision and how explicitly the user adopted it — never a bare \"current choice\" or \"confirmed\"; the reason describes the change and is neither evidence for nor a substitute for that attribution.");
+  expect(prompt).not.toContain('"the current choice"');
+  expect(prompt).not.toContain("Status — what is running");
+  expect(prompt).not.toMatch(/Engine|F1841|K386/);
 });

@@ -243,3 +243,24 @@ test("59 scripted round: two items skipped with reasons, one New item revives th
   expect(state.store.isKnowledgeProcessed(state.items[result.merge.absorb]!.commit)).toBe(false);
   expect(state.store.pendingKnowledgeEvents(state.target)).toEqual([]);
 });
+
+// Ticket 58: the Engine bad case as two reviewed rounds — split by decision object, not by actor; the
+// design folded into its identity instead of archived as an implementation snapshot. Reviewed
+// semantic expectations with their production anchors, not runtime validation.
+test("58: the reconstructed decision-provenance rounds are labelled, anchored, split by object and never archive the design", () => {
+  const result = (value: WorkflowExample) => value.result as { children: { text: string; category: string }[]; operations: string[] };
+  const mixed = example("reconstructed-mixed-decision-objects-split");
+  expect(mixed.judgment).toBe("faithful");
+  expect(mixed.review).toContain("Reconstructed case with pre-revision facts, not an exact replay.");
+  expect(mixed.review).toContain("F1841");
+  expect(result(mixed).children).toHaveLength(2);
+  expect(result(mixed).children.map(child => child.category)).toEqual(["mechanism", "open"]);
+  expect(result(mixed).operations.join(" ")).toContain("no merge of the open into the mechanism");
+  expect(result(mixed).operations.join(" ")).toContain("no archive");
+  const snapshot = example("reconstructed-architecture-decision-not-an-implementation-snapshot");
+  expect(snapshot.judgment).toBe("faithful");
+  expect(snapshot.parents).toHaveLength(2);
+  expect(result(snapshot).children).toHaveLength(1);
+  expect(result(snapshot).children[0]!.text).toContain("用户提案并采纳");
+  expect(result(snapshot).operations.join(" ")).toContain("no archive of the implementation item as an implementation snapshot");
+});

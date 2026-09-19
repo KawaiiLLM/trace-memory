@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { loadPrompt } from "../prompts/load.ts";
 import { createHash } from "node:crypto";
 import { DreamingScopeAuditError, type Store, type RunInput } from "../store/index.ts";
 import { checkProcessedScopes, placementOwner, processedBlock } from "../store/processing.ts";
@@ -11,7 +11,7 @@ import { agentException, recordAttempt, requestMissing } from "../api/audit.ts";
 import type { TriggerOrigin } from "../model/index.ts";
 import { renderDreamingCheckReceipt, type DreamingCheckResult } from "./check-receipt.ts";
 
-const prompt = readFileSync(new URL("../prompts/dreaming.md", import.meta.url), "utf8");
+const prompt = loadPrompt("dreaming.md");
 const promptHash = createHash("sha256").update(prompt).digest("hex");
 export type DreamingInput = Omit<ConsolidateInput, "mode" | "effectiveMode" | "visible" | "boundary">;
 export type DreamingResult = { automaticOff?: string } & (

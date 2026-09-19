@@ -390,6 +390,70 @@
         }
       },
       "review": "Every supplied item ends the round accounted for: two in an explicit skip with a reason, one in an operation; the check reports nothing unaccounted, and a skip is accounting only — the skipped leaves are certified because they are successor-free, not because they were skipped. The batched history search runs once, before the first New item is decided, with each item's object in a few words; a query with no hit is named in the receipt, a current self-hit is not a revival, and the archived hit is read in full before the New item is merged into that identity (48)."
+    },
+    {
+      "id": "reconstructed-mixed-decision-objects-split",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "Engine 接口经工具调用接收观察并返回动作结果；上下文当前选择为跨批次保留（已确认），此前为每批裁决新建独立上下文、只保留批内工具反馈。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        }
+      ],
+      "result": {
+        "children": [
+          {
+            "text": "Engine 接口经工具调用接收观察并返回动作结果；上下文生命周期为用户裁决：每批裁决新建独立上下文、只保留批内工具反馈（已实现）。",
+            "category": "mechanism"
+          },
+          {
+            "text": "助手提出并已落地的 Engine 跨批次保留上下文：用户批准去事件时未单独确认这一变更，批准范围不明，待用户确认后才能并入上下文生命周期机制。",
+            "category": "open"
+          }
+        ],
+        "operations": [
+          "split the ambiguously adopted assistant change out of the ruling: the user's design stays a mechanism marked as the user's ruling, the implemented-but-unconfirmed change becomes an open naming its proposer and the approval's unclear scope",
+          "no merge of the open into the mechanism until a user fact adopts the change explicitly",
+          "no archive: the lifecycle mechanism is a user ruling under KEEP, not an implementation snapshot"
+        ],
+        "reason": "The body mixes a user ruling with an assistant change the user approved only ambiguously, and its bare current choice and confirmed hide that; the ruling stays a mechanism with its attribution, the unconfirmed change is an open that names the proposer and what was and was not approved, and the category test decides the split — not the number of actors."
+      },
+      "review": "Reconstructed case with pre-revision facts, not an exact replay. Mixed actors alone do not split, and the proposal, adoption and implementation stages of one design stay on one identity; the split is by decision object, made only because the interface detail and the lifecycle would be read and changed apart and the compound body left the makers and approval scopes unassignable. The cited user approval behind the parent's confirmed was of a different change and adopts nothing here; the assistant's later choice does not override the user's design, and that design is never retired as disposable implementation detail. Anchors in the read-only production copy: the user's proposal F1841 (T1032#E1) admitted as K386@1037; the approval F1978 is of the spec and tickets (F1966, F1977), not of F1841 directly; implementation F2176 (T1166#E3..E4); the assistant's proposal F3364 and choice F3395; the user's approval F3390 is of a different change; F4255 negates F3395. The harness seeds one user decision fact per parent, so this round is reviewed against those anchors, not against seeded facts."
+    },
+    {
+      "id": "reconstructed-architecture-decision-not-an-implementation-snapshot",
+      "judgment": "faithful",
+      "parents": [
+        {
+          "text": "Engine 分初始化开场输入与裁决两操作，裁决由临时 Agent 完成，内部步骤不向 Runtime 暴露；裁决读取当前 World、本轮行动及角色信息。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        },
+        {
+          "text": "LLMEngine 每次裁决新建 Agent 实例，不继承上一次 Engine 会话；实例经 EngineAdapter 挂接到 Runtime，工具表在构造时注入。",
+          "category": "mechanism",
+          "scope": "project",
+          "topics": ["engine", "context-lifecycle"]
+        }
+      ],
+      "result": {
+        "children": [
+          {
+            "text": "Engine 分初始化开场输入与裁决两操作，内部步骤不向 Runtime 暴露；裁决由每批新建的独立上下文完成、只保留批内工具反馈（用户提案并采纳，已实现：每次裁决新建实例，不继承上次会话），读取当前 World、本轮行动及角色信息。",
+            "category": "mechanism"
+          }
+        ],
+        "operations": [
+          "merge the implementation item into the lifecycle identity: its design clause is that identity's implementation evidence, folded in a few characters with the implementation fact as the change support",
+          "the lifecycle identity is updated to state the design again, attributed and marked implemented, the design clause being that identity's own claim carried in its cited chain; the adapter and tool-table topology leaves the body under principle 2 (identifiers stay in the facts); nothing is archived, since it never was a separate record",
+          "no archive of the implementation item as an implementation snapshot at any intensity: the body carried the user's adopted design, and the label does not make that design disposable"
+        ],
+        "reason": "The first item only calls the Agent temporary — the identity has stopped stating the design it carries in its chain — and under budget pressure the second item reads like an implementation snapshot, but its first clause is the only resident statement of the user's independent-context design; archiving it on that label loses the design (KEEP), so the design folds into the lifecycle identity and only the topology detail leaves."
+      },
+      "review": "Reconstructed from K436@1605's archive by Dreamer R311 (reason: an implementation snapshot, information loss acknowledged) while K386's body had already stopped stating statelessness. Retirement respects the underlying design: 57's per-item order asks merge before archive, and the KEEP list protects a user's adopted design whatever the body looks like; a finished delivery record with nothing unique left may still be archived on its fact."
     }
   ]
 }
