@@ -2687,9 +2687,10 @@ test("58/61: the category definitions and the grounding principle are shared blo
   expect(grounding).toContain("- A support relation from such a fact is a reference for that judgment, not the test.");
   expect(grounding).toContain("Citations alone do not say whose claim it is, and an implementation report is never user approval.");
   expect(facts + knowledge + grounding).not.toMatch(/Engine|F1841|K386/);
+  const admission = readFileSync(new URL("../../../src/core/prompts/shared/admission.md", import.meta.url), "utf8");
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
-    for (const block of [facts, knowledge, grounding]) expect(composed).toContain(block.trimEnd());
+    for (const block of [facts, knowledge, grounding, admission]) expect(composed).toContain(block.trimEnd());
     expect(composed).not.toContain("<!-- include:");
     expect(readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8")).not.toContain("Three kinds");
   }
