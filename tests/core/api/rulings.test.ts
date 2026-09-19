@@ -2382,8 +2382,8 @@ test("29/31 archived divergent tip is not superseded by the surviving same-K sib
  * resubmission; the prompt and the rejection reason now both say where the span goes. */
 test("40 N0: the verbatim span naming the object goes in quote, which the id check does not cover", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("goes in `quote`, which the id check does not cover");
-  expect(prompt).toContain("A resubmission after a rejection changes only what was rejected and never drops an object's identity, a condition, a negation or an evidence level.");
+  expect(prompt).toContain("and the span that names the object (a knowledge or fact address, a path, a hash). Ids never go in the text.");
+  expect(prompt).toContain("A resubmission after a rejection changes only what was rejected; it never drops an object's identity, a condition, a negation or an evidence level.");
   expect(prompt).toContain("A finding that names several independently maintainable objects is one fact per object.");
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
@@ -2404,39 +2404,39 @@ test("40 N0: the verbatim span naming the object goes in quote, which the id che
  * negated, and a target that neither NEAR nor a fact search surfaces gets no relation. */
 test("40 N5b: a new-state fact negates the superseded current state only on a stated replacement of the same object; no fitting target means no relation", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("negates the fact that recorded the superseded current state, strong when the raw states the replacement");
+  expect(prompt).toContain("negates the fact that recorded the superseded state. Strong when the raw states the replacement");
   expect(prompt).toContain("a fix report negates the finding it fixes");
   expect(prompt).toContain("negates the truncation ruling weakly and supports the paging proposal");
-  expect(prompt).toContain("A `negate` is written only when the raw states, or by unambiguous reference establishes, that the new fact replaces the same object under the same scope");
-  expect(prompt).toContain("a summary count (\"7 fixes done\"), a shared ticket or topic proximity does not negate each member item");
-  expect(prompt).toContain("write no relation and do not substitute `weak` for missing evidence");
-  expect(prompt).toContain("Only the fact that recorded the superseded current state is negated");
-  expect(prompt).toContain("stays true after beta.5 is published");
-  expect(prompt).toContain("`search` the fact layer for the object by name, and when nothing fitting is found write no relation: never guess, never force");
+  expect(prompt).toContain("Negate only when the raw states, or by unambiguous reference establishes, that the new fact replaces the same object under the same scope.");
+  expect(prompt).toContain("A summary count (\"7 fixes done\"), a shared ticket or topic proximity negates nothing.");
+  expect(prompt).toContain("Missing correspondence → no relation; never substitute `weak` for missing evidence.");
+  expect(prompt).toContain("Negate only the fact that recorded the superseded current state");
+  expect(prompt).toContain("A historical or availability fact (\"beta.4 is available on npm\") stays true and gets no negate.");
+  expect(prompt).toContain("`search` the fact layer for the object by name; when nothing fits, write no relation.");
 });
 
 /** Ticket 45 narrows ticket 40 C4: supplied complete versions are the first read; literal search
  * remains the exception path and never becomes an evidence or stale-successor shortcut. */
 test("45: Consolidator reads the bounded supplied block first and preserves necessary read exceptions", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("When this block is supplied, it holds the applicable set up to the database-derived capacity; its receipt lists the whole items the capacity could not hold.");
-  expect(prompt).toContain("Read the supplied block first for what this range closes and for the item a claim continues.");
-  expect(prompt).toContain("A complete exact version supplied here needs no reread.");
-  expect(prompt).toContain("a fact's `quote`, a review cue or a targeted search hit points to an item not supplied complete");
-  expect(prompt).toContain("the knowledge block is absent, an item's history is needed before correction, evidence or a competing successor must be checked");
-  expect(prompt).toContain("a legal fact outside the range is needed, or a stale-base refusal requires the applicable successor to be read again");
-  expect(prompt).toContain("`search` matches one contiguous literal substring over the versions applicable here and does not combine keywords");
-  expect(prompt).toContain("No hit means change the word, never stack words.");
-  expect(prompt).toContain("Read an exact current version before writing only when it was not supplied complete in the knowledge block or inherited context.");
+  expect(prompt).toContain("the project's active knowledge that fits the capacity, one item per line; its receipt names the items that did not fit.");
+  expect(prompt).toContain("Read the knowledge block first: it says what this range closes and which item a claim continues.");
+  expect(prompt).toContain("Read what is supplied. Fetch by address (`trace`, `search`) only what a judgment needs and the supplied material does not contain.");
+  expect(prompt).toContain("read a receipted item only when a fact's `quote`, a cue or a search hit points to it");
+  expect(prompt).toContain("only what a judgment needs and the supplied material does not contain");
+  expect(prompt).toContain("A stale base — an applicable successor exists — rejects the whole batch: re-read and resubmit.");
+  expect(prompt).toContain("`search` matches one contiguous literal substring over the versions applicable here; several words match only that exact sequence.");
+  expect(prompt).toContain("On no hit, change the word; never add one.");
+  expect(prompt).toContain("A read grants nothing and is never a fact source.");
   expect(prompt).not.toContain("within its own 10,000-token allowance");
   expect(prompt).not.toContain("the `open`, `goal` and `reference` ones are traced before deciding what this range closes");
-  expect(prompt.indexOf("### Finding what this range closes")).toBeLessThan(prompt.indexOf("### Correction-driven edits"));
+  expect(prompt.indexOf("## Procedure")).toBeLessThan(prompt.indexOf("### Review cues"));
 });
 
 test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or-git exclusion", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("Record what later work will need and cannot look up: a decision or ruling with its reason — why the design takes this shape, why a threshold has this value, what it replaced — even when it lands in code in the same batch, because the code keeps only the current value.");
-  expect(prompt).toContain("How existing code happens to be written is looked up when needed and is not a fact.");
+  expect(prompt).toContain("A decision or ruling with its reason — why the design takes this shape, why a threshold has this value, what it replaced — even when it lands in code in the same batch; code keeps only the current value.");
+  expect(prompt).toContain("Not a fact: how existing code happens to be written (look it up when needed)");
   expect(prompt).not.toContain("re-derivable from code or git");
 });
 
@@ -2445,59 +2445,60 @@ test("noting admission (2026-09-16 ruling): the anchor test replaces the code-or
 test("56: split by maintenance need, rewrite only what fails the standalone test, archive finished work of every category", () => {
   const prompt = loadPrompt("dreaming.md");
   // A: the standard's identity test replaces "split again while a child is still compound"; generic examples, no batch ids.
-  expect(prompt).toContain("one object, one independently maintainable claim or state, one identity.");
-  expect(prompt).toContain("a child is warranted only when a later fact would change it while its sibling stands");
+  expect(prompt).toContain("one object, one independently changeable claim or state, one identity.");
+  expect(prompt).toContain("A piece is its own item only where a later fact would change it while its sibling stands.");
   // 57 replaced the "Split: … Do not split: …" example lists with two principles (pinned there).
-  expect(prompt).toContain("A split that leaves a child unable to stand on its own, or that produces two bodies a reader would always consult together, is the compound it started from and is not made.");
+  expect(prompt).toContain("A split whose child cannot stand alone, or whose two bodies a reader would always consult together, is not made.");
   expect(prompt).not.toContain("split again while a child is still compound");
   // C: the trigger narrows to the standalone test; 54's readability rules stay verbatim (pinned there).
-  expect(prompt).toContain("The survivor of a merge or split, and any item whose body fails the standalone test — a clause whose subject, condition or actor cannot be resolved by a reader who never saw the conversation.");
-  expect(prompt).toContain("A body that already reads on its own is left as it is: expanding it into full sentences, adding attribution it already carries in a few characters, or reordering it is the same class of forbidden edit as shortening-only.");
+  expect(prompt).toContain("Rewrite the survivor of a merge or split, and any item whose body fails the standalone test — a clause whose subject, condition or actor a reader who never saw the conversation cannot resolve.");
+  expect(prompt).toContain("A body that already reads on its own is left as it is: expanding it into full sentences, adding attribution it already carries, or reordering it is as forbidden as shortening for its own sake.");
   expect(prompt).not.toContain("Every survivor the round touched");
   // B: persistent states update; finished work items of every category archive on the fact that finishes them.
-  expect(prompt).toContain("Persistent object states (an installed version, a pinned exclusion, a configured default) are updated, not archived, when the state changes; finished work items — a ticket's delivery, merge or acceptance record with nothing unresolved left in it — are archived on the fact that finishes them, whatever their category.");
+  expect(prompt).toContain("Persistent object states (an installed version, a pinned exclusion, a configured default) are updated, not archived, when the state changes.");
   // 57 rewords the protected-meaning sentence (the folded pointer counts too; pinned there).
-  expect(prompt).toContain("A record that still names an unresolved item is not finished: split the unresolved item out first (step A), then archive the finished remainder.");
+  expect(prompt).toContain("A record that still names an unresolved item is not finished: split that item out first (A), then archive the remainder.");
   expect(prompt).not.toContain("An `open` item whose completion or abandonment a fact states");
   // Maintainer 2026-09-18: when unsure, read the original through trace, never code; every operation carries a reason (the memory tool schema already requires it).
-  expect(prompt).toContain("When a fact leaves you unsure what a claim means or whether it still holds, read the original: `trace` the fact's source entries.");
-  expect(prompt).toContain("The conversation's Raw outranks the extracted fact, and code is never the authority for what was decided.");
+  expect(prompt).toContain("Fetch by address (`trace`, `search`) only what a judgment needs and the supplied material does not contain.");
+  expect(prompt).toContain("Raw outranks the extracted fact; code never says what was decided.");
   expect(prompt).toContain("A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides");
-  expect(prompt).toContain("Each operation has a nonempty reason.");
+  expect(prompt).toContain("and has a non-empty `reason`");
 });
 
 test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed check sets the intensity; an archive has one of three reasons", () => {
   const prompt = loadPrompt("dreaming.md");
   // The ruling.
-  expect(prompt).toContain("The goal is a readable, non-redundant, non-contradictory memory; the caps are acceptance criteria, not the objective.");
-  expect(prompt).toContain("`check` is the final acceptance; when acceptance fails, run another pruning round. Pruning is never done for `check`'s sake — `check` judges the intensity of pruning.");
-  expect(prompt).toContain("Do not call `check` before the round: nothing in core needs it, and the receipt must not set the agenda.");
+  expect(prompt).toContain("Pruning and merging are the work; the caps are acceptance criteria, not the objective.");
+  expect(prompt).toContain("`check` is the acceptance, not the agenda: it sets the next round's intensity and is never the reason to prune.");
+  expect(prompt).toContain("Never call `check` before the round");
   // A: split first (ruled 2026-09-18); 57 rewords the precedence clause to the per-item form (pinned there).
   // B: only the same claim stated twice merges; the three production merges are the anti-pattern (ruled 2026-09-18 on revival).
-  expect(prompt).toContain("the same claim stated twice, never two claims about one subject: a definition and the rules that use it, a rule and the record of the fix that applied it, a sub-ticket's state and the umbrella that lists the sub-tickets, stay separate");
-  expect(prompt).toContain("A later ruling on an object whose earlier rule or proposal is archived continues that identity — revive and merge, the body states the current rule alone.");
+  expect(prompt).toContain("the same claim stated twice — never two claims about one subject. A definition and the rules that use it, a rule and the fix that applied it, a sub-ticket's state and the umbrella that lists it stay separate.");
+  expect(prompt).toContain("A later ruling on an object whose earlier rule or proposal is archived continues that identity: revive and merge, the body stating the current rule alone.");
   // C: resolve.
-  expect(prompt).toContain("A later ruling (a fact recording the user's decision or correction) wins over an earlier one; a later fact that is a proposal, a report or an assistant's choice never overrides a ruling.");
+  expect(prompt).toContain("A later ruling — a fact recording the user's decision or correction — wins over an earlier one.");
+  expect(prompt).toContain("A proposal, a report or an assistant's choice never overrides a ruling.");
   expect(prompt).toContain("The loser is archived with that fact in `supports` and named in `reason`.");
   expect(prompt).toContain("A conflict the facts and their traced originals do not settle becomes one `dispute` item naming both sides");
   // D: readability, not brevity and not verbosity (ruled 2026-09-18).
-  expect(prompt).toContain("full sentences in the conversation's language, present tense for what holds now, the object, the claim, its conditions, its status and who decided it stated in words");
-  expect(prompt).toContain("The project's vocabulary counts as understood (CONTEXT.md; N/C/D, claim, placement, path) — what fails is a clause whose subject, condition or actor cannot be resolved; attribution is a few characters (`助手选择`, `用户裁定`), never a sentence; a body states the current rule only — history is for tracing through the version chain and the cited facts, never resident (a body that narrates its own evolution bloats the context).");
-  expect(prompt).toContain("Shortening is never a goal: an update whose only change is fewer characters is forbidden; a rewrite that removes more than half of a body must name in its reason where the removed detail survives; a rewrite that lengthens a body beyond what its missing attribution or specifics need is forbidden too.");
+  expect(prompt).toContain("the object, the claim, its conditions, its status and who decided it, in words");
+  expect(prompt).toContain("The project's vocabulary counts as understood.");
+  expect(prompt).toContain("Shortening is never a goal: an update whose only change is fewer characters is forbidden. A rewrite that removes more than half a body names in its reason where the detail survives.");
   // Check closes the round; a round with nothing to do names the changed block.
-  expect(prompt).toContain("No blocker: finish. A cap exceeded: another round at the next intensity below.");
-  expect(prompt).toContain("A round with nothing to consolidate, resolve or rewrite is reported as such — with the changed block named — never as \"budget fine\".");
+  expect(prompt).toContain("No blocker: finish. A cap exceeded: another round at the next intensity.");
+  expect(prompt).toContain("A round with nothing to do is reported as such, naming the changed block — never as \"budget fine\".");
   // Protected meaning kept verbatim; a survivor preserves scope; exactly three archive reasons.
-  expect(prompt).toContain("A split preserves the protected meaning across its two children together, an archive through its named survivor or the cited fact, and at the second intensity by stating in the reason what reason (c) loses, which is never a KEEP item.");
-  expect(prompt).toContain("Every split, merge, rewrite and archive must preserve: unique user constraints and corrections;");
-  expect(prompt).toContain("unique user constraints and corrections; user-versus-agent attribution; proposal-versus-decision status; attempted, reported, completed and verified distinctions; uncertainty; conditions; exceptions; rationale; identifiers; exact errors and diagnostics; useful completed work that prevents repetition; unresolved decisions, blockers and next actions; and still-valid subject labels.");
-  expect(prompt).toContain("a `global` item is never archived into a `project` twin, a project item never into a session one — and states every unique qualification; categories may differ, scope may not narrow");
-  expect(prompt).toContain("An archive has exactly one of three reasons, stated in `reason`:");
+  expect(prompt).toContain("A split preserves the protected meaning across its two children together; an archive through its named survivor or the cited fact; reason (c) by stating what is lost, which is never a KEEP item.");
+  expect(prompt).toContain("Every split, merge, rewrite and archive preserves:");
+  expect(prompt).toContain("unique user constraints and corrections; user-versus-agent attribution; proposal-versus-decision status;\n- attempted, reported, completed and verified distinctions; uncertainty; conditions; exceptions; rationale;\n- identifiers; exact errors and diagnostics; useful completed work that prevents repetition;\n- unresolved decisions, blockers and next actions; still-valid subject labels.");
+  expect(prompt).toContain("Categories may differ; scope may not narrow; a `global` item is never archived into a `project` twin, nor a project item into a session one.");
+  expect(prompt).toContain("Exactly one of three, stated in `reason`:");
   expect(prompt).toContain("(c) at the second intensity only, low value under the KEEP test");
   expect(prompt).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
   // Intensity and KEEP (57 rewords the first-round sentence to the per-item form; pinned there).
-  expect(prompt).toContain("Second round (a cap still exceeded): archive redundancy into named survivors across categories, retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test. Third: report to the maintainer with the numbers and finish on the final `check` without further loss; that run ends uncertified");
-  expect(prompt).toContain("KEEP, never retired for a cap: user rulings and corrections, rule language (must/never/always), a body that states why, external-system limits, an item whose object is likely to return, unresolved decisions and blockers.");
+  expect(prompt).toContain("Second round, a cap still exceeded: archive redundancy into named survivors across categories; retire low-value items — routine progress notes with no unresolved decision, session-local detail, `reference` pointers the artifact itself holds — under the KEEP test.");
+  expect(prompt).toContain("KEEP, never retired for a cap: user rulings and corrections; rule language (must, never, always); a body that states why; external-system limits; an item whose object is likely to return; unresolved decisions and blockers.");
   // Removed: the opening check as the agenda, and finishing because the budget is fine.
   expect(prompt).not.toContain("Actual check first");
   expect(prompt).not.toContain("budget work");
@@ -2508,27 +2509,29 @@ test("54: the Dreamer loop is split, merge, resolve, rewrite, check; the failed 
 test("57: the Dreamer deliberates one item at a time on two principles; status beside a ruling is compound", () => {
   const prompt = loadPrompt("dreaming.md");
   // The unit of work is one item; splitting precedes merging within it, never as a pool-wide pass.
-  expect(prompt).toContain("The unit of work is one item: take each item under `New:` and `Changed:` through A–D below in this order, deciding once, then commit that item's operations and take the next item.");
-  expect(prompt).toContain("Splitting precedes merging within an item, because only atomic items compare for overlap, and never as a pass over the whole pool followed by a search for duplicates.");
-  for (const heading of ["### A. Split?", "### B. Merge?", "### C. Resolve?", "### D. Rewrite?", "### Check."]) expect(prompt).toContain(heading);
-  expect(prompt).toContain("Call `check` after the last item's operations are committed.");
+  expect(prompt).toContain("Take each item under `New:` and `Changed:` through A–D below, in this order, deciding once; commit that item's operations; take the next item.");
+  expect(prompt).toContain("A precedes B within an item — only atomic items compare for overlap — and never as a pass over the whole pool followed by a search for duplicates.");
+  for (const heading of ["### A. Split?", "### B. Merge?", "### C. Resolve?", "### D. Rewrite?"]) expect(prompt).toContain(heading);
+  expect(prompt).toContain("call `check`");
+  expect(prompt).toContain("After the last item's operations are committed, call `check`.");
   // Principle 1: one item, one thing, sized by a clear description; the illustrations, not rules.
-  expect(prompt).toContain("Two principles decide, not a list of cases. (1) One item, one thing, sized by what a clear description of that thing needs: too long when a reader hunts for the subject or when one change would force rewriting the whole body, too short when a piece cannot be read without its sibling; a split is warranted when the two pieces would be read and changed apart, a merge when one body would describe the thing more clearly than two.");
-  expect(prompt).toContain("Findings about different mechanisms are different things; the clauses of one contract read and changed together are one.");
+  expect(prompt).toContain("Two principles decide, not a list of cases.");
+  expect(prompt).toContain("One item, one thing, sized by what a clear description needs: too long when a reader hunts for the subject or one change would rewrite the whole body; too short when a piece cannot be read without its sibling.");
+  expect(prompt).toContain("Findings about different mechanisms are different things; the clauses of one contract, read and changed together, are one.");
   // Principle 2: knowledge is macro; an over-detailed body is a rewrite, not a split.
-  expect(prompt).toContain("Knowledge is macro: a body holds decisions, mechanisms, constraints and their reasons; identifiers, function and parameter names, counts and hashes stay in the facts and the original and enter a body only when the claim cannot be stated without them (`trace` reaches them when needed).");
-  expect(prompt).toContain("A body long only by identifiers, function and parameter names, counts and hashes is trimmed (D), not split.");
-  expect(prompt).toContain("session-local narration, step-by-step history and the detail the macro principle keeps out of a body dropped unless they are the point");
+  expect(prompt).toContain("Knowledge is macro: decisions, mechanisms, constraints and their reasons. Identifiers, parameter names, counts, hashes and session detail stay in the facts; they enter a body only when the claim cannot be stated without them.");
+  expect(prompt).toContain("A body long only by identifiers, names, counts and hashes is trimmed (D), not split.");
+  expect(prompt).toContain("The current rule only; history lives in the versions and the cited facts.");
   // The example lists are gone.
   expect(prompt).not.toContain("Split: a user's rule");
   expect(prompt).not.toContain("Do not split: the clauses");
   // A split-out piece is checked for a home before it becomes a new identity.
-  expect(prompt).toContain("A piece that would be split out is checked for an existing home before it is created: if a current item already carries it, the piece merges there instead of becoming a new identity.");
+  expect(prompt).toContain("A piece that would be split out is checked for an existing home first: if a current item already carries it, it merges there instead of becoming a new identity.");
   // Status beside a ruling: compound by the category test; finished status folded, its record archived; follow-up is its own open.
-  expect(prompt).toContain("A body that mixes a ruling or mechanism with implementation status is compound — the category test says so: status and progress are `open`, rulings are `constraint`/`mechanism`/…; a body that cannot be given one category is two things.");
-  expect(prompt).toContain("A finished status with no follow-up (merged, implemented, installed) is folded into the ruling's body in a few characters (`已合入main`, `已实现`) as the traceable pointer; a status with follow-up is its own `open` item.");
-  expect(prompt).toContain("The delivery record a folded status came from is archived on its finishing fact (C); a status with follow-up is created as its own `open` only after the home check (B).");
-  expect(prompt).toContain("The protected-meaning entry \"useful completed work that prevents repetition\" is met by the archived version and its cited facts, plus the few characters folded into the ruling the status stood beside; it does not keep a finished record resident.");
+  expect(prompt).toContain("A body that mixes a ruling or mechanism with implementation status is two things: status and progress are `open`, rulings are `constraint`, `mechanism` and their kin.");
+  expect(prompt).toContain("A finished status with no follow-up (merged, implemented, installed) is a few characters in the ruling's body, pointing at its fact. A status with follow-up is its own `open`.");
+  expect(prompt).toContain("The delivery record a folded status came from is archived on its finishing fact (C); a status with follow-up becomes its own `open` only after the home check (B).");
+  expect(prompt).toContain("What remains of it is the archived version, its cited facts and the few characters folded into the ruling.");
   // The first round is the per-item work; its only archives are C's, on a cited fact.
   expect(prompt).toContain("First round: A–D over every item, closed by `check`; its only archives are C's, on a cited fact.");
   expect(prompt).not.toContain("closed by D");
@@ -2537,11 +2540,11 @@ test("57: the Dreamer deliberates one item at a time on two principles; status b
 test("59: every supplied item is accounted for by an operation or a skip; New items search history once, in a batch", () => {
   const prompt = loadPrompt("dreaming.md");
   // The loop's opening: an item ends the round in an operation or a skip; the check reports the rest; a skip certifies nothing.
-  expect(prompt).toContain("Every supplied item ends the round either in an operation or in a skip with a reason, and the check reports the ones that are neither; a skip is not a certificate.");
+  expect(prompt).toContain("Every supplied item ends in an operation or in a skip with a reason; a skip clears nothing.");
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
-  expect(prompt).toContain("Before the first `New:` item is decided, one `search` with `queries` — for each New item the shortest common noun of its object, the word an older body would use, one query per object and never the item's own phrase — `layer: knowledge`, `versions: history`, `cap: 3`; a hit is a revival candidate to read in full (`trace`) before deciding whether the New item continues that identity.");
+  expect(prompt).toContain("Before the first `New:` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
   // The memory call names the skip shape; the empty-skip literal is gone.
-  expect(prompt).toContain('Call memory({operations, skipped}); a skip is `{knowledge: "K12@57", because}` naming a supplied item this round leaves without an operation.');
+  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a supplied item left without an operation.');
   expect(prompt).not.toContain("skipped: []");
   // The check tool's receipt and the memory tool's description carry the same contract.
   expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("a skip accounts for the item and never certifies it");
@@ -2565,23 +2568,23 @@ test("47: read-version descriptions name current, history and all without making
 test("46: a rule and the choice under it are two items; sub-items are their own opens; an empty receipt is a complete block", () => {
   const prompt = loadPrompt("consolidation.md");
   // The two atomicity sentences sit beside 44's, which stay as they are.
-  expect(prompt).toContain("the goal text holds the intent alone and nothing is archived. The pinned development baseline is its own `reference` state item, updated as it moves. Each staffing choice is its own item with the role named first");
-  expect(prompt).toContain("A user's rule and the assistant's choice, practice or implementation made under it are two items — the rule is the `constraint`, the choice is the assistant's current choice, updated when the choice changes — and neither absorbs the other when the range states them together; a `goal` never absorbs a user's rule stated beside it, which stays its own `constraint`.");
+  expect(prompt).toContain("the goal holds the intent alone and nothing is archived.");
+  expect(prompt).toContain("A user's rule and the assistant's choice, practice or implementation under it are two items; neither absorbs the other when the range states them together, and a `goal` never absorbs a user's rule stated beside it.");
   expect(prompt).toContain("A work item with named sub-items holds only the shared target, order and current step; each sub-item with its own scope and acceptance is its own `open`, continued on its own id.");
   // The empty receipt is a complete block; 45's sentences around it stay as they are.
-  expect(prompt).toContain("its receipt lists the whole items the capacity could not hold. When the receipt is empty, the block — with the versions already visible in an inherited context — is the whole applicable set: a claim no supplied item maintains has no existing item, so create it without a search to confirm absence. Read the supplied block first for what this range closes and for the item a claim continues.");
+  expect(prompt).toContain("An empty receipt means the block, with the versions already visible in an inherited context, is the whole applicable set.");
   // Steps 2 and 3 of the search procedure apply only without a complete block.
-  expect(prompt).toContain("2. Without one, and only when the block is absent or its receipt is not empty (with a complete block, the item a claim continues is found by reading the block), `search` a single distinctive literal word taken from the old state:");
-  expect(prompt).toContain("No hit means change the word, never stack words.");
+  expect(prompt).toContain("To find an item not supplied, `search` one distinctive literal word from its old state — the object's name, the previous version number, \"not committed\", \"awaiting\".");
+  expect(prompt).toContain("On no hit, change the word; never add one.");
 });
 
 test("45: overflow receipts are not a reading checklist; omitted items need a specific read cue", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("it is not a reading checklist");
-  expect(prompt).toContain("Read a receipted item only when a fact's `quote`, a review cue or a targeted search hit points to it.");
-  expect(prompt).toContain("Do not enumerate or trace the receipt to reconstruct the omitted pool.");
-  expect(prompt).toContain("Lower lexical relevance does not prove an item irrelevant; preserve the necessary read exceptions above.");
-  expect(prompt).toContain("a negated-support reminder, a CLOSER entry or a targeted search hit — `trace` it if the needed version was not supplied complete");
+  expect(prompt).toContain("The receipt is not a reading list");
+  expect(prompt).toContain("read a receipted item only when a fact's `quote`, a cue or a search hit points to it");
+  expect(prompt).toContain("The receipt is not a reading list: read a receipted item only when");
+  expect(prompt).toContain("lower lexical relevance does not prove it irrelevant.");
+  expect(prompt).toContain("A negated-support cue and a CLOSER entry give a check target, never a conclusion.");
   expect(prompt).not.toContain("when an id is receipted");
   expect(prompt).not.toContain("in the block's omission receipt — `trace` it first");
   expect(prompt).not.toContain("inspect any receipted item that may maintain a claim");
@@ -2591,12 +2594,12 @@ test("45: overflow receipts are not a reading checklist; omitted items need a sp
  * `reference` item, and finished work now closes by updating the same identity rather than archive. */
 test("44 C6 reverses 40 C1: state and finished-work arcs update one identity", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("a new-state fact updates that item with itself as the only support");
-  expect(prompt).toContain("never a fresh create and never an archive while the object exists");
-  expect(prompt).toContain("A negated-support reminder or a CLOSER entry supplies a check target, never a conclusion");
+  expect(prompt).toContain("A new state updates that item, citing the new-state fact alone.");
+  expect(prompt).toContain("Never create a second item for it or archive it while the object exists.");
+  expect(prompt).toContain("A negated-support cue and a CLOSER entry give a check target, never a conclusion.");
   expect(prompt).toContain("A summary report that does not prove per-item closure leaves the item unchanged; retirement is not a substitute for a justified update.");
-  expect(prompt).toContain("A finished work item (fixes awaiting commit, a task awaiting results) is updated on the fact that ends it to state concisely that it ended and on what, holding no chain of completed events.");
-  expect(prompt).toContain("A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite state.");
+  expect(prompt).toContain("A finished work item is updated on the fact that ends it: that it ended, and on what; no chain of completed events.");
+  expect(prompt).toContain("A fact reporting a knowledge clause stale supports an update that removes the clause, not one that asserts the opposite.");
   expect(prompt).not.toContain("completed results that must not be redone");
   expect(prompt).not.toContain("is archived on the fact that ends it");
 });
@@ -2605,36 +2608,36 @@ test("44 C6 reverses 40 C1: state and finished-work arcs update one identity", (
  * evidence level stay, so "installed" is not read as "running". */
 test("40 C2: knowledge text carries no completion narrative but keeps the qualifiers", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("The text carries no completion status or verification narrative of the work that produced the claim");
-  expect(prompt).toContain("a rule stands on its own, a state item states the state, and the event stays in the fact layer where the item's supports point at it");
-  expect(prompt).toContain("a qualifier that governs the next action or the evidence level stays");
-  expect(prompt).toContain("so that \"installed\" is not read as \"running\"");
+  expect(prompt).toContain("No completion or verification narrative of the work behind the claim");
+  expect(prompt).toContain("a rule stands on its own, a state item states the state, the event stays in the cited facts");
+  expect(prompt).toContain("Keep a qualifier that governs the next action or the evidence level");
+  expect(prompt).toContain("(\"installed on disk, loaded only after Pi restarts\"; \"reported by the subagent, not verified\")");
 });
 
 /** Ticket 40 C5 as reversed by ticket 44: approval changes the ban's category on the same K;
  * intent, baseline and each role's staffing are independently maintainable claims. */
 test("44 C6 reverses 40 C5: approval updates same K and atomizes intent, baseline and staffing", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("approval to start work updates the constraint that forbade it into the `goal` on the same id, changing category from `constraint` to `goal`");
-  expect(prompt).toContain("the goal text holds the intent alone and nothing is archived");
-  expect(prompt).toContain("The pinned development baseline is its own `reference` state item, updated as it moves.");
-  expect(prompt).toContain("Each staffing choice is its own item with the role named first");
-  expect(prompt).toContain("create one only if no corresponding identity exists");
-  expect(prompt).toContain("A dispatch, pause, resume or completion report stays in the fact layer unless it changes a work item's target, progress or next step, in which case it updates that work item's `open`");
+  expect(prompt).toContain("A user's approval to start work updates the constraint that forbade it into a `goal` on the same id");
+  expect(prompt).toContain("the goal holds the intent alone and nothing is archived");
+  expect(prompt).toContain("The pinned development baseline is its own `reference` item, updated as it moves.");
+  expect(prompt).toContain("Each staffing choice is its own item, the role named first");
+  expect(prompt).toContain("create one only when no identity exists");
+  expect(prompt).toContain("A dispatch, pause, resume or completion report stays in the fact layer unless it changes a work item's target, progress or next step.");
   expect(prompt).not.toContain("archives the constraint that forbade it and creates a `goal`");
 });
 
 test("44 C6 pins one-K identity continuity, causal supports and role/default separation", () => {
   const prompt = loadPrompt("consolidation.md");
-  expect(prompt).toContain("A knowledge item is the versioned arc of one object: one object, one independently maintainable claim or state, one identity.");
-  expect(prompt).toContain("its state, its category, or its wording — is an update of the same id; retiring it belongs to the Dreamer");
-  expect(prompt).toContain("the same object's same independently maintainable conclusion or state, whether the item is in the block or in the omission receipt");
+  expect(prompt).toContain("A knowledge item is the versioned arc of one object: one object, one independently changeable claim or state, one identity.");
+  expect(prompt).toContain("a change to that claim or state — its content, its category or its wording — is an update of the same id");
+  expect(prompt).toContain("A claim or state an existing item already maintains — in the block or in the receipt — is updated on that item; a second item for it is never created.");
   expect(prompt).toContain("a second item for it is never created");
-  expect(prompt).toContain("an implementation-subagent default of Sol high, then Astra high, then Sol medium continues as versions of the same K");
-  expect(prompt).toContain("A ticket-specific staffing override is separate and must not replace a broader global or project default; implementation and review roles are separate claims.");
-  expect(prompt).toContain("`supports` names every fact of this range that moved the item to the submitted version");
+  expect(prompt).toContain("one role's default of Sol high, then Astra high, then Sol medium is one item in three versions");
+  expect(prompt).toContain("A ticket-specific override is its own item; implementation and review roles are separate claims.");
+  expect(prompt).toContain("`supports`: every fact of this range that moved the item to this version");
   expect(prompt).toContain("Earlier versions' supports are inherited, not copied.");
-  expect(prompt).toContain("A persistent object's new state cites the new-state fact alone.");
+  expect(prompt).toContain("A new state updates that item, citing the new-state fact alone.");
   expect(prompt).not.toContain("`supports` contains only the facts explicitly grounding this change");
   expect(prompt).not.toContain("List only facts that establish this admission/correction/withdrawal");
 });
@@ -2644,10 +2647,10 @@ test("44 C6 pins one-K identity continuity, causal supports and role/default sep
  * rate and is narrowed to the before-and-after values of one measurement. */
 test("40 N1: claims that could be acted on separately are split, one fact per finding, plan element and compared subject", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("When one passage holds claims that could be approved, withdrawn, verified or completed separately, split them, each keeping its own conditions and exceptions.");
-  expect(prompt).toContain("a statistic yields one fact per compared subject when each subject's numbers could be wrong on their own");
-  expect(prompt).toContain("The before-and-after values of one measurement are one claim; a decision with its necessary reason is one claim.");
-  expect(prompt).toContain("Conditions and exceptions travel with the claim they qualify and are never dropped to shorten it.");
+  expect(prompt).toContain("one fact per claim that could be approved, withdrawn, verified or completed on its own");
+  expect(prompt).toContain("per compared subject of a statistic");
+  expect(prompt).toContain("Before-and-after values of one measurement are one claim; a decision with its necessary reason is one claim.");
+  expect(prompt).toContain("Conditions and exceptions travel with the claim they qualify; never drop them to shorten.");
   expect(prompt).not.toContain("comparison values are one claim");
 });
 
@@ -2656,7 +2659,7 @@ test("40 N1: claims that could be acted on separately are split, one fact per fi
  * recorded, because the answer and the event support it and the accounting checks it. */
 test("40 N4: the user's instruction, question or plan approval that starts work is recorded even when the work completes in the same batch", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan, are recorded even when the work completes in the same batch: they are what the answer and the event support, and what the Consolidator's accounting checks.");
+  expect(prompt).toContain("The user's instruction or question that starts a piece of work, and the user's approval of a plan — even when the work completes in the same batch");
 });
 
 /** Ticket 58 (2026-09-18): an approval or implementation fact names its object and supports it when
@@ -2665,7 +2668,7 @@ test("40 N4: the user's instruction, question or plan approval that starts work 
  * says whose decision it is in a few characters. Neither prompt names the case. */
 test("58: an approval or implementation fact names its object and supports it when it is in view", () => {
   const prompt = loadPrompt("noting.md");
-  expect(prompt).toContain("Relations are written so that a reader can reconstruct approval, rejection, execution, verification and contradiction from the facts' text and their references alone: each text keeps the objects, scope, conditions and degree of evidence its relations rest on.");
+  expect(prompt).toContain("Write relations so that a reader can reconstruct approval, rejection, execution, verification and contradiction from the facts' text and references alone: each text keeps the objects, scope, conditions and degree of evidence its relations rest on.");
   expect(prompt).not.toContain("never guessed toward a target outside the visible range");
   expect(prompt).not.toMatch(/Engine|F1841|K386/);
 });
@@ -2673,25 +2676,29 @@ test("58: an approval or implementation fact names its object and supports it wh
 test("58/61: the category definitions are shared blocks, spliced into the Consolidator and the Dreamer", () => {
   const facts = readFileSync(new URL("../../../src/core/prompts/shared/facts.md", import.meta.url), "utf8");
   const knowledge = readFileSync(new URL("../../../src/core/prompts/shared/knowledge.md", import.meta.url), "utf8");
-  expect(facts).toContain("Facts have three sources: the user's facts; observation — an `observation` or `event` fact stating what was found, measured or done, direct when its evidence is a tool result or the user's own account, relayed when its text says according to whom or its status is reported or dispatched, and a relayed one is its reporter's claim, weighed as an assistant claim; and the assistant's own claims — its proposals, decisions and interpretations. A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it: a negated fact supports nothing, a weak negate is doubt or partial conflict that you weigh, and the original facts and their references remain.");
-  expect(knowledge).toContain("Knowledge is of three kinds. Established decision knowledge — `goal`, `constraint`, `mechanism` — is created, updated or entered by a category change only when its core claims come directly from valid user or observation facts, or, where a core claim comes from an assistant claim, that claim has strong support from a valid user or observation fact; which claims are core and whether scattered evidence suffices is your judgment — not every cited fact needs its own strong support, and repeated facts of one claim are not supported one by one; grounding already valid is inherited along the item's versions, and a core claim that is itself strongly negated does not survive on its old supports. A decision that does not meet the condition stays pending. Pending decision knowledge — `open`, and `dispute` where two accounts conflict — holds claims not yet accepted; once a valid fact establishes one, it changes category on its own id or merges into the established item of its object, under the same condition. An established item never becomes pending: a doubt, an alternative or unfinished work concerning it is its own pending item, and the established item stands until a valid fact changes or archives it; a pending and an established item about the same object's decision are not duplicates — the one is a proposal not yet confirmed, the other the reality in force. Auxiliary knowledge — `term`, `reference` — is created and updated without condition.");
-  expect(knowledge).toContain("- **open**: what has no clear outcome, would be re-investigated by the next agent, or needs the user's ruling? Say what and whom it is waiting for, and keep the change it is about — what stood before, what is proposed instead, and who proposed each — since the settled categories state only what holds now and leave the past to their versions.");
+  expect(facts).toContain("- observation — an `observation` or `event` fact. Direct when its evidence is a tool result or the user's own account; relayed when its text says according to whom or its status is `reported` or `dispatched`. A relayed observation is its reporter's claim and weighs as an assistant claim.");
+  expect(facts).toContain("**Validity.** A fact is valid while it is on the applicable chain and no later user or observation fact strongly negates it. A negated fact supports nothing. A weak negate is doubt or partial conflict: weigh it. The original facts and their references remain.");
+  expect(knowledge).toContain("- **Established decision knowledge** — `goal`, `constraint`, `mechanism`. Create it, update it or enter it by a category change only when every core claim comes directly from a valid user or observation fact, or from an assistant claim that a valid user or observation fact strongly supports. Which claims are core, and whether scattered evidence suffices, is your judgment: not every cited fact needs its own strong support, and repeated facts of one claim are not supported one by one. Grounding once valid is inherited along the versions; a core claim itself strongly negated does not survive on its old supports.");
+  expect(knowledge).toContain("- **Pending decision knowledge** — `open`, and `dispute` where two accounts conflict. A decision that fails the condition stays here. When a valid fact establishes it, it changes category on its own id or merges into the established item of its object, under the same condition.");
+  expect(knowledge).toContain("- An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it. A pending and an established item about one object's decision are not duplicates: one is a proposal not yet confirmed, the other the reality in force.");
+  expect(knowledge).toContain("- **Auxiliary knowledge** — `term`, `reference`. Create and update it without condition.");
+  expect(knowledge).toContain("- **open** — what has no clear outcome, would be re-investigated by the next agent, or needs the user's ruling? Say what and whom it waits for, and keep the change it is about: what stood before, what is proposed instead, who proposed each. Settled categories state only what holds now; their past is in their versions.");
   expect(facts + knowledge).not.toMatch(/Engine|F1841|K386/);
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
     expect(composed).toContain(knowledge.trimEnd());
     expect(composed).toContain(facts.trimEnd());
     expect(composed).not.toContain("<!-- include:");
-    expect(readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8")).not.toContain("Knowledge is of three kinds");
+    expect(readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8")).not.toContain("Three kinds");
   }
   expect(loadPrompt("noting.md")).toContain(facts.trimEnd());
-  expect(loadPrompt("noting.md")).not.toContain("Knowledge is of three kinds");
+  expect(loadPrompt("noting.md")).not.toContain("Three kinds");
 });
 
 test("58: the Dreamer merges within a kind and never makes an established item pending", () => {
   const prompt = loadPrompt("dreaming.md");
-  expect(prompt).toContain("Merging stays within a kind — pending with pending, established and auxiliary among themselves — a pending item entering an established one only under the categories' condition.");
-  expect(prompt).toContain("An established item never becomes pending: a doubt, an alternative or unfinished work concerning it is its own pending item, and the established item stands until a valid fact changes or archives it");
+  expect(prompt).toContain("Merge within a kind: pending with pending, established and auxiliary among themselves; a pending item enters an established one only under the establishment condition.");
+  expect(prompt).toContain("An established item never becomes pending: a doubt, an alternative or unfinished work about it is its own pending item, and the established item stands until a valid fact changes or archives it.");
   expect(prompt).not.toContain("An established item whose core claim a later user or direct observation fact strongly negates");
   expect(prompt).toContain("becomes one `dispute` item naming both sides.");
   expect(prompt).not.toContain("two pending items merge into it");
@@ -2703,10 +2710,78 @@ test("58: the Consolidator reads adoption from the adopting user fact and states
   const prompt = loadPrompt("consolidation.md");
   expect(prompt).toContain("Single review findings, explanations of code and unadopted agent proposals fail unless they establish a rule.");
   expect(prompt).not.toContain("a user's proposal that the work proceeds under");
-  expect(prompt).toContain("a support edge is neither required nor sufficient: adoption is read from the content and scope of the user fact. A constraint from an external system or confirmed by experiment keeps its evidential nature in the text rather than posing as a user ruling.");
+  expect(prompt).toContain("Read adoption from the content and scope of that user fact; a support edge is neither required nor sufficient.");
   expect(prompt).not.toContain("never from co-occurrence in a batch");
-  expect(prompt).toContain("The body states in a few characters, in the conversation's language, who proposed each decision and how explicitly the user adopted it — never a bare \"current choice\" or \"confirmed\"; the reason describes the change and is neither evidence for nor a substitute for that attribution.");
+  expect(prompt).toContain("Attribution is a few characters, never a sentence: who proposed the decision and how explicitly the user adopted it. Never a bare \"current choice\" or \"confirmed\".");
   expect(prompt).not.toContain('"the current choice"');
   expect(prompt).not.toContain("Status — what is running");
   expect(prompt).not.toMatch(/Engine|F1841|K386/);
+});
+
+// 61 (2026-09-19): the prompts are written to one standard — shared memory-model blocks, per-stage judgment,
+// short imperative sentences, no internal references, defined vocabulary only.
+const STAGE_PROMPTS = ["noting.md", "consolidation.md", "dreaming.md"] as const;
+const promptSentences = (text: string) => {
+  const body = text.replace(/```[\s\S]*?```/g, "");
+  const sentences: string[] = [];
+  for (const paragraph of body.split(/\n\s*\n/)) {
+    if (paragraph.trim().startsWith("#")) continue;
+    for (const raw of paragraph.split("\n")) {
+      const line = raw.replace(/^\s*(?:[-*>]|\d+\.)\s+/, "").trim();
+      const parts = line.split(/(?<=[.!?:])\s+(?=[A-Z`"(*\[])/).filter(part => part.split(/\s+/).length >= 2);
+      sentences.push(...parts);
+      if (parts.length > 4) sentences.push(`WALL:${line.slice(0, 60)}`);
+    }
+  }
+  return sentences;
+};
+
+test("61: every stage prompt is composed from the shared blocks in one section order, with a numbered procedure", () => {
+  const order = ["## Role", "## Definitions", "## Inputs", "## Procedure", "## Judgment", "## Contract"];
+  for (const file of STAGE_PROMPTS) {
+    const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8");
+    let last = -1;
+    for (const heading of order) {
+      const at = raw.indexOf(`\n${heading}\n`);
+      expect(at, `${file}: ${heading}`).toBeGreaterThan(last);
+      last = at;
+    }
+    expect(raw).toMatch(/\n## Procedure\n\n1\. /);
+    expect(raw).toMatch(/<!-- include: model -->/);
+    expect(loadPrompt(file)).not.toContain("<!-- include:");
+  }
+});
+
+test("61: sentences are short, paragraphs are not walls, and no internal reference or internal vocabulary leaks into the prompts", () => {
+  const banned = [/\bv1\.\d\b/, /\b\d\d[a-z]?'s\b/, /\bticket\s+\d+/, /\bcase \d\b/, /certif/i, /\bneutral conflict\b/, /\bpost-freeze\b/,
+    /\beffective grounding\b/, /\bfrozen family\b/, /\bfamily\b/, /\bCONTEXT\.md\b/];
+  for (const file of STAGE_PROMPTS) {
+    const prompt = loadPrompt(file);
+    const sentences = promptSentences(prompt);
+    const walls = sentences.filter(s => s.startsWith("WALL:"));
+    expect(walls, `${file}: paragraphs over four sentences`).toEqual([]);
+    const lengths = sentences.filter(s => !s.startsWith("WALL:")).map(s => s.split(/\s+/).length);
+    const longest = sentences.filter(s => s.split(/\s+/).length > 40);
+    expect(longest, `${file}: sentences over 40 words`).toEqual([]);
+    expect(lengths.reduce((a, b) => a + b, 0) / lengths.length, `${file}: mean sentence length`).toBeLessThanOrEqual(18);
+    for (const pattern of banned) expect(prompt.match(pattern), `${file}: ${pattern}`).toBeNull();
+    expect(prompt).not.toMatch(/[一-鿿]/);
+  }
+});
+
+test("61: every backticked category, kind or field word used in a stage file is defined in the shared blocks", () => {
+  const shared = ["model", "facts", "knowledge", "authority", "body", "reading"]
+    .map(name => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8")).join("\n");
+  const defined = new Set(["goal", "constraint", "mechanism", "term", "reference", "open", "dispute", "question", "proposal", "decision",
+    "observation", "interpretation", "event", "completed", "reported", "dispatched", "attempted", "user", "agent", "session", "project", "global",
+    "trace", "search", "quote", "source", "status", "supports", "reason", "topics", "text", "category", "scope", "actor", "inbound", "support", "negate", "strong", "weak"]);
+  for (const word of defined) expect(shared, `shared blocks define ${word}`).toMatch(new RegExp("`" + word + "`|\\*\\*" + word + "\\*\\*"));
+  for (const file of STAGE_PROMPTS) {
+    const raw = readFileSync(new URL(`../../../src/core/prompts/${file}`, import.meta.url), "utf8").replace(/```[\s\S]*?```/g, "");
+    for (const match of raw.matchAll(/`([a-z]+)`/g)) {
+      const word = match[1]!;
+      if (["note", "memory", "check", "create", "update", "merge", "split", "archive", "op", "id", "skipped", "operations", "queries", "layer", "versions", "cap", "history", "full", "ok", "absorb"].includes(word)) continue; // stage tools and operation fields, defined in the stage's Contract
+      expect(defined.has(word), `${file}: \`${word}\` is not a defined term`).toBe(true);
+    }
+  }
 });

@@ -509,8 +509,8 @@ test("23c/30: the Noter prompt names the labels, the independent part budgets an
   const prompt = loadPrompt("noting.md");
   for (const named of ["`[T<n>#E<m>@text] user: <text>`", "`assistant: <text>`",
     "`[T<n>#E<m>@<callId>] <tool>(<key>=<value>, …)`", "`[T<n>#E<r>@<callId>] <tool> <status>: <result text>`",
-    "one tool-call part is worth at most 100 tokens and one tool-result part at most 100, each an independent allowance",
-    "one entry at most 2,000",
+    "a tool-call part shows at most 100 tokens, a tool-result part at most 100",
+    "an entry at most 2,000",
     "`[... N characters truncated]`", "`[... N characters of details truncated]`"]) {
     expect([named, prompt.includes(named)]).toEqual([named, true]);
   }

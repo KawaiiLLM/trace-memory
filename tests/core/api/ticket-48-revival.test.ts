@@ -10,10 +10,10 @@ test("48: the trusted facade revives an archived identity after complete exact r
   let returned!: { knowledgeId: number; commit: number };
   const memory = TraceMemory(":memory:", async raw => {
     const task = raw as DreamingAgentInput;
-    expect(task.prompt).toContain("same object's same independently maintainable claim or state");
-    expect(task.prompt).toContain("search using `versions: history`");
-    expect(task.prompt).toContain("completely read the archive commit and its parent");
-    expect(task.prompt).toContain("likely to return, prefer preserving its identity through merge or update over archive");
+    expect(task.prompt).toContain("the same object's same claim or state");
+    expect(task.prompt).toContain("find it by the object's name with `versions: history`");
+    expect(task.prompt).toContain("read the archive commit and its parent completely");
+    expect(task.prompt).toContain("When an object is likely to return, preserve its identity by merge or update rather than archive.");
     expect(task.material.changed).toContain("New:");
     expect(task.material.changed).toContain("Returned widget state");
     task.tools.find(tool => tool.name === "check")!.execute({});

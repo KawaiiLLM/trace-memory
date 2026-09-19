@@ -1,10 +1,12 @@
 ### The knowledge body
 
-- One line; state the fact or pattern first, then the known reason or mechanism; operational present tense.
-- Drop session detail and commit hashes unless the hash is the point; no ids in the text.
-- Knowledge is macro: a body holds decisions, mechanisms, constraints and their reasons; identifiers, function and parameter names, counts and hashes stay in the facts and the original and enter a body only when the claim cannot be stated without them (`trace` reaches them when needed).
-- The text carries no completion status or verification narrative of the work that produced the claim ("done", "tests passed", "27 files matched", "the assistant reports it complete"): a rule stands on its own, a state item states the state, and the event stays in the fact layer where the item's supports point at it. What is removed is the narrative, not the conditions: a qualifier that governs the next action or the evidence level stays ("installed on disk, loaded only after Pi restarts"; "reported by the subagent, not verified"), so that "installed" is not read as "running".
-- The body states in a few characters, in the conversation's language, who proposed each decision and how explicitly the user adopted it — never a bare "current choice" or "confirmed"; the reason describes the change and is neither evidence for nor a substitute for that attribution.
-- **One knowledge item, one claim that can be overturned on its own**. This overrides "few but valuable".
-- Typically under 50 tokens; over 200 is flagged as a diagnostic.
-- A body is readable when someone who never saw the conversation understands it: full sentences in the conversation's language, present tense for what holds now, the object, the claim, its conditions, its status and who decided it stated in words; specifics added where the body is vague; session-local narration, step-by-step history and the detail the macro principle keeps out of a body dropped unless they are the point. The project's vocabulary counts as understood (CONTEXT.md; N/C/D, claim, placement, path) — what fails is a clause whose subject, condition or actor cannot be resolved; attribution is a few characters (`助手选择`, `用户裁定`), never a sentence; a body states the current rule only — history is for tracing through the version chain and the cited facts, never resident (a body that narrates its own evolution bloats the context). A telegraphic body such as `每库知识G/P/S默认4k/10k/1k，适用池≤其和；同库共享、异库独立，Settings仅入口…` is one anti-pattern; a body ending in `这是助手的实现选择，不是另行记录的用户裁定` is the other.
+- One line in the conversation's language: the claim first, then its reason or mechanism; present tense for what holds now.
+- A reader who never saw the conversation understands it: the object, the claim, its conditions, its status and who decided it, in words. The project's vocabulary counts as understood.
+- Attribution is a few characters, never a sentence: who proposed the decision and how explicitly the user adopted it. Never a bare "current choice" or "confirmed".
+- Knowledge is macro: decisions, mechanisms, constraints and their reasons. Identifiers, parameter names, counts, hashes and session detail stay in the facts; they enter a body only when the claim cannot be stated without them.
+- No ids in the text; no commit hash unless the hash is the point.
+- No completion or verification narrative of the work behind the claim ("done", "tests passed", "the assistant reports it complete"): a rule stands on its own, a state item states the state, the event stays in the cited facts. Keep a qualifier that governs the next action or the evidence level ("installed on disk, loaded only after Pi restarts"; "reported by the subagent, not verified").
+- The current rule only; history lives in the versions and the cited facts.
+- One item, one claim that can be overturned on its own. This outranks "few but valuable".
+- Typically under 50 tokens; over 200 is flagged.
+- The reason is the commit message: it describes the change and is neither evidence nor a substitute for attribution.

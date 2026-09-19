@@ -132,7 +132,7 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     const repairMessages = log.filter(e => JSON.stringify(e).includes("System-generated Dreamer completion check"));
     expect(repairMessages).toHaveLength(1);
     expect(initialSystem).toContain("# Dreamer — bounded knowledge maintenance");
-    expect(initialSystem).toContain("Use only trace, search, memory and check.");
+    expect(initialSystem).toContain("Your tools are `trace`, `search`, `memory` and `check`.");
     let priorStage = -1;
     for (const heading of workflowHeadings) {
       const position = initialSystem!.indexOf(heading);
@@ -141,14 +141,14 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
     }
     expect(initialSystem).toContain("user-versus-agent attribution");
     expect(initialSystem).toContain("attempted, reported, completed and verified distinctions");
-    expect(initialSystem).toContain("An archive has exactly one of three reasons, stated in `reason`:");
-    expect(initialSystem).toContain("invalid budget stripping");
+    expect(initialSystem).toContain("Exactly one of three, stated in `reason`:");
+    expect(initialSystem).toContain("is budget stripping, not maintenance");
     expect(initialSystem).toContain("\"Still valid, lower priority, needed for the budget\" is not a reason.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
     expect(repairSystems.length).toBeGreaterThan(1);
     expect(repairSystems.every(system => system === initialSystem),
       JSON.stringify(repairSystems.map(system => ({ bytes: system === undefined ? undefined : Buffer.byteLength(system), dreamer: system?.startsWith("# Dreamer") })))).toBe(true);
-    expect(repairSystems.every(system => system?.includes("Only this host-bound Dreamer may use supports: []"))).toBe(true);
+    expect(repairSystems.every(system => system?.includes("`supports: []` is allowed here for update, merge, split and archive"))).toBe(true);
     expect(initialTools).toEqual(["trace", "search", "check", "memory"]);
     expect(repairToolSets.every(tools => JSON.stringify(tools) === JSON.stringify(initialTools))).toBe(true);
     expect(repairHistory?.filter(m => m.role === "toolResult")).toHaveLength(24);
