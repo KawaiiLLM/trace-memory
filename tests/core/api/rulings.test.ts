@@ -2384,7 +2384,7 @@ test("40 N0: the verbatim span naming the object goes in quote, which the id che
   const prompt = loadPrompt("noting.md");
   expect(prompt).toContain("`quote` holds verbatim material — error text, commands, paths, hashes — and the span that names the object. Ids never go in the text.");
   expect(prompt).toContain("A resubmission after a rejection changes only what was rejected; it never drops an object's identity, a condition, a negation or an evidence level.");
-  expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own.");
+  expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own, however small.");
   const { s, t } = session();
   const note = memory.tools({ kind: "manual", sessionId: s.id, branch: "main", currentTurnId: t.id }).find(tool => tool.name === "note")!;
   const fact = (changes: Record<string, unknown>) => ({ category: "observation", actor: "agent",
@@ -2570,7 +2570,7 @@ test("46: a rule and the choice under it are two items; sub-items are their own 
   // The two atomicity sentences sit beside 44's, which stay as they are.
   expect(prompt).toContain("When the same independent claim changes, update its item — content, category or wording, on the same id.");
   expect(prompt).toContain("Implementation detail that follows from a decision is the decision's consequence, not knowledge, until a fact changes the decision.");
-  expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own.");
+  expect(prompt).toContain("One record, one object, one claim that can be approved, negated, verified or changed on its own, however small.");
   // The empty receipt is a complete block; 45's sentences around it stay as they are.
   expect(prompt).toContain("An empty receipt means the block, with the versions already visible in an inherited context, is the whole applicable set.");
   // Steps 2 and 3 of the search procedure apply only without a complete block.
