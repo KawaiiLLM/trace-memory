@@ -1,5 +1,4 @@
 ### Atomicity
 
-- One item records one object's independent conclusion, in the present tense that guides action.
-- When the same independent claim changes, update the original item, so that the change and its historical evidence can be traced; different independent claims about one object are maintained apart.
-- An unconfirmed alternative never overrides a ruling still in force; it is kept apart as a pending item.
+- One item records one claim — one object, one content — that changes on its own. Apart from the two pending states `open` and `dispute`, the same claim never appears twice in any other state.
+- When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.

@@ -11,7 +11,7 @@ A knowledge item is the versioned arc of one object: one object, one independent
 - **constraint** — if a new agent ignored it, would something break or the user be annoyed? Limits, conventions, user preferences, working rules distilled from experience; not a one-off action, not a guess.
 - **mechanism** — when explaining why the system looks like this, would you cite it? Load-bearing design choices and root causes; not what it merely does now.
 - **term** — without knowing what this word refers to, would you misread the user or the code? Project names, references, the user's coinages and their meaning.
-- **reference** — where is the value or location you need when acting? Config values, paths, endpoints, specs, URLs; lookup facts, not explanations.
+- **reference** — where is the value or location you need when acting? Config values, paths, endpoints, specs, URLs; lookup facts, not explanations. A persistent object the agent acts on (an installed version, a published version, a pinned exclusion) has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.
 - **open** — what is still missing before this can be settled or closed? An unanswered question, a proposal awaiting approval, a conclusion awaiting verification, important work to do.
 - **dispute** — which claims conflict, and why can no side be chosen yet? Two accounts of one object under the same conditions, incompatible, with no sufficient basis to rule.
 

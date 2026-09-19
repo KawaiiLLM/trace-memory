@@ -2440,12 +2440,14 @@ test("47: read-version descriptions name current, history and all without making
 test("61: definitions are shared and hold definitions only; the principles are the maintainer's note, shared between the Consolidator and the Dreamer", () => {
   const block = (name: string) => readFileSync(new URL(`../../../src/core/prompts/shared/${name}.md`, import.meta.url), "utf8");
   const definitions = ["model", "facts", "knowledge"].map(block).join("\n");
-  for (const leaked of ["There is no open category", "first decide whether", "never becomes pending", "Object state", "Status.", "however small", "weighs as an assistant claim"])
+  for (const leaked of ["There is no open category", "first decide whether", "never becomes pending", "**Object state.**", "**Status.**", "however small", "weighs as an assistant claim"])
     expect(definitions, `definition blocks carry no principle: ${leaked}`).not.toContain(leaked);
   const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
   expect(principles[0]).toContain("Future-use test: knowledge is information that shapes later understanding; its importance is the cost of forgetting it, never the effort spent, the length of the discussion or the kind of task.");
-  expect(principles[1]).toContain("When the same independent claim changes, update the original item, so that the change and its historical evidence can be traced; different independent claims about one object are maintained apart.");
-  expect(principles[1]).toContain("An unconfirmed alternative never overrides a ruling still in force; it is kept apart as a pending item.");
+  expect(principles[1]).toContain("Apart from the two pending states `open` and `dispute`, the same claim never appears twice in any other state.");
+  expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
+  expect(principles[0]).toContain("the implementation detail under a macro claim is not knowledge");
+  expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
   expect(principles[2]).toContain("Knowledge is a conclusion stripped of process and situation, with its source named: the user, the assistant or an observation.");
   expect(principles[3]).toContain("A core claim needs the user's explicit recognition or direct observation within the scope it claims; relation chains help trace the evidence and never raise a source's authority or degree of proof.");
   expect(principles[3]).toContain("A pending claim never becomes a confirmed conclusion by merging; duplicate pending items may merge and stay pending.");
@@ -2464,6 +2466,8 @@ test("61: definitions are shared and hold definitions only; the principles are t
     for (const file of STAGE_PROMPTS) expect(loadPrompt(file), `${file}: ${gone}`).not.toContain(gone);
   const dreaming = loadPrompt("dreaming.md");
   for (const heading of ["### Splitting", "### Merging", "### Archiving", "### Updating"]) expect(dreaming).toContain(heading);
+  expect(dreaming).toContain("- Remove knowledge that fails the Admission principles.");
+  expect(dreaming).not.toContain("Default is no change");
   expect(dreaming).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost. Old, short, rarely used or finished is by itself no proof of no value.");
 });
 
