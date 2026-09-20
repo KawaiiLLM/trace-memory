@@ -2447,7 +2447,9 @@ test("61: definitions are shared and hold definitions only; the principles are t
   expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
   expect(principles[0]).toContain("the implementation detail under a macro claim is not knowledge");
   expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
-  expect(principles[2]).toContain("Knowledge is a conclusion stripped of process and situation, with its source named: the user, the assistant or an observation.");
+  expect(principles[2]).toContain("Its body names the strength of its evidence: whether it comes from the user, the assistant or an observation, and whether it is a decision, a proposal, a question, an event or the like.");
+  expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");
+  expect(loadPrompt("dreaming.md")).toContain("When over budget, remove first:");
   expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant; by category, decision > interpretation > proposal > question.");
   expect(principles[3]).toContain("A claim without reliable evidence belongs to `open`.");
   expect(principles[3]).toContain("A claim whose reliable evidence conflicts belongs to `dispute`.");

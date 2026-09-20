@@ -139,7 +139,7 @@ test("32d native host: one system repair shares 50 rounds and provider retry can
       expect(position, `effective prompt missing ordered stage: ${heading}`).toBeGreaterThan(priorStage);
       priorStage = position;
     }
-    expect(initialSystem).toContain("Protect first: user constraints and corrections, milestone results, errors and lessons, designs and their reasons, important deadlines, open matters.");
+    expect(initialSystem).toContain("When over budget, protect first: user constraints and corrections, milestone results, errors and lessons, designs and their reasons, important deadlines, open matters.");
     expect(initialSystem).toContain("An archive states who fully carries the information, what evidence proves it expired, or what the budget trade actually lost.");
     expect(initialSystem).toContain("Old, short, rarely used or finished is by itself no proof of no value.");
     expect(initialSystem).not.toMatch(/global 4,000|project 10,000|session 1,000|applicable block within 15,000/);
