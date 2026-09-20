@@ -2445,7 +2445,7 @@ test("61: definitions are shared and hold definitions only; the principles are t
   const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
   expect(principles[0]).toContain("Knowledge carries the macro understanding that guides the direction of work, not the concrete detail that understanding lets one derive easily.");
   expect(principles[0]).toContain("What enters knowledge is the understanding whose absence could cause a wrong decision, a pitfall met again or repeated work later; this includes but is not limited to:");
-  expect(principles[0]).toContain("What does not enter knowledge is the trivial information one step of reasoning from resident knowledge yields; this includes but is not limited to:");
+  expect(principles[0]).toContain("What does not enter knowledge is information that carries no surprise given the resident knowledge — what one step of reasoning from it yields; this includes but is not limited to:");
   expect(principles[1]).toContain("`scope` defaults to `project`.");
   expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
   expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
