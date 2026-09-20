@@ -169,10 +169,12 @@ smoke uses Node's built-in TypeScript support and does not load Vitest.
 
 ## Host decisions and boundaries
 
-- Only `/trace project <name>` declares shared project membership, after the first
+- `/trace project <name>` declares shared project membership, after the first
   assistant reply. The same name in the same database identifies the same project.
-  Otherwise, `pi:<Pi session UUID>` names a private project. No marker file,
-  working directory or Git remote supplies attribution. A project may exist before
+  A new session also joins, as a `marker` declaration, the project its repository
+  directory's recorded sessions already belong to when that is exactly one (62);
+  otherwise `pi:<Pi session UUID>` names a private project. The home and temporary
+  directories never key; no marker file or Git remote supplies attribution. A project may exist before
   any assistant reply; a Trace Memory session cannot. The first prompt is buffered
   until that reply permits its turn row to be appended. Later prompts append
   immediately. Stored project declarations persist across resume and tree navigation.
@@ -1102,8 +1104,9 @@ provider failures, and absence of Pi imports in core.
 ## Manual verification in a real Pi session
 
 Use an isolated database so the observations are easy to inspect. To share a
-project, run `/trace project <name>` after the first assistant reply; marker files
-are ignored. Launch Pi under Node with the extension explicitly selected:
+project, run `/trace project <name>` after the first assistant reply, or start the
+sessions in one repository that already has exactly one project; marker files are
+ignored. Launch Pi under Node with the extension explicitly selected:
 
 ```sh
 export TRACE_MEMORY_CONFIG='{"dbPath":"/private/tmp/trace-memory-manual/trace.db"}'
