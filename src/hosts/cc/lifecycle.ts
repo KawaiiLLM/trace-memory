@@ -141,7 +141,8 @@ export class CcCoordinator {
   private closed = false;
   private readonly startup = new AbortController();
   private readonly config: ResolvedCcHostConfig;
-  readonly nativeSessionId: string;
+  /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
+  nativeSessionId: string;
   private readonly diagnostic: CcDiagnostic;
 
   constructor(config: ResolvedCcHostConfig, nativeSessionId: string,
@@ -199,9 +200,9 @@ export class CcCoordinator {
     this.observe("startup-begin");
     const bindingDirectory = dirname(bindingPath(this.config, this.nativeSessionId));
     if (existsSync(bindingDirectory)) {
-      const bindingName = basename(bindingPath(this.config, this.nativeSessionId));
+      // The name is read at event time: an adoption (65) re-targets the watch without reopening it.
       this.bindingWatcher = watch(bindingDirectory, (_event, filename) => {
-        if (String(filename) === bindingName) void this.requestReconcile("binding watch");
+        if (String(filename) === basename(bindingPath(this.config, this.nativeSessionId))) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", error => {
         this.diagnostic(`binding watch failed: ${String(error)}; stat wake-up remains active`);
@@ -211,6 +212,19 @@ export class CcCoordinator {
     this.poll = setInterval(() => { void this.requestReconcile("stat wake-up"); }, this.config.pollIntervalMs);
     await this.requestReconcile("startup");
     this.observe("startup-complete");
+  }
+
+  /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
+   * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
+  adoptNativeSessionId(nativeSessionId: string): boolean {
+    validateNativeSessionId(nativeSessionId);
+    if (nativeSessionId === this.nativeSessionId) return true;
+    if (this.importer || this.closing || this.closed) return false;
+    const previous = this.nativeSessionId;
+    this.nativeSessionId = nativeSessionId;
+    this.observe("session-id-adopted", { from: previous, to: nativeSessionId });
+    if (this.poll) void this.requestReconcile("session adoption");
+    return true;
   }
 
   requestReconcile(reason: string, final = false, deadline?: number): Promise<CcReconcileResult | null> {

@@ -8,6 +8,7 @@ import { CcCoordinator, recordCcSessionEnd } from "./lifecycle.ts";
 import { CcForegroundTools } from "./tools.ts";
 import { ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
+import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -20,6 +21,7 @@ export * from "./worker.ts";
 export * from "./scheduler.ts";
 export * from "./injection.ts";
 export * from "./operator.ts";
+export * from "./native-session.ts";
 
 export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostConfig, input: CcHookInput): Promise<CcHookOutput | null> {
   const config = resolveCcHostConfig(configInput);
@@ -27,6 +29,9 @@ export async function handleCcHook(configInput: CcHostConfig | ResolvedCcHostCon
   if (input.hook_event_name === "SessionStart") {
     const snapshot = readCompleteTranscript(input.transcript_path);
     await recordSessionStart(config, input, snapshot.exists && !snapshot.problem ? nativeCreatedAt(snapshot.records) : null);
+    // 65: tell this Claude Code process's executor which session it serves; never fails the Hook.
+    try { if (!publishNativeSession(config, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id"); }
+    catch (error) { console.error(`Trace Memory CC: native session publish failed: ${error instanceof Error ? error.message : String(error)}`); }
     return ccSessionStartInjection(config, input);
   }
   if (input.hook_event_name !== "SessionEnd") throw new Error(`unsupported Claude Code Hook ${String(input.hook_event_name)}`);
@@ -52,6 +57,19 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     catch (error) { console.error(`Trace Memory CC: lifecycle journal failed: ${String(error)}`); }
   });
   const foreground = new CcForegroundTools(coordinator);
+  // 65: the Hook's id is authoritative. Until the coordinator attaches, an assignment for this
+  // process's ancestors re-targets it; afterwards a differing assignment is only journaled.
+  let follower: CcNativeSessionFollower | null = null, journaledChange: string | null = null;
+  try {
+    const ancestors = processAncestors();
+    runtimeEvent("native-ancestors", { ancestors });
+    follower = followNativeSession(config, ancestors, record => {
+      if (coordinator.adoptNativeSessionId(record.nativeSessionId)) return;
+      if (journaledChange === record.nativeSessionId) return;
+      journaledChange = record.nativeSessionId;
+      runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record.nativeSessionId, source: record.source });
+    }, message => runtimeEvent("native-session-follow", { message }));
+  } catch (error) { runtimeEvent("native-session-follow-unavailable", { error: error instanceof Error ? error.message : String(error) }); }
   const pendingCalls = new Map<string, AbortController>();
   let buffer = "", ending: Promise<void> | null = null, notifyEnding!: () => void;
   const endingStarted = new Promise<void>(resolveEnding => { notifyEnding = resolveEnding; });
@@ -60,6 +78,7 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     runtimeEvent("shutdown-request", { reason });
     ending = (async () => {
       for (const controller of pendingCalls.values()) controller.abort(new DOMException("MCP shutdown", "AbortError"));
+      follower?.stop();
       process.stdin.destroy();
       const result = await coordinator.shutdown(reason);
       if (!result.confirmed) process.exitCode = 1;
