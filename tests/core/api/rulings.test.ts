@@ -2444,13 +2444,13 @@ test("61: definitions are shared and hold definitions only; the principles are t
     expect(definitions, `definition blocks carry no principle: ${leaked}`).not.toContain(leaked);
   const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
   expect(principles[0]).toContain("Future-use test: knowledge is information that shapes later understanding; its importance is the cost of forgetting it, never the effort spent, the length of the discussion or the kind of task.");
-  expect(principles[1]).toContain("Apart from the two pending states `open` and `dispute`, the same claim never appears twice in any other state.");
   expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
   expect(principles[0]).toContain("the implementation detail under a macro claim is not knowledge");
   expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
   expect(principles[2]).toContain("Knowledge is a conclusion stripped of process and situation, with its source named: the user, the assistant or an observation.");
-  expect(principles[3]).toContain("A core claim needs the user's explicit recognition or direct observation within the scope it claims; relation chains help trace the evidence and never raise a source's authority or degree of proof.");
-  expect(principles[3]).toContain("A pending claim never becomes a confirmed conclusion by merging; duplicate pending items may merge and stay pending.");
+  expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant; by category, decision > interpretation > proposal > question.");
+  expect(principles[3]).toContain("A claim without reliable evidence belongs to `open`.");
+  expect(principles[3]).toContain("A claim whose reliable evidence conflicts belongs to `dispute`.");
   expect(principles[4]).toContain("never pad them for coverage");
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
