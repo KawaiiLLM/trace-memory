@@ -23,6 +23,7 @@ export type { EntryProfile, ResultText, ResultExtractor } from "../render/index.
 export { notingText, consolidationText, injectionText, compactText, knowledgeBlock, memoryBodyHash } from "../render/material.ts";
 export type { SharedMaterial, KnowledgeGroup, TaskRange, MemoryComposition } from "../render/material.ts";
 export { enrollmentDefault } from "../store/index.ts";
+export { directoryAllocation } from "../project/directory.ts";
 export type { Enrollment, ClosedSessionScope } from "../store/index.ts";
 export type { SourceInput, SourceEntry, TaskTarget } from "../store/index.ts";
 export { compareTriggerOrigins } from "../model/index.ts";

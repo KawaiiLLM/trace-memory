@@ -34,23 +34,13 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 
 // src/hosts/cc/index.ts
-var import_node_fs7 = require("node:fs");
-var import_node_path6 = require("node:path");
+var import_node_fs8 = require("node:fs");
+var import_node_path7 = require("node:path");
 var import_node_url = require("node:url");
 
 // src/hosts/cc/config.ts
 var import_node_path = require("node:path");
 var import_node_os = require("node:os");
-
-// src/hosts/phase-settings.ts
-var MEMORY_PHASES = ["noting", "consolidation", "dreaming"];
-var PHASE_SETTING_KEYS = {
-  noting: { model: "notingModel", thinking: "notingThinking" },
-  consolidation: { model: "consolidationModel", thinking: "consolidationThinking" },
-  dreaming: { model: "dreaming.model", thinking: "dreaming.thinking" }
-};
-
-// src/hosts/cc/config.ts
 var CC_AGENT_SDK_VERSION = "0.1.77";
 var CC_NATIVE_VERSION = "2.1.257";
 var CC_CONTEXT_HEADROOM = 1e4;
@@ -59,19 +49,6 @@ var positive = (name, value) => {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid CC ${name}: expected a positive safe integer`);
   return value;
 };
-function phaseFields(input, phase) {
-  const keys = PHASE_SETTING_KEYS[phase];
-  const model = input[keys.model];
-  const thinking = input[keys.thinking];
-  if (typeof model !== "string" || !model.trim())
-    throw new Error(`Invalid CC ${keys.model}: an explicit non-empty model id is required when worker is configured`);
-  if (model === "session") throw new Error(`Invalid CC ${keys.model}: session inheritance is unavailable in the CC worker`);
-  if (thinking === "inherit" || thinking === "session")
-    throw new Error(`Invalid CC ${keys.thinking}: inheritance is unavailable in the CC worker`);
-  if (typeof thinking !== "string" || !CC_EFFORT_LEVELS.includes(thinking))
-    throw new Error(`Invalid CC ${keys.thinking}: expected ${CC_EFFORT_LEVELS.join(", ")}; unsupported Pi thinking levels cannot be coerced`);
-  return { model, thinking };
-}
 function resolveCcHostConfig(input) {
   if (!input || typeof input !== "object") throw new Error("CC configuration is required");
   const dbPath = input.dbPath === void 0 ? (0, import_node_path.join)((0, import_node_os.homedir)(), ".trace-memory", "trace.db") : input.dbPath;
@@ -87,41 +64,32 @@ function resolveCcHostConfig(input) {
   if (input.worker !== void 0) {
     const value = input.worker;
     if (!value || typeof value !== "object") throw new Error("Invalid CC worker: expected an object");
-    const legacy = ["model", "effort", "contextWindow"].filter((key) => Object.hasOwn(value, key));
-    if (legacy.length) throw new Error(`Legacy CC worker.${legacy.join("/worker.")} is unsupported; migrate to the six root phase keys and worker.contextWindows`);
-    const parallel = ["noting", "consolidation", "dreaming"].filter((key) => Object.hasOwn(value, key));
-    if (parallel.length) throw new Error(`Invalid CC worker.${parallel[0]}: phase settings use the six flat host keys, not a worker phase hierarchy`);
     if (typeof value.claudeExecutable !== "string" || !(0, import_node_path.isAbsolute)(value.claudeExecutable))
       throw new Error("Invalid CC worker.claudeExecutable: expected an absolute path");
     if (typeof value.cwd !== "string" || !(0, import_node_path.isAbsolute)(value.cwd))
       throw new Error("Invalid CC worker.cwd: expected an absolute path");
     if (value.claudeVersion !== CC_NATIVE_VERSION)
       throw new Error(`Invalid CC worker.claudeVersion: this adapter is pinned to ${CC_NATIVE_VERSION}`);
-    if (!value.contextWindows || typeof value.contextWindows !== "object" || Array.isArray(value.contextWindows))
-      throw new Error("Invalid CC worker.contextWindows: expected model-to-capacity object");
-    const phases = Object.fromEntries(MEMORY_PHASES.map((phase) => {
-      const selected = phaseFields(input, phase);
-      if (!Object.hasOwn(value.contextWindows, selected.model))
-        throw new Error(`Invalid CC worker.contextWindows: no capacity for selected ${phase} model ${selected.model}`);
-      const contextWindow = positive(`worker.contextWindows[${JSON.stringify(selected.model)}]`, value.contextWindows[selected.model]);
-      if (contextWindow <= CC_CONTEXT_HEADROOM)
-        throw new Error(`Invalid CC worker.contextWindows[${JSON.stringify(selected.model)}]: must exceed the ${CC_CONTEXT_HEADROOM}-token headroom`);
-      return [phase, { ...selected, capacity: { inputTokens: contextWindow - CC_CONTEXT_HEADROOM, prefixTokens: 0 } }];
-    }));
+    if (typeof value.model !== "string" || !value.model.trim())
+      throw new Error("Invalid CC worker.model: expected a non-empty model id");
+    if (!CC_EFFORT_LEVELS.includes(value.effort))
+      throw new Error(`Invalid CC worker.effort: expected ${CC_EFFORT_LEVELS.join(", ")}`);
+    const contextWindow = positive("worker.contextWindow", value.contextWindow);
+    if (contextWindow <= CC_CONTEXT_HEADROOM)
+      throw new Error(`Invalid CC worker.contextWindow: must exceed the ${CC_CONTEXT_HEADROOM}-token headroom`);
     worker = {
       claudeExecutable: (0, import_node_path.resolve)(value.claudeExecutable),
       claudeVersion: value.claudeVersion,
-      contextWindows: { ...value.contextWindows },
-      phases,
+      model: value.model,
+      effort: value.effort,
+      contextWindow,
       cwd: (0, import_node_path.resolve)(value.cwd),
       responseOriginTimeoutMs: positive("worker.responseOriginTimeoutMs", value.responseOriginTimeoutMs ?? 5e3)
     };
   }
-  const phaseValues = Object.fromEntries(Object.values(PHASE_SETTING_KEYS).flatMap((keys) => [keys.model, keys.thinking].flatMap((key) => input[key] === void 0 ? [] : [[key, input[key]]])));
   return {
     dbPath: (0, import_node_path.resolve)(dbPath),
     stateDir: (0, import_node_path.resolve)(input.stateDir),
-    ...phaseValues,
     ...input.baseline === void 0 ? {} : { baseline: input.baseline },
     pollIntervalMs: positive("pollIntervalMs", input.pollIntervalMs ?? 2e3),
     finalSyncTimeoutMs: positive("finalSyncTimeoutMs", input.finalSyncTimeoutMs ?? 5e3),
@@ -133,8 +101,8 @@ function resolveCcHostConfig(input) {
 }
 
 // src/hosts/cc/binding.ts
-var import_node_fs = require("node:fs");
-var import_node_path2 = require("node:path");
+var import_node_fs2 = require("node:fs");
+var import_node_path3 = require("node:path");
 var import_node_crypto9 = require("node:crypto");
 var import_node_sqlite2 = require("node:sqlite");
 
@@ -889,7 +857,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- session-scoped state, not configuration: a reopen, a fork or a copied host sharing this session
   -- shares it. fork_suppressed_run is the run that detected the miss, linked once it has an id.
   fork_suppressed_at TEXT,
-  fork_suppressed_run INTEGER
+  fork_suppressed_run INTEGER,
+  -- 62: the real repository root (or cwd) the session started in; the key later sessions join by.
+  -- NULL for sessions allocated before the column existed or in an excluded directory (home, temp).
+  directory TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_claims (
@@ -1096,7 +1067,8 @@ function toSession(row) {
     firstReplyAt: row.first_reply_at,
     closedAt: row.closed_at,
     projectId: row.project_id,
-    parentSessionId: row.parent_session_id
+    parentSessionId: row.parent_session_id,
+    directory: row.directory ?? null
   };
 }
 function toTurn(row) {
@@ -1269,6 +1241,7 @@ var Store = class {
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
       this.transaction(() => {
+        if (!this.db.prepare("PRAGMA table_info(sessions)").all().some((r) => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
         if (!this.db.prepare("PRAGMA table_info(source_entries)").all().some((r) => r.name === "entry_ordinal")) {
           this.db.exec(`ALTER TABLE source_entries ADD COLUMN entry_ordinal INTEGER CHECK(entry_ordinal > 0);
             WITH numbered AS (SELECT id, row_number() OVER (PARTITION BY turn_id ORDER BY id) AS ordinal FROM source_entries)
@@ -1418,8 +1391,18 @@ var Store = class {
     if (!input.firstReplyAt) {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
-    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice));
+    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice, directory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice), input.directory ?? null);
     return this.getSession(Number(info.lastInsertRowid));
+  }
+  /** 62: the distinct effective projects (merges followed) of the sessions that recorded a directory. */
+  directoryProjects(directory) {
+    const effective = /* @__PURE__ */ new Set();
+    for (const row of this.db.prepare("SELECT DISTINCT project_id FROM sessions WHERE directory = ?").all(directory)) {
+      let project = this.getProject(Number(row.project_id));
+      while (project.mergedInto !== null) project = this.getProject(project.mergedInto);
+      effective.add(project.id);
+    }
+    return [...effective];
   }
   getSession(id) {
     const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id);
@@ -1835,7 +1818,7 @@ var Store = class {
             this.db.prepare("INSERT INTO fact_sources (fact_id, entry_id) VALUES (?, ?)").run(factId2, entryId);
           }
         }
-        const resolve3 = (target, batchIndex) => {
+        const resolve4 = (target, batchIndex) => {
           const fIdMatch = /^F(\d+)$/.exec(target);
           if (fIdMatch) return Number(fIdMatch[1]);
           const handleMatch = /^\$(\d+)$/.exec(target);
@@ -1851,7 +1834,7 @@ var Store = class {
         input.facts.forEach((f, i) => {
           const fromFact = batchIds[i];
           for (const kind of ["support", "negate"]) for (const rel of f[kind] ?? []) {
-            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)").run(fromFact, resolve3(rel.target, i), kind, rel.strength);
+            this.db.prepare("INSERT INTO fact_relations (from_fact, to_fact, kind, strength) VALUES (?, ?, ?, ?)").run(fromFact, resolve4(rel.target, i), kind, rel.strength);
           }
         });
         let response;
@@ -5350,7 +5333,7 @@ function bindTools(store, read, supplied, metadata, review, reads = /* @__PURE__
     const candidates2 = context.kind === "noting" ? sourcePath.filter((entry) => frozenIds.has(entry.id)) : sourcePath;
     const positions = new Map(candidates2.map((entry, index) => [entry.id, index]));
     const resolution = /* @__PURE__ */ new Map();
-    const resolve3 = (source) => {
+    const resolve4 = (source) => {
       if (!resolution.has(source)) {
         const matches = resolveFactSource(sourcePath, source);
         resolution.set(source, context.kind === "noting" ? matches.filter((hit) => frozenIds.has(hit.entry.id)) : matches);
@@ -5365,7 +5348,7 @@ function bindTools(store, read, supplied, metadata, review, reads = /* @__PURE__
         let first = 0;
         const cited = [];
         if (Array.isArray(fact.source)) for (const source of fact.source) {
-          const matches = resolve3(source);
+          const matches = resolve4(source);
           const turn = matches.length ? store.getTurn(matches[0].entry.turnId) : null;
           if (!turn || turn.sessionId !== session.id || !sourceTurns.has(turn.id) || turn.kind === "compaction") errors.push(`invalid source ${source}; does not exist in the eligible entry set; expected a raw source on the current branch inside the frozen range or calling session; injected messages and thinking are not fact sources`);
           else {
@@ -5845,6 +5828,48 @@ async function runNoting(store, frozen, runAgent, config3, tools) {
     runId: store.recordRun({ ...run, outcome }).id,
     ...incomplete ? { incompleteHeadEntryId: entries[0].id } : {}
   };
+}
+
+// src/core/project/directory.ts
+var import_node_child_process = require("node:child_process");
+var import_node_fs = require("node:fs");
+var import_node_os2 = require("node:os");
+var import_node_path2 = require("node:path");
+var gitCommonDir = (cwd2) => (0, import_node_child_process.execFileSync)(
+  "git",
+  ["rev-parse", "--git-common-dir"],
+  { cwd: cwd2, encoding: "utf8", timeout: 2e3, stdio: ["ignore", "pipe", "ignore"] }
+).trim();
+var realpathOrNull = (path) => {
+  try {
+    return path ? (0, import_node_fs.realpathSync)(path) : null;
+  } catch {
+    return null;
+  }
+};
+function defaultExclusions() {
+  return {
+    home: realpathOrNull((0, import_node_os2.homedir)()) ?? (0, import_node_os2.homedir)(),
+    temporary: ["/tmp", "/private/tmp", process.env.TMPDIR].map(realpathOrNull).filter((path) => path !== null)
+  };
+}
+function sessionDirectory(cwd2, options = {}) {
+  let directory;
+  try {
+    directory = (0, import_node_fs.realpathSync)((0, import_node_path2.dirname)((0, import_node_path2.resolve)(cwd2, (options.git ?? gitCommonDir)(cwd2))));
+  } catch {
+    directory = realpathOrNull(cwd2);
+  }
+  if (directory === null) return { excluded: true };
+  const excluded = options.excluded ?? defaultExclusions();
+  if (directory === excluded.home || excluded.temporary.some((root2) => directory === root2 || directory.startsWith(root2 + import_node_path2.sep))) return { excluded: true };
+  return { directory };
+}
+function directoryAllocation(store, cwd2, own, options) {
+  const resolved = cwd2 === void 0 ? { excluded: true } : sessionDirectory(cwd2, options);
+  if ("excluded" in resolved) return { projectId: own(), projectDeclaration: "undeclared", directory: null };
+  const projects = store.directoryProjects(resolved.directory);
+  return projects.length === 1 ? { projectId: projects[0], projectDeclaration: "marker", directory: resolved.directory } : { projectId: own(), projectDeclaration: "undeclared", directory: resolved.directory };
 }
 
 // src/core/dreaming/index.ts
@@ -6914,8 +6939,8 @@ ${view}` : view;
     if (!frozen || !claim) return { outcome: empty ? "empty" : "dropped" };
     const controller = new AbortController();
     let force;
-    const forced = new Promise((resolve3) => {
-      force = () => resolve3({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" });
+    const forced = new Promise((resolve4) => {
+      force = () => resolve4({ ...progress, outcome: "cancelled", output: "executor cleanup deadline; provider completion and remaining usage unknown" });
     });
     const progress = {};
     const task = { sessionId: target.sessionId, phase, executionId, controller, force, close: () => {
@@ -7088,14 +7113,14 @@ ${view}` : view;
 
 // src/hosts/cc/binding.ts
 var NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-var wait = (milliseconds, signal) => new Promise((resolve3, reject) => {
+var wait = (milliseconds, signal) => new Promise((resolve4, reject) => {
   if (signal?.aborted) {
     reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
     return;
   }
   const timer = setTimeout(() => {
     signal?.removeEventListener("abort", abort);
-    resolve3();
+    resolve4();
   }, milliseconds);
   const abort = () => {
     clearTimeout(timer);
@@ -7108,10 +7133,10 @@ function validateNativeSessionId(value) {
   return value;
 }
 function bindingPath(config3, nativeSessionId) {
-  return (0, import_node_path2.join)(config3.stateDir, "bindings", `${validateNativeSessionId(nativeSessionId)}.json`);
+  return (0, import_node_path3.join)(config3.stateDir, "bindings", `${validateNativeSessionId(nativeSessionId)}.json`);
 }
 function bindingMutexPath(config3, nativeSessionId) {
-  return (0, import_node_path2.join)(config3.stateDir, "locks", `${validateNativeSessionId(nativeSessionId)}.mutex.sqlite`);
+  return (0, import_node_path3.join)(config3.stateDir, "locks", `${validateNativeSessionId(nativeSessionId)}.mutex.sqlite`);
 }
 function implicitCcProject(store, nativeSessionId) {
   const name = `cc:${validateNativeSessionId(nativeSessionId)}`;
@@ -7119,13 +7144,13 @@ function implicitCcProject(store, nativeSessionId) {
 }
 function parseBinding(value) {
   const binding = value;
-  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
+  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path3.isAbsolute)(binding.cwd)) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
     throw new Error("invalid Claude Code binding record");
   return binding;
 }
 function readBinding(config3, nativeSessionId) {
   try {
-    return parseBinding(JSON.parse((0, import_node_fs.readFileSync)(bindingPath(config3, nativeSessionId), "utf8")));
+    return parseBinding(JSON.parse((0, import_node_fs2.readFileSync)(bindingPath(config3, nativeSessionId), "utf8")));
   } catch (error3) {
     if (error3.code === "ENOENT") return null;
     throw error3;
@@ -7146,27 +7171,27 @@ function assertOperatorBinding(config3, binding, store) {
 }
 function writeBinding(config3, binding, published) {
   const target = bindingPath(config3, binding.nativeSessionId), temporary = `${target}.${process.pid}.${(0, import_node_crypto9.randomUUID)()}`;
-  const directory = (0, import_node_path2.dirname)(target);
-  (0, import_node_fs.mkdirSync)(directory, { recursive: true });
+  const directory = (0, import_node_path3.dirname)(target);
+  (0, import_node_fs2.mkdirSync)(directory, { recursive: true });
   let descriptor;
   try {
-    descriptor = (0, import_node_fs.openSync)(temporary, "wx", 384);
-    (0, import_node_fs.writeFileSync)(descriptor, `${JSON.stringify(binding, null, 2)}
+    descriptor = (0, import_node_fs2.openSync)(temporary, "wx", 384);
+    (0, import_node_fs2.writeFileSync)(descriptor, `${JSON.stringify(binding, null, 2)}
 `);
-    (0, import_node_fs.fsyncSync)(descriptor);
-    (0, import_node_fs.closeSync)(descriptor);
+    (0, import_node_fs2.fsyncSync)(descriptor);
+    (0, import_node_fs2.closeSync)(descriptor);
     descriptor = void 0;
-    (0, import_node_fs.renameSync)(temporary, target);
+    (0, import_node_fs2.renameSync)(temporary, target);
     published?.();
-    const directoryDescriptor = (0, import_node_fs.openSync)(directory, "r");
+    const directoryDescriptor = (0, import_node_fs2.openSync)(directory, "r");
     try {
-      (0, import_node_fs.fsyncSync)(directoryDescriptor);
+      (0, import_node_fs2.fsyncSync)(directoryDescriptor);
     } finally {
-      (0, import_node_fs.closeSync)(directoryDescriptor);
+      (0, import_node_fs2.closeSync)(directoryDescriptor);
     }
   } catch (error3) {
-    if (descriptor !== void 0) (0, import_node_fs.closeSync)(descriptor);
-    (0, import_node_fs.rmSync)(temporary, { force: true });
+    if (descriptor !== void 0) (0, import_node_fs2.closeSync)(descriptor);
+    (0, import_node_fs2.rmSync)(temporary, { force: true });
     throw error3;
   }
 }
@@ -7178,8 +7203,8 @@ async function withCcBindingLock(config3, nativeSessionId, action, timeoutMs = 5
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("CC binding lock timeout must be positive");
   const deadline = Date.now() + timeoutMs, target = bindingPath(config3, nativeSessionId);
   const mutex = bindingMutexPath(config3, nativeSessionId);
-  (0, import_node_fs.mkdirSync)((0, import_node_path2.dirname)(target), { recursive: true });
-  (0, import_node_fs.mkdirSync)((0, import_node_path2.dirname)(mutex), { recursive: true });
+  (0, import_node_fs2.mkdirSync)((0, import_node_path3.dirname)(target), { recursive: true });
+  (0, import_node_fs2.mkdirSync)((0, import_node_path3.dirname)(mutex), { recursive: true });
   const database = new import_node_sqlite2.DatabaseSync(mutex, { timeout: 0 });
   let acquired = false;
   const checkDeadline = () => {
@@ -7253,7 +7278,7 @@ async function updateBindingInStoreTransaction(config3, nativeSessionId, store, 
 async function recordSessionStart(config3, input, nativeCreatedAt2) {
   if (input.hook_event_name !== "SessionStart") throw new Error("expected a SessionStart Hook input");
   const nativeSessionId = validateNativeSessionId(input.session_id);
-  if (typeof input.transcript_path !== "string" || !(0, import_node_path2.isAbsolute)(input.transcript_path))
+  if (typeof input.transcript_path !== "string" || !(0, import_node_path3.isAbsolute)(input.transcript_path))
     throw new Error("SessionStart transcript_path must be absolute");
   return updateBinding(config3, nativeSessionId, (current) => {
     if (current) {
@@ -7261,7 +7286,7 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
         throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
       return current;
     }
-    (0, import_node_fs.mkdirSync)((0, import_node_path2.dirname)(config3.dbPath), { recursive: true });
+    (0, import_node_fs2.mkdirSync)((0, import_node_path3.dirname)(config3.dbPath), { recursive: true });
     return {
       version: 1,
       nativeSessionId,
@@ -7274,13 +7299,14 @@ async function recordSessionStart(config3, input, nativeCreatedAt2) {
       branch: "main",
       selectedLeafUuid: null,
       executor: null,
-      lastClose: null
+      lastClose: null,
+      ...typeof input.cwd === "string" && (0, import_node_path3.isAbsolute)(input.cwd) ? { cwd: input.cwd } : {}
     };
   });
 }
 
 // src/hosts/cc/transcript.ts
-var import_node_fs2 = require("node:fs");
+var import_node_fs3 = require("node:fs");
 var sameStamp = (left, right) => !!left && left.size === right.size && left.modifiedMs === right.modifiedMs && left.changedMs === right.changedMs && left.device === right.device && left.inode === right.inode;
 var object3 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
 var blocks = (content) => Array.isArray(content) ? content.map(object3).filter((value) => value !== null) : [];
@@ -7536,13 +7562,13 @@ var CcTranscriptCursor = class {
   scan(path, visit, collect = false) {
     let descriptor;
     try {
-      descriptor = (0, import_node_fs2.openSync)(path, "r");
+      descriptor = (0, import_node_fs3.openSync)(path, "r");
     } catch (error3) {
       if (error3.code === "ENOENT") return snapshot(path, null);
       throw error3;
     }
     try {
-      const before = (0, import_node_fs2.fstatSync)(descriptor);
+      const before = (0, import_node_fs3.fstatSync)(descriptor);
       const stamp = { size: before.size, modifiedMs: before.mtimeMs, changedMs: before.ctimeMs, device: before.dev, inode: before.ino };
       if (this.rejected && sameStamp(this.rejected.stamp, stamp)) return this.rejected.snapshot;
       if (sameStamp(this.stamp, stamp)) return { ...this.lastSnapshot, records: [], changed: false, reset: false };
@@ -7550,17 +7576,17 @@ var CcTranscriptCursor = class {
       let reset = !this.stamp || replacement || stamp.size < this.completeOffset || stamp.size === this.stamp.size;
       if (!reset && this.completeOffset > 0) {
         const marker = Buffer.allocUnsafe(1);
-        if ((0, import_node_fs2.readSync)(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 10) reset = true;
+        if ((0, import_node_fs3.readSync)(descriptor, marker, 0, 1, this.completeOffset - 1) !== 1 || marker[0] !== 10) reset = true;
       }
       const start = reset ? 0 : this.completeOffset;
       const bytes = Buffer.allocUnsafe(stamp.size - start);
       let read = 0;
       while (read < bytes.length) {
-        const amount = (0, import_node_fs2.readSync)(descriptor, bytes, read, bytes.length - read, start + read);
+        const amount = (0, import_node_fs3.readSync)(descriptor, bytes, read, bytes.length - read, start + read);
         if (!amount) throw new Error("native transcript changed while it was being read");
         read += amount;
       }
-      const after = (0, import_node_fs2.fstatSync)(descriptor);
+      const after = (0, import_node_fs3.fstatSync)(descriptor);
       if (after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || after.dev !== before.dev || after.ino !== before.ino)
         throw new Error("native transcript changed while it was being read");
       const finalNewline = bytes.lastIndexOf(10);
@@ -7684,7 +7710,7 @@ var CcTranscriptCursor = class {
         newProblems
       });
     } finally {
-      (0, import_node_fs2.closeSync)(descriptor);
+      (0, import_node_fs3.closeSync)(descriptor);
     }
   }
   commit(scan, problem) {
@@ -7712,14 +7738,14 @@ var CcTranscriptCursor = class {
 function readTranscriptMetadata(path) {
   let descriptor;
   try {
-    descriptor = (0, import_node_fs2.openSync)(path, "r");
-    const stats = (0, import_node_fs2.fstatSync)(descriptor);
+    descriptor = (0, import_node_fs3.openSync)(path, "r");
+    const stats = (0, import_node_fs3.fstatSync)(descriptor);
     return snapshot(path, { size: stats.size, modifiedMs: stats.mtimeMs, changedMs: stats.ctimeMs, device: stats.dev, inode: stats.ino });
   } catch (error3) {
     if (error3.code === "ENOENT") return snapshot(path, null);
     throw error3;
   } finally {
-    if (descriptor !== void 0) (0, import_node_fs2.closeSync)(descriptor);
+    if (descriptor !== void 0) (0, import_node_fs3.closeSync)(descriptor);
   }
 }
 function completeTranscript(path, accepted) {
@@ -7738,13 +7764,13 @@ function completeTranscript(path, accepted) {
   } catch (error3) {
     let size = null, modifiedMs = null;
     try {
-      const descriptor = (0, import_node_fs2.openSync)(path, "r");
+      const descriptor = (0, import_node_fs3.openSync)(path, "r");
       try {
-        const stats = (0, import_node_fs2.fstatSync)(descriptor);
+        const stats = (0, import_node_fs3.fstatSync)(descriptor);
         size = stats.size;
         modifiedMs = stats.mtimeMs;
       } finally {
-        (0, import_node_fs2.closeSync)(descriptor);
+        (0, import_node_fs3.closeSync)(descriptor);
       }
     } catch {
     }
@@ -7831,17 +7857,17 @@ var ccSourceBlocks = (entry) => {
 };
 
 // src/hosts/cc/lifecycle.ts
-var import_node_fs5 = require("node:fs");
-var import_node_path5 = require("node:path");
+var import_node_fs6 = require("node:fs");
+var import_node_path6 = require("node:path");
 
 // src/hosts/cc/worker.ts
-var import_node_fs3 = require("node:fs");
-var import_node_child_process = require("node:child_process");
+var import_node_fs4 = require("node:fs");
+var import_node_child_process2 = require("node:child_process");
 var import_node_crypto10 = require("node:crypto");
-var import_node_path3 = require("node:path");
+var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -10698,7 +10724,7 @@ var require_compile = __commonJS((exports2) => {
     const schOrFunc = root2.refs[ref];
     if (schOrFunc)
       return schOrFunc;
-    let _sch = resolve3.call(this, root2, ref);
+    let _sch = resolve4.call(this, root2, ref);
     if (_sch === void 0) {
       const schema = (_a2 = root2.localRefs) === null || _a2 === void 0 ? void 0 : _a2[ref];
       const { schemaId } = this.opts;
@@ -10725,7 +10751,7 @@ var require_compile = __commonJS((exports2) => {
   function sameSchemaEnv(s1, s2) {
     return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
   }
-  function resolve3(root2, ref) {
+  function resolve4(root2, ref) {
     let sch;
     while (typeof (sch = this.refs[ref]) == "string")
       ref = sch;
@@ -11223,7 +11249,7 @@ var require_fast_uri = __commonJS((exports2, module2) => {
     }
     return uri;
   }
-  function resolve3(baseURI, relativeURI, options) {
+  function resolve4(baseURI, relativeURI, options) {
     const schemelessOptions = Object.assign({ scheme: "null" }, options);
     const resolved = resolveComponents(parse6(baseURI, schemelessOptions), parse6(relativeURI, schemelessOptions), schemelessOptions, true);
     return serialize(resolved, { ...schemelessOptions, skipEscape: true });
@@ -11456,7 +11482,7 @@ var require_fast_uri = __commonJS((exports2, module2) => {
   var fastUri = {
     SCHEMES,
     normalize,
-    resolve: resolve3,
+    resolve: resolve4,
     resolveComponents,
     equal,
     serialize,
@@ -15437,7 +15463,7 @@ var ProcessTransport = class {
       }
       return;
     }
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const exitHandler = (code, signal) => {
         if (this.abortController.signal.aborted) {
           reject(new AbortError("Operation aborted"));
@@ -15447,7 +15473,7 @@ var ProcessTransport = class {
         if (error3) {
           reject(error3);
         } else {
-          resolve3();
+          resolve4();
         }
       };
       this.process.once("exit", exitHandler);
@@ -15497,17 +15523,17 @@ var Stream = class {
     if (this.hasError) {
       return Promise.reject(this.hasError);
     }
-    return new Promise((resolve3, reject) => {
-      this.readResolve = resolve3;
+    return new Promise((resolve4, reject) => {
+      this.readResolve = resolve4;
       this.readReject = reject;
     });
   }
   enqueue(value) {
     if (this.readResolve) {
-      const resolve3 = this.readResolve;
+      const resolve4 = this.readResolve;
       this.readResolve = void 0;
       this.readReject = void 0;
-      resolve3({ done: false, value });
+      resolve4({ done: false, value });
     } else {
       this.queue.push(value);
     }
@@ -15515,10 +15541,10 @@ var Stream = class {
   done() {
     this.isDone = true;
     if (this.readResolve) {
-      const resolve3 = this.readResolve;
+      const resolve4 = this.readResolve;
       this.readResolve = void 0;
       this.readReject = void 0;
-      resolve3({ done: true, value: void 0 });
+      resolve4({ done: true, value: void 0 });
     }
   }
   error(error3) {
@@ -15851,10 +15877,10 @@ var Query = class {
       type: "control_request",
       request: request2
     };
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       this.pendingControlResponses.set(requestId, (response) => {
         if (response.subtype === "success") {
-          resolve3(response);
+          resolve4(response);
         } else {
           reject(new Error(response.error));
           if (response.pending_permission_requests) {
@@ -15944,15 +15970,15 @@ var Query = class {
       logForDebugging(`[Query.waitForFirstResult] Result already received, returning immediately`);
       return Promise.resolve();
     }
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       if (this.abortController?.signal.aborted) {
-        resolve3();
+        resolve4();
         return;
       }
-      this.abortController?.signal.addEventListener("abort", () => resolve3(), {
+      this.abortController?.signal.addEventListener("abort", () => resolve4(), {
         once: true
       });
-      this.firstResultReceivedResolve = resolve3;
+      this.firstResultReceivedResolve = resolve4;
     });
   }
   handleHookCallbacks(callbackId, input, toolUseID, abortSignal) {
@@ -16003,13 +16029,13 @@ var Query = class {
   handleMcpControlRequest(serverName, mcpRequest, transport) {
     const messageId = "id" in mcpRequest.message ? mcpRequest.message.id : null;
     const key = `${serverName}:${messageId}`;
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       const cleanup = () => {
         this.pendingMcpResponses.delete(key);
       };
       const resolveAndCleanup = (response) => {
         cleanup();
-        resolve3(response);
+        resolve4(response);
       };
       const rejectAndCleanup = (error3) => {
         cleanup();
@@ -26860,7 +26886,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = (_c = (_a2 = task2.pollInterval) !== null && _a2 !== void 0 ? _a2 : (_b = this._options) === null || _b === void 0 ? void 0 : _b.defaultTaskPollInterval) !== null && _c !== void 0 ? _c : 1e3;
-        await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+        await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
         (_d = options === null || options === void 0 ? void 0 : options.signal) === null || _d === void 0 || _d.throwIfAborted();
       }
     } catch (error22) {
@@ -26872,7 +26898,7 @@ var Protocol = class {
   }
   request(request2, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options !== null && options !== void 0 ? options : {};
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       var _a2, _b, _c, _d, _e, _f, _g;
       const earlyReject = (error22) => {
         reject(error22);
@@ -26953,7 +26979,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve3(parseResult.data);
+            resolve4(parseResult.data);
           }
         } catch (error22) {
           reject(error22);
@@ -27150,12 +27176,12 @@ var Protocol = class {
       }
     } catch (_d) {
     }
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve3, interval);
+      const timeoutId = setTimeout(resolve4, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -27954,7 +27980,7 @@ var McpServer = class {
     let task = createTaskResult.task;
     const pollInterval = (_a2 = task.pollInterval) !== null && _a2 !== void 0 ? _a2 : 5e3;
     while (task.status !== "completed" && task.status !== "failed" && task.status !== "cancelled") {
-      await new Promise((resolve3) => setTimeout(resolve3, pollInterval));
+      await new Promise((resolve4) => setTimeout(resolve4, pollInterval));
       const updatedTask = await extra.taskStore.getTask(taskId);
       if (!updatedTask) {
         throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found during polling`);
@@ -28639,7 +28665,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28713,7 +28739,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29392,7 +29418,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29458,7 +29484,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29538,7 +29564,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29695,7 +29721,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30243,7 +30269,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30279,14 +30305,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32257,7 +32283,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32366,7 +32392,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32414,7 +32440,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33218,7 +33244,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33570,7 +33596,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34046,7 +34072,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34215,7 +34241,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34249,7 +34275,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34290,7 +34316,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34330,7 +34356,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34344,7 +34370,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35423,22 +35449,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -36980,7 +37006,7 @@ var CcForegroundTools = class {
 };
 
 // src/hosts/cc/worker.ts
-var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
+var execFileAsync = (0, import_node_util.promisify)(import_node_child_process2.execFile);
 var AUDIT_UNAVAILABLE = `Claude Agent SDK ${CC_AGENT_SDK_VERSION} does not expose the exact provider request body`;
 var CcResponseOrigins = class {
   task;
@@ -37034,8 +37060,8 @@ var CcResponseOrigins = class {
     this.claimed.add(id);
     const known = this.origins.get(id);
     if (known) return known;
-    return new Promise((resolve3, reject) => {
-      const waiter = { resolve: resolve3, reject, timer: setTimeout(() => {
+    return new Promise((resolve4, reject) => {
+      const waiter = { resolve: resolve4, reject, timer: setTimeout(() => {
         const rows = this.waiters.get(id) ?? [];
         this.waiters.set(id, rows.filter((row) => row !== waiter));
         reject(this.fail(new Error(`CC assistant response origin timed out for tool use ${id}`)));
@@ -37180,7 +37206,7 @@ var CcUserInput = class {
       const value = this.values.shift();
       if (value) return Promise.resolve({ value, done: false });
       if (this.ended) return Promise.resolve({ value: void 0, done: true });
-      return new Promise((resolve3) => this.waiters.push(resolve3));
+      return new Promise((resolve4) => this.waiters.push(resolve4));
     } };
   }
 };
@@ -37208,13 +37234,13 @@ function assertInit(message, worker, allowedTools) {
   if (message.mcp_servers.length !== 1 || message.mcp_servers[0]?.name !== "trace_memory" || message.mcp_servers[0].status !== "connected")
     throw new Error("CC worker isolation failed: the private trace_memory MCP server is not the sole connected server");
 }
-function assertModelMetadata(models, execution) {
+function assertModelMetadata(models, worker) {
   if (!Array.isArray(models)) throw new Error("CC worker could not read supported model metadata");
-  const selected = models.find((value) => value && typeof value === "object" && (value.value === execution.model || value.model === execution.model));
-  if (!selected) throw new Error(`CC worker model ${execution.model} is not supported by the installed executable`);
+  const selected = models.find((value) => value && typeof value === "object" && (value.value === worker.model || value.model === worker.model));
+  if (!selected) throw new Error(`CC worker model ${worker.model} is not supported by the installed executable`);
   const levels = selected.supportedEffortLevels;
-  if (!Array.isArray(levels) || !levels.includes(execution.thinking))
-    throw new Error(`CC worker effort ${execution.thinking} is not supported by model ${execution.model}`);
+  if (!Array.isArray(levels) || !levels.includes(worker.effort))
+    throw new Error(`CC worker effort ${worker.effort} is not supported by model ${worker.model}`);
 }
 var CcAgentWorker = class {
   config;
@@ -37229,6 +37255,9 @@ var CcAgentWorker = class {
     this.environment = productionEnvironment(dependencies.environment ?? process.env);
     this.query = dependencies.query ?? query;
   }
+  capacity() {
+    return { inputTokens: this.worker.contextWindow - CC_CONTEXT_HEADROOM, prefixTokens: 0 };
+  }
   verifyExecutable() {
     return this.versionCheck ??= execFileAsync(this.worker.claudeExecutable, ["--version"], { timeout: 1e4, env: this.environment }).then(({ stdout }) => {
       const version3 = nativeVersion(stdout);
@@ -37237,17 +37266,12 @@ var CcAgentWorker = class {
     });
   }
   async run(task, maxToolRounds) {
-    const settings = this.worker.phases[task.kind];
-    if (task.model !== void 0 && task.model !== settings.model)
-      throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
-    if (task.subagentThinkingLevel !== void 0 && task.subagentThinkingLevel !== settings.thinking)
-      throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
-    const logs = (0, import_node_path3.join)(this.config.stateDir, "workers");
-    (0, import_node_fs3.mkdirSync)(logs, { recursive: true });
-    const nativeLog = (0, import_node_path3.join)(logs, `${Date.now()}-${task.kind}-${(0, import_node_crypto10.randomUUID)()}.jsonl`);
-    (0, import_node_fs3.closeSync)((0, import_node_fs3.openSync)(nativeLog, "wx", 384));
-    (0, import_node_fs3.chmodSync)(nativeLog, 384);
-    const record3 = (value) => (0, import_node_fs3.appendFileSync)(nativeLog, `${JSON.stringify(value)}
+    const logs = (0, import_node_path4.join)(this.config.stateDir, "workers");
+    (0, import_node_fs4.mkdirSync)(logs, { recursive: true });
+    const nativeLog = (0, import_node_path4.join)(logs, `${Date.now()}-${task.kind}-${(0, import_node_crypto10.randomUUID)()}.jsonl`);
+    (0, import_node_fs4.closeSync)((0, import_node_fs4.openSync)(nativeLog, "wx", 384));
+    (0, import_node_fs4.chmodSync)(nativeLog, 384);
+    const record3 = (value) => (0, import_node_fs4.appendFileSync)(nativeLog, `${JSON.stringify(value)}
 `, { mode: 384 });
     const controller = new AbortController();
     const cancel = () => controller.abort(task.signal?.reason ?? new DOMException("CC worker cancelled", "AbortError"));
@@ -37270,7 +37294,7 @@ var CcAgentWorker = class {
       await this.verifyExecutable();
       const allowedTools = task.tools.map((definition) => `mcp__trace_memory__${definition.name}`);
       const execution = this.query({ prompt: input ?? task.text, options: {
-        model: settings.model,
+        model: this.worker.model,
         cwd: this.worker.cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
@@ -37284,7 +37308,7 @@ var CcAgentWorker = class {
         persistSession: false,
         permissionMode: "dontAsk",
         strictMcpConfig: true,
-        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking }
+        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: this.worker.effort }
       } });
       for await (const message of execution) {
         record3(message);
@@ -37299,7 +37323,7 @@ var CcAgentWorker = class {
           if (initIdentity === null) {
             initIdentity = identity;
             nativeSessionId = message.session_id;
-            assertModelMetadata(await execution.supportedModels(), settings);
+            assertModelMetadata(await execution.supportedModels(), this.worker);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {
           origins.observe(message);
@@ -37348,7 +37372,7 @@ var CcAgentWorker = class {
         nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         verification: { rounds: origins.rounds() },
-        thinking: { requested: settings.thinking, effective: settings.thinking }
+        thinking: { requested: this.worker.effort, effective: this.worker.effort }
       };
     } catch (error3) {
       controller.abort(error3);
@@ -37361,7 +37385,7 @@ var CcAgentWorker = class {
         nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE },
         verification: { rounds: origins.rounds() },
-        thinking: { requested: settings.thinking, effective: settings.thinking }
+        thinking: { requested: this.worker.effort, effective: this.worker.effort }
       };
     } finally {
       input?.close();
@@ -37372,7 +37396,7 @@ var CcAgentWorker = class {
 };
 function createCcRunAgent(config3, dependencies = {}, maxToolRounds = () => 0) {
   const worker = new CcAgentWorker(config3, dependencies);
-  return (input) => {
+  return { runAgent: (input) => {
     const task = input;
     if (task.kind !== "noting" && task.kind !== "consolidation" && task.kind !== "dreaming")
       return Promise.resolve({
@@ -37381,7 +37405,7 @@ function createCcRunAgent(config3, dependencies = {}, maxToolRounds = () => 0) {
         audit: { available: false, reason: AUDIT_UNAVAILABLE }
       });
     return worker.run(task, maxToolRounds(task.kind));
-  };
+  }, capacity: worker.capacity() };
 }
 
 // src/hosts/cc/importer.ts
@@ -37486,18 +37510,17 @@ var CcProjection = class {
         projectId: existing.projectId,
         enrollment: this.memory.store.enrollment(existing.id)
       };
-      const project = implicitCcProject(this.memory.store, binding.nativeSessionId);
+      const allocation = directoryAllocation(this.memory.store, binding.cwd, () => implicitCcProject(this.memory.store, binding.nativeSessionId).id);
       const session = this.memory.store.createSession({
         host,
         startedAt: summary.createdAt,
         firstReplyAt: summary.firstAssistantAt,
-        projectId: project.id,
-        projectDeclaration: "undeclared",
+        ...allocation,
         nativeCreatedAt: summary.createdAt,
         baseline: this.config.baseline,
         enrollmentChoice: binding.enrollment.choice
       });
-      return { ...binding, coreSessionId: session.id, projectId: project.id, enrollment: this.memory.store.enrollment(session.id) };
+      return { ...binding, coreSessionId: session.id, projectId: allocation.projectId, enrollment: this.memory.store.enrollment(session.id) };
     });
   }
   result(state, snapshot2, problems = [], values = {}) {
@@ -37796,23 +37819,25 @@ var CcProjection = class {
 };
 var CcImporter = class {
   memory;
+  workerCapacity;
   projection;
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
     let memory;
-    const runAgent = config3.worker ? createCcRunAgent(
+    const prepared = config3.worker ? createCcRunAgent(
       config3,
       workerDependencies,
       (kind) => memory.config[kind].maxToolRounds
     ) : void 0;
     memory = TraceMemory(
       config3.dbPath,
-      runAgent ?? unavailableRunner,
+      prepared?.runAgent ?? unavailableRunner,
       { closedSessionScope: config3.closedSessionScope },
       void 0,
       (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
     );
     this.memory = memory;
+    this.workerCapacity = prepared?.capacity;
     this.projection = new CcProjection(config3, binding, memory);
   }
   currentBinding() {
@@ -37835,12 +37860,12 @@ var CcImporter = class {
 };
 
 // src/hosts/cc/control.ts
-var import_node_fs4 = require("node:fs");
+var import_node_fs5 = require("node:fs");
 var import_node_net = require("node:net");
-var import_node_path4 = require("node:path");
+var import_node_path5 = require("node:path");
 var import_node_crypto11 = require("node:crypto");
 var socketPath = (config3, token) => {
-  const value = (0, import_node_path4.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
+  const value = (0, import_node_path5.join)(config3.stateDir, "control", `${token.replaceAll("-", "").slice(0, 12)}.sock`);
   if (Buffer.byteLength(value) > 100) throw new Error("CC control socket path exceeds the supported Unix-domain path length; configure a shorter stateDir");
   return value;
 };
@@ -37877,17 +37902,17 @@ async function disableEnrollment(config3, nativeSessionId, store, expectedToken)
   });
   return result;
 }
-var closeServer = (server) => new Promise((resolve3) => {
+var closeServer = (server) => new Promise((resolve4) => {
   if (!server.listening) {
-    resolve3();
+    resolve4();
     return;
   }
-  server.close(() => resolve3());
+  server.close(() => resolve4());
 });
 async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
   const token = (0, import_node_crypto11.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  (0, import_node_fs4.mkdirSync)((0, import_node_path4.dirname)(path), { recursive: true });
+  (0, import_node_fs5.mkdirSync)((0, import_node_path5.dirname)(path), { recursive: true });
   const server = (0, import_node_net.createServer)((connection) => {
     let input = "", handled = false;
     connection.setEncoding("utf8");
@@ -37940,9 +37965,9 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
     });
   });
   try {
-    await new Promise((resolve3, reject) => {
+    await new Promise((resolve4, reject) => {
       server.once("error", reject);
-      server.listen(path, resolve3);
+      server.listen(path, resolve4);
     });
     await updateBinding(config3, binding.nativeSessionId, (current) => {
       if (!current) throw new Error("CC binding disappeared before executor attach");
@@ -37956,12 +37981,12 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
     }, bindingTimeoutMs, signal);
   } catch (error3) {
     await closeServer(server);
-    (0, import_node_fs4.rmSync)(path, { force: true });
+    (0, import_node_fs5.rmSync)(path, { force: true });
     throw error3;
   }
   return { executor, close: async (preserveExecutor = false) => {
     await closeServer(server);
-    (0, import_node_fs4.rmSync)(path, { force: true });
+    (0, import_node_fs5.rmSync)(path, { force: true });
     if (!preserveExecutor) await updateBinding(
       config3,
       binding.nativeSessionId,
@@ -37970,7 +37995,7 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
   } };
 }
 function request(executor, verb, timeoutMs) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const connection = (0, import_node_net.createConnection)(executor.socketPath);
     let output = "", settled = false;
     const finish2 = (error3) => {
@@ -37991,7 +38016,7 @@ function request(executor, verb, timeoutMs) {
         if (!reply.ok) throw new Error(reply.error ?? "CC executor rejected control request");
         settled = true;
         clearTimeout(timer);
-        resolve3(reply);
+        resolve4(reply);
       } catch (error3) {
         finish2(error3 instanceof Error ? error3 : new Error(String(error3)));
       }
@@ -38055,14 +38080,16 @@ async function controlSession(config3, nativeSessionId, verb, timeoutMs = 2e3) {
 var CcTaskScheduler = class {
   memory;
   worker;
+  capacity;
   diagnostic;
   slots = /* @__PURE__ */ new Map();
   stopped = false;
   catchup;
   cancellationEpoch = 0;
-  constructor(memory, worker, diagnostic) {
+  constructor(memory, worker, capacity, diagnostic) {
     this.memory = memory;
     this.worker = worker;
+    this.capacity = capacity;
     this.diagnostic = diagnostic;
   }
   running() {
@@ -38097,8 +38124,8 @@ var CcTaskScheduler = class {
     if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
     if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) return this.catchupStatus();
     if (this.stopped) return this.failedStatus("CC executor is shutting down");
-    if (!this.worker)
-      return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
+    if (!this.worker || !this.capacity)
+      return this.failedStatus("CC worker model, effort, executable version and finite context capacity are not configured");
     if (reconcile.state === "disabled") return this.failedStatus("Trace Memory is disabled for this session");
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length)
       return this.failedStatus(reconcile.problems.join("; ") || "persisted selected source path is not ready");
@@ -38162,8 +38189,8 @@ var CcTaskScheduler = class {
       ...this.memory.store.closedTasks(phase, own.sessionId, this.memory.config.closedSessionScope).map((target) => ({ ...target, borrowed: true }))
     ];
     if (!candidates2.length) return;
-    if (!this.worker) {
-      this.diagnostic(`${phase} admission failed: CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured`);
+    if (!this.worker || !this.capacity) {
+      this.diagnostic(`${phase} admission failed: CC worker model, effort, executable version and finite context capacity are not configured`);
       return;
     }
     const cancellationEpoch = this.cancellationEpoch;
@@ -38177,8 +38204,7 @@ var CcTaskScheduler = class {
       if (shouldDrive()) this.driveCatchup();
     });
   }
-  common(phase, target, borrowed, automatic, boundary) {
-    const execution = this.worker.phases[phase];
+  common(target, borrowed, automatic, boundary) {
     return {
       ...target,
       borrowed,
@@ -38186,11 +38212,11 @@ var CcTaskScheduler = class {
       executorSessionId: target.sessionId,
       mode: "subagent",
       effectiveMode: "subagent",
-      model: execution.model,
-      capacity: execution.capacity,
+      model: this.worker.model,
+      capacity: this.capacity,
       maxReadChars: CC_MAX_RESULT_CHARS,
-      thinkingLevel: execution.thinking,
-      subagentThinkingLevel: execution.thinking,
+      thinkingLevel: this.worker.effort,
+      subagentThinkingLevel: this.worker.effort,
       ...boundary ? { boundary } : {}
     };
   }
@@ -38198,7 +38224,7 @@ var CcTaskScheduler = class {
     for (const { borrowed, ...target } of candidates2) {
       if (this.stopped || this.cancellationEpoch !== cancellationEpoch || !this.memory.store.enabled(executorSessionId)) return;
       try {
-        const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
+        const options = { ...this.common(target, borrowed, true), executorSessionId };
         const result = phase === "noting" ? await this.memory.noting(options) : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
         this.report(phase, target, result);
         if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
@@ -38251,7 +38277,7 @@ var CcTaskScheduler = class {
       }
       let result;
       try {
-        result = phase === "noting" ? await this.memory.noting(this.common(phase, drain.target, false, false, boundary)) : await this.memory.consolidate(this.common(phase, drain.target, false, false, boundary));
+        result = phase === "noting" ? await this.memory.noting(this.common(drain.target, false, false, boundary)) : await this.memory.consolidate(this.common(drain.target, false, false, boundary));
       } catch (error3) {
         if (this.catchup === drain && drainActive()) {
           drain.state = "failed";
@@ -38290,7 +38316,7 @@ var CcTaskScheduler = class {
 };
 
 // src/hosts/cc/lifecycle.ts
-var wait2 = (milliseconds) => new Promise((resolve3) => setTimeout(resolve3, milliseconds));
+var wait2 = (milliseconds) => new Promise((resolve4) => setTimeout(resolve4, milliseconds));
 var sameExecutor = (left, right) => !!left && left.executorId === right.executorId && left.pid === right.pid && left.token === right.token && left.socketPath === right.socketPath;
 var executorLiveness2 = (executor) => {
   try {
@@ -38422,7 +38448,7 @@ var CcCoordinator = class {
     if (!binding) return;
     this.observe("attach-start", { final });
     this.importer = new CcImporter(this.config, binding);
-    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
+    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.importer.workerCapacity, this.diagnostic);
     try {
       const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
@@ -38464,9 +38490,9 @@ var CcCoordinator = class {
     this.observe("attach-complete", { final });
   }
   watchTranscript(binding) {
-    if (this.transcriptWatcher || !(0, import_node_fs5.existsSync)((0, import_node_path5.dirname)(binding.transcriptPath))) return;
-    const transcriptName = (0, import_node_path5.basename)(binding.transcriptPath);
-    this.transcriptWatcher = (0, import_node_fs5.watch)((0, import_node_path5.dirname)(binding.transcriptPath), (_event, filename) => {
+    if (this.transcriptWatcher || !(0, import_node_fs6.existsSync)((0, import_node_path6.dirname)(binding.transcriptPath))) return;
+    const transcriptName = (0, import_node_path6.basename)(binding.transcriptPath);
+    this.transcriptWatcher = (0, import_node_fs6.watch)((0, import_node_path6.dirname)(binding.transcriptPath), (_event, filename) => {
       if (String(filename) === transcriptName) void this.requestReconcile("transcript watch");
     });
     this.transcriptWatcher.on("error", (error3) => {
@@ -38478,10 +38504,10 @@ var CcCoordinator = class {
   async start() {
     if (this.poll || this.closed || this.closing) return;
     this.observe("startup-begin");
-    const bindingDirectory = (0, import_node_path5.dirname)(bindingPath(this.config, this.nativeSessionId));
-    if ((0, import_node_fs5.existsSync)(bindingDirectory)) {
-      const bindingName = (0, import_node_path5.basename)(bindingPath(this.config, this.nativeSessionId));
-      this.bindingWatcher = (0, import_node_fs5.watch)(bindingDirectory, (_event, filename) => {
+    const bindingDirectory = (0, import_node_path6.dirname)(bindingPath(this.config, this.nativeSessionId));
+    if ((0, import_node_fs6.existsSync)(bindingDirectory)) {
+      const bindingName = (0, import_node_path6.basename)(bindingPath(this.config, this.nativeSessionId));
+      this.bindingWatcher = (0, import_node_fs6.watch)(bindingDirectory, (_event, filename) => {
         if (String(filename) === bindingName) void this.requestReconcile("binding watch");
       });
       this.bindingWatcher.on("error", (error3) => {
@@ -38641,13 +38667,13 @@ var CcCoordinator = class {
 
 // src/hosts/cc/injection.ts
 var import_node_crypto12 = require("node:crypto");
-var import_node_fs6 = require("node:fs");
+var import_node_fs7 = require("node:fs");
 var BEGIN = "TRACE MEMORY KNOWLEDGE: If this is a file reference, read the file before proceeding.";
 var HEADER = "TRACE-MEMORY-CC/1 ";
 var END = "TRACE MEMORY KNOWLEDGE END";
 var digest = (text) => (0, import_node_crypto12.createHash)("sha256").update(text, "utf8").digest("hex");
 var databaseIdentity = (path) => {
-  const stat = (0, import_node_fs6.statSync)(path);
+  const stat = (0, import_node_fs7.statSync)(path);
   return `${stat.dev}:${stat.ino}`;
 };
 var positiveId = (value) => Number.isSafeInteger(value) && Number(value) > 0;
@@ -38990,13 +39016,13 @@ async function handleCcHook(configInput, input) {
 }
 async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_CODE_SESSION_ID) {
   const config3 = resolveCcHostConfig(configInput), sessionId = validateNativeSessionId(nativeSessionId);
-  const runtimeDirectory = (0, import_node_path6.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path6.join)(runtimeDirectory, `${sessionId}.jsonl`);
-  (0, import_node_fs7.mkdirSync)(runtimeDirectory, { recursive: true });
+  const runtimeDirectory = (0, import_node_path7.join)(config3.stateDir, "runtime"), runtimePath = (0, import_node_path7.join)(runtimeDirectory, `${sessionId}.jsonl`);
+  (0, import_node_fs8.mkdirSync)(runtimeDirectory, { recursive: true });
   const runtimeEvent = (event, details = {}) => {
     const value = { event, at: Date.now(), pid: process.pid, ...details };
     console.error(`Trace Memory CC: lifecycle ${JSON.stringify(value)}`);
     try {
-      (0, import_node_fs7.appendFileSync)(runtimePath, `${JSON.stringify(value)}
+      (0, import_node_fs8.appendFileSync)(runtimePath, `${JSON.stringify(value)}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -39005,7 +39031,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
   const coordinator = new CcCoordinator(config3, sessionId, (message) => {
     console.error(`Trace Memory CC: ${message}`);
     try {
-      (0, import_node_fs7.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
+      (0, import_node_fs8.appendFileSync)(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}
 `, { mode: 384 });
     } catch (error3) {
       console.error(`Trace Memory CC: lifecycle journal failed: ${String(error3)}`);
@@ -39099,7 +39125,7 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
 }
 function readConfig(path) {
   if (!path.startsWith("/")) throw new Error("CC configuration path must be absolute");
-  return resolveCcHostConfig(JSON.parse((0, import_node_fs7.readFileSync)(path, "utf8")));
+  return resolveCcHostConfig(JSON.parse((0, import_node_fs8.readFileSync)(path, "utf8")));
 }
 async function readStdin() {
   let input = "";
@@ -39131,7 +39157,7 @@ async function runCcCommand(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(result)}
 `);
 }
-var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path6.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
+var direct = process.argv[1]?.endsWith("/index.ts") && (0, import_node_path7.resolve)(process.argv[1]) === (0, import_node_url.fileURLToPath)(__ccImportMetaUrl);
 if (direct) void runCcCommand().catch((error3) => {
   console.error(`Trace Memory CC: ${error3 instanceof Error ? error3.message : String(error3)}`);
   process.exitCode = 1;

@@ -73,6 +73,7 @@ export interface Session {
   closedAt: string | null;
   projectId: number;
   parentSessionId: number | null;
+  directory: string | null; // 62: the repository root or cwd the session started in; NULL when excluded or pre-62
 }
 
 export interface Turn {

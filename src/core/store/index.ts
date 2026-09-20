@@ -60,7 +60,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- session-scoped state, not configuration: a reopen, a fork or a copied host sharing this session
   -- shares it. fork_suppressed_run is the run that detected the miss, linked once it has an id.
   fork_suppressed_at TEXT,
-  fork_suppressed_run INTEGER
+  fork_suppressed_run INTEGER,
+  -- 62: the real repository root (or cwd) the session started in; the key later sessions join by.
+  -- NULL for sessions allocated before the column existed or in an excluded directory (home, temp).
+  directory TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_claims (
@@ -261,6 +264,7 @@ export interface CreateSessionInput {
   projectId: number;
   parentSessionId?: number | null;
   projectDeclaration?: "undeclared" | "marker" | "mark";
+  directory?: string | null; // 62: the resolved repository root or cwd; absent or null when excluded
 }
 
 export interface AppendTurnInput {
@@ -529,6 +533,7 @@ function toSession(row: any): Session {
     closedAt: row.closed_at,
     projectId: row.project_id,
     parentSessionId: row.parent_session_id,
+    directory: row.directory ?? null,
   };
 }
 
@@ -719,6 +724,8 @@ export class Store {
       this.db.exec(SCHEMA_SQL);
       migrateDreaming(this.db, true);
       this.transaction(() => {
+        // 62: existing sessions keep NULL; they are never re-attributed to a directory.
+        if (!this.db.prepare("PRAGMA table_info(sessions)").all().some(r => r.name === "directory")) this.db.exec("ALTER TABLE sessions ADD COLUMN directory TEXT");
         // Allocate once in original insertion order, across every branch of each Turn. Raw and
         // historic citation strings remain untouched. Recheck under the immediate write lock.
         if (!this.db.prepare("PRAGMA table_info(source_entries)").all().some(r => r.name === "entry_ordinal")) {
@@ -885,8 +892,19 @@ export class Store {
     if (!input.firstReplyAt) {
       throw new Error("a session is allocated an id only once an assistant reply exists (firstReplyAt is required)");
     }
-    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice));
+    const info = this.db.prepare("INSERT INTO sessions (host, started_at, first_reply_at, project_id, parent_session_id, project_declaration, enrollment_default, enrollment_choice, directory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(input.host, input.startedAt, input.firstReplyAt, input.projectId, input.parentSessionId ?? null, input.projectDeclaration ?? "marker", Number(enrollmentDefault(input.nativeCreatedAt, input.baseline)), input.enrollmentChoice == null ? null : Number(input.enrollmentChoice), input.directory ?? null);
     return this.getSession(Number(info.lastInsertRowid))!;
+  }
+
+  /** 62: the distinct effective projects (merges followed) of the sessions that recorded a directory. */
+  directoryProjects(directory: string): number[] {
+    const effective = new Set<number>();
+    for (const row of this.db.prepare("SELECT DISTINCT project_id FROM sessions WHERE directory = ?").all(directory)) {
+      let project = this.getProject(Number(row.project_id))!;
+      while (project.mergedInto !== null) project = this.getProject(project.mergedInto)!;
+      effective.add(project.id);
+    }
+    return [...effective];
   }
 
   getSession(id: number): Session | null {

@@ -36,6 +36,9 @@ export interface CcSessionBinding {
   selectedLeafUuid: string | null;
   executor: CcExecutorBinding | null;
   lastClose: { at: string; reason: string; confirmed: boolean; diagnostic?: string } | null;
+  /** 62: the SessionStart hook's cwd, read once when the core session is allocated. Absent on
+   * bindings written before 62 or by a hook without cwd: such a session keeps its own project. */
+  cwd?: string;
 }
 
 const NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -73,6 +76,7 @@ function parseBinding(value: unknown): CcSessionBinding {
       (binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId! < 1)) ||
       (binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId! < 1)) ||
       typeof binding.branch !== "string" || !binding.branch ||
+      (binding.cwd !== undefined && (typeof binding.cwd !== "string" || !isAbsolute(binding.cwd))) ||
       (binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid)))
     throw new Error("invalid Claude Code binding record");
   return binding as CcSessionBinding;
@@ -235,6 +239,7 @@ export async function recordSessionStart(config: ResolvedCcHostConfig, input: Cc
       selectedLeafUuid: null,
       executor: null,
       lastClose: null,
+      ...(typeof input.cwd === "string" && isAbsolute(input.cwd) ? { cwd: input.cwd } : {}),
     };
   });
 }

@@ -1,4 +1,4 @@
-import { TraceMemory, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
+import { TraceMemory, directoryAllocation, type TraceMemory as TraceMemoryFacade } from "../../core/api/index.ts";
 import type { SourceEntry } from "../../core/store/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
 import { createCcRunAgent, type CcWorkerDependencies } from "./worker.ts";
@@ -126,10 +126,11 @@ export class CcProjection {
       const existing = this.memory.store.findSessionByHost(host);
       if (existing) return { ...binding, coreSessionId: existing.id, projectId: existing.projectId,
         enrollment: this.memory.store.enrollment(existing.id) };
-      const project = implicitCcProject(this.memory.store, binding.nativeSessionId);
-      const session = this.memory.store.createSession({ host, startedAt: summary.createdAt!, firstReplyAt: summary.firstAssistantAt!, projectId: project.id,
-        projectDeclaration: "undeclared", nativeCreatedAt: summary.createdAt!, baseline: this.config.baseline, enrollmentChoice: binding.enrollment.choice });
-      return { ...binding, coreSessionId: session.id, projectId: project.id, enrollment: this.memory.store.enrollment(session.id) };
+      // 62: the one place this host resolves cwd; a binding without cwd keeps its own project.
+      const allocation = directoryAllocation(this.memory.store, binding.cwd, () => implicitCcProject(this.memory.store, binding.nativeSessionId).id);
+      const session = this.memory.store.createSession({ host, startedAt: summary.createdAt!, firstReplyAt: summary.firstAssistantAt!, ...allocation,
+        nativeCreatedAt: summary.createdAt!, baseline: this.config.baseline, enrollmentChoice: binding.enrollment.choice });
+      return { ...binding, coreSessionId: session.id, projectId: allocation.projectId, enrollment: this.memory.store.enrollment(session.id) };
     });
   }
 
