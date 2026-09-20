@@ -2453,8 +2453,8 @@ test("61: definitions are shared and hold definitions only; the principles are t
   expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");
   expect(loadPrompt("dreaming.md")).toContain("When over budget, remove first:");
   expect(principles[3]).toContain("Reliability of fact evidence: by source, user > observation > assistant; by category, decision > interpretation > proposal > question.");
-  expect(principles[3]).toContain("A claim without reliable evidence belongs to `open`.");
-  expect(principles[3]).toContain("A claim whose reliable evidence conflicts belongs to `dispute`.");
+  expect(principles[3]).toContain("A matter worth tracking that still awaits an answer, adoption, verification or completion belongs to `open`");
+  expect(principles[3]).toContain("Knowledge without reliable evidence stays in `open`, not `dispute`.");
   expect(principles[4]).toContain("never pad them for coverage");
   for (const file of ["consolidation.md", "dreaming.md"] as const) {
     const composed = loadPrompt(file);
