@@ -2443,11 +2443,11 @@ test("61: definitions are shared and hold definitions only; the principles are t
   for (const leaked of ["There is no open category", "first decide whether", "never becomes pending", "**Object state.**", "**Status.**", "however small", "weighs as an assistant claim"])
     expect(definitions, `definition blocks carry no principle: ${leaked}`).not.toContain(leaked);
   const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
-  expect(principles[0]).toContain("Future-use test: importance is the cost of forgetting, never the effort spent, the length of the discussion or the kind of task.");
-  expect(principles[0]).toContain("A value, a list or a detail is not resident when the existing understanding lets an agent look it up in an artifact or a document. Only the pointer to where it is found is kept.");
-  expect(principles[1]).toContain("Knowledge belongs to the project by default.");
+  expect(principles[0]).toContain("Knowledge carries the macro understanding that guides the direction of work, not the concrete detail that understanding lets one derive easily.");
+  expect(principles[0]).toContain("What enters knowledge is what would cause a wrong decision or repeated work if it were not resident:");
+  expect(principles[0]).toContain("What does not enter knowledge is what one step of reasoning from resident knowledge yields:");
+  expect(principles[1]).toContain("`scope` defaults to `project`.");
   expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
-  expect(principles[0]).toContain("Knowledge carries macro understanding, not the implementation detail under it.");
   expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
   expect(principles[2]).toContain("Its body names the strength of its evidence: whether it comes from the user, the assistant or an observation, and whether it is a decision, a proposal, a question, an event or the like.");
   expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");

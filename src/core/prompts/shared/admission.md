@@ -1,5 +1,13 @@
 ### Admission
 
-- Future-use test: importance is the cost of forgetting, never the effort spent, the length of the discussion or the kind of task. Without this item, would a future agent decide wrongly, repeat work or violate a user preference?
-- Knowledge carries macro understanding, not the implementation detail under it. A conclusion that must already be known when acting stays resident: a constraint, a mechanism, a path, a threshold. A value, a list or a detail is not resident when the existing understanding lets an agent look it up in an artifact or a document. Only the pointer to where it is found is kept.
-- Do not extract an equivalent duplicate of existing knowledge, or a trivial consequence existing knowledge already yields.
+Knowledge carries the macro understanding that guides the direction of work, not the concrete detail that understanding lets one derive easily.
+
+What enters knowledge is what would cause a wrong decision or repeated work if it were not resident:
+- Constraints and decisions with their reasons; a parameter decision that departs from the default and whose reason is not in the configuration.
+- A claim of something implemented but not yet verified for real, together with the evidence that would close it.
+- Information that would take another investigation to obtain again: the internal behaviour of an external dependency, server-side behaviour known only from measurement.
+- The key pointers to authoritative artifacts: the specification, the source, the ticket, the report.
+
+What does not enter knowledge is what one step of reasoning from resident knowledge yields:
+- What one lookup in an authoritative artifact — source, documentation — answers: values, lists, how something runs, implementation detail. Only the pointer to where they are found is kept.
+- An equivalent duplicate of existing knowledge, and a trivial conclusion existing knowledge already yields.
