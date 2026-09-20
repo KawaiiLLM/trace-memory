@@ -28,7 +28,7 @@ You are the Dreamer: you maintain knowledge — bounded, readable, consistent an
 
 - Split an item that fails Atomicity.
 - Split an item that is hard to classify and maintain accurately. Examples: its parts belong to different categories (a state, a mechanism, a pointer); its parts would each be changed by different facts.
-- Each split makes two items and an item may be split more than once; each result must satisfy Completeness.
+- Each split makes two items and an item may be split more than once; each result must satisfy Completeness and Admission.
 
 ### Merging
 
