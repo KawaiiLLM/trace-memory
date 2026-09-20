@@ -2444,7 +2444,7 @@ test("61: definitions are shared and hold definitions only; the principles are t
     expect(definitions, `definition blocks carry no principle: ${leaked}`).not.toContain(leaked);
   const principles = ["admission", "atomicity", "completeness", "pending", "citations"].map(block);
   expect(principles[0]).toContain("Future-use test: importance is the cost of forgetting, never the effort spent, the length of the discussion or the kind of task.");
-  expect(principles[0]).toContain("A value, a list or a detail that can be looked up in an artifact or a document without any guiding understanding is not resident; only the pointer to where it is found is kept.");
+  expect(principles[0]).toContain("A value, a list or a detail is not resident when the existing understanding lets an agent look it up in an artifact or a document. Only the pointer to where it is found is kept.");
   expect(principles[1]).toContain("Knowledge belongs to the project by default.");
   expect(principles[1]).toContain("When the claim's content changes, update the original item, so that the change and its historical evidence can be traced; different independently changing claims about one object are maintained apart.");
   expect(principles[0]).toContain("Knowledge carries macro understanding, not the implementation detail under it.");
