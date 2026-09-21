@@ -7144,6 +7144,7 @@ ${view}` : view;
 }
 
 // src/hosts/cc/binding.ts
+var coreHostOf = (binding) => binding.coreHost ?? `cc:${validateNativeSessionId(binding.nativeSessionId)}`;
 var NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 var wait = (milliseconds, signal) => new Promise((resolve4, reject) => {
   if (signal?.aborted) {
@@ -7174,9 +7175,13 @@ function implicitCcProject(store, nativeSessionId) {
   const name = `cc:${validateNativeSessionId(nativeSessionId)}`;
   return store.findProjectByName(name) ?? store.createProject({ name, declaredBy: "marker" });
 }
+var validClearedFrom = (value) => {
+  const cleared = value;
+  return !!cleared && typeof cleared.nativeSessionId === "string" && NATIVE_ID.test(cleared.nativeSessionId) && typeof cleared.at === "string" && (cleared.compactionTurnId === null || Number.isSafeInteger(cleared.compactionTurnId) && cleared.compactionTurnId > 0) && Array.isArray(cleared.inheritedEntryIds) && cleared.inheritedEntryIds.every((id) => Number.isSafeInteger(id) && id > 0);
+};
 function parseBinding(value) {
   const binding = value;
-  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path3.isAbsolute)(binding.cwd)) || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
+  if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId || typeof binding.transcriptPath !== "string" || !binding.transcriptPath || typeof binding.dbPath !== "string" || binding.coreSessionId !== null && (!Number.isSafeInteger(binding.coreSessionId) || binding.coreSessionId < 1) || binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId < 1) || typeof binding.branch !== "string" || !binding.branch || binding.cwd !== void 0 && (typeof binding.cwd !== "string" || !(0, import_node_path3.isAbsolute)(binding.cwd)) || binding.coreHost !== void 0 && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:")) || binding.clearedFrom !== void 0 && !validClearedFrom(binding.clearedFrom) || binding.clearedInto !== void 0 && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string") || binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid))
     throw new Error("invalid Claude Code binding record");
   return binding;
 }
@@ -7196,7 +7201,7 @@ function assertOperatorBinding(config3, binding, store) {
     return;
   }
   const session = store.getSession(binding.coreSessionId);
-  if (!session || session.host !== `cc:${binding.nativeSessionId}`)
+  if (!session || session.host !== coreHostOf(binding))
     throw new Error("CC binding does not name its authoritative core session");
   if (binding.projectId === null || session.projectId !== binding.projectId)
     throw new Error("bound Claude Code core session or project disagrees with the database");
@@ -7899,7 +7904,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28697,7 +28702,7 @@ function query({
   return queryInstance;
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
+// node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28771,7 +28776,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
+// node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29450,7 +29455,7 @@ var Class2 = class {
   }
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
+// node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29516,7 +29521,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
+// node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29596,7 +29601,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
+// node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29753,7 +29758,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
+// node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30301,7 +30306,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
+// node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30337,14 +30342,14 @@ var Doc2 = class {
   }
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
+// node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
+// node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32315,7 +32320,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
+// node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32424,7 +32429,7 @@ function en_default3() {
   };
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
+// node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32472,7 +32477,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
+// node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33276,7 +33281,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
+// node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33628,7 +33633,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
+// node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -34104,7 +34109,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34273,7 +34278,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
+// node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34307,7 +34312,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
+// node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34348,7 +34353,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
+// node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34388,7 +34393,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
+// node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34402,7 +34407,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
+// node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35481,22 +35486,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
+// node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
+// node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
+// node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// ../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -37536,7 +37541,7 @@ var CcProjection = class {
     if (this.binding.coreSessionId !== null || !summary.firstAssistantAt || !summary.createdAt) return;
     await this.persist((binding) => {
       if (binding.coreSessionId !== null || !provisionalEnabled(binding)) return binding;
-      const host = `cc:${binding.nativeSessionId}`;
+      const host = coreHostOf(binding);
       const existing = this.memory.store.findSessionByHost(host);
       if (existing) return {
         ...binding,
@@ -37645,7 +37650,7 @@ var CcProjection = class {
         if (ancestor.sourceKind !== null) throw new CcIntegrityError(`native source ${ancestor.uuid} is not persisted`);
         parent = ancestor.parentUuid;
       }
-      return null;
+      return this.binding.clearedFrom?.compactionTurnId ?? null;
     };
     const knownCalls = (turnId) => {
       const loaded = this.callsByTurn.get(turnId);
@@ -37806,8 +37811,10 @@ var CcProjection = class {
             }
           }
           if (projectionReady) {
+            const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
+            if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
             this.memory.selectEntries(sessionId, branch, selectedEntryIds);
-            headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? null;
+            headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
           }
         }
       }
@@ -37854,6 +37861,9 @@ var CcProjection = class {
 var CcImporter = class {
   memory;
   projection;
+  config;
+  /** 63: every native lineage this facade has served; the source normalizer renders them all. */
+  lineages = /* @__PURE__ */ new Set();
   reopened = false;
   constructor(config3, binding, workerDependencies = {}) {
     let memory;
@@ -37862,18 +37872,27 @@ var CcImporter = class {
       workerDependencies,
       (kind) => memory.config[kind].maxToolRounds
     ) : void 0;
+    this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(
       config3.dbPath,
       runAgent ?? unavailableRunner,
       { closedSessionScope: config3.closedSessionScope },
       void 0,
-      (entry) => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : void 0
+      (entry) => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : void 0
     );
     this.memory = memory;
+    this.config = config3;
     this.projection = new CcProjection(config3, binding, memory);
   }
   currentBinding() {
     return this.projection.currentBinding();
+  }
+  /** 63: project another native lineage of the same core session on the same facade. */
+  retarget(binding) {
+    const current = this.projection.currentBinding();
+    if (binding.coreSessionId !== current.coreSessionId) throw new Error("CC importer retarget must stay on the same core session");
+    this.lineages.add(binding.nativeSessionId);
+    this.projection = new CcProjection(this.config, binding, this.memory);
   }
   persistedCall(toolUseId, toolName) {
     return this.projection.persistedCall(toolUseId, toolName);
@@ -37941,7 +37960,8 @@ var closeServer = (server) => new Promise((resolve4) => {
   }
   server.close(() => resolve4());
 });
-async function startControlServer(config3, binding, memory, bindingTimeoutMs, signal, handlers) {
+async function startControlServer(config3, initial, memory, bindingTimeoutMs, signal, handlers) {
+  let binding = initial;
   const token = (0, import_node_crypto11.randomUUID)(), path = socketPath(config3, token);
   const executor = { executorId: memory.executorId, pid: process.pid, token, socketPath: path, startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   (0, import_node_fs5.mkdirSync)((0, import_node_path5.dirname)(path), { recursive: true });
@@ -38016,14 +38036,31 @@ async function startControlServer(config3, binding, memory, bindingTimeoutMs, si
     (0, import_node_fs5.rmSync)(path, { force: true });
     throw error3;
   }
+  const attachTo = (target) => updateBinding(config3, target.nativeSessionId, (current) => {
+    if (!current) throw new Error("CC binding disappeared before executor attach");
+    if (current.transcriptPath !== target.transcriptPath) throw new Error("CC binding changed before executor attach");
+    if (current.executor && current.executor.token !== token) {
+      const liveness = executorLiveness(current.executor);
+      if (liveness === "alive") throw new Error(`CC session already has a live executor process ${current.executor.pid}`);
+      if (liveness === "unknown") throw new Error(`cannot establish liveness of CC executor process ${current.executor.pid}`);
+    }
+    return { ...current, executor };
+  }, bindingTimeoutMs);
+  const release = (target) => updateBinding(
+    config3,
+    target.nativeSessionId,
+    (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
+  );
   return { executor, close: async (preserveExecutor = false) => {
     await closeServer(server);
     (0, import_node_fs5.rmSync)(path, { force: true });
-    if (!preserveExecutor) await updateBinding(
-      config3,
-      binding.nativeSessionId,
-      (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
-    );
+    if (!preserveExecutor) await release(binding);
+  }, retarget: async (next) => {
+    if (next.coreSessionId !== binding.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
+    await attachTo(next);
+    const previous = binding;
+    binding = next;
+    await release(previous);
   } };
 }
 function request(executor, verb, timeoutMs) {
@@ -38359,6 +38396,28 @@ var executorLiveness2 = (executor) => {
   }
 };
 var samePath = (left, right) => left.length === right.length && left.every((id, index) => id === right[index]);
+function siblingLineages(config3, coreSessionId, excludeNativeSessionId) {
+  let files;
+  try {
+    files = (0, import_node_fs6.readdirSync)((0, import_node_path6.dirname)(bindingPath(config3, excludeNativeSessionId)));
+  } catch {
+    return [];
+  }
+  const siblings = [];
+  for (const file2 of files) {
+    if (!file2.endsWith(".json")) continue;
+    const nativeSessionId = file2.slice(0, -".json".length);
+    if (nativeSessionId === excludeNativeSessionId) continue;
+    let binding;
+    try {
+      binding = readBinding(config3, nativeSessionId);
+    } catch {
+      continue;
+    }
+    if (binding && binding.coreSessionId === coreSessionId) siblings.push(binding);
+  }
+  return siblings;
+}
 async function recordCcSessionEnd(config3, input) {
   if (input.hook_event_name !== "SessionEnd") throw new Error("expected a SessionEnd Hook input");
   const nativeSessionId = validateNativeSessionId(input.session_id), binding = readBinding(config3, nativeSessionId);
@@ -38413,13 +38472,13 @@ async function recordCcSessionEnd(config3, input) {
   const store = new Store(config3.dbPath);
   try {
     if (imported.coreSessionId === null) return unconfirmed("CC binding has no allocated core session", expected);
-    const selectedEntryIds = selected.records.flatMap((record3) => {
+    const selectedEntryIds = [...imported.clearedFrom?.inheritedEntryIds ?? [], ...selected.records.flatMap((record3) => {
       const source = classifySourceRecord(record3);
       if (!source || source.kind === "compaction") return [];
       const entry = store.findSourceEntry(imported.coreSessionId, nativeSessionId, source.nativeId);
       return entry ? [entry.id] : [];
-    });
-    const expectedSources = selected.records.filter((record3) => {
+    })];
+    const expectedSources = (imported.clearedFrom?.inheritedEntryIds.length ?? 0) + selected.records.filter((record3) => {
       const source = classifySourceRecord(record3);
       return source !== null && source.kind !== "compaction";
     }).length;
@@ -38434,10 +38493,11 @@ async function recordCcSessionEnd(config3, input) {
       if (current.coreSessionId === null || current.selectedLeafUuid !== selected.leafUuid || current.branch !== imported.branch || !samePath(store.selectedSourceEntryIds(current.coreSessionId, current.branch) ?? [], selectedEntryIds))
         throw new Error("CC selected projection changed during SessionEnd close");
       const session = store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${nativeSessionId}`) throw new Error("bound core session identity changed during SessionEnd close");
+      if (!session || session.host !== coreHostOf(current)) throw new Error("bound core session identity changed during SessionEnd close");
+      const liveSibling = siblingLineages(config3, current.coreSessionId, nativeSessionId).some((sibling) => sibling.executor && executorLiveness2(sibling.executor) !== "dead");
       store.transaction(() => {
         store.releaseExecutor(expected.executorId);
-        if (session.closedAt === null) store.closeSession(current.coreSessionId);
+        if (session.closedAt === null && !liveSibling) store.closeSession(current.coreSessionId);
       });
       return { ...current, executor: null, lastClose: { at: (/* @__PURE__ */ new Date()).toISOString(), reason, confirmed: true } };
     }, Math.max(1, deadline - Date.now()));
@@ -38564,6 +38624,35 @@ var CcCoordinator = class {
     this.observe("session-id-adopted", { from: previous, to: nativeSessionId });
     if (this.poll) void this.requestReconcile("session adoption");
     return true;
+  }
+  /** 63: serve the native session this one was cleared into — same facade, same core session, new
+   * lineage. Runs on the reconcile queue so no import is in flight while the projection is swapped.
+   * Returns false when the target is not a clear-child of the current session. */
+  retargetTo(nativeSessionId) {
+    validateNativeSessionId(nativeSessionId);
+    const done = this.queue.then(async () => {
+      if (this.closed || this.closing || !this.importer || !this.control) return false;
+      const current = this.importer.currentBinding(), next = readBinding(this.config, nativeSessionId);
+      if (!next || next.clearedFrom?.nativeSessionId !== current.nativeSessionId || next.coreSessionId !== current.coreSessionId) return false;
+      this.observe("retarget-start", { from: current.nativeSessionId, to: nativeSessionId });
+      this.transcriptWatcher?.close();
+      this.transcriptWatcher = null;
+      await this.control.retarget(next);
+      this.importer.retarget(next);
+      this.nativeSessionId = nativeSessionId;
+      this.watchTranscript(next);
+      this.observe("retarget-complete", { to: nativeSessionId });
+      return true;
+    }).then((result2) => result2, (error3) => {
+      this.diagnostic(`retarget to ${nativeSessionId} failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      return false;
+    });
+    this.queue = done.then(() => null);
+    const result = done;
+    void result.then((retargeted) => {
+      if (retargeted) void this.requestReconcile("retarget");
+    });
+    return result;
   }
   requestReconcile(reason, final = false, deadline) {
     if (!final && this.wakeQueued) return this.queue;
@@ -38923,7 +39012,7 @@ async function lockedInjectionBinding(config3, nativeSessionId, transcriptPath, 
     if (!enabled(current, memory)) return current;
     if (current.coreSessionId !== null) {
       const session = memory.store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${current.nativeSessionId}` || session.projectId !== current.projectId)
+      if (!session || session.host !== coreHostOf(current) || session.projectId !== current.projectId)
         throw new Error("bound Claude Code core session or project disagrees with the database");
       return current;
     }
@@ -38968,7 +39057,7 @@ async function ccSessionStartInjection(config3, input) {
       target = { projectId: binding.projectId };
     } else {
       const session = memory.store.getSession(core);
-      if (!session || session.host !== `cc:${binding.nativeSessionId}` || session.projectId !== binding.projectId)
+      if (!session || session.host !== coreHostOf(binding) || session.projectId !== binding.projectId)
         throw new Error("bound Claude Code core session or project disagrees with the database");
       if (!snapshot2.exists) throw new Error("native transcript is unavailable for an allocated Claude Code session");
       const selected = selectedNativePath(snapshot2.records);
@@ -39033,7 +39122,7 @@ async function declareCcProject(config3, nativeSessionId, name) {
         throw new Error(`Claude Code session ${id} has no persisted selected source path; project declaration is not ready`);
       result = memory.declareProject(current.coreSessionId, name, "mark", path);
       const session = memory.store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${id}`) throw new Error("CC binding lost its authoritative core session during project declaration");
+      if (!session || session.host !== coreHostOf(current)) throw new Error("CC binding lost its authoritative core session during project declaration");
       coreSessionId = current.coreSessionId;
       return { ...current, projectId: session.projectId };
     });
@@ -39182,18 +39271,119 @@ ${record3.at}`;
   } };
 }
 
+// src/hosts/cc/clear.ts
+async function ccHandleClear(config3, input) {
+  const pid = parsePid(process.env.CLAUDE_PID);
+  if (pid === null) return { handled: false };
+  const record3 = assignedNativeSession(config3, [{ pid, startedAt: processStartedAt(pid) }]);
+  if (!record3) return { handled: false };
+  const parentBinding = readBinding(config3, record3.nativeSessionId);
+  if (!parentBinding) return { handled: false };
+  const childId = validateNativeSessionId(input.session_id);
+  const childSnapshot = readCompleteTranscript(input.transcript_path);
+  const createdAt = childSnapshot.exists && !childSnapshot.problem ? nativeCreatedAt(childSnapshot.records) : null;
+  if (parentBinding.coreSessionId === null) {
+    await recordSessionStart(config3, input, createdAt);
+    await updateBinding(config3, childId, (current) => current && current.coreSessionId === null ? { ...current, projectId: parentBinding.projectId, enrollment: parentBinding.enrollment } : current);
+    return { handled: true, output: await ccSessionStartInjection(config3, input) };
+  }
+  const memory = TraceMemory(
+    config3.dbPath,
+    async () => {
+      throw new Error("CC clear Hook cannot run model work");
+    },
+    {},
+    void 0,
+    (entry) => entry.nativeLineage === parentBinding.nativeSessionId ? ccSourceBlocks(entry) : void 0
+  );
+  try {
+    const projection = new CcProjection(config3, parentBinding, memory);
+    const projected = await projection.synchronize();
+    const synced = projection.currentBinding();
+    if (projected.state === "not-ready")
+      throw new Error(projected.problems.join("; ") || "parent native source projection is not ready");
+    if (synced.coreSessionId === null) return { handled: false };
+    const core = synced.coreSessionId;
+    const at = (/* @__PURE__ */ new Date()).toISOString();
+    const linkChild = async (clearedFrom) => {
+      await withCcBindingLock(config3, childId, (locked) => locked.update((current) => {
+        if (current) {
+          if (current.dbPath !== config3.dbPath || current.transcriptPath !== input.transcript_path)
+            throw new Error("native Claude Code binding disagrees with its configured database or transcript path");
+          return current;
+        }
+        return {
+          version: 1,
+          nativeSessionId: childId,
+          transcriptPath: input.transcript_path,
+          dbPath: config3.dbPath,
+          nativeCreatedAt: createdAt,
+          enrollment: synced.enrollment,
+          coreSessionId: core,
+          projectId: synced.projectId,
+          branch: synced.branch,
+          selectedLeafUuid: null,
+          executor: null,
+          lastClose: null,
+          ...synced.cwd !== void 0 ? { cwd: synced.cwd } : {},
+          coreHost: coreHostOf(synced),
+          clearedFrom
+        };
+      }));
+      await updateBinding(config3, synced.nativeSessionId, (current) => current && current.transcriptPath === synced.transcriptPath ? { ...current, clearedInto: { nativeSessionId: childId, at } } : current);
+    };
+    if (!memory.store.enabled(core)) {
+      const inheritedEntryIds2 = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
+      await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: null, inheritedEntryIds: inheritedEntryIds2 });
+      return { handled: true, output: null };
+    }
+    if (!synced.selectedLeafUuid) throw new Error("parent Claude Code session has no selected native source to compact from");
+    const entry = memory.store.findSourceEntry(core, synced.nativeSessionId, synced.selectedLeafUuid);
+    const nativeTurn = memory.store.findNativeTurn(core, synced.nativeSessionId, synced.selectedLeafUuid);
+    const headTurnId = entry?.turnId ?? nativeTurn?.turnId;
+    if (!headTurnId) throw new Error("parent Claude Code selected native source has no persisted core Turn");
+    const compacted = memory.compact(core, synced.branch, headTurnId);
+    const injection = "native" in compacted ? memory.injection({ sessionId: core, branch: synced.branch, headTurnId }, noVisibility()) : { text: compacted.text, knowledgeCommitIds: compacted.supplied.knowledgeCommitIds, composition: compacted.composition };
+    const turn = memory.store.appendTurn({
+      sessionId: core,
+      parentTurnId: headTurnId,
+      kind: "compaction",
+      assistantText: injection.text,
+      startedAt: at,
+      endedAt: at
+    });
+    const inheritedEntryIds = memory.store.selectedSourceEntryIds(core, synced.branch) ?? [];
+    await linkChild({ nativeSessionId: synced.nativeSessionId, at, compactionTurnId: turn.id, inheritedEntryIds });
+    if (!injection.text) return { handled: true, output: null };
+    const visibleBinding = { db: databaseIdentity(config3.dbPath), nativeSession: childId, coreSession: core };
+    return { handled: true, output: { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: encodeCcInjection(visibleBinding, injection) } } };
+  } finally {
+    memory.store.close();
+  }
+}
+
 // src/hosts/cc/index.ts
 async function handleCcHook(configInput, input) {
   const config3 = resolveCcHostConfig(configInput);
   validateNativeSessionId(input.session_id);
   if (input.hook_event_name === "SessionStart") {
+    const publish = () => {
+      try {
+        if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
+      } catch (error3) {
+        console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
+      }
+    };
+    if (input.source === "clear") {
+      const cleared = await ccHandleClear(config3, input);
+      if (cleared.handled) {
+        publish();
+        return cleared.output;
+      }
+    }
     const snapshot2 = readCompleteTranscript(input.transcript_path);
     await recordSessionStart(config3, input, snapshot2.exists && !snapshot2.problem ? nativeCreatedAt(snapshot2.records) : null);
-    try {
-      if (!publishNativeSession(config3, input)) console.error("Trace Memory CC: CLAUDE_PID is not set; the executor keeps its own session id");
-    } catch (error3) {
-      console.error(`Trace Memory CC: native session publish failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
-    }
+    publish();
     return ccSessionStartInjection(config3, input);
   }
   if (input.hook_event_name !== "SessionEnd") throw new Error(`unsupported Claude Code Hook ${String(input.hook_event_name)}`);
@@ -39231,9 +39421,15 @@ async function runCcStdioMcp(configInput, nativeSessionId = process.env.CLAUDE_C
     runtimeEvent("native-ancestors", { ancestors });
     follower = followNativeSession(config3, ancestors, (record3) => {
       if (coordinator.adoptNativeSessionId(record3.nativeSessionId)) return;
-      if (journaledChange === record3.nativeSessionId) return;
-      journaledChange = record3.nativeSessionId;
-      runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record3.nativeSessionId, source: record3.source });
+      void coordinator.retargetTo(record3.nativeSessionId).then((retargeted) => {
+        if (retargeted) {
+          runtimeEvent("session-id-retargeted", { to: record3.nativeSessionId });
+          return;
+        }
+        if (journaledChange === record3.nativeSessionId) return;
+        journaledChange = record3.nativeSessionId;
+        runtimeEvent("session-id-changed-after-attach", { attached: coordinator.nativeSessionId, hook: record3.nativeSessionId, source: record3.source });
+      });
     }, (message) => runtimeEvent("native-session-follow", { message }));
   } catch (error3) {
     runtimeEvent("native-session-follow-unavailable", { error: error3 instanceof Error ? error3.message : String(error3) });

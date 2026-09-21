@@ -39,7 +39,28 @@ export interface CcSessionBinding {
   /** 62: the SessionStart hook's cwd, read once when the core session is allocated. Absent on
    * bindings written before 62 or by a hook without cwd: such a session keeps its own project. */
   cwd?: string;
+  /** 63: the core session's `host` when it is not `cc:<this native id>` — a native session cleared
+   * into from another keeps the root's host. `coreHostOf` reads it with the default. */
+  coreHost?: string;
+  /** 63: this native session continues the core session of the one it was cleared from. */
+  clearedFrom?: CcClearedFrom;
+  /** 63: this native session was cleared into another; its core session stays open there. */
+  clearedInto?: { nativeSessionId: string; at: string };
 }
+
+export interface CcClearedFrom {
+  nativeSessionId: string;
+  at: string;
+  /** The compaction Turn appended under the parent's head; the child's root records attach to it.
+   * Null when the parent had no core session yet. */
+  compactionTurnId: number | null;
+  /** The branch's persisted path at the clear; the child's selected path continues it. */
+  inheritedEntryIds: number[];
+}
+
+/** The `host` of the core session a binding names: the lineage root's, or this native id's. */
+export const coreHostOf = (binding: Pick<CcSessionBinding, "nativeSessionId" | "coreHost">): string =>
+  binding.coreHost ?? `cc:${validateNativeSessionId(binding.nativeSessionId)}`;
 
 const NATIVE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
 const wait = (milliseconds: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
@@ -69,6 +90,13 @@ export function implicitCcProject(store: Store, nativeSessionId: string) {
   return store.findProjectByName(name) ?? store.createProject({ name, declaredBy: "marker" });
 }
 
+const validClearedFrom = (value: unknown): value is CcClearedFrom => {
+  const cleared = value as Partial<CcClearedFrom>;
+  return !!cleared && typeof cleared.nativeSessionId === "string" && NATIVE_ID.test(cleared.nativeSessionId) && typeof cleared.at === "string" &&
+    (cleared.compactionTurnId === null || (Number.isSafeInteger(cleared.compactionTurnId) && cleared.compactionTurnId! > 0)) &&
+    Array.isArray(cleared.inheritedEntryIds) && cleared.inheritedEntryIds.every(id => Number.isSafeInteger(id) && id > 0);
+};
+
 function parseBinding(value: unknown): CcSessionBinding {
   const binding = value as Partial<CcSessionBinding>;
   if (!binding || binding.version !== 1 || validateNativeSessionId(binding.nativeSessionId) !== binding.nativeSessionId ||
@@ -77,6 +105,9 @@ function parseBinding(value: unknown): CcSessionBinding {
       (binding.projectId !== null && (!Number.isSafeInteger(binding.projectId) || binding.projectId! < 1)) ||
       typeof binding.branch !== "string" || !binding.branch ||
       (binding.cwd !== undefined && (typeof binding.cwd !== "string" || !isAbsolute(binding.cwd))) ||
+      (binding.coreHost !== undefined && (typeof binding.coreHost !== "string" || !binding.coreHost.startsWith("cc:"))) ||
+      (binding.clearedFrom !== undefined && !validClearedFrom(binding.clearedFrom)) ||
+      (binding.clearedInto !== undefined && (typeof binding.clearedInto?.nativeSessionId !== "string" || typeof binding.clearedInto.at !== "string")) ||
       (binding.selectedLeafUuid !== null && (typeof binding.selectedLeafUuid !== "string" || !binding.selectedLeafUuid)))
     throw new Error("invalid Claude Code binding record");
   return binding as CcSessionBinding;
@@ -99,7 +130,7 @@ export function assertOperatorBinding(config: ResolvedCcHostConfig, binding: CcS
     return;
   }
   const session = store.getSession(binding.coreSessionId);
-  if (!session || session.host !== `cc:${binding.nativeSessionId}`)
+  if (!session || session.host !== coreHostOf(binding))
     throw new Error("CC binding does not name its authoritative core session");
   if (binding.projectId === null || session.projectId !== binding.projectId)
     throw new Error("bound Claude Code core session or project disagrees with the database");

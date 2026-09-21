@@ -76,7 +76,7 @@ export function publishNativeSession(config: ResolvedCcHostConfig, input: CcHook
   return record;
 }
 
-const parsePid = (value: string | undefined): number | null => {
+export const parsePid = (value: string | undefined): number | null => {
   const pid = Number(value); return value !== undefined && Number.isSafeInteger(pid) && pid > 0 ? pid : null;
 };
 

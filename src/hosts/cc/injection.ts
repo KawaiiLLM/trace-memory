@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { TraceMemory, knowledgeStateKey, noVisibility, type Injection, type KnowledgeStateReceipt, type VisibleView } from "../../core/api/index.ts";
 import type { ResolvedCcHostConfig } from "./config.ts";
-import { implicitCcProject, readBinding, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
+import { coreHostOf, implicitCcProject, readBinding, updateBinding, type CcHookInput, type CcSessionBinding } from "./binding.ts";
 import { CcProjection } from "./importer.ts";
 import { ccSourceBlocks, classifySourceRecord, nativeParentId, readCompleteTranscript, selectedNativePath, type CcNativeRecord } from "./transcript.ts";
 
@@ -12,7 +12,7 @@ const END = "TRACE MEMORY KNOWLEDGE END";
 const digest = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 // Unlike Pi's path identity, dev:inode invalidates old envelopes after any file replacement,
 // including backup restore, and conservatively causes the next occurrence to reinject.
-const databaseIdentity = (path: string): string => { const stat = statSync(path); return `${stat.dev}:${stat.ino}`; };
+export const databaseIdentity = (path: string): string => { const stat = statSync(path); return `${stat.dev}:${stat.ino}`; };
 const positiveId = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 
@@ -251,7 +251,7 @@ async function lockedInjectionBinding(config: ResolvedCcHostConfig, nativeSessio
     if (!enabled(current, memory)) return current;
     if (current.coreSessionId !== null) {
       const session = memory.store.getSession(current.coreSessionId);
-      if (!session || session.host !== `cc:${current.nativeSessionId}` || session.projectId !== current.projectId)
+      if (!session || session.host !== coreHostOf(current) || session.projectId !== current.projectId)
         throw new Error("bound Claude Code core session or project disagrees with the database");
       return current;
     }
@@ -292,7 +292,7 @@ export async function ccSessionStartInjection(config: ResolvedCcHostConfig, inpu
       target = { projectId: binding.projectId };
     } else {
       const session = memory.store.getSession(core);
-      if (!session || session.host !== `cc:${binding.nativeSessionId}` || session.projectId !== binding.projectId)
+      if (!session || session.host !== coreHostOf(binding) || session.projectId !== binding.projectId)
         throw new Error("bound Claude Code core session or project disagrees with the database");
       if (!snapshot.exists) throw new Error("native transcript is unavailable for an allocated Claude Code session");
       const selected = selectedNativePath(snapshot.records);
