@@ -404,19 +404,17 @@ export class CcProjection {
 
 export class CcImporter {
   readonly memory: TraceMemoryFacade;
-  readonly workerCapacity?: { inputTokens: number; prefixTokens: 0 };
   private readonly projection: CcProjection;
   private reopened = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, workerDependencies: CcWorkerDependencies = {}) {
     let memory!: TraceMemoryFacade;
-    const prepared = config.worker ? createCcRunAgent(config, workerDependencies,
+    const runAgent = config.worker ? createCcRunAgent(config, workerDependencies,
       kind => memory.config[kind].maxToolRounds) : undefined;
-    memory = TraceMemory(config.dbPath, prepared?.runAgent ?? unavailableRunner,
+    memory = TraceMemory(config.dbPath, runAgent ?? unavailableRunner,
       { closedSessionScope: config.closedSessionScope }, undefined,
       entry => entry.nativeLineage === binding.nativeSessionId ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
-    this.workerCapacity = prepared?.capacity;
     this.projection = new CcProjection(config, binding, memory);
   }
 

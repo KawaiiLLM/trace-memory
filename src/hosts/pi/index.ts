@@ -15,6 +15,7 @@ import { visibleView, type ContextEntry, type VisibleBinding } from "./visible.t
 export { visibleView } from "./visible.ts";
 export type { Carrier, ContextEntry, VisibleBinding } from "./visible.ts";
 import { CURRENT_CONTEXT_SNAPSHOT_EVENT, type CurrentContextSnapshotResult } from "./context-snapshot.ts";
+import { PHASE_SETTING_KEYS } from "../phase-settings.ts";
 
 /** Ticket 27a (parent 27 "Decision", amendment 9): the fixed headroom of the one capacity rule both
  * memory-worker guards decide by — `context measure + 10,000 <= context window`. It is an allowance,
@@ -347,7 +348,7 @@ export default function (pi: ExtensionAPI) {
   const effectiveMode = (requested: "fork" | "subagent", task?: ForkTask) =>
     forkRefused(requested, task) ? "subagent" as const : requested;
   const modelName = (kind: WorkerPhase) => {
-    const configured = flat[kind === "dreaming" ? "dreaming.model" : `${kind}Model`];
+    const configured = flat[PHASE_SETTING_KEYS[kind].model];
     return String(configured && configured !== "session" ? configured : ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "session");
   };
   // Each phase configures its own mode, defaulting to subagent when no override is supplied.
@@ -448,7 +449,7 @@ export default function (pi: ExtensionAPI) {
     const configuredModel = carried?.subagentModel ?? modelName(kind);
     const fallbackModel = configuredModel === "session" && context.model
       ? `${context.model.provider}/${context.model.id}` : configuredModel;
-    const configuredThinking = flat[kind === "dreaming" ? "dreaming.thinking" : `${kind}Thinking`];
+    const configuredThinking = flat[PHASE_SETTING_KEYS[kind].thinking];
     const inheritedThinking = carried ? carried.thinkingLevel : pi.getThinkingLevel();
     const subagentThinking = carried ? carried.subagentThinkingLevel
       : configuredThinking && configuredThinking !== "inherit" ? String(configuredThinking) : inheritedThinking;

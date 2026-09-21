@@ -2,7 +2,21 @@
 
 The standalone plugin requires Node >=24.6.0 and fails at its bundled entry before loading adapter or SDK code on an older runtime. It never downloads or installs a replacement runtime.
 
-Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`; set the prepared model's finite `contextWindow`. CC defaults to `worker.model: "opus"` and `worker.effort: "high"` for all three memory phases. These settings belong only to CC: they neither read nor change Pi's model/thinking preferences, and do not inherit the foreground CC session's selection. The adapter is pinned to Claude Code 2.1.257. Missing required values fail explicitly. The file is the only mutable plugin configuration surface and must not contain credentials.
+Before loading the plugin, edit `cc.config.json`. Set absolute paths for `stateDir`, `worker.claudeExecutable`, and the worker's private `cwd`. In `worker.contextWindows`, supply the prepared context capacity for each selected model, keyed by its exact configured name; each must be a safe integer greater than 10,000. The template's `null` values require explicit preparation, not a guessed capacity. The adapter is pinned to Claude Code 2.1.257.
+
+CC uses the same flat phase-setting keys as Pi. The shipped defaults are:
+
+| Phase | Model key | Default | Thinking key | Default |
+| --- | --- | --- | --- | --- |
+| Noter | `notingModel` | `sonnet` | `notingThinking` | `high` |
+| Consolidator | `consolidationModel` | `opus` | `consolidationThinking` | `high` |
+| Dreamer | `dreaming.model` | `opus` | `dreaming.thinking` | `high` |
+
+These are top-level JSON keys, including the literal dots in the Dreamer keys. CC and Pi store their values separately: this file neither reads nor changes Pi settings. CC does not inherit the foreground selection, so `session` and `inherit` fail explicitly. Its adapter converts each thinking setting to the SDK's effort and verifies native model support; unsupported settings are not silently replaced. All six settings are required when `worker` is present. Omit `worker` only for ingestion/read-only operation.
+
+A phase uses its selected model, thinking level and capacity consistently for admission, execution and run records, including borrowed work and catchup. Capacity is looked up by model name, not copied from another phase. Restart CC after configuration changes; an already running executor retains its resolved settings.
+
+**Upgrade from the single-model configuration:** remove `worker.model`, `worker.effort` and `worker.contextWindow`; set the six phase keys above and register each selected model's capacity in `worker.contextWindows`. The retired fields are rejected rather than used as a shared fallback. The file is the only mutable plugin configuration surface and must not contain credentials.
 
 Omit `dbPath` to use `~/.trace-memory/trace.db`, the same default as Pi. An existing database is opened in place, never replaced or copied by installation; an absent database is created on first use. Set an explicit absolute `dbPath` only to use another database (or to match a customized Pi path). Database reuse includes the existing Store's normal schema migration checks; it does not reset facts, knowledge, or enrollment. A new session on either host joins the project its repository directory (the git repository root, or the real cwd outside a repository) already has when that is exactly one project; the home directory and temporary directories are excluded, and `project <name>` overrides.
 

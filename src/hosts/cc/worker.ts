@@ -7,7 +7,7 @@ import { createSdkMcpServer, query, type SDKAssistantMessage, type SDKMessage, t
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import type { ConsolidationAgentInput, DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { toolRejected } from "../../core/api/index.ts";
-import { CC_AGENT_SDK_VERSION, CC_CONTEXT_HEADROOM, type ResolvedCcHostConfig, type ResolvedCcWorkerConfig } from "./config.ts";
+import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
@@ -221,14 +221,14 @@ function assertInit(message: Extract<SDKMessage, { type: "system"; subtype: "ini
     throw new Error("CC worker isolation failed: the private trace_memory MCP server is not the sole connected server");
 }
 
-function assertModelMetadata(models: unknown, worker: ResolvedCcWorkerConfig): void {
+function assertModelMetadata(models: unknown, execution: ResolvedCcPhaseConfig): void {
   if (!Array.isArray(models)) throw new Error("CC worker could not read supported model metadata");
   const selected = models.find(value => value && typeof value === "object" &&
-    ((value as { value?: unknown }).value === worker.model || (value as { model?: unknown }).model === worker.model));
-  if (!selected) throw new Error(`CC worker model ${worker.model} is not supported by the installed executable`);
+    ((value as { value?: unknown }).value === execution.model || (value as { model?: unknown }).model === execution.model));
+  if (!selected) throw new Error(`CC worker model ${execution.model} is not supported by the installed executable`);
   const levels = (selected as { supportedEffortLevels?: unknown }).supportedEffortLevels;
-  if (!Array.isArray(levels) || !levels.includes(worker.effort))
-    throw new Error(`CC worker effort ${worker.effort} is not supported by model ${worker.model}`);
+  if (!Array.isArray(levels) || !levels.includes(execution.thinking))
+    throw new Error(`CC worker effort ${execution.thinking} is not supported by model ${execution.model}`);
 }
 
 /** One fresh-context official-SDK execution implementation for all three frozen memory phases. */
@@ -246,10 +246,6 @@ export class CcAgentWorker {
     this.query = dependencies.query ?? query;
   }
 
-  capacity(): { inputTokens: number; prefixTokens: 0 } {
-    return { inputTokens: this.worker.contextWindow - CC_CONTEXT_HEADROOM, prefixTokens: 0 };
-  }
-
   private verifyExecutable(): Promise<void> {
     return this.versionCheck ??= execFileAsync(this.worker.claudeExecutable, ["--version"], { timeout: 10_000, env: this.environment })
       .then(({ stdout }) => {
@@ -260,6 +256,11 @@ export class CcAgentWorker {
   }
 
   async run(task: CcAgentTask, maxToolRounds: number): Promise<RunAgentResult> {
+    const settings = this.worker.phases[task.kind];
+    if (task.model !== undefined && task.model !== settings.model)
+      throw new Error(`CC ${task.kind} task model ${task.model} does not match configured model ${settings.model}`);
+    if (task.subagentThinkingLevel !== undefined && task.subagentThinkingLevel !== settings.thinking)
+      throw new Error(`CC ${task.kind} task thinking ${task.subagentThinkingLevel} does not match configured thinking ${settings.thinking}`);
     const logs = join(this.config.stateDir, "workers"); mkdirSync(logs, { recursive: true });
     const nativeLog = join(logs, `${Date.now()}-${task.kind}-${randomUUID()}.jsonl`);
     closeSync(openSync(nativeLog, "wx", 0o600)); chmodSync(nativeLog, 0o600);
@@ -284,7 +285,7 @@ export class CcAgentWorker {
       await this.verifyExecutable();
       const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
       const execution = this.query({ prompt: input ?? task.text, options: {
-        model: this.worker.model,
+        model: settings.model,
         cwd: this.worker.cwd,
         pathToClaudeCodeExecutable: this.worker.claudeExecutable,
         env: this.environment,
@@ -298,7 +299,7 @@ export class CcAgentWorker {
         persistSession: false,
         permissionMode: "dontAsk",
         strictMcpConfig: true,
-        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: this.worker.effort },
+        extraArgs: { "disable-slash-commands": null, "no-chrome": null, restricted: null, effort: settings.thinking },
       } });
       for await (const message of execution) {
         record(message);
@@ -311,7 +312,7 @@ export class CcAgentWorker {
           if (initIdentity === null) {
             initIdentity = identity;
             nativeSessionId = message.session_id;
-            assertModelMetadata(await execution.supportedModels(), this.worker);
+            assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {
           origins.observe(message);
@@ -352,14 +353,14 @@ export class CcAgentWorker {
       const usage = coreUsage(results);
       return { outcome, output, ...(usage ? { usage } : {}), mode: "subagent", nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
-        thinking: { requested: this.worker.effort, effective: this.worker.effort } };
+        thinking: { requested: settings.thinking, effective: settings.thinking } };
     } catch (error) {
       controller.abort(error);
       const cancelled = task.signal?.aborted === true;
       const cause = protocolError && !cancelled ? protocolError : error;
       return { outcome: cancelled ? "cancelled" : "failure", output: cause instanceof Error ? cause.message : String(cause),
         mode: "subagent", nativeLog, audit: { available: false, reason: AUDIT_UNAVAILABLE },
-        verification: { rounds: origins.rounds() }, thinking: { requested: this.worker.effort, effective: this.worker.effort } };
+        verification: { rounds: origins.rounds() }, thinking: { requested: settings.thinking, effective: settings.thinking } };
     } finally {
       input?.close(); origins.close(); task.signal?.removeEventListener("abort", cancel);
     }
@@ -367,15 +368,13 @@ export class CcAgentWorker {
 }
 
 export function createCcRunAgent(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {},
-  maxToolRounds: (kind: CcAgentTask["kind"]) => number = () => 0): {
-  runAgent: RunAgent; capacity: { inputTokens: number; prefixTokens: 0 }
-} {
+  maxToolRounds: (kind: CcAgentTask["kind"]) => number = () => 0): RunAgent {
   const worker = new CcAgentWorker(config, dependencies);
-  return { runAgent: (input: unknown) => {
+  return (input: unknown) => {
     const task = input as CcAgentTask;
     if (task.kind !== "noting" && task.kind !== "consolidation" && task.kind !== "dreaming")
       return Promise.resolve({ outcome: "failure", output: `CC worker does not support ${String((input as { kind?: unknown })?.kind)}`,
         audit: { available: false, reason: AUDIT_UNAVAILABLE } });
     return worker.run(task, maxToolRounds(task.kind));
-  }, capacity: worker.capacity() };
+  };
 }

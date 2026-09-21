@@ -161,7 +161,7 @@ export class CcCoordinator {
     if (!binding) return;
     this.observe("attach-start", { final });
     this.importer = new CcImporter(this.config, binding);
-    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.importer.workerCapacity, this.diagnostic);
+    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
     try {
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {

@@ -11,6 +11,9 @@ import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsMana
   type ExtensionAPI, type SessionEntry, type ToolDefinition as PiToolDefinition } from "@earendil-works/pi-coding-agent";
 import { capturedSystemPrompt, capturedTools, hash, messageKey, snapshot, verifyForkRequest, verifyNativeRequest, type Body } from "./fork.ts";
 import { toolRejected, type ToolDefinition } from "../../core/api/index.ts";
+import { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
+
+export { THINKING_LEVELS, type ThinkingLevel } from "../phase-settings.ts";
 
 export type Verification = ReturnType<typeof verifyForkRequest> & { key: string; cache_read?: number; cacheMiss?: CacheObservation; rounds: ReturnType<typeof verifyNativeRequest>[] };
 
@@ -20,11 +23,6 @@ export class NotForkable extends Error {
   verification?: Verification;
   constructor(message: string, verification?: Verification) { super(message); this.verification = verification; }
 }
-
-/** Pi's own thinking levels — `ThinkingLevel` in `@earendil-works/pi-agent-core`, which the
- * coding-agent package this adapter depends on does not re-export. */
-export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-export type ThinkingLevel = typeof THINKING_LEVELS[number];
 
 interface NativeCommon {
   runsDir: string;

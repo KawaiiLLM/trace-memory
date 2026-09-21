@@ -30,6 +30,13 @@ function fixture(label = "lifecycle") {
   ];
   return { dir, transcriptPath, nativeSessionId, config, records, write: () => writeFileSync(transcriptPath, records.map(record => `${JSON.stringify(record)}\n`).join("")) };
 }
+function enableSyntheticWorker(f: ReturnType<typeof fixture>): void {
+  const configured = resolveCcHostConfig({ ...f.config, notingModel: "synthetic", notingThinking: "medium",
+    consolidationModel: "synthetic", consolidationThinking: "medium", "dreaming.model": "synthetic", "dreaming.thinking": "medium",
+    worker: { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", contextWindows: { synthetic: 200_000 }, cwd: f.dir,
+      responseOriginTimeoutMs: 20 } });
+  Object.assign(f.config, configured);
+}
 const sleep = (milliseconds: number) => new Promise(resolve => setTimeout(resolve, milliseconds));
 const directControl = (executor: CcExecutorBinding, verb: unknown) =>
   new Promise<any>((resolveReply, reject) => {
@@ -191,8 +198,7 @@ test("stop also fences the first attach opportunity while initial import is in f
   const f = fixture("initial-reconcile-stop");
   f.config.stateDir = mkdtempSync("/tmp/tmcc-initial-"); dirs.push(f.config.stateDir);
   f.config.pollIntervalMs = 100_000;
-  f.config.worker = { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", model: "synthetic",
-    effort: "medium", contextWindow: 200_000, cwd: f.dir, responseOriginTimeoutMs: 20 };
+  enableSyntheticWorker(f);
   f.records[0]!.message = { role: "user", content: "pending ".repeat(12_000) }; f.write();
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
@@ -219,8 +225,7 @@ test("stop invalidates an entry opportunity frozen before an in-flight reconcile
   const f = fixture("reconcile-stop-epoch"); f.write();
   f.config.stateDir = mkdtempSync("/tmp/tmcc-epoch-"); dirs.push(f.config.stateDir);
   f.config.pollIntervalMs = 100_000;
-  f.config.worker = { claudeExecutable: "/missing/claude", claudeVersion: "2.1.257", model: "synthetic",
-    effort: "medium", contextWindow: 200_000, cwd: f.dir, responseOriginTimeoutMs: 20 };
+  enableSyntheticWorker(f);
   await recordSessionStart(f.config, { hook_event_name: "SessionStart", session_id: f.nativeSessionId,
     transcript_path: f.transcriptPath }, now);
   const coordinator = new CcCoordinator(f.config, f.nativeSessionId, () => {});

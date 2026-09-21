@@ -46,6 +46,7 @@
   "files": [
     "src/core",
     "src/hosts/pi",
+    "src/hosts/phase-settings.ts",
     "docs",
     "CONTEXT.md",
     "README.md",
