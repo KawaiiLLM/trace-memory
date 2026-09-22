@@ -15,10 +15,13 @@ function errorOf(reason: unknown): Error {
 function isOwnedSdkControlAbort(reason: unknown, owner: NativeAbortOwner | undefined): reason is Error {
   if (!owner?.signal.aborted || !(reason instanceof Error)) return false;
   const stack = reason.stack ?? "";
+  // No module-path check: the shipped bundle (esbuild, no source map) inlines the SDK, so stack
+  // frames read `at ProcessTransport.write (/…/dist/cc.cjs:N:N)` with no `@anthropic-ai/claude-agent-sdk`
+  // or `node_modules` segment. The owner/signal/message discriminators plus both frame names still
+  // uniquely identify this one abort path.
   return reason.message === "Operation aborted"
     && stack.includes("ProcessTransport.write")
-    && stack.includes("Query.handleControlRequest")
-    && stack.includes("@anthropic-ai/claude-agent-sdk");
+    && stack.includes("Query.handleControlRequest");
 }
 
 const onUnhandledRejection = (reason: unknown) => {

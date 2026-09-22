@@ -9,7 +9,21 @@ const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 const sdkAbort = () => Object.assign(new Error("Operation aborted"), { stack:
   "Error: Operation aborted\n    at ProcessTransport.write (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:1:1)\n    at Query.handleControlRequest (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:2:2)" });
+const bundleAbort = () => Object.assign(new Error("Operation aborted"), { stack:
+  "Error: Operation aborted\n    at ProcessTransport.write (/x/plugin/dist/cc.cjs:15309:13)\n    at Query.handleControlRequest (/x/plugin/dist/cc.cjs:15290:7)" });
 const turn = () => new Promise(resolve => setTimeout(resolve, 10));
+
+test("native guard contains a bundle-shaped SDK control abort (no node_modules path, no source map)", async () => {
+  const dispose = installCcNativeRejectionGuard();
+  const controller = new AbortController(), audit = vi.fn();
+  await runWithCcNativeAbortOwner(controller.signal, audit, async () => {
+    controller.abort(new Error("worker failed"));
+    setTimeout(() => void Promise.reject(bundleAbort()), 0);
+  });
+  await turn();
+  expect(audit).toHaveBeenCalledWith(expect.objectContaining({ message: "Operation aborted" }));
+  dispose();
+});
 
 test("native guard owns a late SDK control abort by async context and does not leak listeners", async () => {
   const baseline = process.listenerCount("unhandledRejection");
@@ -42,15 +56,28 @@ test("concurrent native owners attribute a late abort only to its query", async 
 });
 
 test.each([
-  ["unrelated stack",  "const e=new Error('Operation aborted'); e.stack='Error: Operation aborted\\n at unrelated'; Promise.reject(e);"],
-  ["unaborted owner", "Promise.reject(abortError());"],
-])("native guard keeps %s fatal", (_label, body) => {
+  ["unrelated stack",  "controller.abort(new Error('worker failed')); const e=new Error('Operation aborted'); e.stack='Error: Operation aborted\\n at unrelated'; Promise.reject(e);", "Operation aborted"],
+  ["unaborted owner", "Promise.reject(abortError());", "Operation aborted"],
+  ["different message", "controller.abort(new Error('worker failed')); const e=new Error('Something else'); e.stack=abortError().stack.replace('Operation aborted','Something else'); Promise.reject(e);", "Something else"],
+])("native guard keeps %s fatal", (_label, body, expected) => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-rejection-child-")); dirs.push(directory);
   const script = join(directory, "probe.mjs");
   const module = new URL("../../src/hosts/cc/native-rejection.ts", import.meta.url).href;
   writeFileSync(script, `import {installCcNativeRejectionGuard,runWithCcNativeAbortOwner} from ${JSON.stringify(module)};\n`
     + `const abortError=()=>Object.assign(new Error('Operation aborted'),{stack:'Error: Operation aborted\\n at ProcessTransport.write (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:1:1)\\n at Query.handleControlRequest (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:2:2)'});\n`
-    + `installCcNativeRejectionGuard(); const c=new AbortController(); await runWithCcNativeAbortOwner(c.signal,()=>{},async()=>{${body}}); await new Promise(r=>setTimeout(r,30));\n`);
+    + `installCcNativeRejectionGuard(); const controller=new AbortController(); await runWithCcNativeAbortOwner(controller.signal,()=>{},async()=>{${body}}); await new Promise(r=>setTimeout(r,30));\n`);
+  const child = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  expect(child.status).not.toBe(0);
+  expect(child.stderr).toContain(expected);
+});
+
+test("native guard keeps a late abort fatal with no owner in scope", () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-rejection-child-")); dirs.push(directory);
+  const script = join(directory, "probe.mjs");
+  const module = new URL("../../src/hosts/cc/native-rejection.ts", import.meta.url).href;
+  writeFileSync(script, `import {installCcNativeRejectionGuard} from ${JSON.stringify(module)};\n`
+    + `const abortError=()=>Object.assign(new Error('Operation aborted'),{stack:'Error: Operation aborted\\n at ProcessTransport.write (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:1:1)\\n at Query.handleControlRequest (file:///x/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs:2:2)'});\n`
+    + `installCcNativeRejectionGuard(); Promise.reject(abortError()); await new Promise(r=>setTimeout(r,30));\n`);
   const child = spawnSync(process.execPath, [script], { encoding: "utf8" });
   expect(child.status).not.toBe(0);
   expect(child.stderr).toContain("Operation aborted");
