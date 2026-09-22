@@ -152,7 +152,7 @@ test("64b: a merge keeps exactly two historical parents but applicability uses o
     const malformed = tool.execute({ operations: [{ op: "merge", id: `K${f.created.knowledgeId}@${merged.commit}`,
       absorb: [`K${childOnly.knowledgeId}@${childOnly.commit}`, `K${f.created.knowledgeId}@${f.created.commit}`],
       text: "illegal three-parent merge", category: "constraint", scope: "project", topics: [], supports: [`F${f.rootFact}`], reason: "invalid fixture" }], skipped: [] });
-    expect(malformed).toContain("exactly two distinct parents");
+    expect(malformed).toContain("absorb as exactly one distinct other parent");
     const supplied = new Set(input.material.changed.match(/K\d+@\d+/g) ?? []); supplied.delete(`K${trigger.knowledgeId}@${trigger.commit}`);
     tool.execute({ operations: [{ op: "archive", id: `K${trigger.knowledgeId}@${trigger.commit}`, supports: [`F${f.rootFact}`], reason: "Retire the explicit invalid-merge trigger." }],
       skipped: [...supplied].map(knowledge => ({ knowledge, because: "The rejected malformed merge makes no valid change." })) });

@@ -216,22 +216,23 @@ test("64b stateless graph: direct-only scope, merge/split provenance and cross-i
     const trace = input.tools.find(tool => tool.name === "trace")!, write = input.tools.find(tool => tool.name === "memory")!;
     for (const item of [scopedParent, survivor, absorbed, splitParent, siblingTrigger])
       trace.execute({ address: `K${item.knowledgeId}@${item.commit}`, itemBudget: null, pageBudget: 8000 });
+    const operated = new Set([absorbed, splitParent, siblingTrigger]
+      .map(item => `K${item.knowledgeId}@${item.commit}`));
+    const unchangedSupplied = [...new Set(input.material.changed.match(/K\d+@\d+/g) ?? [])]
+      .filter(knowledge => !operated.has(knowledge));
     const receipt = JSON.parse(write.execute({ operations: [
       { op: "update", id: `K${absorbed.knowledgeId}@${absorbed.commit}`, text: "restorable absorbed sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing merge sibling.", topics: [] },
       { op: "update", id: `K${splitParent.knowledgeId}@${splitParent.commit}`, text: "restorable split-source sibling",
         category: "constraint", scope: "global", supports: [`F${cFact.id}`], reason: "Create competing split sibling.", topics: [] },
       { op: "archive", id: `K${siblingTrigger.knowledgeId}@${siblingTrigger.commit}`, supports: [`F${aFact.id}`], reason: "Retire first trigger." },
-    ], skipped: [
-      { knowledge: `K${scopedParent.knowledgeId}@${scopedParent.commit}`, because: "Not part of the sibling construction." },
-      { knowledge: `K${survivor.knowledgeId}@${survivor.commit}`, because: "Reserved for the later merge fixture." },
-    ] }));
+    ], skipped: unchangedSupplied.map(knowledge => ({ knowledge, because: "Not part of the sibling construction." })) }));
     absorbedSibling = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === absorbed.knowledgeId);
     splitSibling = receipt.committed.find((item: { knowledgeId: number }) => item.knowledgeId === splitParent.knowledgeId);
     expect(input.tools.find(tool => tool.name === "check")!.execute({})).toContain("Blockers: none");
     return { outcome: "success", output: "siblings created", request };
   });
-  expect(siblingRun.outcome).toBe("success");
+  expect(siblingRun.outcome, JSON.stringify(siblingRun)).toBe("success");
   store.setCurrentPath(c.id, "rewind", c0.turn.id, "test-lineage");
   expect(store.currentCommit(absorbed.knowledgeId, bPath).map(revision => revision.id)).toEqual([absorbed.commit]);
   expect(store.currentCommit(splitParent.knowledgeId, bPath).map(revision => revision.id)).toEqual([splitParent.commit]);
