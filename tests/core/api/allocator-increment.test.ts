@@ -93,7 +93,7 @@ test("64c optional Knowledge cannot displace required facts or Raw", () => {
   expect(positiveExcess(windows)).toBeLessThanOrEqual(20_000);
 });
 
-test("64c unused base windows do not lend when shared allowance is disabled", () => {
+test("68 phase triggers keep a minimum shared allowance when the Knowledge base is zero", () => {
   const { s, t } = exactFixture({ knowledge: 5_000, facts: 10_000, raw: 10_000 });
   setKnowledgeInjection(memory, 0);
   memory.config.noting.triggerTokens = 1;
@@ -105,8 +105,8 @@ test("64c unused base windows do not lend when shared allowance is disabled", ()
   if (!history.ok) throw new Error(JSON.stringify(history));
   memory.store.commitConsolidationRun({ run: { sessionId: s.id, branch: "main", kind: "consolidation", createdAt: time }, operations: [], consolidated: history.facts.map(f => f.id) });
   const result = memory.compact(s.id, "main", t.id);
-  expect("native" in result ? [raw.id] : result.supplied.entries.map(e => e.id)).not.toContain(raw.id);
-  expect("native" in result ? history.facts.map(f => f.id) : result.supplied.factIds).not.toContain(history.facts[0]!.id);
+  expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toContain(raw.id);
+  expect("native" in result ? [] : result.supplied.factIds).toContain(history.facts[0]!.id);
 });
 
 test("64c historical Raw borrows remaining shared before historical facts", () => {
@@ -170,7 +170,7 @@ test("32e old pending holes and incomplete optional bindings survive filtering",
   memory.config.consolidation.triggerTokens = 1;
   const result = memory.compact(s.id, "main", later.id), text = compacted(result);
   for (const marker of ["partly covered", "incomplete binding", "old pending fact hole"]) expect(text).toContain(marker);
-  expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toEqual([entries[0]!.id]);
+  expect("native" in result ? [] : result.supplied.entries.map(e => e.id)).toEqual([entries[0]!.id, newer.id]);
   expect(memory.pendingEntries(s.id, "main", later.id).map(e => e.id)).toEqual([entries[0]!.id]);
 });
 

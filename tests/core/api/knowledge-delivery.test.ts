@@ -207,7 +207,7 @@ test("34c a visible applicable Knowledge view at or above the configured 20,000 
   expect(f.memory.injection(f.target, view({ knowledgeCommitIds: new Set([old.commit]) })).text).toBe("");
 });
 
-test("34c processing status is independent of delivery eligibility", async () => {
+test("68 untouched frozen and post-freeze versions remain pending without affecting delivery eligibility", async () => {
   const f = fixture();
   const processed = f.create("processed", [f.facts[1]!.id]);
   const pool = `project:${f.session.projectId}`;
@@ -219,7 +219,7 @@ test("34c processing status is independent of delivery eligibility", async () =>
     return { outcome: "success", output: "reviewed", request: { fixture: "delivery is independent" } };
   });
   expect(result.outcome).toBe("success");
-  expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([unprocessed.commit]);
+  expect(f.memory.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([processed.commit, unprocessed.commit]);
   expect(f.memory.injection(f.target).knowledgeCommitIds).toEqual([processed.commit, unprocessed.commit]);
 });
 
