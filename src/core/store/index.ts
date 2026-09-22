@@ -2391,7 +2391,8 @@ export class Store {
       }).sort((left, right) => left.revisionId - right.revisionId);
       let reason: DueKnowledgePool["reason"] | null = null;
       const pendingTokens = pending.reduce((sum, value) => sum + value.tokens, 0);
-      if (pending.length && pendingTokens >= dreamingTriggerTokens) reason = "pending";
+      const effectiveTrigger = Math.min(dreamingTriggerTokens, budget);
+      if (pending.length && pendingTokens >= effectiveTrigger) reason = "pending";
       else if (size > budget) {
         const state = states.get(pool);
         // Pending always wins on the over-budget path. Only a fully deliberated residual may be

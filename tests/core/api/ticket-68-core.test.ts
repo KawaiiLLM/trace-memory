@@ -121,17 +121,18 @@ test("68 own output is processed, its superseded parent needs no processing row,
   expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
-test("68 flat trigger is independent of pool budget and pending wins over unchanged over-budget state", async () => {
+test("68 each pool uses min(configured trigger cap, pool budget) and untouched pending stays due", async () => {
   const f = setup(async task => { task.acknowledgeRequest(); return { outcome: "failure", output: "cut", request: exactRequest }; }, { triggerTokens: 5_000 });
   const first = f.create("session", "first ".repeat(80));
   const second = f.create("session", "second ".repeat(80));
   const pool = `session:${f.session.id}`;
   const pending = f.store.pendingVersions(pool, f.target);
-  f.store.setKnowledgeBudget("session", pending[0]!.tokens + 10);
+  const budget = pending[0]!.tokens + 10;
+  f.store.setKnowledgeBudget("session", budget);
   expect(f.store.pendingPoolWeight(pool, f.target)).toBeLessThan(5_000);
-  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: 5_000, state: "known" });
-  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("over-budget");
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: budget, state: "known" });
+  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("pending");
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([first.commit, second.commit]);
-  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("over-budget");
+  expect(f.store.duePools(f.target, 5_000).find(value => value.pool === pool)?.reason).toBe("pending");
 });

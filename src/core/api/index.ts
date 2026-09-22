@@ -68,7 +68,7 @@ export interface TraceMemoryConfig {
   };
   /** Bounded fresh-subagent maintenance; no fork mode. */
   dreaming: {
-    /** Flat per-pool pending trigger; pool budgets still cap each frozen range. */
+    /** Pending-trigger cap; each pool uses min(triggerTokens, its own budget). */
     triggerTokens: number;
     /** 0 = unlimited. Dreaming is bounded by timeoutMs instead. */
     maxToolRounds: number;
@@ -155,7 +155,7 @@ export const CONFIG_ALIASES: Readonly<Record<string, string>> = { "noting.branch
 const PART_BUDGETS = "use render.toolInputTokens (the whole rendered call part) and render.toolResultTokens (the whole rendered result part)";
 export const REMOVED_SETTINGS: Readonly<Record<string, string>> = {
   "consolidation.triggerUnconsolidatedFacts": "use consolidation.triggerTokens (tokens, not a count)",
-  "compaction.overflowTokens": "remove it; the shared allowance is derived from the Noting, Consolidation and per-pool Dreamer triggers",
+  "compaction.overflowTokens": "remove it; the shared allowance is derived from the Noting, Consolidation and Dreamer triggers",
   // Ticket 25b removed this key; 29e restores the choice under the canonical spelling every phase
   // shares. It stays a removed setting rather than becoming an alias, because it is the INVERSE
   // boolean: reading a saved `true` as `forkModeDefault: true` would switch the meaning of the value
@@ -717,7 +717,7 @@ export function TraceMemory(dbPath: string, runAgent: RunAgent, config: ConfigOv
         const pools = store.knowledgePools(target, cfg.dreaming.triggerTokens)
           .map(size => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
         const selected = pools.sort((left, right) => right.pending / Math.max(1, right.budget) - left.pending / Math.max(1, left.budget))[0]!;
-        return { tokens: selected.pending, trigger: cfg.dreaming.triggerTokens, state: "known" };
+        return { tokens: selected.pending, trigger: Math.min(cfg.dreaming.triggerTokens, selected.budget), state: "known" };
       }
       const count = phase === "noting" ? tokens([...notingViews(target)].join("\n\n")) : consolidationTokens(target);
       return { tokens: count, trigger: cfg[phase].triggerTokens, state: "known" };
