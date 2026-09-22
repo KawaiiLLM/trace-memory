@@ -162,23 +162,26 @@ function assistantApiError(message: SDKAssistantMessage): string | undefined {
   return text || "CC native API error";
 }
 
+type UsageTotals = { input: number; output: number; cacheRead: number; cacheWrite: number; cost?: { total: number } };
+
 function assistantUsage(messages: readonly SDKAssistantMessage[]) {
-  const seen = new Set<string>(), totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  let observed = false;
+  // Partial/replayed assistant envelopes can share an API response id. Keep the latest complete
+  // counters for that response, just as origins count that id as one native round.
+  const latest = new Map<string, Omit<UsageTotals, "cost">>();
   for (const message of messages) {
     const id = message.message.id;
-    if (typeof id !== "string" || seen.has(id)) continue;
+    if (typeof id !== "string") continue;
     const usage = message.message.usage as unknown;
     if (!usage || typeof usage !== "object") continue;
     const counters = usage as Record<string, unknown>;
     if (USAGE_COUNTERS.some(name => typeof counters[name] !== "number")) continue;
-    seen.add(id); observed = true;
-    totals.input += counters.input_tokens as number;
-    totals.output += counters.output_tokens as number;
-    totals.cacheRead += counters.cache_read_input_tokens as number;
-    totals.cacheWrite += counters.cache_creation_input_tokens as number;
+    latest.set(id, { input: counters.input_tokens as number, output: counters.output_tokens as number,
+      cacheRead: counters.cache_read_input_tokens as number, cacheWrite: counters.cache_creation_input_tokens as number });
   }
-  return observed ? totals : undefined;
+  if (!latest.size) return;
+  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const usage of latest.values()) for (const key of ["input", "output", "cacheRead", "cacheWrite"] as const) totals[key] += usage[key];
+  return totals;
 }
 
 function coreUsage(results: readonly SDKResultMessage[]) {
@@ -303,6 +306,7 @@ export class CcAgentWorker {
       protocolError ??= error; controller.abort(error);
     });
     const results: SDKResultMessage[] = [], assistantMessages: SDKAssistantMessage[] = [];
+    let assistantMessagesAfterResult: SDKAssistantMessage[] = [];
     const input = task.kind === "dreaming" ? new CcUserInput() : null;
     input?.push(userMessage(task.text));
     let initIdentity: string | null = null, nativeSessionId: string | null = null;
@@ -310,7 +314,13 @@ export class CcAgentWorker {
     let nativeFailureOutput: string | null = null;
     let outcome: "success" | "failure" = "failure";
     const retries: { attempt: number; error: string }[] = [];
-    const observedUsage = () => coreUsage(results) ?? assistantUsage(assistantMessages);
+    const observedUsage = () => {
+      const settled = coreUsage(results);
+      if (!settled) return assistantUsage(assistantMessages);
+      const tail = assistantUsage(assistantMessagesAfterResult);
+      return tail ? { ...settled, input: settled.input + tail.input, output: settled.output + tail.output,
+        cacheRead: settled.cacheRead + tail.cacheRead, cacheWrite: settled.cacheWrite + tail.cacheWrite } : settled;
+    };
     const progress = () => { const usage = observedUsage(); task.reportProgress?.({ retries: [...retries], ...(usage ? { usage } : {}) }); };
     let dreamState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
@@ -350,7 +360,7 @@ export class CcAgentWorker {
             assertModelMetadata(await execution.supportedModels(), settings);
           } else if (identity !== initIdentity) throw new Error("CC worker repeated init with a different native session or messaging socket");
         } else if (message.type === "assistant") {
-          assistantMessages.push(message);
+          assistantMessages.push(message); assistantMessagesAfterResult.push(message);
           nativeFailureOutput = assistantApiError(message) ?? nativeFailureOutput;
           origins.observe(message);
           progress();
@@ -367,18 +377,23 @@ export class CcAgentWorker {
           if (nativeSessionId !== null && message.session_id !== nativeSessionId)
             throw new Error("CC worker result came from a different native session");
           results.push(message);
+          // A result accounts for all assistant responses in that completed native pass. Only
+          // assistant usage received after it is unaccounted tail usage if continuation later fails.
+          assistantMessagesAfterResult = [];
           progress();
           if (message.is_error || message.subtype !== "success")
-            nativeFailureOutput = message.subtype === "success" ? message.result : message.errors.join("; ");
+            nativeFailureOutput ??= message.subtype === "success" ? message.result : message.errors.join("; ");
           if (task.kind !== "dreaming") {
             outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
-            output = message.subtype === "success" ? message.result : message.errors.join("; ");
+            output = outcome === "failure" && nativeFailureOutput !== null ? nativeFailureOutput
+              : message.subtype === "success" ? message.result : message.errors.join("; ");
           } else {
             const pass = results.length;
             if ((pass === 1 && dreamState !== "first") || (pass === 2 && dreamState !== "repair-authorized") || pass > 2)
               throw new Error("CC Dreamer emitted a completed pass without core repair authorization");
             const succeeded = message.subtype === "success" && !message.is_error;
-            output = message.subtype === "success" ? message.result : message.errors.join("; ");
+            output = !succeeded && nativeFailureOutput !== null ? nativeFailureOutput
+              : message.subtype === "success" ? message.result : message.errors.join("; ");
             outcome = succeeded ? "success" : "failure";
             if (!succeeded) { dreamState = "complete"; input!.close(); }
             else {

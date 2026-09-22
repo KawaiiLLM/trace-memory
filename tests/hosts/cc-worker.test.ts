@@ -139,6 +139,105 @@ test("worker preserves assistant usage when an API error exits before an SDK res
   });
 });
 
+test.each(["throw", "end"] as const)("flagged assistant API error outranks a later generic error result when the stream %s", async ending => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-api-priority-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "api-child", claude_code_version: "2.1.257", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "assistant", isApiError: true, session_id: "api-child", message: { id: "specific-api-error",
+        content: [{ type: "text", text: "API Error: upstream response body closed" }],
+        usage: { input_tokens: 8, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+      yield { type: "result", subtype: "error_during_execution", session_id: "api-child", is_error: true,
+        errors: ["Process exited with code 1"], usage: { input_tokens: 8, output_tokens: 1,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0.01 };
+      if (ending === "throw") throw new Error("Claude Code process exited with code 1");
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+    outcome: "failure", output: "API Error: upstream response body closed",
+    usage: { input: 8, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } },
+  });
+});
+
+test("no-result stream exit keeps the latest complete usage for a repeated assistant response id", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-usage-latest-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "usage-child", claude_code_version: "2.1.257", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      for (const output_tokens of [2, 5]) yield { type: "assistant", session_id: "usage-child", message: { id: "same-response",
+        content: [{ type: "text", text: "partial" }], usage: { input_tokens: 20, output_tokens,
+          cache_read_input_tokens: 3, cache_creation_input_tokens: 1 } } };
+      throw new Error("stream ended before result");
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+    outcome: "failure", usage: { input: 20, output: 5, cacheRead: 3, cacheWrite: 1 },
+  });
+});
+
+test("Dreamer retains assistant usage received after the last completed result when continuation fails", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-usage-tail-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = ((request: { prompt: AsyncIterable<any> }) => {
+    const stream = (async function* () {
+      const input = request.prompt[Symbol.asyncIterator](); await input.next();
+      yield { type: "system", subtype: "init", session_id: "usage-child", messaging_socket_path: "/tmp/usage.sock",
+        claude_code_version: "2.1.257", cwd: directory, tools: [], plugins: [], skills: [], slash_commands: [],
+        mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "result", subtype: "success", session_id: "usage-child", is_error: false, result: "first", errors: [],
+        usage: { input_tokens: 10, output_tokens: 4, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 }, total_cost_usd: 0.1 };
+      await input.next();
+      yield { type: "assistant", session_id: "usage-child", message: { id: "repair-response", content: [{ type: "text", text: "repair" }],
+        usage: { input_tokens: 7, output_tokens: 3, cache_read_input_tokens: 1, cache_creation_input_tokens: 2 } } };
+      throw new Error("repair stream failed before result");
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "dreaming", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(),
+    reportRounds: vi.fn(), passEnd: vi.fn(() => "repair") } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+    outcome: "failure", output: "repair stream failed before result",
+    usage: { input: 17, output: 7, cacheRead: 3, cacheWrite: 3, cost: { total: 0.1 } },
+  });
+});
+
+test("full CC worker accepts more than fifty native assistant rounds when the core round cap is unlimited", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-unlimited-rounds-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const fakeQuery = (() => {
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "long-child", claude_code_version: "2.1.257", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      for (let round = 1; round <= 51; round++) yield { type: "assistant", session_id: "long-child", message: { id: `response-${round}`,
+        content: [{ type: "tool_use", id: `tool-${round}`, name: "memory", input: {} }], usage: { input_tokens: 1, output_tokens: 1,
+          cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+      yield { type: "result", subtype: "success", session_id: "long-child", is_error: false, result: "done", errors: [],
+        usage: { input_tokens: 51, output_tokens: 51, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, total_cost_usd: 0 };
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn() } as unknown as CcAgentTask;
+  expect(await new CcAgentWorker(workerConfig(directory, executable), { query: fakeQuery }).run(task, 0)).toMatchObject({
+    outcome: "success", output: "done", verification: { rounds: 51 }, usage: { input: 51, output: 51 },
+  });
+});
+
 test("simultaneous phase workers keep model and thinking selection isolated", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-phases-")); dirs.push(directory);
   const executable = join(directory, "claude");
