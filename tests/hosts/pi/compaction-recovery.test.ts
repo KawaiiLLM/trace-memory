@@ -7,7 +7,10 @@ import { join } from "node:path";
 // fixtures test ownership/cancellation, not a below-threshold compaction exemption (removed by 32f).
 const host = (config: Record<string, unknown>) => {
   const { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, ...rest } = config;
-  const h = createHost(rest);
+  // R1FINAL derives shared allowance from configured phase caps rather than effective pool triggers.
+  // Keep this recovery fixture's historical N/C-only capacity (within one token) while the zero
+  // Knowledge budgets below continue to make Dreamer ineligible.
+  const h = createHost({ ...rest, "dreaming.triggerTokens": 1 });
   // Capacity probes isolate the derived N/C contribution; Dreamer still has real zero-budget
   // triggers and changed Knowledge remains scheduling-only during compaction.
   h.memory.setKnowledgeBudget("global", 0);
@@ -15,7 +18,7 @@ const host = (config: Record<string, unknown>) => {
   h.memory.setKnowledgeBudget("session", 0);
   const file = join(h.dir, "agent", "settings.json");
   const settings = JSON.parse(readFileSync(file, "utf8"));
-  settings["trace-memory"] = { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation };
+  settings["trace-memory"] = { "noting.triggerTokens": noting, "consolidation.triggerTokens": consolidation, "dreaming.triggerTokens": 1 };
   writeFileSync(file, JSON.stringify(settings));
   return h;
 };

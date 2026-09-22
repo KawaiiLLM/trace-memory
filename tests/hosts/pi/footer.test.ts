@@ -99,7 +99,8 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
   expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1/1 cost: $0.00</dim>");
   processPool(h, `session:${h.memory.store.getSession(1)!.id}`);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->0/1 cost: $0.00</dim>");
+  // R1FINAL does not falsely protect an untouched input when a synthetic run commits no output.
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 2->3 memory: 3->1/1 cost: $0.00</dim>");
 
   // A Consolidation commit takes two of the three facts; a Noting commit takes both entries.
   const taken = h.memory.store.commitConsolidationRun({ run: { kind: "consolidation", sessionId: 1, branch: "main", createdAt: time },
@@ -109,7 +110,7 @@ test("footer chains facts to consolidate, changed current Knowledge and all curr
     facts: [], entryIds: h.memory.store.sourcePath(1, "main", 1).map(e => e.id) });
   expect(noted.ok).toBe(true);
   await refresh(h);
-  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->0/1 cost: $0.00</dim>");
+  expect(raw(h)).toBe("🧠 <dim>○</dim> <dim>notes: 0->3 memory: 1->1/1 cost: $0.00</dim>");
   expect(footer(h)).toMatchObject(enumerated(h));
 
   // 51: the footer's cost is today's spend across the whole database — another session's run made

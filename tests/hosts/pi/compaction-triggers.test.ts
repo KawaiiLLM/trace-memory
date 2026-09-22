@@ -158,7 +158,7 @@ async function completedStatus(f: Awaited<ReturnType<typeof session>>, native = 
 
 test.each(["success", "failure", "cancel"] as const)("32f: real Pi native delegation terminal event (%s)", async terminal => {
   const f = await session({ automatic: false, rawTokens: 1, seedKnowledge: false,
-    memoryConfig: { "noting.triggerTokens": 20, "consolidation.triggerTokens": 20 } });
+    memoryConfig: { "noting.triggerTokens": 20, "consolidation.triggerTokens": 20, "dreaming.triggerTokens": 1 } });
   const memoryWorker = (body: unknown) => /# (Noter|Consolidator|Dreamer)/.test(JSON.stringify(body));
   const failed = () => new Response(JSON.stringify({ error: { message: "terminal provider failure" } }),
     { status: 400, headers: { "content-type": "application/json" } });
@@ -169,7 +169,7 @@ test.each(["success", "failure", "cancel"] as const)("32f: real Pi native delega
     const observer = TraceMemory(join(f.store, "trace.db"), async () => { throw new Error("observer cannot call a model"); });
     try { for (const scope of ["global", "project", "session"] as const) observer.setKnowledgeBudget(scope, 0); }
     finally { observer.close(); }
-    // Required Raw exceeds its base plus the derived 40-token allowance. Recovery is eligible,
+    // Required Raw exceeds its base plus the derived 41-token allowance. Recovery is eligible,
     // but its worker fails without a note commit; the real native summarizer must decide next.
     f.script((body, signal) => {
       if (memoryWorker(body) || terminal === "failure") return failed();
