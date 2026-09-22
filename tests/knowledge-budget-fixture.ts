@@ -1,7 +1,7 @@
 import { deriveSharedMaterialAllowance, type TraceMemory } from "../src/core/api/index.ts";
 
-/** Set the database-owned Knowledge base for a fixture. The shared allowance remains derived from
- * this policy and the current maintenance triggers, exactly as in production. */
+/** Set the database-owned Knowledge base for a fixture. The shared allowance is independent and
+ * remains derived from the current maintenance triggers. */
 export function setKnowledgeInjection(memory: TraceMemory, capacity: number): void {
   if (!Number.isSafeInteger(capacity) || capacity < 0) throw new Error("test Knowledge injection capacity must be a nonnegative safe integer");
   memory.setKnowledgeBudget("global", 0);
@@ -15,19 +15,17 @@ export function setKnowledgeCapacity(memory: TraceMemory, capacity: number): voi
   if (!Number.isSafeInteger(capacity) || capacity < 2) throw new Error("test total Knowledge capacity must be a safe integer of at least two");
   setKnowledgeInjection(memory, 0);
   memory.config.noting.triggerTokens = 1;
-  memory.config.consolidation.triggerTokens = capacity - 1;
+  memory.config.consolidation.triggerTokens = 1;
+  memory.config.dreaming.triggerTokens = capacity - 2;
 }
 
 /** Select a derived allowance through its real authorities. The current pool budgets remain intact. */
 export function setSharedAllowance(memory: TraceMemory, allowance: number): void {
   if (!Number.isSafeInteger(allowance) || allowance < 2) throw new Error("test shared allowance must be a safe integer of at least two");
-  const budgets = memory.knowledgeBudgets();
-  const dreaming = Math.ceil(budgets.global / 2) + Math.ceil(budgets.project / 2) + Math.ceil(budgets.session / 2);
-  const consolidation = allowance - dreaming - 1;
-  if (consolidation < 1) throw new Error(`test shared allowance ${allowance} is below the Dreamer triggers ${dreaming} plus two`);
+  const consolidation = 1, dreaming = allowance - 2;
   memory.config.noting.triggerTokens = 1;
   memory.config.consolidation.triggerTokens = consolidation;
-  memory.config.dreaming.triggerTokens = allowance - 1 - consolidation;
-  if (deriveSharedMaterialAllowance({ noting: 1, consolidation, dreaming: memory.config.dreaming.triggerTokens }) !== allowance)
+  memory.config.dreaming.triggerTokens = dreaming;
+  if (deriveSharedMaterialAllowance({ noting: 1, consolidation, dreaming }) !== allowance)
     throw new Error("test shared allowance derivation mismatch");
 }
