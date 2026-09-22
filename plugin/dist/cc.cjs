@@ -623,7 +623,8 @@ function migrateKnowledgeLineage(db, transactionOwned = false) {
     addOrigin("runs");
     if (taskColumns.length) addOrigin("task_executions");
     if (rangeColumns.length) addOrigin("dreaming_ranges");
-    if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Knowledge-lineage migration: foreign key violations");
+    if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Knowledge-lineage migration: foreign key violations");
   };
   if (transactionOwned) {
     if (!db.isTransaction) throw new Error("Knowledge-lineage store migration requires an active transaction");
@@ -675,7 +676,8 @@ function migrateDreaming(db, transactionOwned = false) {
       if (sequence) db.prepare("UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = ?").run(sequence.seq, name);
       for (const object7 of objects) db.exec(String(object7.sql));
     }
-    if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Dreaming migration: foreign key violations");
+    if (!transactionOwned && db.prepare("PRAGMA foreign_key_check").all().length)
+      throw new Error("Dreaming migration: foreign key violations");
   };
   if (transactionOwned) {
     if (!db.isTransaction) throw new Error("Dreaming store migration requires an active transaction");
@@ -1246,6 +1248,7 @@ var Store = class {
       this.db.exec("PRAGMA busy_timeout = 5000;");
       this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
       began = true;
+      const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get().schema_version);
       const policyTable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='knowledge_budget_policy'").get();
       if (policyTable) {
         const row = this.db.prepare("SELECT global_tokens,project_tokens,session_tokens FROM knowledge_budget_policy WHERE id=1").get();
@@ -1268,6 +1271,7 @@ var Store = class {
         if (!columns.some((r) => r.name === "blocks")) this.db.exec("ALTER TABLE source_entries ADD COLUMN blocks TEXT");
         const newAddresses = !columns.some((r) => r.name === "addresses");
         if (newAddresses) this.db.exec("ALTER TABLE source_entries ADD COLUMN addresses TEXT NOT NULL DEFAULT '[]'");
+        this.db.exec("CREATE INDEX IF NOT EXISTS idx_source_unnormalized ON source_entries(id) WHERE blocks IS NULL");
         if (newAddresses || normalizeSource) {
           const update = this.db.prepare("UPDATE source_entries SET addresses = ?, blocks = ? WHERE id = ?");
           for (const row of this.db.prepare(`SELECT id, content, entry_ordinal, blocks FROM source_entries ${newAddresses ? "" : "WHERE blocks IS NULL"} ORDER BY id`).iterate()) {
@@ -1326,7 +1330,9 @@ var Store = class {
           pool: placementOwner(this, { revision }, input.metadata)
         }));
       }, priorBudgetPolicy);
-      if (this.db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("Store migration: foreign key violations");
+      const schemaChanged = Number(this.db.prepare("PRAGMA schema_version").get().schema_version) !== schemaBefore;
+      if (schemaChanged && this.db.prepare("PRAGMA foreign_key_check").all().length)
+        throw new Error("Store migration: foreign key violations");
       this.db.exec("COMMIT");
       began = false;
       this.db.exec("PRAGMA foreign_keys = ON");
@@ -1508,6 +1514,9 @@ var Store = class {
     const problem = this.currentPathProblem(sessionId, branch, headTurnId);
     if (problem) throw new Error(problem);
     if (!this.getSession(sessionId)) throw new Error(`session S${sessionId} does not exist`);
+    this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+  }
+  writeCurrentPath(sessionId, branch, headTurnId, lineage) {
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id) VALUES (?, ?, ?, ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET branch = excluded.branch, head_turn_id = excluded.head_turn_id`).run(sessionId, lineage, branch, headTurnId);
   }
@@ -1619,39 +1628,41 @@ var Store = class {
     } : null;
   }
   acquireClaim(target, phase, executorId, borrowed = false, eligible = () => true) {
-    return this.transaction(() => {
-      if (!executorId || !this.enabled(target.sessionId)) return null;
-      if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
-      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId) : phase === "dreaming" ? (() => {
-        const session = this.getSession(target.sessionId);
-        const pools = ["global", `project:${session.projectId}`, `session:${session.id}`];
-        return [...this.duePools(target), ...pools.flatMap((pool) => this.pendingVersions(pool, target))];
-      })() : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
-      const now = Date.now();
-      if (phase === "dreaming") this.db.prepare(`UPDATE dreaming_ranges AS r SET closed_at = ? WHERE r.pool IS NOT NULL
-        AND r.completed_run IS NULL AND r.closed_at IS NULL AND NOT EXISTS (
-          SELECT 1 FROM task_claims c WHERE c.session_id = r.session_id AND c.phase = 'dreaming'
-            AND c.token = r.claim_token AND c.expires_at > ?)`).run((/* @__PURE__ */ new Date()).toISOString(), now);
-      const openRange = phase === "dreaming" ? this.openDreamingRange(target.sessionId, target.branch) : null;
-      if (openRange && openRange.pool !== null || !pending.length || !eligible()) return null;
-      const current = this.getClaim(target.sessionId, phase);
-      const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
-      if (current && current.expiresAt > now && !takeover) return null;
-      if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
-      const claim = {
-        sessionId: target.sessionId,
-        phase,
-        executorId,
-        token: takeover ? current.token : (0, import_node_crypto2.randomUUID)(),
-        expiresAt: now + 30 * 6e4,
-        borrowed,
-        reserved: false
-      };
-      this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
-        ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
-        expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`).run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
-      return claim;
-    });
+    return this.transaction(() => this.acquireAvailableClaim(target, phase, executorId, borrowed, () => {
+      const pending = phase === "noting" ? this.pendingEntries(target.sessionId, target.branch, target.headTurnId) : phase === "dreaming" ? this.knowledgePools(target).filter((pool) => pool.reason !== null || pool.pending.length > 0) : this.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+      return pending.length > 0;
+    }, eligible));
+  }
+  /** Called only by atomic Store operations. Pending discovery is private and synchronous, so
+   * admission can reuse its own projection without accepting prepared authority from a caller. */
+  acquireAvailableClaim(target, phase, executorId, borrowed, hasPending, eligible) {
+    if (!executorId || !this.enabled(target.sessionId)) return null;
+    if (borrowed && this.getSession(target.sessionId)?.closedAt == null) return null;
+    const pending = hasPending();
+    const now = Date.now();
+    if (phase === "dreaming") this.db.prepare(`UPDATE dreaming_ranges AS r SET closed_at = ? WHERE r.pool IS NOT NULL
+      AND r.completed_run IS NULL AND r.closed_at IS NULL AND NOT EXISTS (
+        SELECT 1 FROM task_claims c WHERE c.session_id = r.session_id AND c.phase = 'dreaming'
+          AND c.token = r.claim_token AND c.expires_at > ?)`).run((/* @__PURE__ */ new Date()).toISOString(), now);
+    const openRange = phase === "dreaming" ? this.openDreamingRange(target.sessionId, target.branch) : null;
+    if (openRange && openRange.pool !== null || !pending || !eligible()) return null;
+    const current = this.getClaim(target.sessionId, phase);
+    const takeover = current?.reserved && current.expiresAt > now && current.executorId === executorId && !borrowed;
+    if (current && current.expiresAt > now && !takeover) return null;
+    if (phase === "dreaming" && this.otherSessionOwnsDreamerSeat(target.sessionId, now)) return null;
+    const claim = {
+      sessionId: target.sessionId,
+      phase,
+      executorId,
+      token: takeover ? current.token : (0, import_node_crypto2.randomUUID)(),
+      expiresAt: now + 30 * 6e4,
+      borrowed,
+      reserved: false
+    };
+    this.db.prepare(`INSERT INTO task_claims (session_id, phase, executor_id, token, expires_at, borrowed, reserved) VALUES (?, ?, ?, ?, ?, ?, 0)
+      ON CONFLICT (session_id, phase) DO UPDATE SET executor_id = excluded.executor_id, token = excluded.token,
+      expires_at = excluded.expires_at, borrowed = excluded.borrowed, reserved = 0`).run(claim.sessionId, phase, executorId, claim.token, claim.expiresAt, Number(borrowed));
+    return claim;
   }
   releaseClaim(claim) {
     return !!this.db.prepare("DELETE FROM task_claims WHERE session_id = ? AND phase = ? AND token = ? AND executor_id = ?").run(claim.sessionId, claim.phase, claim.token, claim.executorId).changes;
@@ -2116,7 +2127,8 @@ var Store = class {
     const facts = /* @__PURE__ */ new Map(), commits = /* @__PURE__ */ new Map();
     const grounded = revisions.filter((revision) => this.revisionApplies(revision, metadata, facts, commits));
     const effective = this.effectiveRevisions(revisions, parents, grounded);
-    let readerSnapshot = prepared;
+    const cursor = path && Array.isArray(foreground) ? foreground.find((value) => value.branch === path.branch && value.headTurnId === path.headTurnId) : void 0;
+    let readerSnapshot = prepared ?? (cursor ? metadata.currentSnapshots?.get(`${path.sessionId}:${cursor.lineage}`) : void 0);
     const visible = path ? (revision) => {
       if (revision.scope === "session") readerSnapshot ??= this.pathSnapshot(path);
       return this.visibleOnPath(revision, path, metadata, readerSnapshot);
@@ -2153,12 +2165,14 @@ var Store = class {
     }
     const runIds = JSON.stringify([...new Set(revisions.flatMap((r) => r.runId === null ? [] : [r.runId]))]);
     const factIds = JSON.stringify([...new Set(revisions.flatMap((r) => r.supports))]);
-    const sessions = this.db.prepare("SELECT id FROM sessions ORDER BY id").all().map((row) => Number(row.id));
+    const facts = new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds).map((r) => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }]));
+    const sessions = [...new Set([...facts.values()].map((value) => value.sessionId))];
     const cursorRows = this.db.prepare(`SELECT c.session_id, c.lineage, c.branch, c.head_turn_id, p.entry_ids,
       p.session_id IS NOT NULL AS branch_exists,
       EXISTS(SELECT 1 FROM turns t WHERE t.id = c.head_turn_id AND t.session_id = c.session_id) AS head_exists
       FROM session_lineage_cursors c LEFT JOIN source_paths p ON p.session_id = c.session_id AND p.branch = c.branch
-      ORDER BY c.session_id, c.lineage`).all();
+      WHERE c.session_id IN (SELECT value FROM json_each(?))
+      ORDER BY c.session_id, c.lineage`).all(JSON.stringify(sessions));
     const grouped = /* @__PURE__ */ new Map();
     for (const row of cursorRows) {
       const id = Number(row.session_id);
@@ -2182,7 +2196,7 @@ var Store = class {
       })),
       currentSnapshots: /* @__PURE__ */ new Map(),
       validatedCurrentPaths: /* @__PURE__ */ new Set(),
-      facts: new Map(this.db.prepare(`SELECT f.*, t.session_id FROM facts f JOIN turns t ON t.id = f.turn_id WHERE f.id IN (SELECT value FROM json_each(?))`).all(factIds).map((r) => [Number(r.id), { fact: toFact(r), sessionId: Number(r.session_id), runId: Number(r.run_id), entries: [] }]))
+      facts
     };
     for (const row of this.db.prepare("SELECT fact_id, entry_id FROM fact_sources WHERE fact_id IN (SELECT value FROM json_each(?)) ORDER BY entry_id").all(factIds))
       metadata.facts.get(Number(row.fact_id)).entries.push(Number(row.entry_id));
@@ -2704,8 +2718,8 @@ var Store = class {
       return { ok: false, reason: `merge survivor K${op.intoKnowledgeId} is newer than absorbed K${op.absorb[0].knowledgeId}; swap them: use K${op.absorb[0].knowledgeId}@${op.absorb[0].baseCommit} as the survivor and absorb K${op.intoKnowledgeId}@${op.intoBaseCommit}` };
     const targets = op.op === "create" ? [] : op.op === "merge" ? [{ knowledgeId: op.intoKnowledgeId, baseCommit: op.intoBaseCommit }, ...op.absorb] : [{ knowledgeId: op.knowledgeId, baseCommit: op.baseCommit }];
     const revivalSurvivor = dreaming && op.op === "merge" && this.getKnowledgeRevision(op.intoKnowledgeId, op.intoBaseCommit)?.op === "archive";
-    const writerInput = this.commitGraphInput();
-    const writerGraph = this.commitGraph(path, void 0, void 0, writerInput);
+    const writerInput = targets.length ? this.commitGraphInput() : void 0;
+    const writerGraph = writerInput ? this.commitGraph(path, void 0, void 0, writerInput) : void 0;
     const seen = /* @__PURE__ */ new Set();
     for (const target of targets) {
       const base = this.getKnowledgeRevision(target.knowledgeId, target.baseCommit);
@@ -2798,22 +2812,46 @@ var Store = class {
    * graph projection chooses one current revision before reader visibility; processing affects only
    * scheduling and never participates in that projection. */
   poolVersions(pool, path) {
-    const input = this.commitGraphInput();
-    const knowledge = /* @__PURE__ */ new Map();
-    return this.commitGraph(path, void 0, void 0, input).current.filter((revision) => revision.op !== "archive" && placementOwner(this, { revision }, input.metadata) === pool).map((revision) => {
-      if (!knowledge.has(revision.knowledgeId)) knowledge.set(revision.knowledgeId, this.getKnowledge(revision.knowledgeId));
-      return { knowledge: knowledge.get(revision.knowledgeId), revision };
-    });
+    return this.knowledgePools(path).find((value) => value.pool === pool)?.versions ?? [];
   }
   pendingVersions(pool, path) {
-    const processed = new Set(this.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ?").all(pool).map((row) => row.revision_id));
-    return this.poolVersions(pool, path).filter((value) => !processed.has(value.revision.id)).map((value) => {
-      const changed = !!this.db.prepare(`SELECT 1 FROM knowledge_processed p JOIN knowledge_revisions r ON r.id = p.revision_id
-        WHERE p.pool = ? AND r.knowledge_id = ? LIMIT 1`).get(pool, value.revision.knowledgeId);
-      const material = `${changed ? "Changed" : "New"} K${value.revision.knowledgeId}@${value.revision.id}:
-${renderKnowledge(value)}`;
-      return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
-    }).sort((left, right) => left.revisionId - right.revisionId);
+    return this.knowledgePools(path).find((value) => value.pool === pool)?.pending ?? [];
+  }
+  /** One operation-local value: resolve globally before scope filtering, render each current body
+   * once, and batch processing history. Never retain this value across a mutation or transaction. */
+  knowledgePools(path) {
+    const projectId = this.getSession(path.sessionId)?.projectId;
+    if (projectId === void 0) throw new Error(`Unknown session ${path.sessionId}`);
+    const budgets2 = this.knowledgeBudgets(), input = this.commitGraphInput();
+    const pools = [["global", budgets2.global], [`project:${projectId}`, budgets2.project], [`session:${path.sessionId}`, budgets2.session]];
+    const versions = new Map(pools.map(([pool]) => [pool, []]));
+    const current = this.commitGraph(path, void 0, void 0, input).current.filter((revision) => revision.op !== "archive");
+    const knowledge = new Map(this.db.prepare("SELECT * FROM knowledge WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(current.map((revision) => revision.knowledgeId))).map((row) => [Number(row.id), toKnowledge(row)]));
+    for (const revision of current) versions.get(placementOwner(this, { revision }, input.metadata))?.push({ knowledge: knowledge.get(revision.knowledgeId), revision });
+    const history = this.db.prepare(`SELECT p.pool, p.revision_id, r.knowledge_id FROM knowledge_processed p
+      JOIN knowledge_revisions r ON r.id = p.revision_id WHERE p.pool IN (SELECT value FROM json_each(?))`).all(JSON.stringify(pools.map(([pool]) => pool)));
+    const processed = new Set(history.map((row) => `${row.pool}:${row.revision_id}`));
+    const changed = new Set(history.map((row) => `${row.pool}:${row.knowledge_id}`));
+    const states = new Map(this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool IN (SELECT value FROM json_each(?))").all(JSON.stringify(pools.map(([pool]) => pool))).map((row) => [String(row.pool), row]));
+    return pools.map(([pool, budget]) => {
+      const values = versions.get(pool);
+      const rendered = new Map(values.map((value) => [value.revision.id, renderKnowledge(value)]));
+      const size = tokens(processedBlock(values, (value) => rendered.get(value.revision.id)));
+      const pending = values.filter((value) => !processed.has(`${pool}:${value.revision.id}`)).map((value) => {
+        const material = `${changed.has(`${pool}:${value.revision.knowledgeId}`) ? "Changed" : "New"} K${value.revision.knowledgeId}@${value.revision.id}:
+${rendered.get(value.revision.id)}`;
+        return { revisionId: value.revision.id, knowledgeId: value.revision.knowledgeId, pool, tokens: tokens(material), material };
+      }).sort((left, right) => left.revisionId - right.revisionId);
+      let reason = null;
+      if (pending.length && pending.reduce((sum, value) => sum + value.tokens, 0) * 2 >= budget) reason = "pending";
+      else if (size > budget) {
+        const state = states.get(pool);
+        const residual = new Set(state ? JSON.parse(String(state.residual_revisions)) : []);
+        if (pending.some((value) => !residual.has(value.revisionId)) || !state || Number(state.last_over_size) < size || Number(state.last_over_budget) !== budget)
+          reason = "over-budget";
+      }
+      return { pool, budget, tokens: size, versions: values, rendered, pending, reason };
+    });
   }
   pendingPoolWeight(pool, path) {
     return this.pendingVersions(pool, path).reduce((total, revision) => total + revision.tokens, 0);
@@ -2830,34 +2868,48 @@ ${renderKnowledge(value)}`;
     }).map((row) => Number(row.revision_id)));
   }
   poolSizes(path) {
-    const projectId = this.getSession(path.sessionId)?.projectId;
-    if (projectId === void 0) throw new Error(`Unknown session ${path.sessionId}`);
-    const budgets2 = this.knowledgeBudgets();
-    return [["global", budgets2.global], [`project:${projectId}`, budgets2.project], [`session:${path.sessionId}`, budgets2.session]].map(([pool, budget]) => ({ pool: String(pool), budget: Number(budget), tokens: tokens(processedBlock(this.poolVersions(String(pool), path))) }));
+    return this.knowledgePools(path).map(({ pool, budget, tokens: tokens2 }) => ({ pool, budget, tokens: tokens2 }));
   }
   duePools(path) {
-    const result = [];
-    for (const size of this.poolSizes(path)) {
-      const pending = this.pendingVersions(size.pool, path);
-      if (pending.length && pending.reduce((sum, value) => sum + value.tokens, 0) * 2 >= size.budget) {
-        result.push({ ...size, pending, reason: "pending" });
-        continue;
-      }
-      if (size.tokens <= size.budget) continue;
-      const state = this.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").get(size.pool);
-      const residual = new Set(state ? JSON.parse(String(state.residual_revisions)) : []);
-      const hasNewPending = pending.some((value) => !residual.has(value.revisionId));
-      if (hasNewPending || !state || Number(state.last_over_size) < size.tokens || Number(state.last_over_budget) !== size.budget)
-        result.push({ ...size, pending, reason: "over-budget" });
-    }
-    return result;
+    return this.knowledgePools(path).flatMap(({ pool, budget, tokens: tokens2, pending, reason }) => reason ? [{ pool, budget, tokens: tokens2, pending, reason }] : []);
   }
   poolBudget(pool) {
     const budgets2 = this.knowledgeBudgets();
     return pool === "global" ? budgets2.global : pool.startsWith("project:") ? budgets2.project : budgets2.session;
   }
-  /** Freeze one pool's current revisions through the existing Dreamer range seam. */
+  /** One atomic admission snapshot covers discovery, claim availability and the frozen range.
+   * Claim/range bookkeeping does not mutate knowledge, processing records or source cursors. */
+  admitKnowledgePool(target, executorId, borrowed = false, executorSessionId) {
+    return this.transaction(() => {
+      if (!this.enabled(target.sessionId) || executorSessionId !== void 0 && !this.enabled(executorSessionId))
+        return { outcome: "dropped" };
+      const pool = this.knowledgePools(target).find((value) => value.reason !== null);
+      if (!pool) return { outcome: "empty" };
+      const claim = this.acquireAvailableClaim(target, "dreaming", executorId, borrowed, () => true, () => true);
+      if (!claim) return { outcome: "dropped" };
+      const range = this.retainProjectedPoolRange(target, pool, claim);
+      return { outcome: "admitted", claim, pool, range };
+    });
+  }
+  /** Select and reserve from the same atomic projection. Only range/claim bookkeeping mutates
+   * inside this operation; no caller can submit a stale prepared projection as write authority. */
+  freezeKnowledgePool(target, claim) {
+    return this.transaction(() => {
+      const pool = this.knowledgePools(target).find((value) => value.reason !== null);
+      if (!pool) throw new Error("No Knowledge pool is due");
+      return { pool, range: this.retainProjectedPoolRange(target, pool, claim) };
+    });
+  }
+  /** Direct callers may reserve a below-trigger pending prefix with the same live-claim fence. */
   retainKnowledgePoolRange(target, pool, claim) {
+    return this.transaction(() => {
+      const projected = this.knowledgePools(target).find((value) => value.pool === pool);
+      if (!projected) throw new Error(`Pool ${pool} is not applicable to S${target.sessionId}`);
+      return this.retainProjectedPoolRange(target, projected, claim);
+    });
+  }
+  retainProjectedPoolRange(target, due, claim) {
+    const pool = due.pool;
     return this.transaction(() => {
       this.requireClaim({ kind: "dreaming", sessionId: target.sessionId, branch: target.branch, createdAt: (/* @__PURE__ */ new Date()).toISOString(), claim });
       const session = this.getSession(target.sessionId);
@@ -2872,12 +2924,7 @@ ${renderKnowledge(value)}`;
         JOIN dreaming_ranges r ON r.id = e.range_id JOIN task_claims c
           ON c.session_id = r.session_id AND c.phase = 'dreaming' AND c.token = r.claim_token
         WHERE r.pool IS NOT NULL AND r.completed_run IS NULL AND r.closed_at IS NULL AND c.expires_at > ?`).all(now).map((row) => row.event_id));
-      const due = this.duePools(target).find((value) => value.pool === pool) ?? (() => {
-        const pending = this.pendingVersions(pool, target);
-        if (!pending.length) throw new Error(`Pool ${pool} is not due`);
-        const size = this.poolSizes(target).find((value) => value.pool === pool);
-        return { ...size, pending, reason: "pending" };
-      })();
+      if (!due.reason && !due.pending.length) throw new Error(`Pool ${pool} is not due`);
       const selected = [];
       for (const revision of due.pending) {
         if (reserved2.has(revision.revisionId)) continue;
@@ -2929,9 +2976,8 @@ ${renderKnowledge(value)}`;
       if (consumes) {
         const pairs = /* @__PURE__ */ new Map();
         for (const revisionId of range.eventIds) pairs.set(`${range.pool}:${revisionId}`, { pool: range.pool, revisionId });
-        const input = own.length ? this.commitGraphInput() : void 0;
         for (const revision of own) {
-          const owner = placementOwner(this, { revision }, input?.metadata);
+          const owner = placementOwner(this, { revision });
           pairs.set(`${owner}:${revision.id}`, { pool: owner, revisionId: revision.id });
         }
         for (const pair of pairs.values()) this.db.prepare("INSERT OR IGNORE INTO knowledge_processed(pool,revision_id,run_id) VALUES (?,?,?)").run(pair.pool, pair.revisionId, runId);
@@ -2940,11 +2986,11 @@ ${renderKnowledge(value)}`;
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, (/* @__PURE__ */ new Date()).toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
       const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-      const size = this.poolSizes(path).find((value) => value.pool === range.pool);
+      const size = this.knowledgePools(path).find((value) => value.pool === range.pool);
       if (consumes) {
         if (size.tokens > size.budget) {
           const frozen = new Set(range.pendingRevisionIds);
-          const residual = this.pendingVersions(range.pool, path).map((value) => value.revisionId).filter((id) => frozen.has(id));
+          const residual = size.pending.map((value) => value.revisionId).filter((id) => frozen.has(id));
           this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
             ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
               residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, JSON.stringify(residual));
@@ -3171,7 +3217,7 @@ ${renderKnowledge(value)}`;
        WHERE p.session_id = ? AND p.branch = ? AND e.session_id = ? AND (? IS NULL OR e.turn_id = ?) ORDER BY j.key`
     ).all(sessionId, branch, sessionId, turnId ?? null, turnId ?? null);
     const hasPath = branch !== void 0 && !!this.db.prepare("SELECT 1 FROM source_paths WHERE session_id = ? AND branch = ?").get(sessionId, branch);
-    const rows = hasPath ? selected : this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? AND (? IS NULL OR turn_id = ?) ORDER BY id").all(sessionId, turnId ?? null, turnId ?? null);
+    const rows = hasPath ? selected : turnId === void 0 ? this.db.prepare("SELECT id FROM source_entries WHERE session_id = ? ORDER BY id").all(sessionId) : this.db.prepare("SELECT id FROM source_entries WHERE turn_id = ? AND session_id = ? ORDER BY id").all(turnId, sessionId);
     return rows.map((r) => this.getSourceEntry(r.id));
   }
   /** 22c "complete snapshot": the source-entry identities of many Turns in one read, in the order an
@@ -3200,6 +3246,26 @@ ${renderKnowledge(value)}`;
       return entryIds.every((id, index) => ids[index] === id) ? [row.branch] : [];
     });
     return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
+  }
+  /** Publish source selection and its lineage cursor atomically, validating the supplied identities
+   * once without writing and then reparsing the full path. Other lineage cursors remain untouched. */
+  publishSourcePath(sessionId, branch, entryIds, headTurnId, lineage) {
+    this.transaction(() => {
+      this.requireEnabled(sessionId);
+      if (typeof lineage !== "string" || !lineage) throw new Error("current path requires a non-empty lineage");
+      if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some((id) => !Number.isSafeInteger(id) || id < 1))
+        throw new Error("invalid source path");
+      const rows = this.db.prepare("SELECT id, turn_id, session_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))").all(JSON.stringify(entryIds));
+      const entries = new Map(rows.map((row) => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
+      if (entryIds.some((id) => entries.get(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
+      const headAncestry = this.pathTurns({ sessionId, headTurnId });
+      const tail = entryIds.length ? entries.get(entryIds.at(-1)).turnId : null;
+      const tailAncestry = tail !== null && !headAncestry.has(tail) ? this.pathTurns({ sessionId, headTurnId: tail }) : void 0;
+      const problem = this.pathCoherenceProblem(sessionId, branch, headTurnId, entryIds, entries, headAncestry, tailAncestry);
+      if (problem) throw new Error(problem);
+      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids").run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+    });
   }
   selectSourcePath(sessionId, branch, entryIds) {
     return this.transaction(() => {
@@ -4956,19 +5022,33 @@ function readFacade(store, config3, prepare, resultText = rawResultText) {
     branchSummary: (sessionId, branch, headTurnId) => {
       if (!store.enabled(sessionId)) return "";
       const title = "Pending raw:";
-      const pending = store.pendingEntries(sessionId, branch, headTurnId).map((e) => renderEntry(e, config3.render, resultText));
-      const costs = pending.map((view) => charge([view.content, ...view.receipts]));
-      let omitted = 0, used = charge([title]) + costs.reduce((sum, cost) => sum + cost, 0);
+      const pending = store.pendingEntries(sessionId, branch, headTurnId);
+      const raw = [];
+      let omitted = pending.length, used = charge([title]);
       const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with trace]`] : [];
-      while (used + charge(receipt()) > config3.render.episodicBlockTokens && omitted < pending.length)
-        used -= costs[omitted++];
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const view = renderEntry(pending[i], config3.render, resultText);
+        const cost = charge([view.content, ...view.receipts]);
+        if (used + cost > config3.render.episodicBlockTokens) break;
+        omitted--;
+        raw.push(view);
+        used += cost;
+      }
+      while (raw.length && used + charge(receipt()) > config3.render.episodicBlockTokens) {
+        const removed = raw.pop();
+        used -= charge([removed.content, ...removed.receipts]);
+        omitted++;
+      }
+      raw.reverse();
       if (used + charge(receipt()) > config3.render.episodicBlockTokens)
         throw new Error(`Branch carry capacity: Raw framing and omission receipt exceed render.episodicBlockTokens (${config3.render.episodicBlockTokens})`);
-      const raw = pending.slice(omitted);
       const path = { sessionId, headTurnId, branch }, snapshot2 = store.pathSnapshot(path);
       const facts = store.listSessionFacts(sessionId).filter((f) => store.factOnPath(f, path, snapshot2)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map((f) => f.id));
-      const commits = store.listKnowledgeRevisions().filter((r) => store.commitApplies(r, path, snapshot2) && r.supports.some((id) => factIds.has(id))).map((revision) => ({ knowledge: store.getKnowledge(revision.knowledgeId), revision }));
+      const revisions = store.listKnowledgeRevisions();
+      const input = store.commitGraphInput(revisions).metadata;
+      const applicableFacts = /* @__PURE__ */ new Map(), applicableCommits = /* @__PURE__ */ new Map();
+      const commits = revisions.filter((r) => store.commitApplies(r, path, snapshot2, input, applicableFacts, applicableCommits) && r.supports.some((id) => factIds.has(id))).map((revision) => ({ knowledge: store.getKnowledge(revision.knowledgeId), revision }));
       const relations = store.listFactRelationsOnPathOf(facts.map((fact) => fact.id), path, snapshot2);
       const content = [
         "this is knowledge from another branch; it must not be written as facts; the Noter's facts come only from the current branch's conversation, never from messages this plugin injected.",
@@ -5923,26 +6003,29 @@ function renderDreamingCheckReceipt(result) {
 // src/core/dreaming/index.ts
 var prompt2 = loadPrompt("dreaming.md");
 var promptHash2 = (0, import_node_crypto6.createHash)("sha256").update(prompt2).digest("hex");
-function freezeDreaming(store, input, config3, claim, _origin = store.triggerOrigin({
-  sessionId: input.sessionId,
-  branch: input.branch,
-  headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId
-}, input.triggerEntryId)) {
-  if (!claim) throw new Error("Dreaming freeze requires its live claim");
-  const path = {
-    sessionId: input.sessionId,
-    branch: input.branch,
-    headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId
-  };
-  const due = store.duePools(path)[0];
-  if (!due) throw new Error("No Knowledge pool is due");
-  const range = store.retainKnowledgePoolRange(path, due.pool, claim);
+function admitDreaming(store, input, config3, executorId) {
+  return store.transaction(() => {
+    const path = {
+      sessionId: input.sessionId,
+      branch: input.branch,
+      headTurnId: input.headTurnId ?? store.knowledgePath(input.sessionId, input.branch).headTurnId
+    };
+    const admitted = store.admitKnowledgePool(path, executorId, input.borrowed, input.executorSessionId);
+    if (admitted.outcome !== "admitted") return admitted;
+    return {
+      outcome: "admitted",
+      claim: admitted.claim,
+      frozen: prepareDreaming(store, input, config3, admitted.claim, path, admitted)
+    };
+  });
+}
+function prepareDreaming(store, input, config3, claim, path, { pool: due, range }) {
   const frozenIds = new Set(range.eventIds);
   const pending = due.pending.filter((value) => frozenIds.has(value.revisionId));
   const changed = ["Pending current knowledge:", ...pending.map((value) => value.material)].join("\n");
   if (tokens(changed) > due.budget)
     throw new Error(`Dreaming pool ${due.pool} changed material exceeds its ${due.budget}-token budget including framing`);
-  const references = store.poolVersions(due.pool, path).filter((value) => !frozenIds.has(value.revision.id));
+  const references = due.versions.filter((value) => !frozenIds.has(value.revision.id));
   const budgets2 = store.knowledgeBudgets();
   const knowledgeCapacity = budgets2.injection + deriveSharedMaterialAllowance(
     budgets2,
@@ -5950,13 +6033,14 @@ function freezeDreaming(store, input, config3, claim, _origin = store.triggerOri
   );
   if (!Number.isSafeInteger(knowledgeCapacity)) throw new Error("derived Dreamer Knowledge capacity must be a safe integer");
   const processedInputCap = knowledgeCapacity - tokens(changed) - 1;
-  let old = processedBlock(references), oldIds = references.map((value) => value.revision.id);
+  const renderReference = (value) => due.rendered.get(value.revision.id);
+  let old = processedBlock(references, renderReference), oldIds = references.map((value) => value.revision.id);
   if (tokens(`Current pool knowledge outside this range:
 ${old}`) > processedInputCap) {
     const selected = budgetKnowledge(
       references,
       Math.max(0, processedInputCap - tokens("Current pool knowledge outside this range:\n")),
-      void 0,
+      renderReference,
       "Dreamer current reference input"
     );
     old = [renderKnowledgeBlock(selected.groups.filter((group) => group.text)), ...selected.receipts].join("\n");
@@ -5966,7 +6050,7 @@ ${old}`) > processedInputCap) {
 ${old}`;
   if (tokens(old) > processedInputCap)
     throw new Error(`Dreaming current reference input exceeds ${processedInputCap} tokens including framing`);
-  const frozenValues = store.poolVersions(due.pool, path).filter((value) => frozenIds.has(value.revision.id));
+  const frozenValues = due.versions.filter((value) => frozenIds.has(value.revision.id));
   const facts = [...new Set(frozenValues.flatMap((value) => value.revision.supports))].sort((a, b) => a - b).map((id) => {
     const fact = store.getFact(id);
     if (!fact) throw new Error(`Missing direct support F${id}`);
@@ -6029,12 +6113,13 @@ async function runDreaming(store, frozen, runAgent, bind) {
     const ownRevisionIds = runId2 === void 0 ? [] : store.listCommitsByRun(runId2).map((revision) => revision.id);
     const excluded = /* @__PURE__ */ new Set([...frozen.frozenIds, ...ownRevisionIds]);
     const operationFailures = [...binding.toolProblems, ...binding.memory.problems];
+    const pools = store.knowledgePools(path);
     return {
       pool: frozen.pool,
       frozenRevisionIds: frozen.frozenIds,
       ownRevisionIds,
-      pendingRevisionIds: store.pendingVersions(frozen.pool, path).map((value) => value.revisionId).filter((id) => !excluded.has(id)),
-      totals: store.poolSizes(path),
+      pendingRevisionIds: pools.find((value) => value.pool === frozen.pool).pending.map((value) => value.revisionId).filter((id) => !excluded.has(id)),
+      totals: pools.map(({ pool, budget, tokens: tokens2 }) => ({ pool, budget, tokens: tokens2 })),
       operationFailures,
       problems: operationFailures
     };
@@ -6667,7 +6752,7 @@ ${view}` : view;
     try {
       if (store.closed || !store.getSession(target.sessionId)) return { tokens: null, trigger, state: "unavailable" };
       if (phase === "dreaming") {
-        const pools = store.poolSizes(target).map((size) => ({ ...size, pending: store.pendingPoolWeight(size.pool, target) }));
+        const pools = store.knowledgePools(target).map((size) => ({ ...size, pending: size.pending.reduce((sum, value) => sum + value.tokens, 0) }));
         const selected = pools.sort((left, right) => right.pending / Math.max(1, right.budget) - left.pending / Math.max(1, left.budget))[0];
         return { tokens: selected.pending, trigger: Math.ceil(selected.budget / 2), state: "known" };
       }
@@ -6701,13 +6786,23 @@ ${view}` : view;
     try {
       frozen = store.transaction(() => {
         if (input.borrowed && !store.canBorrow(target.sessionId, input.executorSessionId, closedSessionScope)) return null;
-        const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId) : phase === "dreaming" ? store.duePools(target) : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
+        if (phase === "dreaming") {
+          const admitted = admitDreaming(store, { ...input, ...target }, cfg, executorId);
+          empty = admitted.outcome === "empty";
+          if (admitted.outcome !== "admitted") return null;
+          claim = admitted.claim;
+          projectId = store.getSession(input.sessionId).projectId;
+          const frozen3 = admitted.frozen;
+          origin = frozen3.range.origin;
+          executionId = store.beginExecution({ sessionId: target.sessionId, phase, head: frozen3.range.id, origin }, input.executionId);
+          return frozen3;
+        }
+        const pendingNow = phase === "noting" ? store.pendingEntries(target.sessionId, target.branch, target.headTurnId) : store.consolidationBatch(target.sessionId, target.branch, target.headTurnId);
         const boundary = input.boundary;
         empty = !boundary ? !pendingNow.length : phase === "noting" ? !pendingNow.some((e) => (!boundary.exactEntryIds || boundary.exactEntryIds.includes(e.id)) && (boundary.maxEntryId === void 0 || e.id <= boundary.maxEntryId)) : !pendingNow.some((f) => (!boundary.exactFactIds || boundary.exactFactIds.includes(f.id)) && (!boundary.allowedFactIds || boundary.allowedFactIds.includes(f.id)));
         if (empty) return null;
         claim = store.acquireClaim(target, phase, executorId, input.borrowed, () => {
           if (input.executorSessionId !== void 0 && !store.enabled(input.executorSessionId)) return false;
-          if (phase === "dreaming") return taskEligibility(phase, target).due;
           if (!input.automatic || input.borrowed) return true;
           return taskEligibility(phase, target).due;
         });
@@ -6715,9 +6810,9 @@ ${view}` : view;
         projectId = store.getSession(input.sessionId).projectId;
         const selected = { ...input, ...target, ...input.borrowed ? { mode: "subagent" } : {} };
         const admittedOrigin = input.executionId ? store.executionOrigin(input.executionId) : store.triggerOrigin(target, target.triggerEntryId);
-        const frozen2 = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : phase === "dreaming" ? freezeDreaming(store, selected, cfg, claim, admittedOrigin) : freezeConsolidation(store, selected, cfg);
-        origin = phase === "dreaming" ? frozen2.range.origin : admittedOrigin;
-        const head = "entries" in frozen2 ? frozen2.entries[0]?.id : "rangeFacts" in frozen2 ? frozen2.rangeFacts[0]?.id : frozen2.range.id;
+        const frozen2 = phase === "noting" ? freezeNoting(store, selected, cfg, resultText) : freezeConsolidation(store, selected, cfg);
+        origin = admittedOrigin;
+        const head = "entries" in frozen2 ? frozen2.entries[0]?.id : frozen2.rangeFacts[0]?.id;
         if (head !== void 0) executionId = store.beginExecution({ sessionId: target.sessionId, phase, head, origin }, input.executionId);
         return frozen2;
       });
@@ -7661,7 +7756,7 @@ var import_node_crypto10 = require("node:crypto");
 var import_node_path4 = require("node:path");
 var import_node_util = require("node:util");
 
-// node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 var import_path = require("path");
 var import_url = require("url");
 var import_events = require("events");
@@ -28459,7 +28554,7 @@ function query({
   return queryInstance;
 }
 
-// node_modules/zod/v4/core/core.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/core.js
 var NEVER2 = Object.freeze({
   status: "aborted"
 });
@@ -28533,7 +28628,7 @@ function config2(newConfig) {
   return globalConfig2;
 }
 
-// node_modules/zod/v4/core/util.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/util.js
 var util_exports = {};
 __export(util_exports, {
   BIGINT_FORMAT_RANGES: () => BIGINT_FORMAT_RANGES2,
@@ -29212,7 +29307,7 @@ var Class2 = class {
   }
 };
 
-// node_modules/zod/v4/core/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/errors.js
 var initializer3 = (inst, def) => {
   inst.name = "$ZodError";
   Object.defineProperty(inst, "_zod", {
@@ -29278,7 +29373,7 @@ function formatError2(error3, mapper = (issue3) => issue3.message) {
   return fieldErrors;
 }
 
-// node_modules/zod/v4/core/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/parse.js
 var _parse2 = (_Err) => (schema, value, _ctx, _params) => {
   const ctx = _ctx ? Object.assign(_ctx, { async: false }) : { async: false };
   const result = schema._zod.run({ value, issues: [] }, ctx);
@@ -29358,7 +29453,7 @@ var _safeDecodeAsync = (_Err) => async (schema, value, _ctx) => {
   return _safeParseAsync2(_Err)(schema, value, _ctx);
 };
 
-// node_modules/zod/v4/core/regexes.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/regexes.js
 var regexes_exports = {};
 __export(regexes_exports, {
   base64: () => base642,
@@ -29515,7 +29610,7 @@ var sha512_hex = /^[0-9a-fA-F]{128}$/;
 var sha512_base64 = /* @__PURE__ */ fixedBase64(86, "==");
 var sha512_base64url = /* @__PURE__ */ fixedBase64url(86);
 
-// node_modules/zod/v4/core/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/checks.js
 var $ZodCheck2 = /* @__PURE__ */ $constructor2("$ZodCheck", (inst, def) => {
   var _a2;
   inst._zod ?? (inst._zod = {});
@@ -30063,7 +30158,7 @@ var $ZodCheckOverwrite2 = /* @__PURE__ */ $constructor2("$ZodCheckOverwrite", (i
   };
 });
 
-// node_modules/zod/v4/core/doc.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/doc.js
 var Doc2 = class {
   constructor(args = []) {
     this.content = [];
@@ -30099,14 +30194,14 @@ var Doc2 = class {
   }
 };
 
-// node_modules/zod/v4/core/versions.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/versions.js
 var version2 = {
   major: 4,
   minor: 3,
   patch: 6
 };
 
-// node_modules/zod/v4/core/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/schemas.js
 var $ZodType2 = /* @__PURE__ */ $constructor2("$ZodType", (inst, def) => {
   var _a2;
   inst ?? (inst = {});
@@ -32077,7 +32172,7 @@ function handleRefineResult2(result, payload, input, inst) {
   }
 }
 
-// node_modules/zod/v4/locales/en.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/locales/en.js
 var error2 = () => {
   const Sizable = {
     string: { unit: "characters", verb: "to have" },
@@ -32186,7 +32281,7 @@ function en_default3() {
   };
 }
 
-// node_modules/zod/v4/core/registries.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/registries.js
 var _a;
 var $ZodRegistry2 = class {
   constructor() {
@@ -32234,7 +32329,7 @@ function registry2() {
 (_a = globalThis).__zod_globalRegistry ?? (_a.__zod_globalRegistry = registry2());
 var globalRegistry2 = globalThis.__zod_globalRegistry;
 
-// node_modules/zod/v4/core/api.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/api.js
 // @__NO_SIDE_EFFECTS__
 function _string2(Class3, params) {
   return new Class3({
@@ -33038,7 +33133,7 @@ function _stringFormat(Class3, format, fnOrRegex, _params = {}) {
   return inst;
 }
 
-// node_modules/zod/v4/core/to-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/to-json-schema.js
 function initializeContext(params) {
   let target = params?.target ?? "draft-2020-12";
   if (target === "draft-4")
@@ -33390,7 +33485,7 @@ var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) =
   return finalize(ctx, schema);
 };
 
-// node_modules/zod/v4/core/json-schema-processors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/core/json-schema-processors.js
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -33866,7 +33961,7 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var schemas_exports2 = {};
 __export(schemas_exports2, {
   ZodAny: () => ZodAny2,
@@ -34035,7 +34130,7 @@ __export(schemas_exports2, {
   xor: () => xor
 });
 
-// node_modules/zod/v4/classic/checks.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/checks.js
 var checks_exports2 = {};
 __export(checks_exports2, {
   endsWith: () => _endsWith2,
@@ -34069,7 +34164,7 @@ __export(checks_exports2, {
   uppercase: () => _uppercase2
 });
 
-// node_modules/zod/v4/classic/iso.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/iso.js
 var iso_exports = {};
 __export(iso_exports, {
   ZodISODate: () => ZodISODate2,
@@ -34110,7 +34205,7 @@ function duration4(params) {
   return _isoDuration2(ZodISODuration2, params);
 }
 
-// node_modules/zod/v4/classic/errors.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/errors.js
 var initializer4 = (inst, issues) => {
   $ZodError2.init(inst, issues);
   inst.name = "ZodError";
@@ -34150,7 +34245,7 @@ var ZodRealError2 = $constructor2("ZodError", initializer4, {
   Parent: Error
 });
 
-// node_modules/zod/v4/classic/parse.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/parse.js
 var parse3 = /* @__PURE__ */ _parse2(ZodRealError2);
 var parseAsync4 = /* @__PURE__ */ _parseAsync2(ZodRealError2);
 var safeParse5 = /* @__PURE__ */ _safeParse2(ZodRealError2);
@@ -34164,7 +34259,7 @@ var safeDecode = /* @__PURE__ */ _safeDecode(ZodRealError2);
 var safeEncodeAsync = /* @__PURE__ */ _safeEncodeAsync(ZodRealError2);
 var safeDecodeAsync = /* @__PURE__ */ _safeDecodeAsync(ZodRealError2);
 
-// node_modules/zod/v4/classic/schemas.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/schemas.js
 var ZodType3 = /* @__PURE__ */ $constructor2("ZodType", (inst, def) => {
   $ZodType2.init(inst, def);
   Object.assign(inst["~standard"], {
@@ -35243,22 +35338,22 @@ function preprocess2(fn, schema) {
   return pipe2(transform2(fn), schema);
 }
 
-// node_modules/zod/v4/classic/compat.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/compat.js
 var ZodFirstPartyTypeKind2;
 /* @__PURE__ */ (function(ZodFirstPartyTypeKind3) {
 })(ZodFirstPartyTypeKind2 || (ZodFirstPartyTypeKind2 = {}));
 
-// node_modules/zod/v4/classic/from-json-schema.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/from-json-schema.js
 var z = {
   ...schemas_exports2,
   ...checks_exports2,
   iso: iso_exports
 };
 
-// node_modules/zod/v4/classic/external.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/zod/v4/classic/external.js
 config2(en_default3());
 
-// node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
+// ../../../../Users/zhaoqixuan/Projects/trace-memory/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
 var RELATED_TASK_META_KEY2 = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION2 = "2.0";
 var AssertObjectSchema2 = custom2((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -37226,6 +37321,7 @@ var CcProjection = class {
   callsByTurn = /* @__PURE__ */ new Map();
   loadedCallTurns = /* @__PURE__ */ new Set();
   lastResult = null;
+  synchronized = false;
   constructor(config3, binding, memory) {
     if (binding.dbPath !== config3.dbPath) throw new Error("CC binding uses another database");
     this.config = config3;
@@ -37343,6 +37439,7 @@ var CcProjection = class {
           state: problems.length ? "not-ready" : this.lastResult.state,
           snapshot: problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
           appendedEntryIds: [],
+          bootstrap: false,
           problems
         };
       }
@@ -37423,80 +37520,85 @@ var CcProjection = class {
     };
     const ingest = (record3, source, raw, scan2) => {
       if (!source.timestamp) throw new CcIntegrityError(`native source ${source.nativeId} has no valid timestamp`);
+      const timestamp2 = source.timestamp;
       if (source.kind === "compaction") {
         const known2 = this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId);
         const parentTurnId = nearestTurn(record3, scan2);
         if (known2) {
-          const turn2 = this.memory.store.getTurn(known2.turnId);
-          if (!turn2 || turn2.kind !== "compaction" || turn2.parentTurnId !== parentTurnId || turn2.startedAt !== source.timestamp)
+          const turn = this.memory.store.getTurn(known2.turnId);
+          if (!turn || turn.kind !== "compaction" || turn.parentTurnId !== parentTurnId || turn.startedAt !== source.timestamp)
             throw new CcIntegrityError(`native compaction ${source.nativeId} changed after persistence`);
           return { association: { turnId: known2.turnId } };
         }
-        const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: source.timestamp, endedAt: source.timestamp });
-        this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
-        return { association: { turnId: turn.id } };
+        return this.memory.store.transaction(() => {
+          const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp2, endedAt: timestamp2 });
+          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          return { association: { turnId: turn.id } };
+        });
       }
       const known = this.memory.store.findSourceEntry(sessionId, lineage, source.nativeId);
       if (known) {
         if (known.raw !== raw) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
         if (source.kind === "user" && !this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId))
-          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn");
-        const calls2 = new Map(knownCalls(known.turnId));
+          this.memory.store.transaction(() => this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn"));
+        const calls = new Map(knownCalls(known.turnId));
         if (source.kind === "assistant") for (const value of known.calls) {
-          const prior = calls2.get(value.callId);
+          const prior = calls.get(value.callId);
           if (prior && (prior.ordinal !== value.ordinal || prior.name !== value.name))
             throw new CcIntegrityError(`native tool call ${value.callId} changed within one Turn`);
-          calls2.set(value.callId, { ordinal: value.ordinal, name: value.name });
+          calls.set(value.callId, { ordinal: value.ordinal, name: value.name });
         }
-        return { association: { turnId: known.turnId, entryId: known.id }, calls: calls2 };
+        return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
-      let turnId;
-      if (source.kind === "user") {
-        const parentTurnId = nearestTurn(record3, scan2);
-        turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: source.timestamp }).id;
-        this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
-      } else {
-        const owner = nearestTurn(record3, scan2);
-        if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
-          throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
-        turnId = owner;
-      }
-      const calls = source.kind === "user" ? /* @__PURE__ */ new Map() : new Map(knownCalls(turnId));
-      const fragments = [];
-      if (source.kind === "assistant") for (const offered of source.calls) {
-        if (calls.has(offered.callId)) throw new CcIntegrityError(`native tool call ${offered.callId} repeats within one Turn`);
-        const stored2 = this.memory.store.appendToolCall({ turnId, name: offered.name, input: offered.input, status: offered.status });
-        calls.set(offered.callId, { ordinal: stored2.ordinal, name: stored2.name });
-        fragments.push({ ...offered, ordinal: stored2.ordinal });
-      }
-      if (source.kind === "toolResult") {
-        for (const value of source.calls) {
-          const offered = calls.get(value.callId);
-          if (!offered) throw new CcIntegrityError(`tool result ${value.callId} has no call in its owning Turn`);
-          fragments.push({ ...value, ordinal: offered.ordinal, name: offered.name });
+      return this.memory.store.transaction(() => {
+        let turnId;
+        if (source.kind === "user") {
+          const parentTurnId = nearestTurn(record3, scan2);
+          turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp2 }).id;
+          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
+        } else {
+          const owner = nearestTurn(record3, scan2);
+          if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
+            throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
+          turnId = owner;
         }
-        for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
-      }
-      const stored = this.memory.appendEntry({
-        sessionId,
-        nativeLineage: lineage,
-        nativeId: source.nativeId,
-        turnId,
-        role: source.kind,
-        text: source.text,
-        raw,
-        calls: fragments
+        const calls = source.kind === "user" ? /* @__PURE__ */ new Map() : new Map(knownCalls(turnId));
+        const fragments = [];
+        if (source.kind === "assistant") for (const offered of source.calls) {
+          if (calls.has(offered.callId)) throw new CcIntegrityError(`native tool call ${offered.callId} repeats within one Turn`);
+          const stored2 = this.memory.store.appendToolCall({ turnId, name: offered.name, input: offered.input, status: offered.status });
+          calls.set(offered.callId, { ordinal: stored2.ordinal, name: stored2.name });
+          fragments.push({ ...offered, ordinal: stored2.ordinal });
+        }
+        if (source.kind === "toolResult") {
+          for (const value of source.calls) {
+            const offered = calls.get(value.callId);
+            if (!offered) throw new CcIntegrityError(`tool result ${value.callId} has no call in its owning Turn`);
+            fragments.push({ ...value, ordinal: offered.ordinal, name: offered.name });
+          }
+          for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
+        }
+        const stored = this.memory.appendEntry({
+          sessionId,
+          nativeLineage: lineage,
+          nativeId: source.nativeId,
+          turnId,
+          role: source.kind,
+          text: source.text,
+          raw,
+          calls: fragments
+        });
+        if (source.kind === "assistant") {
+          const turn = this.memory.store.getTurn(turnId);
+          this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
+        }
+        return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
       });
-      if (source.kind === "assistant") {
-        const turn = this.memory.store.getTurn(turnId);
-        this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
-      }
-      return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
     };
     const visit = (record3, source, raw, currentScan) => {
       if (!source) return;
       try {
-        const committed = this.memory.store.transaction(() => ingest(record3, source, raw, currentScan));
+        const committed = ingest(record3, source, raw, currentScan);
         currentScan.associate(source.nativeId, committed.association);
         if (committed.calls) {
           this.callsByTurn.set(committed.association.turnId, committed.calls);
@@ -37571,10 +37673,9 @@ var CcProjection = class {
             const inherited = this.binding.clearedFrom?.inheritedEntryIds ?? [];
             if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
             headTurnId = [...selectedNodes].reverse().find((node) => node.turnId !== void 0)?.turnId ?? this.lastResult?.headTurnId ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            this.memory.store.transaction(() => {
-              this.memory.selectEntries(sessionId, branch, selectedEntryIds);
-              if (headTurnId !== null) this.memory.store.setCurrentPath(sessionId, branch, headTurnId, this.binding.nativeSessionId);
-            });
+            if (headTurnId !== null)
+              this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, this.binding.nativeSessionId);
+            else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
           }
         }
       }
@@ -37611,10 +37712,12 @@ var CcProjection = class {
         branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
         selectedEntryIds: projectionReady ? selectedEntryIds : this.lastResult?.selectedEntryIds ?? [],
-        appendedEntryIds
+        appendedEntryIds,
+        bootstrap: !this.synchronized
       }
     );
     if (projectionReady) this.lastResult = ready;
+    if (state === "ready") this.synchronized = true;
     return ready;
   }
 };
@@ -37792,8 +37895,16 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
       return { ...current, executor };
     }, bindingTimeoutMs, signal);
   } catch (error3) {
-    await closeServer(server);
-    (0, import_node_fs5.rmSync)(path, { force: true });
+    try {
+      await closeServer(server);
+    } catch (cleanup) {
+      console.error(`Trace Memory CC: failed attach socket close: ${String(cleanup)}`);
+    }
+    try {
+      (0, import_node_fs5.rmSync)(path, { force: true });
+    } catch (cleanup) {
+      console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`);
+    }
     throw error3;
   }
   const attachTo = (target) => updateBinding(config3, target.nativeSessionId, (current) => {
@@ -37812,9 +37923,15 @@ async function startControlServer(config3, initial, memory, bindingTimeoutMs, si
     (current) => !current || current.executor?.token !== token ? current : { ...current, executor: null }
   );
   return { executor, close: async (preserveExecutor = false) => {
-    await closeServer(server);
-    (0, import_node_fs5.rmSync)(path, { force: true });
-    if (!preserveExecutor) await release(binding);
+    try {
+      await closeServer(server);
+    } finally {
+      try {
+        (0, import_node_fs5.rmSync)(path, { force: true });
+      } finally {
+        if (!preserveExecutor) await release(binding);
+      }
+    }
   }, retarget: async (next) => {
     const current = readBinding(config3, binding.nativeSessionId) ?? binding;
     if (next.coreSessionId === null || next.coreSessionId !== current.coreSessionId) throw new Error("CC control retarget must stay on the same core session");
@@ -37936,14 +38053,15 @@ var CcTaskScheduler = class {
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
     if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
       const selected = new Set(reconcile.selectedEntryIds);
-      for (const entryId of reconcile.appendedEntryIds) {
-        if (!selected.has(entryId)) continue;
+      const appended = reconcile.appendedEntryIds.filter((id) => selected.has(id));
+      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedEntryIds.at(-1)] : appended;
+      for (const entryId of opportunities) {
         const entry = this.memory.store.getSourceEntry(entryId);
         if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
         const own = {
           sessionId: reconcile.coreSessionId,
           branch: reconcile.branch,
-          headTurnId: entry.turnId,
+          headTurnId: reconcile.bootstrap ? reconcile.headTurnId : entry.turnId,
           triggerEntryId: entry.id
         };
         for (const phase of ["noting", "consolidation", "dreaming"]) this.startAutomatic(phase, own);
@@ -37978,7 +38096,8 @@ var CcTaskScheduler = class {
       entryTotal: entries.length,
       factIds: new Set(facts),
       factTotal: facts.length,
-      state: entries.length || facts.length ? "running" : "completed"
+      state: entries.length ? "running" : "completed",
+      downstream: /* @__PURE__ */ new Set()
     };
     this.driveCatchup();
     return this.catchupStatus();
@@ -38057,17 +38176,22 @@ var CcTaskScheduler = class {
   }
   async runCandidates(phase, executorSessionId, candidates, cancellationEpoch) {
     for (const { borrowed, ...target } of candidates) {
-      if (this.stopped || this.cancellationEpoch !== cancellationEpoch || !this.memory.store.enabled(executorSessionId)) return;
       try {
-        const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
-        const result = phase === "noting" ? await this.memory.noting(options) : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
-        this.report(phase, target, result);
-        if (result.outcome !== "dropped" && result.outcome !== "empty") return result;
+        const result = await this.runCandidate(phase, executorSessionId, target, borrowed, cancellationEpoch);
+        if (!result || result.outcome !== "dropped" && result.outcome !== "empty") return result;
       } catch (error3) {
         this.diagnostic(`${phase} admission failed for S${target.sessionId}: ${error3 instanceof Error ? error3.message : String(error3)}`);
         if (!(error3 instanceof Error && error3.cause === "task admission")) return;
       }
     }
+  }
+  /** One ordinary admission path; callers own continuation and error handling, not claim policy. */
+  async runCandidate(phase, executorSessionId, target, borrowed, epoch) {
+    if (this.stopped || this.cancellationEpoch !== epoch || !this.memory.store.enabled(executorSessionId)) return;
+    const options = { ...this.common(phase, target, borrowed, true), executorSessionId };
+    const result = phase === "noting" ? await this.memory.noting(options) : phase === "consolidation" ? await this.memory.consolidate(options) : await this.memory.dream(options);
+    this.report(phase, target, result);
+    return result;
   }
   report(phase, target, result) {
     if (result.automaticOff) this.diagnostic(result.automaticOff);
@@ -38083,13 +38207,12 @@ var CcTaskScheduler = class {
       return;
     }
     const remainingEntries = drain.maxEntryId === void 0 ? [] : this.memory.pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId).filter((entry) => entry.id <= drain.maxEntryId);
-    const remainingFacts = this.memory.store.consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId).filter((fact) => drain.factIds.has(fact.id));
-    const phase = remainingEntries.length ? "noting" : remainingFacts.length ? "consolidation" : void 0;
-    if (!phase) {
-      drain.state = "completed";
-      drain.phase = void 0;
+    if (!remainingEntries.length) {
+      drain.state = drain.downstream.size ? "waiting" : "completed";
+      drain.phase = drain.downstream.has("consolidation") ? "consolidation" : void 0;
       return;
     }
+    const phase = "noting";
     drain.phase = phase;
     if (this.slots.has(phase)) {
       drain.state = "waiting";
@@ -38102,7 +38225,7 @@ var CcTaskScheduler = class {
     }
     drain.state = "running";
     const cancellationEpoch = this.cancellationEpoch;
-    const boundary = phase === "noting" ? { maxEntryId: drain.maxEntryId } : { allowedFactIds: [...drain.factIds] };
+    const boundary = { maxEntryId: drain.maxEntryId };
     let chain = true;
     const drainActive = () => drain.state === "running" || drain.state === "waiting";
     this.reserve(phase, async () => {
@@ -38112,7 +38235,7 @@ var CcTaskScheduler = class {
       }
       let result;
       try {
-        result = phase === "noting" ? await this.memory.noting(this.common(phase, drain.target, false, false, boundary)) : await this.memory.consolidate(this.common(phase, drain.target, false, false, boundary));
+        result = await this.memory.noting(this.common(phase, drain.target, false, false, boundary));
       } catch (error3) {
         if (this.catchup === drain && drainActive()) {
           drain.state = "failed";
@@ -38138,8 +38261,53 @@ var CcTaskScheduler = class {
         drain.phase = void 0;
         drain.diagnostic = result.problems?.join("; ") || result.outcome;
       }
+      if (result.outcome === "success") this.checkDownstream(drain, "consolidation", cancellationEpoch);
       return result;
     }, () => chain);
+  }
+  /** Catchup adds completion opportunities, not a second admission policy or a retry queue. */
+  checkDownstream(drain, phase, epoch) {
+    const owned = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch && (drain.state === "running" || drain.state === "waiting");
+    const active = () => owned() && this.memory.store.enabled(drain.target.sessionId);
+    const fail = (error3) => {
+      this.diagnostic(`${phase} catchup failed: ${String(error3)}`);
+      if (owned()) {
+        drain.state = "failed";
+        drain.phase = void 0;
+        drain.diagnostic = error3 instanceof Error ? error3.message : String(error3);
+      }
+    };
+    if (!active() || this.slots.has(phase)) return;
+    let due;
+    try {
+      due = this.memory.taskEligibility(phase, drain.target).due;
+    } catch (error3) {
+      fail(error3);
+      return;
+    }
+    if (!due) return;
+    drain.downstream.add(phase);
+    this.reserve(phase, async () => {
+      if (!active()) return;
+      try {
+        const result = await this.runCandidate(phase, drain.target.sessionId, drain.target, false, epoch);
+        if (owned() && result && result.outcome !== "success" && result.outcome !== "empty" && result.outcome !== "dropped") {
+          drain.state = result.outcome === "cancelled" ? "stopped" : "failed";
+          drain.phase = void 0;
+          drain.diagnostic = ("problems" in result ? result.problems?.join("; ") : void 0) || result.outcome;
+        }
+        if (active() && result?.outcome === "success" && phase === "consolidation")
+          this.checkDownstream(drain, "dreaming", epoch);
+        return result;
+      } catch (error3) {
+        if (error3 instanceof Error && error3.cause === "task admission")
+          this.diagnostic(`${phase} admission failed for S${drain.target.sessionId}: ${error3.message}`);
+        else fail(error3);
+      }
+    }, () => {
+      drain.downstream.delete(phase);
+      return true;
+    });
   }
   stop() {
     this.stopCatchup("executor shutdown");
@@ -38290,6 +38458,7 @@ var CcCoordinator = class {
   wakeQueued = false;
   closing = false;
   closed = false;
+  startupComplete = false;
   startup = new AbortController();
   config;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
@@ -38309,9 +38478,9 @@ var CcCoordinator = class {
     const binding = readBinding(this.config, this.nativeSessionId);
     if (!binding) return;
     this.observe("attach-start", { final });
-    this.importer = new CcImporter(this.config, binding);
-    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
     try {
+      this.importer = new CcImporter(this.config, binding);
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
       const timeout = deadline === void 0 ? void 0 : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? void 0 : this.startup.signal, {
         catchup: async () => {
@@ -38340,16 +38509,33 @@ var CcCoordinator = class {
       }).then((control) => {
         this.control = control;
       });
+      this.watchTranscript(binding);
+      if (final) this.importer.memory.cancelTasks(true);
+      this.observe("attach-complete", { final });
     } catch (error3) {
-      this.scheduler.stop();
-      this.scheduler = null;
-      this.importer.close();
-      this.importer = null;
+      await this.discardAttachment();
       throw error3;
     }
-    this.watchTranscript(binding);
-    if (final) this.importer.memory.cancelTasks(true);
-    this.observe("attach-complete", { final });
+  }
+  /** Detach references before disposal: facade close may close its Store and then throw. */
+  async discardAttachment() {
+    const importer = this.importer, scheduler = this.scheduler, control = this.control;
+    this.importer = null;
+    this.scheduler = null;
+    this.control = null;
+    this.transcriptWatcher?.close();
+    this.transcriptWatcher = null;
+    scheduler?.stop();
+    try {
+      if (control) await control.close();
+    } catch (error3) {
+      this.diagnostic(`attachment control cleanup failed: ${String(error3)}`);
+    }
+    try {
+      importer?.close();
+    } catch (error3) {
+      this.diagnostic(`attachment facade cleanup failed: ${String(error3)}`);
+    }
   }
   watchTranscript(binding) {
     if (this.transcriptWatcher || !(0, import_node_fs6.existsSync)((0, import_node_path6.dirname)(binding.transcriptPath))) return;
@@ -38381,7 +38567,6 @@ var CcCoordinator = class {
       void this.requestReconcile("stat wake-up");
     }, this.config.pollIntervalMs);
     await this.requestReconcile("startup");
-    this.observe("startup-complete");
   }
   /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
    * once attached — re-targeting a live facade is the handoff of ticket 63, not a rename. */
@@ -38431,6 +38616,7 @@ var CcCoordinator = class {
     this.queue = this.queue.then(async () => {
       if (!final) this.wakeQueued = false;
       if (this.closed || this.closing && !final) return null;
+      const wasAttached = this.importer !== null;
       try {
         const attaching = this.attach(final, deadline);
         const epoch = opportunityEpoch ?? this.scheduler?.catchupTicket();
@@ -38438,6 +38624,10 @@ var CcCoordinator = class {
         const result = await this.importer?.reconcile() ?? null;
         if (this.importer) this.watchTranscript(this.importer.currentBinding());
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
+        if (this.importer && !this.startupComplete && !final) {
+          this.startupComplete = true;
+          this.observe("startup-complete");
+        }
         if (reason !== "stat wake-up") this.observe("reconcile", {
           reason,
           final,
@@ -38448,6 +38638,7 @@ var CcCoordinator = class {
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
         return result;
       } catch (error3) {
+        if (!wasAttached) await this.discardAttachment();
         if (error3.name === "AbortError") this.observe("startup-cancelled", { reason });
         else this.diagnostic(`${reason} reconciliation failed: ${error3 instanceof Error ? error3.message : String(error3)}`);
         return null;
