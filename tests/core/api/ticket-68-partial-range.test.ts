@@ -4,8 +4,8 @@ import { TraceMemory, type DreamingAgentInput, type RunAgentResult } from "../..
 const opened: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { vi.useRealTimers(); for (const memory of opened.splice(0)) memory.close(); });
 const exact = { request: { fixture: "partial-range" } };
-function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
-  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1, timeoutMs: 1000 } });
+function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, triggerTokens = 1) {
+  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens, timeoutMs: 1000 } });
   opened.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "partial-range", declaredBy: "mark" });
@@ -15,14 +15,35 @@ function setup(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
   memory.selectEntries(session.id, "main", [entry.id]);
   const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, facts: [{ turnId: turn.id, entryIds: [entry.id], category: "decision", actor: "user", text: "rule", source: [`T${turn.id}#E1`], createdAt: "now" }] });
   if (!noted.ok) throw new Error(noted.problems.join("; "));
-  const create = (text: string) => {
-    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text, category: "constraint", scope: "project", supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
+  const create = (text: string, scope: "global" | "project" | "session" = "project") => {
+    const made = store.commitConsolidationRun({ run: { kind: "manual", sessionId: session.id, createdAt: "now" }, operations: [{ op: "create", handle: "$1", author: "test", text, category: "constraint", scope, supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: "now" }] });
     if (!made.ok) throw new Error(made.problems.join("; "));
     return made.committed[0]!;
   };
   return { memory, store, create, session, pool: `project:${project.id}`, target: { sessionId: session.id, branch: "main", headTurnId: turn.id, triggerEntryId: entry.id } };
 }
 const handles = (task: DreamingAgentInput) => [...task.material.changed.matchAll(/^\[?(K\d+@\d+)\]? /gm)].map(match => match[1]!);
+
+test.each([
+  ["global", 4000], ["project", 5000], ["session", 1000],
+] as const)("68: %s effective trigger follows its budget and configured cap", (scope, defaultTrigger) => {
+  const f = setup(async () => { throw new Error("measurement must not invoke a model"); }, 5000);
+  const item = f.create("A small complete rule", scope);
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: defaultTrigger, state: "known" });
+  const pool = f.store.knowledgePools(f.target, 5000).find(value => value.pending.some(version => version.revisionId === item.commit))!;
+  const weight = pool.pending[0]!.tokens;
+  f.memory.setKnowledgeBudget(scope, weight + 1);
+  // Pool framing may already make this over budget; only the pending-path threshold is under test.
+  expect(f.store.duePools(f.target, 5000).find(value => value.pool === pool.pool)?.reason).not.toBe("pending");
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight + 1, tokens: weight });
+  f.memory.setKnowledgeBudget(scope, weight);
+  expect(f.store.duePools(f.target, 5000)).toContainEqual(expect.objectContaining({ pool: pool.pool, reason: "pending" }));
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight, tokens: weight });
+  f.memory.setKnowledgeBudget(scope, weight + 1);
+  f.memory.config.dreaming.triggerTokens = weight - 1;
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
+  expect(f.memory.pendingTokens("dreaming", f.target)).toMatchObject({ trigger: weight - 1 });
+});
 
 test.each(["success", "failure", "cancelled", "timeout"] as const)("68: 86 frozen items retain exactly the untouched remainder after %s", async outcome => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
