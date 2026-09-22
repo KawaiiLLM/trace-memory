@@ -2565,15 +2565,16 @@ test("40 N0: the verbatim span naming the object goes in quote, which the id che
 
 test("59: every supplied item is accounted for by an operation or a skip; New items search history once, in a batch", () => {
   const prompt = loadPrompt("dreaming.md");
-  // The loop's opening: an item ends the round in an operation or a reasoned skip; a skip never mutates it.
-  expect(prompt).toContain("Every supplied item ends in an operation or in a skip with a reason.");
+  // The loop's opening: a deliberated item ends the round in an operation or a reasoned skip; a skip never mutates it.
+  // 64c: the material also carries the pool's references; only what the round took up is accounted for.
+  expect(prompt).toContain("Every `New` and `Changed` item, and every other item the round took through A–D, ends in an operation or in a skip with a reason. Pool references the round did not take up need no skip.");
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
   expect(prompt).toContain("Before the first `New` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
   // The memory call names the skip shape; the empty-skip literal is gone.
-  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a supplied item left without an operation.');
+  expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a deliberated item left without an operation.');
   expect(prompt).not.toContain("skipped: []");
   // The check tool's receipt and the memory tool's description carry the same contract.
-  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("a skip accounts for the item and never changes it");
+  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("a skip accounts for a deliberated item and never changes it");
 });
 
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
