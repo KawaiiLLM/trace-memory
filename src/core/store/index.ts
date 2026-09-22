@@ -704,12 +704,17 @@ export class Store {
     let priorBudgetPolicy: { global: number; project: number; session: number } | null = null;
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
-      // Never change an existing file's journal mode here: WAL conversion is an explicit
-      // stopped-executor cutover, after a consistent backup (67).
+      this.db.exec("PRAGMA busy_timeout = 5000;");
+      // Configure file databases before any transaction; SQLite memory databases cannot use WAL.
+      // The live shared file is converted during the stopped-executor deployment, before workers
+      // load this code. That cutover procedure does not disable WAL initialization for new files.
+      if (path !== ":memory:") {
+        const mode = this.db.prepare("PRAGMA journal_mode = WAL").get()!.journal_mode;
+        if (mode !== "wal") throw new Error(`Store requires WAL journal mode; SQLite returned ${String(mode)}`);
+      }
       // One immediate transaction owns schema probes, upgrades and policy publication. Legacy
       // CHECK rebuilds require foreign keys off before BEGIN. A changed schema is checked once
       // before commit; an unchanged open must not scan the entire database under its write lock.
-      this.db.exec("PRAGMA busy_timeout = 5000;");
       this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
       began = true;
       const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get()!.schema_version);

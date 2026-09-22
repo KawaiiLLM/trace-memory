@@ -78,24 +78,74 @@ test("67 undecoded-entry selection uses its partial index instead of scanning Ra
   expect(plan.some(row => String(row.detail).includes("idx_source_unnormalized"))).toBe(true);
 });
 
-test("67 opening an existing DELETE database never converts it to WAL", () => {
+test("67 file initialization sets WAL before schema transactions and preserves it across reopen", () => {
+  const transactions: boolean[] = [], prepare = DatabaseSync.prototype.prepare;
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, statement: string) {
+    if (statement === "PRAGMA journal_mode = WAL") transactions.push(this.isTransaction);
+    return prepare.call(this, statement);
+  });
   const { file, store } = fixture();
-  expect(store.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("delete");
+  expect(store.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
+  const project = store.createProject({ name: "preserved", declaredBy: "mark" });
   store.close();
-  const sql = recordSql();
+  const raw = new DatabaseSync(file);
+  try { expect(raw.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal"); }
+  finally { raw.close(); }
   const reopened = new Store(file); stores.push(reopened);
-  expect(sql.filter(statement => /journal_mode\s*=/i.test(statement))).toEqual([]);
-  expect(reopened.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("delete");
+  expect(reopened.getProject(project.id)!.name).toBe("preserved");
+  expect(reopened.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
+  expect(transactions).toEqual([false, false]);
 });
 
-test("67 an explicitly converted WAL copy supports cross-process readers and writers", () => {
+test("67 opening an existing DELETE fixture enables WAL without changing its data", () => {
+  const { file, store } = fixture();
+  const project = store.createProject({ name: "legacy", declaredBy: "mark" });
+  store.close();
+  const legacy = new DatabaseSync(file);
+  try { expect(legacy.prepare("PRAGMA journal_mode = DELETE").get()!.journal_mode).toBe("delete"); }
+  finally { legacy.close(); }
+  const sql = recordSql();
+  const reopened = new Store(file); stores.push(reopened);
+  expect(sql).toContain("PRAGMA journal_mode = WAL");
+  expect(sql.some(statement => /foreign_key_check/i.test(statement))).toBe(false);
+  expect(reopened.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
+  expect(reopened.getProject(project.id)!.name).toBe("legacy");
+});
+
+test("67 in-memory Store keeps MEMORY mode without requesting unsupported WAL", () => {
+  const sql = recordSql(), store = new Store(":memory:"); stores.push(store);
+  expect(sql).not.toContain("PRAGMA journal_mode = WAL");
+  expect(store.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("memory");
+});
+
+test.each(["refused", "exception"] as const)("67 WAL %s fails before schema writes and closes the connection", failure => {
+  const dir = mkdtempSync(join(tmpdir(), "tm-67-wal-failure-")); directories.push(dir);
+  const file = join(dir, "test.db"), prepare = DatabaseSync.prototype.prepare;
+  const sqliteError = new Error("injected WAL configuration failure");
+  let opened!: DatabaseSync;
+  vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, statement: string) {
+    if (statement === "PRAGMA journal_mode = WAL") {
+      opened = this;
+      if (failure === "exception") throw sqliteError;
+      // SQLite can return the original mode instead of the requested one. Use its real
+      // read statement to simulate that response; do not manufacture a successful mode.
+      return prepare.call(this, "PRAGMA journal_mode");
+    }
+    return prepare.call(this, statement);
+  });
+  const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+  expect(() => new Store(file)).toThrow(failure === "exception" ? sqliteError : "Store requires WAL journal mode; SQLite returned delete");
+  expect(exec.mock.calls.some(([statement]) => /BEGIN|CREATE TABLE/i.test(statement))).toBe(false);
+  expect(() => opened.prepare("SELECT 1")).toThrow(/not open/i);
+  const check = new DatabaseSync(file);
+  try { expect(check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]); }
+  finally { check.close(); }
+});
+
+test("67 Store-initialized WAL supports cross-process readers and writers", () => {
   const { file, store } = fixture();
   store.createProject({ name: "committed", declaredBy: "mark" });
   store.close();
-  // This operator action is confined to the synthetic database, with every Store closed.
-  const operator = new DatabaseSync(file);
-  expect(operator.prepare("PRAGMA journal_mode = WAL").get()!.journal_mode).toBe("wal");
-  operator.close();
   const reopened = new Store(file); stores.push(reopened);
   expect(reopened.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal");
   const importStore = `import { Store } from ${JSON.stringify(new URL("../../../src/core/store/index.ts", import.meta.url).href)};`;

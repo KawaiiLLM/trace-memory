@@ -63,10 +63,10 @@ async function fullChain(entries: number, due: boolean) {
     "dreaming.model": "synthetic", "dreaming.thinking": "medium", worker: { cwd: dir, claudeExecutable: "/missing/claude",
       claudeVersion: "2.1.257", contextWindows: { synthetic: 200_000 } } });
   seedKnowledge(config.dbPath, due);
-  // Explicit synthetic cutover with every handle closed, never an implicit Store conversion.
-  const conversion = new DatabaseSync(config.dbPath);
-  try { expect(conversion.prepare("PRAGMA journal_mode = WAL").get()!.journal_mode).toBe("wal"); }
-  finally { conversion.close(); }
+  // New installations must receive WAL from Store, without an operator step in the fixture.
+  const inspection = new DatabaseSync(config.dbPath);
+  try { expect(inspection.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("wal"); }
+  finally { inspection.close(); }
   writeFileSync(transcriptPath, records(entries / 2).map(line).join(""));
   await recordSessionStart(config, { hook_event_name: "SessionStart", session_id: nativeSessionId, transcript_path: transcriptPath }, at);
   const diagnostics: string[] = [], coordinator = new CcCoordinator(config, nativeSessionId, message => diagnostics.push(message));

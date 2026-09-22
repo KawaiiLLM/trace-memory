@@ -1246,6 +1246,10 @@ var Store = class {
     try {
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.db.exec("PRAGMA busy_timeout = 5000;");
+      if (path !== ":memory:") {
+        const mode = this.db.prepare("PRAGMA journal_mode = WAL").get().journal_mode;
+        if (mode !== "wal") throw new Error(`Store requires WAL journal mode; SQLite returned ${String(mode)}`);
+      }
       this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
       began = true;
       const schemaBefore = Number(this.db.prepare("PRAGMA schema_version").get().schema_version);
