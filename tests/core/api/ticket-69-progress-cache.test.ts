@@ -92,3 +92,25 @@ test("ticket 69: the cache invalidates on a Consolidation and a Dreamer commit, 
     expect(afterDreaming).toMatchObject({ facts: 1, unconsolidated: 0, knowledge: 1, changedKnowledge: 0 });
   } finally { memory.close(); }
 });
+
+test("ticket 69: merging another project into this session's project invalidates the cached knowledge count", () => {
+  const { memory, store, sessionId, turnId } = seeded();
+  try {
+    const other = store.createProject({ name: "B", declaredBy: "mark" });
+    const donor = store.createSession({ host: "test", enrollmentChoice: true, projectId: other.id, startedAt: time, firstReplyAt: time }).id;
+    const donorTurn = store.appendTurn({ sessionId: donor, kind: "turn", userPrompt: "rule", assistantText: "ok", startedAt: time }).id;
+    const donorEntry = store.appendSourceEntry({ sessionId: donor, turnId: donorTurn, nativeLineage: "d", nativeId: "d1", role: "user", text: "rule", raw: "rule", calls: [] });
+    memory.selectEntries(donor, "main", [donorEntry.id]);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: donor, createdAt: time },
+      facts: [{ turnId: donorTurn, entryIds: [donorEntry.id], category: "decision", actor: "user", text: "rule", source: [`T${donorTurn}#E1`], createdAt: time }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const created = store.commitConsolidationRun({ run: { kind: "manual", sessionId: donor, createdAt: time }, operations: [{
+      op: "create", handle: "$rule", author: "test", text: "project rule", category: "constraint", scope: "project",
+      supports: [noted.facts[0]!.id], topics: [], reason: "fixture", createdAt: time }] });
+    if (!created.ok) throw new Error(created.problems.join("; "));
+    const before = memory.progress(sessionId, "main", turnId); // primes the cache for project A
+    store.mergeProject(other.id, store.getSession(sessionId)!.projectId!);
+    const after = memory.progress(sessionId, "main", turnId);
+    expect(after.knowledge).toBe(before.knowledge + 1);
+  } finally { memory.close(); }
+});

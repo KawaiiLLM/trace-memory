@@ -2718,7 +2718,9 @@ export class Store {
    * this session's own `sessions.project_id` (a project merge reassigns every session and every
    * knowledge row that shared the merged-away project, this session's own row included, in the same
    * transaction; an explicit `/trace project` reassignment updates it directly) — a fresh point lookup
-   * by primary key, not a scan, so it costs nothing extra to include. Ingesting Raw touches none of
+   * by primary key, not a scan, so it costs nothing extra to include. The surviving side of that merge
+   * keeps its `project_id` while gaining the absorbed project's knowledge rows (`UPDATE knowledge`), so
+   * the count of merged projects is part of the signal too. Ingesting Raw touches none of
    * these: `source_entries`/`source_paths`/`turns` are deliberately absent from this signal. */
   progressSignal(sessionId: number): string {
     const row = this.db.prepare(`SELECT
@@ -2726,8 +2728,9 @@ export class Store {
         (SELECT IFNULL(MAX(rowid), 0) FROM consolidated_facts) AS cf,
         (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
         (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
-        (SELECT project_id FROM sessions WHERE id = ?) AS pid`).get(sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null };
-    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}`;
+        (SELECT project_id FROM sessions WHERE id = ?) AS pid,
+        (SELECT COUNT(*) FROM projects WHERE merged_into IS NOT NULL) AS pm`).get(sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null; pm: number };
+    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}:${row.pm}`;
   }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
