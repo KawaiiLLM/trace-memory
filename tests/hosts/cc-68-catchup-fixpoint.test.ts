@@ -59,6 +59,22 @@ test.each(["empty", "dropped"] as const)("R4 %s does not spin, complete while du
   expect(f.scheduler.catchupStatus().state).toBe("waiting");
 });
 
+test.each(["consolidation", "dreaming"] as const)("R4 does not adopt, queue, or replay a busy ordinary %s slot with zero Raw", async phase => {
+  const f = fixture();
+  let release!: () => void;
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
+  if (phase === "consolidation") f.memory.consolidate = execute as any;
+  else f.memory.dream = execute as any;
+  f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase }));
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase });
+  release(); await tick(); await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
+});
+
 test("R4 terminal failure fences every later phase", async () => {
   const f = fixture(); f.c(2); f.d(1); f.entries.push(1);
   f.memory.consolidate.mockImplementation(async () => ({ outcome: "failure", problems: ["terminal"] }) as any);
