@@ -1247,7 +1247,12 @@ var Store = class {
       this.db.exec("PRAGMA foreign_keys = ON;");
       this.db.exec("PRAGMA busy_timeout = 5000;");
       if (path !== ":memory:") {
-        const mode = this.db.prepare("PRAGMA journal_mode = WAL").get().journal_mode;
+        let mode;
+        try {
+          mode = this.db.prepare("PRAGMA journal_mode = WAL").get().journal_mode;
+        } catch (error3) {
+          throw new Error(`Store WAL initialization failed before the schema transaction: ${error3 instanceof Error ? error3.message : String(error3)}. For a shared-database upgrade, verify that all executors were stopped and the backup/manual WAL conversion completed before restart.`, { cause: error3 });
+        }
         if (mode !== "wal") throw new Error(`Store requires WAL journal mode; SQLite returned ${String(mode)}`);
       }
       this.db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");

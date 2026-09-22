@@ -709,7 +709,12 @@ export class Store {
       // The live shared file is converted during the stopped-executor deployment, before workers
       // load this code. That cutover procedure does not disable WAL initialization for new files.
       if (path !== ":memory:") {
-        const mode = this.db.prepare("PRAGMA journal_mode = WAL").get()!.journal_mode;
+        let mode: unknown;
+        try { mode = this.db.prepare("PRAGMA journal_mode = WAL").get()!.journal_mode; }
+        catch (error) {
+          throw new Error(`Store WAL initialization failed before the schema transaction: ${error instanceof Error ? error.message : String(error)}. ` +
+            "For a shared-database upgrade, verify that all executors were stopped and the backup/manual WAL conversion completed before restart.", { cause: error });
+        }
         if (mode !== "wal") throw new Error(`Store requires WAL journal mode; SQLite returned ${String(mode)}`);
       }
       // One immediate transaction owns schema probes, upgrades and policy publication. Legacy

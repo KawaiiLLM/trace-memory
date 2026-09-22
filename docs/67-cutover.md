@@ -14,6 +14,7 @@ Store requests and verifies WAL on every file-database open, before its schema t
 
 ## Validation boundaries
 
+- **Diagnostics:** `Store WAL initialization failed ... database is locked` identifies failure during WAL setup and retains the original SQLite error as its cause; check executor shutdown and cutover order. `Store requires WAL journal mode; SQLite returned ...` instead identifies a refused mode. A lock after successful WAL setup is not relabeled as a WAL failure, and a lock alone does not prove an ordering mistake.
 - **Schema open:** an unchanged schema must not run a full foreign-key scan. An actual schema migration validates foreign keys once before the atomic commit; failure rolls back. Ordinary foreign-key enforcement remains on.
 - **Concurrency:** synthetic tests use separate processes to read during a write and write during a read in WAL initialized by Store. They do not certify production conversion, real-host recovery or model behavior.
 - **Rollback:** stop all executors again before restoring. Treat the database and any WAL state as one SQLite-managed unit; do not attach old sidecars to a restored file or downgrade pre-64 executors against a post-64 database.

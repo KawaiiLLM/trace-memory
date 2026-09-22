@@ -118,15 +118,17 @@ test("67 in-memory Store keeps MEMORY mode without requesting unsupported WAL", 
   expect(store.db.prepare("PRAGMA journal_mode").get()!.journal_mode).toBe("memory");
 });
 
-test.each(["refused", "exception"] as const)("67 WAL %s fails before schema writes and closes the connection", failure => {
+test.each(["refused", "exception", "locked"] as const)("67 WAL %s fails before schema writes and closes the connection", failure => {
   const dir = mkdtempSync(join(tmpdir(), "tm-67-wal-failure-")); directories.push(dir);
   const file = join(dir, "test.db"), prepare = DatabaseSync.prototype.prepare;
-  const sqliteError = new Error("injected WAL configuration failure");
+  const sqliteError = failure === "locked"
+    ? Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 })
+    : new Error("injected WAL configuration failure");
   let opened!: DatabaseSync;
   vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function(this: DatabaseSync, statement: string) {
     if (statement === "PRAGMA journal_mode = WAL") {
       opened = this;
-      if (failure === "exception") throw sqliteError;
+      if (failure !== "refused") throw sqliteError;
       // SQLite can return the original mode instead of the requested one. Use its real
       // read statement to simulate that response; do not manufacture a successful mode.
       return prepare.call(this, "PRAGMA journal_mode");
@@ -134,12 +136,39 @@ test.each(["refused", "exception"] as const)("67 WAL %s fails before schema writ
     return prepare.call(this, statement);
   });
   const exec = vi.spyOn(DatabaseSync.prototype, "exec");
-  expect(() => new Store(file)).toThrow(failure === "exception" ? sqliteError : "Store requires WAL journal mode; SQLite returned delete");
+  let caught: unknown;
+  try { new Store(file); } catch (error) { caught = error; }
+  expect(caught).toBeInstanceOf(Error);
+  const error = caught as Error;
+  if (failure === "refused") {
+    expect(error.message).toBe("Store requires WAL journal mode; SQLite returned delete");
+    expect(error.message).not.toContain("database is locked");
+  } else {
+    expect(error.message).toContain(`Store WAL initialization failed before the schema transaction: ${sqliteError.message}`);
+    expect(error.message).toContain("backup/manual WAL conversion completed before restart");
+    expect(error.message).not.toContain("SQLite returned");
+    expect(error.cause).toBe(sqliteError);
+    if (failure === "locked") expect(error.cause).toMatchObject({ code: "ERR_SQLITE_ERROR", errcode: 5 });
+  }
   expect(exec.mock.calls.some(([statement]) => /BEGIN|CREATE TABLE/i.test(statement))).toBe(false);
   expect(() => opened.prepare("SELECT 1")).toThrow(/not open/i);
   const check = new DatabaseSync(file);
   try { expect(check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]); }
   finally { check.close(); }
+});
+
+test("67 a later schema lock failure is not mislabeled as WAL initialization failure", () => {
+  const { file, store } = fixture(); store.close();
+  const sqliteError = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
+  const exec = DatabaseSync.prototype.exec;
+  vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function(this: DatabaseSync, statement: string) {
+    if (statement === "PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE") throw sqliteError;
+    return exec.call(this, statement);
+  });
+  let caught: unknown;
+  try { new Store(file); } catch (error) { caught = error; }
+  expect(caught).toBe(sqliteError);
+  expect((caught as Error).message).not.toContain("WAL initialization");
 });
 
 test("67 Store-initialized WAL supports cross-process readers and writers", () => {
