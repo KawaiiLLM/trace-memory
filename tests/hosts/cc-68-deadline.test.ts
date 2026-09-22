@@ -104,8 +104,10 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
   const { session, target } = seed(memory);
   deadlineRun = true;
   try {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     const running = memory.dream({ ...target, model: "sonnet", subagentThinkingLevel: "medium" });
     await started;
+    await vi.advanceTimersByTimeAsync(1000);
     const result = await running;
     expect(result).toMatchObject({ outcome: "failure", problems: [expect.stringContaining("Dreaming wall-clock limit exceeded (1000 ms)")] });
     expect(memory.store.getClaim(session.id, "dreaming")).toBeNull();
@@ -115,10 +117,11 @@ test("shared Dreamer deadline terminates an actual CC adapter run and leaves the
     await firstSettled;
     expect(firstFinalized).toBe(true);
 
+    vi.useRealTimers();
     deadlineRun = false;
     const nextTask = { kind: "noting", text: "next", prompt: "next", tools: [], acknowledgeRequest: vi.fn() } as unknown as NotingAgentInput;
     const next = await worker.run(nextTask, 0);
     expect(next).toMatchObject({ outcome: "success", output: "healthy" });
     expect(calls).toBe(2);
-  } finally { memory.close(); }
+  } finally { vi.useRealTimers(); memory.close(); }
 });

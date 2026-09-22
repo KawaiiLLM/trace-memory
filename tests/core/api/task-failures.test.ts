@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { sourceSeededMemory, type NotingAgentInput, type RunAgent, type TraceMemory } from "../../source-fixture.ts";
 import { Store } from "../../../src/core/store/index.ts";
+import type { DreamingAgentInput } from "../../../src/core/api/index.ts";
 
 const memories: TraceMemory[] = [], dirs: string[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const m of memories.splice(0)) m.close(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -150,7 +151,8 @@ test("32c: Consolidation uses the selected oldest fact, not the smallest F id or
 
 test("68: Dreamer terminal outcomes consume accepted skips; a later range settles independently", async () => {
   let outcome: "failure" | "success" = "failure";
-  const m = open(":memory:", async input => {
+  const m = open(":memory:", async raw => {
+    const input = raw as DreamingAgentInput;
     if (input.kind !== "dreaming") return { outcome, output: outcome, request };
     const handles = [...new Set([...input.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))];
     input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
