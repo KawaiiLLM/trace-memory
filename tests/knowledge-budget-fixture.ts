@@ -27,6 +27,7 @@ export function setSharedAllowance(memory: TraceMemory, allowance: number): void
   if (consolidation < 1) throw new Error(`test shared allowance ${allowance} is below the Dreamer triggers ${dreaming} plus two`);
   memory.config.noting.triggerTokens = 1;
   memory.config.consolidation.triggerTokens = consolidation;
-  if (deriveSharedMaterialAllowance(budgets, { noting: 1, consolidation }) !== allowance)
+  memory.config.dreaming.triggerTokens = allowance - 1 - consolidation;
+  if (deriveSharedMaterialAllowance({ noting: 1, consolidation, dreaming: memory.config.dreaming.triggerTokens }) !== allowance)
     throw new Error("test shared allowance derivation mismatch");
 }

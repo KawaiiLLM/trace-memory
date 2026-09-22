@@ -472,7 +472,7 @@ function deliveryScenarios(fixture: Fixture, size: string): Sample[] {
     const unchanged = noVisibility();
     for (const value of store.currentKnowledge(path)) unchanged.knowledgeCommitIds.add(value.revision.id);
     return [
-      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; ${store.knowledgeBudgets().injection + deriveSharedMaterialAllowance(store.knowledgeBudgets(), { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens })} rendered cap`),
+      measure("foreground Knowledge delivery (body candidates)", () => memory.injection(path, noVisibility()), `${count} new exact revisions; ${store.knowledgeBudgets().injection + deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens })} rendered cap`),
       measure("foreground Knowledge delivery (exact no-delta)", () => memory.injection(path, unchanged), `${unchanged.knowledgeCommitIds.size} current exact bodies visible`),
       measure("foreground Knowledge delivery (Fact-suppressed)", () => memory.injection(path, hidden), `${count} new exact revisions sharing one visible support`),
     ];

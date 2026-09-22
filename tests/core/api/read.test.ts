@@ -775,7 +775,7 @@ test("64c: 18k knowledge, 14k facts and 6k Raw fit one shared allowance without 
   expect(windows.facts).toBeGreaterThan(10_000);
   expect(windows.knowledge).toBeGreaterThan(17_000);
   expect(windows.raw).toBeGreaterThan(5_000);
-  expect(windows.envelope).toBe(65_000);
+  expect(windows.envelope).toBe(60_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   for (const fact of facts) expect(text).toContain(`[F${fact.id}]`);
   for (let i = 0; i < 3; i++) expect(text).toContain(`RAW_${i}`);
@@ -802,7 +802,7 @@ test("64c: optional knowledge borrows only shared space left after required fact
   // records still have no compaction meaning, and whole older bodies are omitted with a receipt.
   expect(windows.knowledge).toBeGreaterThan(memory.knowledgeBudgets().injection);
   const rawExcess = Math.max(0, windows.required.raw - memory.config.compaction.rawTokens);
-  expect(windows.knowledge).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + deriveSharedMaterialAllowance(memory.knowledgeBudgets(), { noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens }) - rawExcess);
+  expect(windows.knowledge).toBeLessThanOrEqual(memory.knowledgeBudgets().injection + deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens, consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens }) - rawExcess);
   expect(text).toContain("knowledge; expand: K");
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   // Required material that still does not fit after all of that lending delegates, naming the window

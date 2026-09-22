@@ -67,9 +67,10 @@ test("64c zero Knowledge base borrows only the current Noting and Consolidation 
   expect(f.memory.knowledgeBudgets()).toEqual({
     global: 0, project: 0, session: 0, applicable: 0, injection: 0, dreamingProcessedInput: 0,
   });
-  expect(deriveSharedMaterialAllowance(f.memory.knowledgeBudgets(), {
+  expect(deriveSharedMaterialAllowance({
     noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
-  })).toBe(15_000);
+    dreaming: f.memory.config.dreaming.triggerTokens,
+  })).toBe(20_000);
   const borrowed = f.memory.injection(f.target);
   expect(borrowed.knowledgeCommitIds).toEqual([item.commit]);
   expect(tokens(borrowed.text)).toBeLessThanOrEqual(15_000);
@@ -122,8 +123,9 @@ test("64c real facade freezes D references to base plus shared minus Changed and
   f = fixture(async raw => {
     const task = raw as DreamingAgentInput;
     const budgets = f.memory.knowledgeBudgets();
-    admitted.push(budgets.dreamingProcessedInput + deriveSharedMaterialAllowance(budgets, {
+    admitted.push(budgets.dreamingProcessedInput + deriveSharedMaterialAllowance({
       noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
+      dreaming: f.memory.config.dreaming.triggerTokens,
     }) - tokens(task.material.changed) - 1);
     if (admitted.length === 1) {
       const frozen = task.admittedProcessedInputCap;
@@ -144,8 +146,9 @@ test("64c real facade freezes D references to base plus shared minus Changed and
   expect((await f.memory.dream(f.target)).outcome).toBe("failure");
   const second = f.captured[1]!;
   const secondBudgets = f.memory.knowledgeBudgets();
-  const secondWindow = secondBudgets.dreamingProcessedInput + deriveSharedMaterialAllowance(secondBudgets, {
+  const secondWindow = secondBudgets.dreamingProcessedInput + deriveSharedMaterialAllowance({
     noting: f.memory.config.noting.triggerTokens, consolidation: f.memory.config.consolidation.triggerTokens,
+    dreaming: f.memory.config.dreaming.triggerTokens,
   });
   expect(second.admittedProcessedInputCap).toBe(admitted[1]);
   expect(second.admittedProcessedInputCap).toBe(secondWindow - tokens(second.material.changed) - 1);

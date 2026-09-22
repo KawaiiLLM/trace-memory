@@ -1406,7 +1406,7 @@ test("28: three windows, one envelope — required material first, refills into 
   // Everything fits: required material and both refills, inside the 40,000-token envelope.
   const full = memory.compact(s.id, "main", t.id);
   const text = compacted(full), windows = charged(full);
-  expect(windows.envelope).toBe(65_000);
+  expect(windows.envelope).toBe(60_000);
   expect(windows.knowledge + windows.facts + windows.raw).toBeLessThanOrEqual(windows.envelope);
   expect(text).toContain("CONSOLIDATED HISTORY"); // manual write has no frozen source set to prove completeness
   for (const marker of ["PENDING FACT", "PENDING RAW", "EXTRACTED RAW"]) expect(text).toContain(marker);
@@ -2574,7 +2574,7 @@ test("59: every supplied item is accounted for by an operation or a skip; New it
   expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a deliberated item left without an operation.');
   expect(prompt).not.toContain("skipped: []");
   // The check tool's receipt and the memory tool's description carry the same contract.
-  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("a skip accounts for a deliberated item and never changes it");
+  expect(dreamingToolDefinitions().find(tool => tool.name === "memory")!.description).toContain("skipped accounts for an exact frozen version that was deliberated and intentionally left unchanged");
 });
 
 test("47: read-version descriptions name current, history and all without making inapplicable revisions write bases", () => {
