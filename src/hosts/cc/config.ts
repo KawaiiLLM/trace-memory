@@ -1,6 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import type { ClosedSessionScope } from "../../core/api/index.ts";
+import { validateConfig, type ClosedSessionScope, type ConfigOverride, type TraceMemoryConfig } from "../../core/api/index.ts";
 import { MEMORY_PHASES, PHASE_SETTING_KEYS, type MemoryPhase } from "../phase-settings.ts";
 
 export const CC_AGENT_SDK_VERSION = "0.1.77";
@@ -8,6 +8,11 @@ export const CC_NATIVE_VERSION = "2.1.257";
 export const CC_CONTEXT_HEADROOM = 10_000;
 export const CC_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type CcEffort = typeof CC_EFFORT_LEVELS[number];
+
+export interface CcRetryConfig {
+  /** Native Claude Code request retry count. The runtime owns eligibility, timing and backoff. */
+  maxRetries: number;
+}
 
 export interface CcWorkerConfig {
   /** Prepared Claude Code executable. The worker verifies its exact version before use. */
@@ -43,8 +48,14 @@ export interface CcHostConfig {
   consolidationThinking?: string;
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
+  "noting.triggerTokens"?: number;
+  "consolidation.triggerTokens"?: number;
+  "dreaming.triggerTokens"?: number;
+  "dreaming.timeoutMs"?: number;
   /** Installation baseline. Unknown or malformed values keep provisional enrollment disabled. */
   baseline?: string;
+  /** Omitted preserves Claude Code's native default. No adapter retry policy is added. */
+  retry?: CcRetryConfig;
   pollIntervalMs?: number;
   finalSyncTimeoutMs?: number;
   finalSyncStablePolls?: number;
@@ -65,11 +76,14 @@ export interface ResolvedCcHostConfig {
   "dreaming.model"?: string;
   "dreaming.thinking"?: string;
   baseline?: string;
+  retry?: CcRetryConfig;
   pollIntervalMs: number;
   finalSyncTimeoutMs: number;
   finalSyncStablePolls: number;
   writeSourceTimeoutMs: number;
   closedSessionScope: ClosedSessionScope;
+  /** Validated core configuration assembled from the CC file's flat phase keys. */
+  coreConfig: TraceMemoryConfig;
   worker?: ResolvedCcWorkerConfig;
 }
 
@@ -77,6 +91,19 @@ const positive = (name: string, value: number): number => {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid CC ${name}: expected a positive safe integer`);
   return value;
 };
+
+function retry(input: CcRetryConfig | undefined): CcRetryConfig | undefined {
+  if (input === undefined) return undefined;
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    throw new Error("Invalid CC retry: expected { maxRetries }");
+  const extra = Object.keys(input).filter(key => key !== "maxRetries");
+  if (extra.length) throw new Error(`Invalid CC retry.${extra[0]}: native retry configuration accepts only maxRetries`);
+  if (!Number.isSafeInteger(input.maxRetries) || input.maxRetries < 0)
+    throw new Error("Invalid CC retry.maxRetries: expected a non-negative safe integer");
+  if (input.maxRetries > 15)
+    throw new Error("Invalid CC retry.maxRetries: pinned Claude Code supports at most 15 without retry watchdog");
+  return { maxRetries: input.maxRetries };
+}
 
 function phaseFields(input: CcHostConfig, phase: MemoryPhase): { model: string; thinking: CcEffort } {
   const keys = PHASE_SETTING_KEYS[phase];
@@ -134,13 +161,23 @@ export function resolveCcHostConfig(input: CcHostConfig): ResolvedCcHostConfig {
   }
   const phaseValues = Object.fromEntries(Object.values(PHASE_SETTING_KEYS).flatMap(keys =>
     [keys.model, keys.thinking].flatMap(key => input[key as keyof CcHostConfig] === undefined ? [] : [[key, input[key as keyof CcHostConfig]]]))) as Partial<ResolvedCcHostConfig>;
+  const coreConfig = validateConfig({
+    closedSessionScope,
+    ...(input["noting.triggerTokens"] === undefined ? {} : { noting: { triggerTokens: input["noting.triggerTokens"] } }),
+    ...(input["consolidation.triggerTokens"] === undefined ? {} : { consolidation: { triggerTokens: input["consolidation.triggerTokens"] } }),
+    ...(input["dreaming.triggerTokens"] === undefined && input["dreaming.timeoutMs"] === undefined ? {} : { dreaming: {
+      ...(input["dreaming.triggerTokens"] === undefined ? {} : { triggerTokens: input["dreaming.triggerTokens"] }),
+      ...(input["dreaming.timeoutMs"] === undefined ? {} : { timeoutMs: input["dreaming.timeoutMs"] }),
+    } }),
+  } as ConfigOverride);
   return {
     dbPath: resolve(dbPath), stateDir: resolve(input.stateDir), ...phaseValues,
     ...(input.baseline === undefined ? {} : { baseline: input.baseline }),
+    ...(input.retry === undefined ? {} : { retry: retry(input.retry)! }),
     pollIntervalMs: positive("pollIntervalMs", input.pollIntervalMs ?? 2_000),
     finalSyncTimeoutMs: positive("finalSyncTimeoutMs", input.finalSyncTimeoutMs ?? 5_000),
     finalSyncStablePolls: positive("finalSyncStablePolls", input.finalSyncStablePolls ?? 2),
     writeSourceTimeoutMs: positive("writeSourceTimeoutMs", input.writeSourceTimeoutMs ?? 5_000),
-    closedSessionScope, ...(worker ? { worker } : {}),
+    closedSessionScope, coreConfig, ...(worker ? { worker } : {}),
   };
 }

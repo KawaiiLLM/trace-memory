@@ -434,7 +434,7 @@ export class CcImporter {
       kind => memory.config[kind].maxToolRounds) : undefined;
     this.lineages.add(binding.nativeSessionId);
     memory = TraceMemory(config.dbPath, runAgent ?? unavailableRunner,
-      { closedSessionScope: config.closedSessionScope }, undefined,
+      config.coreConfig, undefined,
       entry => this.lineages.has(entry.nativeLineage) ? ccSourceBlocks(entry) : undefined);
     this.memory = memory;
     this.config = config;

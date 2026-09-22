@@ -10,6 +10,7 @@ import { ccSessionStartInjection, type CcHookOutput } from "./injection.ts";
 import { declareCcProject, operateCcSession } from "./operator.ts";
 import { followNativeSession, processAncestors, publishNativeSession, type CcNativeSessionFollower } from "./native-session.ts";
 import { ccHandleClear } from "./clear.ts";
+import { installCcNativeRejectionGuard } from "./native-rejection.ts";
 
 export * from "./config.ts";
 export * from "./binding.ts";
@@ -60,6 +61,7 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     try { appendFileSync(runtimePath, `${JSON.stringify(value)}\n`, { mode: 0o600 }); }
     catch (error) { console.error(`Trace Memory CC: lifecycle journal failed: ${String(error)}`); }
   };
+  const disposeNativeRejectionGuard = installCcNativeRejectionGuard();
   const coordinator = new CcCoordinator(config, sessionId, message => {
     console.error(`Trace Memory CC: ${message}`);
     try { appendFileSync(runtimePath, `${JSON.stringify({ event: "coordinator", at: Date.now(), pid: process.pid, message })}\n`, { mode: 0o600 }); }
@@ -146,9 +148,11 @@ export async function runCcStdioMcp(configInput: CcHostConfig | ResolvedCcHostCo
     process.exitCode = 1;
     await finish("startup failure");
   });
-  await endingStarted;
-  await ending;
-  await startup;
+  try {
+    await endingStarted;
+    await ending;
+    await startup;
+  } finally { disposeNativeRejectionGuard(); }
 }
 
 function readConfig(path: string): ResolvedCcHostConfig {

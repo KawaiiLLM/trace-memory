@@ -92,6 +92,17 @@ test("CC resolves one immutable execution setting per phase from the six flat Pi
     consolidationThinking: "medium", "dreaming.model": "opus", "dreaming.thinking": "xhigh" });
 });
 
+test("CC retry configuration is a native count only and preserves omission", () => {
+  const f = fixture();
+  expect(resolveCcHostConfig(f.input).retry).toBeUndefined();
+  expect(resolveCcHostConfig({ ...f.input, retry: { maxRetries: 0 } }).retry).toEqual({ maxRetries: 0 });
+  expect(resolveCcHostConfig({ ...f.input, retry: { maxRetries: 15 } }).retry).toEqual({ maxRetries: 15 });
+  for (const maxRetries of [-1, 1.5, Number.NaN, 16])
+    expect(() => resolveCcHostConfig({ ...f.input, retry: { maxRetries } })).toThrow("retry.maxRetries");
+  expect(() => resolveCcHostConfig({ ...f.input, retry: { maxRetries: 2, backoffMs: 10 } as any }))
+    .toThrow("accepts only maxRetries");
+});
+
 test("CC keeps ingestion-only configuration valid but requires all six phase keys with a worker", () => {
   const f = fixture();
   expect(resolveCcHostConfig(f.input).worker).toBeUndefined();

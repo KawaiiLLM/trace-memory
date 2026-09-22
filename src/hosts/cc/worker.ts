@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 import type { ConsolidationAgentInput, DreamingAgentInput, NotingAgentInput, RunAgent, RunAgentResult, ToolDefinition } from "../../core/api/index.ts";
 import { toolRejected } from "../../core/api/index.ts";
 import { CC_AGENT_SDK_VERSION, type ResolvedCcHostConfig, type ResolvedCcPhaseConfig, type ResolvedCcWorkerConfig } from "./config.ts";
+import { runWithCcNativeAbortOwner } from "./native-rejection.ts";
 import { CC_MAX_RESULT_CHARS } from "./tools.ts";
 
 export type CcAgentTask = NotingAgentInput | ConsolidationAgentInput | DreamingAgentInput;
@@ -242,7 +243,9 @@ export class CcAgentWorker {
   constructor(config: ResolvedCcHostConfig, dependencies: CcWorkerDependencies = {}) {
     if (!config.worker) throw new Error("CC worker configuration is required for memory-task admission");
     this.config = config; this.worker = config.worker;
-    this.environment = productionEnvironment(dependencies.environment ?? process.env);
+    const environment = productionEnvironment(dependencies.environment ?? process.env);
+    this.environment = config.retry === undefined ? environment
+      : { ...environment, CLAUDE_CODE_MAX_RETRIES: String(config.retry.maxRetries) };
     this.query = dependencies.query ?? query;
   }
 
@@ -277,10 +280,14 @@ export class CcAgentWorker {
     input?.push(userMessage(task.text));
     let initIdentity: string | null = null, nativeSessionId: string | null = null;
     let output = "CC worker ended without an SDK result message";
+    let nativeFailureOutput: string | null = null;
     let outcome: "success" | "failure" = "failure";
+    const retries: { attempt: number; error: string }[] = [];
+    const progress = () => task.reportProgress?.({ retries: [...retries], ...(coreUsage(results) ? { usage: coreUsage(results) } : {}) });
     let dreamState: "first" | "repair-authorized" | "complete" = "first";
     const toolsAllowed = () => task.kind !== "dreaming" || dreamState !== "complete";
-    try {
+    return runWithCcNativeAbortOwner(controller.signal, error =>
+      record({ type: "contained-sdk-control-abort", error: error.message }), async () => { try {
       task.signal?.throwIfAborted();
       await this.verifyExecutable();
       const allowedTools = task.tools.map(definition => `mcp__trace_memory__${definition.name}`);
@@ -317,10 +324,21 @@ export class CcAgentWorker {
         } else if (message.type === "assistant") {
           origins.observe(message);
           if (task.kind === "dreaming") task.reportRounds(origins.rounds());
+        } else if (message.type === "system" && (message as unknown as { subtype?: unknown }).subtype === "api_retry") {
+          const retry = message as unknown as { attempt?: unknown; max_retries?: unknown; retry_delay_ms?: unknown; error?: unknown };
+          if (!Number.isSafeInteger(retry.attempt) || typeof retry.error !== "string")
+            throw new Error("CC worker received malformed native api_retry metadata");
+          retries.push({ attempt: retry.attempt as number, error: retry.error });
+          progress();
+          record({ type: "native-retry", attempt: retry.attempt, maxRetries: retry.max_retries,
+            delayMs: retry.retry_delay_ms, error: retry.error });
         } else if (message.type === "result") {
           if (nativeSessionId !== null && message.session_id !== nativeSessionId)
             throw new Error("CC worker result came from a different native session");
           results.push(message);
+          progress();
+          if (message.is_error || message.subtype !== "success")
+            nativeFailureOutput = message.subtype === "success" ? message.result : message.errors.join("; ");
           if (task.kind !== "dreaming") {
             outcome = message.subtype === "success" && !message.is_error ? "success" : "failure";
             output = message.subtype === "success" ? message.result : message.errors.join("; ");
@@ -351,19 +369,22 @@ export class CcAgentWorker {
       if (protocolError) throw protocolError;
       if (!results.length) throw new Error("CC worker ended without an SDK result message");
       const usage = coreUsage(results);
-      return { outcome, output, ...(usage ? { usage } : {}), mode: "subagent", nativeLog,
+      return { outcome, output, ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
         audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
         thinking: { requested: settings.thinking, effective: settings.thinking } };
     } catch (error) {
       controller.abort(error);
       const cancelled = task.signal?.aborted === true;
       const cause = protocolError && !cancelled ? protocolError : error;
-      return { outcome: cancelled ? "cancelled" : "failure", output: cause instanceof Error ? cause.message : String(cause),
-        mode: "subagent", nativeLog, audit: { available: false, reason: AUDIT_UNAVAILABLE },
-        verification: { rounds: origins.rounds() }, thinking: { requested: settings.thinking, effective: settings.thinking } };
+      const usage = coreUsage(results);
+      const specific = nativeFailureOutput ?? (cause instanceof Error ? cause.message : String(cause));
+      return { outcome: cancelled ? "cancelled" : "failure", output: specific,
+        ...(usage ? { usage } : {}), ...(retries.length ? { retries } : {}), mode: "subagent", nativeLog,
+        audit: { available: false, reason: AUDIT_UNAVAILABLE }, verification: { rounds: origins.rounds() },
+        thinking: { requested: settings.thinking, effective: settings.thinking } };
     } finally {
       input?.close(); origins.close(); task.signal?.removeEventListener("abort", cancel);
-    }
+    } });
   }
 }
 

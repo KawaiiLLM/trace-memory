@@ -7,6 +7,11 @@
   "consolidationThinking": "high",
   "dreaming.model": "opus",
   "dreaming.thinking": "high",
+  "noting.triggerTokens": 10000,
+  "consolidation.triggerTokens": 5000,
+  "dreaming.triggerTokens": 5000,
+  "dreaming.timeoutMs": 600000,
+  "retry": { "maxRetries": 10 },
   "worker": {
     "claudeExecutable": null,
     "claudeVersion": "2.1.257",

@@ -80,6 +80,39 @@ test("production worker serves original schemas and raw arguments, publishes the
   expect(optionsSeen[0]).not.toHaveProperty("hooks");
 });
 
+test("worker passes only native retry count, records native events, and preserves API failure detail and usage", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-retry-")); dirs.push(directory);
+  const executable = join(directory, "claude");
+  writeFileSync(executable, "#!/bin/sh\necho '2.1.257 (Claude Code)'\n"); chmodSync(executable, 0o700);
+  const base = workerConfig(directory, executable);
+  const config = resolveCcHostConfig({ ...base, retry: { maxRetries: 3 }, worker: {
+    claudeExecutable: executable, claudeVersion: "2.1.257", contextWindows: { "claude-sonnet-4-5": 200_000 }, cwd: directory,
+  } } as any);
+  let environment: NodeJS.ProcessEnv | undefined;
+  const fakeQuery = ((request: { options: Record<string, any> }) => {
+    environment = request.options.env;
+    const stream = (async function* () {
+      yield { type: "system", subtype: "init", session_id: "retry-child", claude_code_version: "2.1.257", cwd: directory,
+        tools: [], plugins: [], skills: [], slash_commands: [], mcp_servers: [{ name: "trace_memory", status: "connected" }] };
+      yield { type: "system", subtype: "api_retry", attempt: 1, max_retries: 3, retry_delay_ms: 250, error: "server_error" };
+      yield { type: "result", subtype: "success", session_id: "retry-child", is_error: true,
+        result: "API Error: stream closed before response.completed", errors: [],
+        usage: { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 2, cache_creation_input_tokens: 1 }, total_cost_usd: 0.2 };
+      throw new Error("Claude Code process exited with code 1");
+    })() as any;
+    stream.supportedModels = async () => [{ value: "claude-sonnet-4-5", supportedEffortLevels: ["medium"] }];
+    return stream;
+  }) as any;
+  const reportProgress = vi.fn();
+  const task = { kind: "noting", text: "material", prompt: "instructions", tools: [], acknowledgeRequest: vi.fn(), reportProgress } as unknown as CcAgentTask;
+  const result = await new CcAgentWorker(config, { query: fakeQuery }).run(task, 0);
+  expect(environment?.CLAUDE_CODE_MAX_RETRIES).toBe("3");
+  expect(result).toMatchObject({ outcome: "failure", output: "API Error: stream closed before response.completed",
+    retries: [{ attempt: 1, error: "server_error" }],
+    usage: { input: 9, output: 4, cacheRead: 2, cacheWrite: 1, cost: { total: 0.2 } } });
+  expect(reportProgress).toHaveBeenCalledWith(expect.objectContaining({ retries: [{ attempt: 1, error: "server_error" }] }));
+});
+
 test("simultaneous phase workers keep model and thinking selection isolated", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-worker-phases-")); dirs.push(directory);
   const executable = join(directory, "claude");
@@ -609,6 +642,14 @@ test("response correlation acknowledges one underlying response before releasing
   expect(acknowledgeRequest).toHaveBeenCalledTimes(1);
   expect(origins.rounds()).toBe(1);
   expect(failures).toEqual([]);
+  origins.close();
+});
+
+test("response correlation reports more than fifty tool rounds when the native bound is unlimited", () => {
+  const value = originTask(), origins = new CcResponseOrigins(value.task, 100, 0, () => {});
+  for (let round = 1; round <= 51; round++) origins.observe(assistant(`round-${round}`, [`call-${round}`]));
+  expect(origins.rounds()).toBe(51);
+  expect(value.acknowledgeRequest).toHaveBeenCalledTimes(51);
   origins.close();
 });
 
