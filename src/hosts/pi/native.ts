@@ -276,7 +276,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
       // Noting review is a native user message, queued as steering so the child reads it before its
       // next model call.
       if (review) pending.push(session.sendUserMessage(review, { deliverAs: "steer" }));
-      return { ...result(content), ...(task.passEnd && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
+      return { ...result(content), ...(task.passEnd && task.maxToolRounds > 0 && rounds >= task.maxToolRounds ? { terminate: true } : {}) };
     },
   })) satisfies { name: string }[] as unknown as PiToolDefinition[];
 
@@ -393,10 +393,12 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // over the cap fails the run before its tools execute; a committed batch stays committed.
     // A failed or cancelled response may carry a partial tool call that never executes; only a completed
     // response's tool round spends the cap (review 2026-09-08).
-    if (task.maxToolRounds && !failedOrCancelled && Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === "toolCall")
-        && ++rounds > task.maxToolRounds) {
-      exceeded = true; failure = `tool rounds exceeded (${task.maxToolRounds})`;
-      void session.abort();
+    if (!failedOrCancelled && Array.isArray(message.content) && message.content.some((part: { type?: string }) => part.type === "toolCall")) {
+      rounds++;
+      if (task.maxToolRounds > 0 && rounds > task.maxToolRounds) {
+        exceeded = true; failure = `tool rounds exceeded (${task.maxToolRounds})`;
+        void session.abort();
+      }
     }
     task.reportRounds?.(rounds);
     // Gate 3: only a response whose request passed the deterministic prefix check can count, and it is
@@ -420,7 +422,7 @@ export async function runNative(task: NativeTask): Promise<NativeResult> {
     // end. The same child, counters and retry accounting survive the one system-generated repair.
     if (task.passEnd && !task.signal?.aborted && !failure && terminal?.stopReason !== "error" && terminal?.stopReason !== "aborted") {
       const followup = task.passEnd(rounds);
-      if (followup && rounds < task.maxToolRounds) {
+      if (followup && (task.maxToolRounds === 0 || rounds < task.maxToolRounds)) {
         // A new public prompt reapplies before_agent_start. An idle custom-message turn skips it,
         // so Pi's next-turn refresh would replace the worker instructions with its base prompt.
         // The feedback identifies itself as host-generated, not evidence, in this same child log.
