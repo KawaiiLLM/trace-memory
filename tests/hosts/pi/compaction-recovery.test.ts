@@ -88,12 +88,12 @@ const notes = (conversation: any, text = "recovered fact"): Reply => ({ ...reply
  * consolidated, so the facts window empties, and no knowledge is written. A batch that skips
  * everything reports no commit, which is not one of `test-host`'s automatic closing conditions, so
  * the closing reply is this helper's own. */
-const consolidates = (h: Host, conversation: any): Reply =>
+const consolidates = (h: Host, conversation: any, ids = facts(h).map(f => f.id)): Reply =>
   // Ruling 18:39: the first batch is a candidate and the run commits on the resubmission after the
   // review feedback, so a scripted Consolidator submits the same batch twice.
   (conversation.messages ?? []).filter((m: any) => m.role === "toolResult" && m.toolName === "memory").length >= 2 ? reply("Done.")
   : ({ ...reply(""), stopReason: "toolUse", content: [{ type: "toolCall", id: "memory-1", name: "memory",
-      arguments: { operations: [], skipped: facts(h).map(f => ({ fact: `F${f.id}`, because: "Not durable." })) } }] });
+      arguments: { operations: [], skipped: ids.map(id => ({ fact: `F${id}`, because: "Not durable." })) } }] });
 /** Which worker is asking: both children register all four memory tools, so the phase is told by the
  * production prompt the material carries, exactly as `native-fixture`'s `worker()` tells them apart. */
 const isNoting = (conversation: unknown) => JSON.stringify(conversation).includes("Noting (fact extraction)");
@@ -498,6 +498,54 @@ test("a reused Noter's output waits for catchup's ordinary-threshold C without d
     expect(runs(h, "consolidation")).toHaveLength(1);
     expect(h.notices.some(n => n.includes("after recovery: Noting"))).toBe(true);
   } finally { releaseNoting(); releaseConsolidation(); await h.dispose(); }
+});
+
+test("67: a compatible reused Noter's exact output enters compaction's unused C allowance after a capacity wait", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 20, ...windows(1, 100, 200) });
+  let releaseNoting = () => {}, releaseOrdinary = () => {}, releaseRecovery = () => {};
+  const notingGate = new Promise<void>(resolve => { releaseNoting = resolve; });
+  const ordinaryGate = new Promise<void>(resolve => { releaseOrdinary = resolve; });
+  const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
+  try {
+    await turns(h, 1, "OLD"); noted(h, 1);
+    const seeded = facts(h).map(f => f.id);
+    let produced: number[] = [];
+    h.provider(async conversation => {
+      if (isNoting(conversation)) {
+        await notingGate;
+        return notes(conversation, "compatible reused output " + "word ".repeat(300));
+      }
+      const recovery = JSON.stringify(conversation).includes("compatible reused output");
+      await (recovery ? recoveryGate : ordinaryGate);
+      return consolidates(h, conversation, recovery ? produced : seeded);
+    });
+    await turns(h, 1, "NEW"); // Ordinary C freezes only the seeded facts, then holds its slot.
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    expect(h.memory.store.getClaim(1, "consolidation")).not.toBeNull();
+    // Ordinary N has no frozen boundary, so it is not compatible reuse. Catchup N
+    // has the exact recovery boundary; its completion finds C busy and discards that trigger.
+    await h.commands.get("trace").handler("catchup", h.ctx);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    const attempt = compact(h);
+    await vi.waitFor(() => expect(h.notices.join("\n")).toContain("waiting for the running Noting task"));
+    releaseNoting();
+    await vi.waitFor(() => expect(h.notices.join("\n")).toContain("waiting for the occupied Consolidation slot"));
+    await vi.waitFor(() => {
+      produced = facts(h).map(f => f.id).filter(id => !seeded.includes(id));
+      expect(produced).toHaveLength(1);
+    });
+    releaseOrdinary();
+    await vi.waitFor(() => expect(h.notices.join("\n")).toContain("compaction is running Consolidation"));
+    await vi.waitFor(() => expect(JSON.stringify(h.conversations.filter(c => !isNoting(c)))).toContain("compatible reused output"));
+    expect(h.memory.store.consolidationBatch(1, "main", currentTarget(h).headTurnId).map(f => f.id)).toEqual(produced);
+    releaseRecovery();
+    expect((await attempt).compaction.summary).toBeTruthy();
+    expect(runs(h, "noting")).toHaveLength(1);
+    expect(runs(h, "consolidation")).toHaveLength(2);
+    expect(runs(h, "consolidation").map(r => h.memory.store.listConsolidatedFacts(r.id).map(f => f.id))).toEqual([seeded, produced]);
+    expect(h.notices.join("\n")).toContain("after recovery: Noting, Consolidation");
+    expect(h.notices.join("\n")).not.toContain("compaction is running Noting");
+  } finally { releaseNoting(); releaseOrdinary(); releaseRecovery(); await h.dispose(); }
 });
 
 test("28b acceptance 10: a tree switch during recovery publishes nothing into the newly selected path", async () => {

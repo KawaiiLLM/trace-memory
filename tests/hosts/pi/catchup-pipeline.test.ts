@@ -156,6 +156,56 @@ test("67: a global Dreamer seat conflict discards C's opportunity; release alone
   } finally { await h.dispose(); }
 });
 
+test.each(["C", "D"] as const)("67: downstream %s business failure ends catchup honestly and never launches more work", async failedPhase => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+  let release = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let releaseNextNoter = () => {}, nextNoterHeld = false;
+  const nextNoter = new Promise<void>(resolve => { releaseNextNoter = resolve; });
+  let failingCalls = 0;
+  try {
+    backlog(h); await h.emit("session_start"); h.memory.setKnowledgeBudget("session", 1000);
+    h.provider(async c => {
+      if (phase(c) === "N") {
+        if (h.memory.store.listRuns(1).some(r => r.kind === "noting" && r.outcome === "success")) {
+          nextNoterHeld = true;
+          await nextNoter;
+        }
+        return notingFact(c);
+      }
+      if (phase(c) === failedPhase) {
+        failingCalls++;
+        await gate;
+        // The deterministic worker terminates unsuccessfully (non-retryable), so core
+        // returns outcome:failure rather than a thrown admission error or cancellation.
+        return { ...reply(""), stopReason: "error", errorMessage: "fixture terminal worker failure" };
+      }
+      return call("memory", { operations: [{ op: "create", topics: [], reason: "Supported conclusion",
+        text: "constraint ".repeat(250), category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
+    });
+    await command(h, "catchup");
+    await vi.waitFor(() => { expect(failingCalls).toBeGreaterThan(0); expect(nextNoterHeld).toBe(true); });
+    release();
+    const kind = failedPhase === "C" ? "consolidation" : "dreaming";
+    await vi.waitFor(() => expect(h.memory.store.listRuns(1).some(r => r.kind === kind && r.outcome === "failure")).toBe(true));
+    // Existing work may commit, but failure must fence the next Noting batch, not
+    // merely report failed after a drain that had already exhausted all its Raw.
+    releaseNextNoter(); await settle(h);
+    const runs = h.memory.store.listRuns(1);
+    expect(runs.filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(2);
+    expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
+    expect(runs.filter(r => r.kind === kind && r.outcome === "failure")).toHaveLength(1);
+    if (failedPhase === "C") expect(runs.some(r => r.kind === "dreaming")).toBe(false);
+    else expect(h.memory.store.listKnowledgeRevisions().length).toBeGreaterThan(0);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
+    const requests = h.requests.length;
+    await settle(h); await h.emit("session_tree"); await settle(h);
+    expect(h.requests).toHaveLength(requests);
+    expect(h.memory.store.listRuns(1)).toEqual(runs);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: failed");
+  } finally { release(); releaseNextNoter(); await h.dispose(); }
+}, 30000);
+
 test("67: entries persisted after catchup freezes do not extend Noting's boundary", async () => {
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9 });
   let release!: () => void;
