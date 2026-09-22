@@ -2708,6 +2708,27 @@ export class Store {
     return candidates.filter(fact => this.factOnPath(fact, path, view)); // every source on the path, not only the first
   }
 
+  /** Ticket 69: a cheap composite that changes exactly when a commit could change the footer's four
+   * cached counts (branch facts, unconsolidated, current knowledge, changed current knowledge) — for
+   * ANY connection to this database file, not only this process. Verified against every INSERT/UPDATE/
+   * DELETE in this file: `facts`, `knowledge_revisions` (every knowledge write — create, update, merge,
+   * split, archive — inserts one; a merge/split's `knowledge_links` row is written in the same commit)
+   * and `knowledge_processed` are insert-only, so `MAX(id)`/`MAX(rowid)` is monotonic and exact for
+   * them; so is `consolidated_facts`. The one column that is ever UPDATEd and read by these counts is
+   * this session's own `sessions.project_id` (a project merge reassigns every session and every
+   * knowledge row that shared the merged-away project, this session's own row included, in the same
+   * transaction; an explicit `/trace project` reassignment updates it directly) — a fresh point lookup
+   * by primary key, not a scan, so it costs nothing extra to include. Ingesting Raw touches none of
+   * these: `source_entries`/`source_paths`/`turns` are deliberately absent from this signal. */
+  progressSignal(sessionId: number): string {
+    const row = this.db.prepare(`SELECT
+        (SELECT IFNULL(MAX(id), 0) FROM facts) AS f,
+        (SELECT IFNULL(MAX(rowid), 0) FROM consolidated_facts) AS cf,
+        (SELECT IFNULL(MAX(id), 0) FROM knowledge_revisions) AS kr,
+        (SELECT IFNULL(MAX(rowid), 0) FROM knowledge_processed) AS kp,
+        (SELECT project_id FROM sessions WHERE id = ?) AS pid`).get(sessionId) as { f: number; cf: number; kr: number; kp: number; pid: number | null };
+    return `${row.f}:${row.cf}:${row.kr}:${row.kp}:${row.pid}`;
+  }
   /** Which of these branch facts Consolidation still owes work for: exact path-aware membership, one
    * fact at a time, never "every fact minus the cited ones" (22b, restated by 24a for the footer).
    * The one definition both the batch and the footer's second count are built from. */
