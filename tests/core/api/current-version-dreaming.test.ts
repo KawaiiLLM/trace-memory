@@ -337,3 +337,49 @@ test("64c over-budget completion does not loop and rearms on growth or budget ch
   f.store.setKnowledgeBudget("project", firstSize - 2);
   expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true);
 });
+
+test("68 fix 3: a cancelled no-op Dreamer run on an over-budget pool with nothing pending does not suppress it", async () => {
+  let mode: "skip" | "cancel" = "skip";
+  const f = fixture(async task => {
+    task.acknowledgeRequest();
+    if (mode === "cancel") return { outcome: "cancelled", output: "cancelled", request: { exact: "request" } };
+    skipAll(task); return ok;
+  });
+  f.create("project", "large ".repeat(100));
+  const pool = `project:${f.project.id}`;
+  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2); // generous: under budget
+  expect((await f.memory.dream(f.target)).outcome).toBe("success"); // clears pending; under budget writes no state row
+  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toEqual([]);
+
+  const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+  f.store.setKnowledgeBudget("project", firstSize - 1); // over budget, nothing pending, no baseline recorded yet
+  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true);
+
+  mode = "cancel";
+  expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
+  // Baseline instructions: a pre-commit cancellation with nothing committed or skipped must not
+  // establish an excess-suppression baseline for the pool it did not service.
+  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toEqual([]);
+  expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(true); // still due
+});
+
+test("68 fix 3: a cancelled run that did skip something still records the over-budget baseline", async () => {
+  let mode: "skip" | "cancelAfterSkip" = "skip";
+  const f = fixture(async task => {
+    task.acknowledgeRequest();
+    if (mode === "skip") { skipAll(task); return ok; }
+    skipAll(task); return { outcome: "cancelled", output: "cancelled", request: { exact: "request" } };
+  });
+  f.create("project", "large ".repeat(100));
+  const pool = `project:${f.project.id}`;
+  f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
+  expect((await f.memory.dream(f.target)).outcome).toBe("success");
+
+  const firstSize = f.store.poolSizes(f.target).find(value => value.pool === pool)!.tokens;
+  f.store.setKnowledgeBudget("project", firstSize - 1);
+  f.create("project", "another rule to skip"); // something pending this run actually deliberates
+  mode = "cancelAfterSkip";
+  expect((await f.memory.dream(f.target)).outcome).toBe("cancelled");
+  // Unaffected by the fix: a cancelled run that skipped a version still records the baseline, as today.
+  expect(f.store.db.prepare("SELECT * FROM knowledge_pool_state WHERE pool = ?").all(pool)).toHaveLength(1);
+});

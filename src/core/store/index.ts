@@ -2541,15 +2541,20 @@ export class Store {
       const closed = this.db.prepare(`UPDATE dreaming_ranges SET completed_run = ?, closed_at = ?
         WHERE id = ? AND completed_run IS NULL AND closed_at IS NULL`).run(runId, new Date().toISOString(), range.id);
       if (closed.changes !== 1) throw new Error("Knowledge pool range was not closed atomically");
-      const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
-      const size = this.knowledgePools(path).find(value => value.pool === range.pool)!;
-      // A run with pending untouched material must not establish an excess-suppression baseline.
-      // residual_revisions remains schema history only; admission no longer reads it.
-      if (size.tokens > size.budget && !size.pending.length) {
-        this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
-          ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
-            residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
-      } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
+      // A pre-commit cancellation closes its reservation but does not service or suppress the pool:
+      // a run that neither committed a revision nor skipped a version leaves no trace in pool state.
+      const consumes = outcome !== "cancelled" || own.length > 0 || skippedRevisionIds.length > 0;
+      if (consumes) {
+        const path = { sessionId: range.sessionId, branch: range.branch, headTurnId: range.headTurnId };
+        const size = this.knowledgePools(path).find(value => value.pool === range.pool)!;
+        // A run with pending untouched material must not establish an excess-suppression baseline.
+        // residual_revisions remains schema history only; admission no longer reads it.
+        if (size.tokens > size.budget && !size.pending.length) {
+          this.db.prepare(`INSERT INTO knowledge_pool_state(pool,last_over_size,last_over_budget,residual_revisions) VALUES (?,?,?,?)
+            ON CONFLICT(pool) DO UPDATE SET last_over_size=excluded.last_over_size,last_over_budget=excluded.last_over_budget,
+              residual_revisions=excluded.residual_revisions`).run(size.pool, size.tokens, size.budget, "[]");
+        } else if (size.tokens <= size.budget) this.db.prepare("DELETE FROM knowledge_pool_state WHERE pool = ?").run(size.pool);
+      }
     });
   }
 
