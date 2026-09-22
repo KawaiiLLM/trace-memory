@@ -107,8 +107,10 @@ test("35c archive and no-op skip preserve the compared survivor and original no-
   expect(outcome.outcome).toBe("success");
   expect(state.store.currentCommit(survivor.knowledgeId, state.target)[0]).toMatchObject({ text: reviewed.parents[disposition.survivorParent]!.text });
   expect(state.store.currentCommit(archived.knowledgeId, state.target)[0]).toMatchObject({ op: "archive", text: "" });
-  expect(state.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(`project:${state.store.getSession(state.target.sessionId)!.projectId}`)
-    .map(row => Number(row.revision_id))).toEqual(expect.arrayContaining([archived.commit, survivor.commit]));
+  const processed = state.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id")
+    .all(`project:${state.store.getSession(state.target.sessionId)!.projectId}`).map(row => Number(row.revision_id));
+  expect(processed).toContain(survivor.commit); // accepted skip
+  expect(processed).not.toContain(archived.commit); // superseded parent needs no processing row
 });
 
 test("58 reconstructed decision-provenance fixtures remain split by object and never archive the design", () => {

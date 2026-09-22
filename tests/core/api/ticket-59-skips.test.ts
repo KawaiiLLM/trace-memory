@@ -8,7 +8,7 @@ const success = { outcome: "success", output: "done", request: { exact: "request
 
 /** One project session with `count` supplied New items, each created on its own fact. */
 function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, texts = ["durable rule"]) {
-  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput)); memories.push(memory);
+  const memory = TraceMemory(":memory:", task => agent(task as DreamingAgentInput), { dreaming: { triggerTokens: 1 } }); memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "P", declaredBy: "mark" });
   const session = store.createSession({ host: "test", enrollmentChoice: true, projectId: project.id, startedAt: "now", firstReplyAt: "now" });
@@ -30,7 +30,7 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>, t
 const handle = (item: { knowledgeId: number; commit: number }) => `K${item.knowledgeId}@${item.commit}`;
 const tool = (task: DreamingAgentInput, name: string) => task.tools.find(t => t.name === name)!;
 
-test("59: the memory schema branches on phase and says skips never change knowledge or scheduling", () => {
+test("59/68: the memory schema branches on phase and says accepted Dreamer skips process exact frozen versions", () => {
   const items = (definitions: { name: string; parameters: Record<string, unknown> }[]) =>
     ((definitions.find(t => t.name === "memory")!.parameters.properties as any).skipped.items) as { required: string[]; properties: Record<string, unknown> };
   expect(items(dreamingToolDefinitions()).required).toEqual(["knowledge", "because"]);
@@ -38,7 +38,7 @@ test("59: the memory schema branches on phase and says skips never change knowle
   expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
-    .toContain("a skip accounts for a deliberated item and never changes it, and has no scheduling effect; untouched pool references need none");
+    .toContain("skipped accounts for an exact frozen version that was deliberated and intentionally left unchanged; it marks that version processed without changing it");
   const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf?: unknown[] };
   expect(search.properties.queries).toMatchObject({ type: "array", minItems: 1 });
   expect(search.oneOf).toBeUndefined();
@@ -67,18 +67,18 @@ test("64c: a skip is audited but terminal success processes the frozen pair inde
     .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
 });
 
-test("64c: untouched supplied items are not an admission failure and terminal success processes the exact frozen set", async () => {
+test("68: untouched frozen items are not an admission failure and remain pending after terminal success", async () => {
   const f = fixture(async task => {
     expect(tool(task, "check").execute({})).toContain("Blockers: none");
     return success;
   }, ["first rule", "second rule"]);
   const result = await f.memory.dream(f.target);
   expect(result.outcome).toBe("success");
-  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(f.pool)
-    .map(row => Number(row.revision_id))).toEqual(f.items.map(item => item.commit));
+  expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(f.pool)).toEqual([]);
+  expect(f.store.pendingVersions(f.pool, f.target).map(item => item.revisionId)).toEqual(f.items.map(item => item.commit));
 });
 
-test("64c: malformed, unknown and consumed skips remain rejected atomically; failure still consumes the frozen pair", async () => {
+test("68: malformed, unknown and consumed skips remain rejected atomically and consume nothing", async () => {
   const f = fixture(async task => {
     const memory = tool(task, "memory"), skip = (skipped: unknown[], operations: unknown[] = []) => memory.execute({ operations, skipped });
     expect(skip([{ knowledge: "K999@999", because: "x" }])).toContain("not a supplied handle of this run");
@@ -95,8 +95,7 @@ test("64c: malformed, unknown and consumed skips remain rejected atomically; fai
   const result = await f.memory.dream(f.target);
   expect(result.outcome).toBe("failure");
   expect(f.store.listKnowledgeRevisions()).toHaveLength(1);
-  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all())
-    .toEqual([{ pool: f.pool, revision_id: f.items[0]!.commit }]);
+  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([]);
 });
 
 test("59: a batched search returns one best hit per query under the shared options, echoes the query and names the empty ones", () => {
