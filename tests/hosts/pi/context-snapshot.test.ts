@@ -206,14 +206,14 @@ test("branch switches select exact source membership and returned snapshots do n
 }, 30_000);
 
 test("allocator refusal is capacity, never a worker or native-compaction fallback", async () => {
-  const f = await fixture({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 20,
+  const f = await fixture({ "noting.triggerTokens": 20, "consolidation.triggerTokens": 20, "dreaming.triggerTokens": 1,
     "compaction.factsTokens": 1, "compaction.rawTokens": 1 });
   try {
     // The scripted worker makes no note commit, so required Raw remains after ordinary admission.
     f.script(() => say("answer"));
     await f.turn("required raw material ".repeat(200));
     for (const scope of ["global", "project", "session"] as const) f.h.memory.setKnowledgeBudget(scope, 0);
-    // Empty pools contribute zero; real N/C thresholds derive a 40-token shared allowance.
+    // Configured phase caps derive a 41-token shared allowance; empty pools keep D ineligible.
     const sent = f.sent.length;
     const runs = f.h.memory.store.listRuns(1).length;
     const result = request(f.h);

@@ -58,7 +58,8 @@ test("20c 2026-09-08 scenario 11: the host returns no custom replacement when co
   // reads at all. Each entry alone still fits a batch, so a Noter can run afterwards (review
   // 2026-09-08: a budget the mandatory material cannot fit reduces or holds the task rather than
   // running over it).
-  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "compaction.factsTokens": 50, "compaction.rawTokens": 50});
+  const h = host({ ...eager, "noting.forkModeDefault": true, "noting.batchTokens": 300, "dreaming.triggerTokens": 1,
+    "compaction.factsTokens": 50, "compaction.rawTokens": 50 });
   try {
     h.memory.setKnowledgeBudget("global", 0);
     h.memory.setKnowledgeBudget("project", 0);

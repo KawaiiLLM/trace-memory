@@ -7,8 +7,8 @@ test.each(["automatic", "catchup", "recovery"] as const)("%s releases a rejected
   const factory = vi.spyOn(api, "TraceMemory").mockImplementation((...args) => {
     const memory = create(...args); facades.push(memory); return memory;
   });
-  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9,
-    "compaction.rawTokens": 1});
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1e9, "dreaming.triggerTokens": 1,
+    "compaction.rawTokens": 1 });
   factory.mockRestore();
   const runtime = facades[0]!;
   try {
