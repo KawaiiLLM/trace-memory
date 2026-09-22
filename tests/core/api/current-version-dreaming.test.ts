@@ -6,7 +6,7 @@ const memories: ReturnType<typeof TraceMemory>[] = [];
 afterEach(() => { for (const memory of memories.splice(0)) memory.close(); });
 
 function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
-  const memory = TraceMemory(":memory:", raw => agent(raw as DreamingAgentInput));
+  const memory = TraceMemory(":memory:", raw => agent(raw as DreamingAgentInput), { dreaming: { triggerTokens: 1 } });
   memories.push(memory);
   const store = memory.store;
   const project = store.createProject({ name: "P", declaredBy: "mark" });
@@ -30,10 +30,13 @@ function fixture(agent: (task: DreamingAgentInput) => Promise<RunAgentResult>) {
 }
 
 const ok = { outcome: "success", output: "done", request: { exact: "request" } } as const;
+const skipAll = (task: DreamingAgentInput) => task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+  skipped: [...new Set([...task.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))]
+    .map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
 
 test("67: admission, freeze, final check and consumption have bounded independent projections", async () => {
   let admissionGraphs = -1;
-  const f = fixture(async task => { admissionGraphs = graph.mock.calls.length; task.acknowledgeRequest(); return ok; });
+  const f = fixture(async task => { admissionGraphs = graph.mock.calls.length; task.acknowledgeRequest(); skipAll(task); return ok; });
   f.create("project", "due rule");
   f.create("project", "second rule");
   f.create("global", "below threshold");
@@ -50,7 +53,7 @@ test("67: admission, freeze, final check and consumption have bounded independen
 
 test("64c facade freezes one due pool and terminal success processes its exact current versions", async () => {
   let seen!: DreamingAgentInput;
-  const f = fixture(async task => { seen = task; task.acknowledgeRequest(); return ok; });
+  const f = fixture(async task => { seen = task; task.acknowledgeRequest(); skipAll(task); return ok; });
   const item = f.create("project", "project rule");
   const pool = `project:${f.project.id}`;
   f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
@@ -69,7 +72,7 @@ test("64c facade freezes one due pool and terminal success processes its exact c
 test("64c facade leaves an external mid-run revision pending while recording the frozen range", async () => {
   let release!: () => void;
   const wait = new Promise<void>(resolve => { release = resolve; });
-  const f = fixture(async task => { task.acknowledgeRequest(); await wait; return ok; });
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); await wait; return ok; });
   const first = f.create("project", "first rule ".repeat(20));
   const pool = `project:${f.project.id}`;
   f.store.setKnowledgeBudget("project", Math.floor(f.store.pendingPoolWeight(pool, f.target) * 1.5));
@@ -121,7 +124,7 @@ test("64c cancelled run after a scope-changing commit processes the frozen sourc
   controller.abort();
   expect((await running).outcome).toBe("cancelled");
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed ORDER BY revision_id").all()).toEqual([
-    { pool: projectPool, revision_id: input.commit }, { pool: "global", revision_id: output },
+    { pool: "global", revision_id: output },
   ]);
 });
 
@@ -169,7 +172,7 @@ test.each([
     expect(f.store.getClaim(f.session.id, "dreaming")).toBeNull();
     expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
     expect(f.store.db.prepare("SELECT revision_id FROM knowledge_processed WHERE pool = ? ORDER BY revision_id").all(pool)
-      .map(row => Number(row.revision_id))).toEqual(committed ? [item.commit, output] : []);
+      .map(row => Number(row.revision_id))).toEqual(committed ? [output] : []);
     expect(f.store.duePools(f.target).some(value => value.pool === pool)).toBe(!committed);
     expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(!committed && !stopping && !disabled);
     expect(f.store.enabled(f.session.id)).toBe(!disabled);
@@ -212,7 +215,7 @@ test.each(["absorbed", "survivor", "explicit"] as const)("64c merge shorthand co
 });
 
 test("64c a shared global threshold can be serviced from another session while project pools remain independent", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return ok; });
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   const global = f.create("global", "shared global");
   f.create("project", "private project");
   const otherProject = f.store.createProject({ name: "Other", declaredBy: "mark" });
@@ -228,8 +231,8 @@ test("64c a shared global threshold can be serviced from another session while p
   expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([{ pool: "global", revision_id: global.commit }]);
 });
 
-test("64c unchanged low-threshold residual stays quiet but an old lower-id version becoming visible rearms it", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return ok; });
+test("68 untouched residual stays due before and after an older version becomes visible", async () => {
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   const q = f.store.createProject({ name: "Q", declaredBy: "mark" });
   const qs = f.store.createSession({ host: "q", enrollmentChoice: true, projectId: q.id, projectDeclaration: "mark", startedAt: "now", firstReplyAt: "now" });
   const qt = f.store.appendTurn({ sessionId: qs.id, kind: "turn", userPrompt: "q", startedAt: "now" });
@@ -251,7 +254,7 @@ test("64c unchanged low-threshold residual stays quiet but an old lower-id versi
   const remaining = f.store.pendingPoolWeight(pool, f.target);
   expect(remaining).toBeGreaterThan(0);
   expect(remaining * 2).toBeLessThan(f.store.knowledgeBudgets().project);
-  expect(f.store.duePools(f.target).map(value => value.pool)).not.toContain(pool);
+  expect(f.store.duePools(f.target).map(value => value.pool)).toContain(pool);
 
   f.store.mergeProject(q.id, f.project.id);
   expect(old.committed[0]!.commit).toBeLessThan(Math.min(...f.store.pendingVersions(pool, f.target).filter(v => v.revisionId !== old.committed[0]!.commit).map(v => v.revisionId)));
@@ -259,7 +262,7 @@ test("64c unchanged low-threshold residual stays quiet but an old lower-id versi
 });
 
 test("64c an unchanged residual above half budget remains due independently of the over-budget baseline", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return ok; });
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   f.create("project", "large ".repeat(400));
   f.create("project", "small ".repeat(250));
   f.create("project", "small ".repeat(250));
@@ -297,7 +300,7 @@ test.each(["failure", "cancelled"] as const)("64c %s terminal transaction persis
   expect(JSON.parse(run.response!)).toMatchObject({ output: `${terminal} output`, check: { pool }, nativeLog: `/tmp/${terminal}.jsonl` });
   expect(JSON.parse(run.request!)).toEqual({ terminal });
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual(terminal === "cancelled" ? [item.commit] : []);
+  expect(f.store.pendingVersions(pool, f.target).map(value => value.revisionId)).toEqual([item.commit]);
 });
 
 test("64c rejected terminal transaction rolls back processing but preserves attempt evidence", async () => {
@@ -314,7 +317,7 @@ test("64c rejected terminal transaction rolls back processing but preserves atte
 });
 
 test("64c over-budget completion does not loop and rearms on growth or budget change", async () => {
-  const f = fixture(async task => { task.acknowledgeRequest(); return ok; });
+  const f = fixture(async task => { task.acknowledgeRequest(); skipAll(task); return ok; });
   f.create("project", "large ".repeat(100));
   const pool = `project:${f.project.id}`;
   f.store.setKnowledgeBudget("project", f.store.pendingPoolWeight(pool, f.target) * 2);
