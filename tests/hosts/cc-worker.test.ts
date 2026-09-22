@@ -714,7 +714,7 @@ test("manual catchup reports missing worker, disabled enrollment, and unavailabl
       diagnostic: "native transcript is unavailable" });
 });
 
-test("manual catchup finitely drains bounded Noting into Consolidation without Dreaming or later input", async () => {
+test("manual catchup drains bounded Noting but leaves below-threshold facts and later input pending", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-")); dirs.push(directory);
   const phases: string[] = [], admissions: { kind: string; model: string; thinking?: string }[] = [];
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
@@ -745,15 +745,14 @@ test("manual catchup finitely drains bounded Noting into Consolidation without D
   expect(scheduler.startCatchup(projection).state).toBe("running");
   const late = append(memory, session.id, "late", "late input must remain outside the frozen catchup boundary");
   for (let i = 0; i < 100 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 2, entriesTotal: 2, factsDone: 2, factsTotal: 2 });
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesDone: 2, entriesTotal: 2, factsDone: 0, factsTotal: 2 });
   expect(phases.filter(phase => phase === "noting")).toHaveLength(2);
-  expect(phases.filter(phase => phase === "consolidation")).toHaveLength(1);
+  expect(phases.filter(phase => phase === "consolidation")).toHaveLength(0);
   expect(admissions).toEqual(expect.arrayContaining([
     { kind: "noting", model: "sonnet", thinking: "low" },
-    { kind: "consolidation", model: "opus-c", thinking: "high" },
   ]));
   expect(notingAdmission.mock.calls.every(call => call[0].capacity?.inputTokens === 110_000)).toBe(true);
-  expect(consolidationAdmission.mock.calls.every(call => call[0].capacity?.inputTokens === 210_000)).toBe(true);
+  expect(consolidationAdmission).not.toHaveBeenCalled();
   expect(phases).not.toContain("dreaming");
   expect(memory.pendingEntries(session.id, "main", late.turn.id).map(entry => entry.id)).toEqual([late.entry.id]);
   expect(scheduler.startCatchup({ ...projection, headTurnId: late.turn.id, selectedEntryIds: late.ids }))
@@ -789,7 +788,7 @@ test("manual catchup reports waiting on a foreign claim and resumes only on a la
   expect(calls).toEqual(["noting"]);
 });
 
-test("stop preserves a real core partial Noting commit and a later catchup integrates its facts", async () => {
+test("stop preserves a partial Noting commit without forcing its below-threshold C tail on restart", async () => {
   const directory = mkdtempSync(join(tmpdir(), "tm-cc-catchup-resume-")); dirs.push(directory);
   let noted!: () => void; const committed = new Promise<void>(resolve => { noted = resolve; });
   const memory = TraceMemory(join(directory, "memory.sqlite"), async raw => {
@@ -822,7 +821,7 @@ test("stop preserves a real core partial Noting commit and a later catchup integ
   expect(scheduler.catchupStatus().state).toBe("stopped");
   scheduler.startCatchup(projection);
   for (let i = 0; i < 50 && scheduler.catchupStatus().state !== "completed"; i++) await tick();
-  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 0, factsTotal: 1, factsDone: 1 });
+  expect(scheduler.catchupStatus()).toMatchObject({ state: "completed", entriesTotal: 0, factsTotal: 1, factsDone: 0 });
   memory.close();
 });
 

@@ -162,15 +162,15 @@ test("a projection failure keeps the suffix retryable after record commits", asy
     const reply = assistant("projection-a", "projection-u", 4,
       [{ type: "tool_use", id: "projection-call", name: "Read", input: { path: "/tmp/projection" } }]);
     appendFileSync(f.transcriptPath, line(next) + line(reply));
-    const selectEntries = f.importer.memory.selectEntries.bind(f.importer.memory); let failed = false;
-    f.importer.memory.selectEntries = ((...args: Parameters<typeof selectEntries>) => {
+    const publish = f.importer.memory.store.publishSourcePath.bind(f.importer.memory.store); let failed = false;
+    f.importer.memory.store.publishSourcePath = (...args: Parameters<typeof publish>) => {
       if (!failed) { failed = true; throw new Error("injected projection failure"); }
-      return selectEntries(...args);
-    }) as typeof f.importer.memory.selectEntries;
+      return publish(...args);
+    };
     await expect(f.importer.reconcile()).rejects.toThrow("injected projection failure");
     expect(f.importer.memory.store.findSourceEntry(first.coreSessionId!, f.nativeSessionId, "projection-u")).not.toBeNull();
     expect(f.importer.memory.store.findSourceEntry(first.coreSessionId!, f.nativeSessionId, "projection-a")).not.toBeNull();
-    f.importer.memory.selectEntries = selectEntries;
+    f.importer.memory.store.publishSourcePath = publish;
     const retried = await f.importer.reconcile();
     expect(retried).toMatchObject({ state: "ready", problems: [] });
     expect(retried.selectedEntryIds.slice(-2).map(id => f.importer.memory.store.getSourceEntry(id)!.nativeId))
@@ -336,13 +336,13 @@ test("a failed binding receipt reuses the database-published rewind branch in-pr
     "binding-retry");
   let importer = f.importer;
   const injectReceiptFailure = async () => {
-    const original = importer.memory.selectEntries.bind(importer.memory);
+    const original = importer.memory.store.publishSourcePath.bind(importer.memory.store);
     const bindingDirectory = dirname(bindingPath(f.config, f.nativeSessionId)), moved = `${bindingDirectory}.held`;
-    importer.memory.selectEntries = ((...args: Parameters<typeof original>) => {
+    importer.memory.store.publishSourcePath = (...args: Parameters<typeof original>) => {
       const value = original(...args); renameSync(bindingDirectory, moved); return value;
-    }) as typeof importer.memory.selectEntries;
+    };
     await expect(importer.reconcile()).rejects.toThrow("binding disappeared");
-    renameSync(moved, bindingDirectory); importer.memory.selectEntries = original;
+    renameSync(moved, bindingDirectory); importer.memory.store.publishSourcePath = original;
   };
   try {
     const initial = await importer.reconcile();
@@ -380,13 +380,13 @@ test("divergent compaction leaves use native identity and retry deterministicall
     expect(first.branch).toBe("main");
     writeFileSync(f.transcriptPath, two.map(line).join(""));
 
-    const selectEntries = importer.memory.selectEntries.bind(importer.memory);
+    const publish = importer.memory.store.publishSourcePath.bind(importer.memory.store);
     const bindingDirectory = dirname(bindingPath(f.config, f.nativeSessionId)), moved = `${bindingDirectory}.held`;
-    importer.memory.selectEntries = ((...args: Parameters<typeof selectEntries>) => {
-      const value = selectEntries(...args); renameSync(bindingDirectory, moved); return value;
-    }) as typeof importer.memory.selectEntries;
+    importer.memory.store.publishSourcePath = (...args: Parameters<typeof publish>) => {
+      const value = publish(...args); renameSync(bindingDirectory, moved); return value;
+    };
     await expect(importer.reconcile()).rejects.toThrow("binding disappeared");
-    renameSync(moved, bindingDirectory); importer.memory.selectEntries = selectEntries;
+    renameSync(moved, bindingDirectory); importer.memory.store.publishSourcePath = publish;
     expect(importer.memory.store.selectedSourceEntryIds(first.coreSessionId!, "cc:compact-two")).toEqual(first.selectedEntryIds);
 
     importer.close(); importer = new CcImporter(f.config, readBinding(f.config, f.nativeSessionId)!);

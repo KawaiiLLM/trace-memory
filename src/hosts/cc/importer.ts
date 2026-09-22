@@ -15,6 +15,8 @@ export interface CcReconcileResult {
   headTurnId: number | null;
   selectedEntryIds: number[];
   appendedEntryIds: number[];
+  /** First successful scan of this native projection, not a replay of live entry events. */
+  bootstrap?: boolean;
   problems: string[];
 }
 
@@ -55,6 +57,7 @@ export class CcProjection {
   private callsByTurn = new Map<number, Map<string, CallIdentity>>();
   private loadedCallTurns = new Set<number>();
   private lastResult: CcReconcileResult | null = null;
+  private synchronized = false;
 
   constructor(config: ResolvedCcHostConfig, binding: CcSessionBinding, memory: TraceMemoryFacade) {
     if (binding.dbPath !== config.dbPath) throw new Error("CC binding uses another database");
@@ -150,7 +153,7 @@ export class CcProjection {
         const problems = this.transcript.currentProblems();
         return { ...this.lastResult, state: problems.length ? "not-ready" : this.lastResult.state,
           snapshot: problems.length ? { ...unchanged, problem: problems[0] } : unchanged,
-          appendedEntryIds: [], problems };
+          appendedEntryIds: [], bootstrap: false, problems };
       }
     }
     return withCcBindingLock(this.config, this.binding.nativeSessionId, async locked => {
@@ -235,6 +238,7 @@ export class CcProjection {
     }
     const ingest = (record: CcNativeRecord, source: CcSourceRecord, raw: string, scan: CcTranscriptScan): RecordCommit => {
       if (!source.timestamp) throw new CcIntegrityError(`native source ${source.nativeId} has no valid timestamp`);
+      const timestamp = source.timestamp;
       if (source.kind === "compaction") {
         const known = this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId);
         const parentTurnId = nearestTurn(record, scan);
@@ -244,15 +248,17 @@ export class CcProjection {
             throw new CcIntegrityError(`native compaction ${source.nativeId} changed after persistence`);
           return { association: { turnId: known.turnId } };
         }
-        const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: source.timestamp, endedAt: source.timestamp });
-        this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
-        return { association: { turnId: turn.id } };
+        return this.memory.store.transaction(() => {
+          const turn = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "compaction", startedAt: timestamp, endedAt: timestamp });
+          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turn.id, "compaction");
+          return { association: { turnId: turn.id } };
+        });
       }
       const known = this.memory.store.findSourceEntry(sessionId, lineage, source.nativeId);
       if (known) {
         if (known.raw !== raw) throw new CcIntegrityError(`native source ${source.nativeId} changed after persistence`);
         if (source.kind === "user" && !this.memory.store.findNativeTurn(sessionId, lineage, source.nativeId))
-          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn");
+          this.memory.store.transaction(() => this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, known.turnId, "turn"));
         const calls = new Map(knownCalls(known.turnId));
         if (source.kind === "assistant") for (const value of known.calls) {
           const prior = calls.get(value.callId);
@@ -262,46 +268,48 @@ export class CcProjection {
         }
         return { association: { turnId: known.turnId, entryId: known.id }, calls };
       }
-      let turnId: number;
-      if (source.kind === "user") {
-        const parentTurnId = nearestTurn(record, scan);
-        turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: source.timestamp }).id;
-        this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
-      } else {
-        const owner = nearestTurn(record, scan);
-        if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
-          throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
-        turnId = owner;
-      }
-      const calls = source.kind === "user" ? new Map<string, CallIdentity>() : new Map(knownCalls(turnId));
-      const fragments: SourceEntry["calls"] = [];
-      if (source.kind === "assistant") for (const offered of source.calls) {
-        if (calls.has(offered.callId)) throw new CcIntegrityError(`native tool call ${offered.callId} repeats within one Turn`);
-        const stored = this.memory.store.appendToolCall({ turnId, name: offered.name, input: offered.input, status: offered.status });
-        calls.set(offered.callId, { ordinal: stored.ordinal, name: stored.name });
-        fragments.push({ ...offered, ordinal: stored.ordinal });
-      }
-      if (source.kind === "toolResult") {
-        for (const value of source.calls) {
-          const offered = calls.get(value.callId);
-          if (!offered) throw new CcIntegrityError(`tool result ${value.callId} has no call in its owning Turn`);
-          fragments.push({ ...value, ordinal: offered.ordinal, name: offered.name });
+      return this.memory.store.transaction(() => {
+        let turnId: number;
+        if (source.kind === "user") {
+          const parentTurnId = nearestTurn(record, scan);
+          turnId = this.memory.store.appendTurn({ sessionId, parentTurnId, kind: "turn", userPrompt: source.text, startedAt: timestamp }).id;
+          this.memory.store.bindNativeTurn(sessionId, lineage, source.nativeId, turnId, "turn");
+        } else {
+          const owner = nearestTurn(record, scan);
+          if (owner === null || this.memory.store.getTurn(owner)?.kind !== "turn")
+            throw new CcIntegrityError(`owning user Turn for native source ${source.nativeId} is unavailable`);
+          turnId = owner;
         }
-        for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
-      }
-      const stored = this.memory.appendEntry({ sessionId, nativeLineage: lineage, nativeId: source.nativeId, turnId,
-        role: source.kind, text: source.text, raw, calls: fragments });
-      if (source.kind === "assistant") {
-        const turn = this.memory.store.getTurn(turnId)!;
-        this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
-      }
-      return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
+        const calls = source.kind === "user" ? new Map<string, CallIdentity>() : new Map(knownCalls(turnId));
+        const fragments: SourceEntry["calls"] = [];
+        if (source.kind === "assistant") for (const offered of source.calls) {
+          if (calls.has(offered.callId)) throw new CcIntegrityError(`native tool call ${offered.callId} repeats within one Turn`);
+          const stored = this.memory.store.appendToolCall({ turnId, name: offered.name, input: offered.input, status: offered.status });
+          calls.set(offered.callId, { ordinal: stored.ordinal, name: stored.name });
+          fragments.push({ ...offered, ordinal: stored.ordinal });
+        }
+        if (source.kind === "toolResult") {
+          for (const value of source.calls) {
+            const offered = calls.get(value.callId);
+            if (!offered) throw new CcIntegrityError(`tool result ${value.callId} has no call in its owning Turn`);
+            fragments.push({ ...value, ordinal: offered.ordinal, name: offered.name });
+          }
+          for (const call of fragments) this.memory.store.completeToolCall(turnId, call.ordinal, call.result ?? "", call.status);
+        }
+        const stored = this.memory.appendEntry({ sessionId, nativeLineage: lineage, nativeId: source.nativeId, turnId,
+          role: source.kind, text: source.text, raw, calls: fragments });
+        if (source.kind === "assistant") {
+          const turn = this.memory.store.getTurn(turnId)!;
+          this.memory.store.updateTurn(turnId, { assistantText: [turn.assistantText, source.text].filter(Boolean).join("\n"), endedAt: source.timestamp });
+        }
+        return { association: { turnId, entryId: stored.id }, calls, appendedEntryId: stored.id };
+      });
     };
 
     const visit = (record: CcNativeRecord, source: CcSourceRecord | null, raw: string, currentScan: CcTranscriptScan): void => {
       if (!source) return;
       try {
-        const committed = this.memory.store.transaction(() => ingest(record, source, raw, currentScan));
+        const committed = ingest(record, source, raw, currentScan);
         currentScan.associate(source.nativeId, committed.association);
         if (committed.calls) {
           this.callsByTurn.set(committed.association.turnId, committed.calls);
@@ -369,10 +377,9 @@ export class CcProjection {
             if (inherited.length && !inherited.every((id, index) => selectedEntryIds[index] === id)) selectedEntryIds = [...inherited, ...selectedEntryIds];
             headTurnId = [...selectedNodes].reverse().find(node => node.turnId !== undefined)?.turnId ?? this.lastResult?.headTurnId
               ?? this.binding.clearedFrom?.compactionTurnId ?? null;
-            this.memory.store.transaction(() => {
-              this.memory.selectEntries(sessionId, branch, selectedEntryIds);
-              if (headTurnId !== null) this.memory.store.setCurrentPath(sessionId, branch, headTurnId, this.binding.nativeSessionId);
-            });
+            if (headTurnId !== null)
+              this.memory.store.publishSourcePath(sessionId, branch, selectedEntryIds, headTurnId, this.binding.nativeSessionId);
+            else this.memory.selectEntries(sessionId, branch, selectedEntryIds);
           }
         }
       }
@@ -404,8 +411,10 @@ export class CcProjection {
     const ready = this.result(state, problems.length ? { ...completed.snapshot, problem: problems[0] } : completed.snapshot, problems,
       { coreSessionId: sessionId, branch: projectionReady ? branch : this.binding.branch,
         headTurnId: projectionReady ? headTurnId : this.lastResult?.headTurnId ?? null,
-        selectedEntryIds: projectionReady ? selectedEntryIds : this.lastResult?.selectedEntryIds ?? [], appendedEntryIds });
+        selectedEntryIds: projectionReady ? selectedEntryIds : this.lastResult?.selectedEntryIds ?? [], appendedEntryIds,
+        bootstrap: !this.synchronized });
     if (projectionReady) this.lastResult = ready;
+    if (state === "ready") this.synchronized = true;
     return ready;
   }
 

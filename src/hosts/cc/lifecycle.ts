@@ -165,6 +165,7 @@ export class CcCoordinator {
   private wakeQueued = false;
   private closing = false;
   private closed = false;
+  private startupComplete = false;
   private readonly startup = new AbortController();
   private readonly config: ResolvedCcHostConfig;
   /** 65: the Hook's id once adopted; the env id only until then. Fixed from the first attach on. */
@@ -186,9 +187,9 @@ export class CcCoordinator {
     const binding = readBinding(this.config, this.nativeSessionId);
     if (!binding) return;
     this.observe("attach-start", { final });
-    this.importer = new CcImporter(this.config, binding);
-    this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
     try {
+      this.importer = new CcImporter(this.config, binding);
+      this.scheduler = new CcTaskScheduler(this.importer.memory, this.config.worker, this.diagnostic);
       const timeout = deadline === undefined ? undefined : Math.max(1, deadline - Date.now());
       await startControlServer(this.config, binding, this.importer.memory, timeout, final ? undefined : this.startup.signal, {
         catchup: async () => {
@@ -203,10 +204,22 @@ export class CcCoordinator {
         },
         beforeCancel: () => this.scheduler?.stopCatchup(),
       }).then(control => { this.control = control; });
-    } catch (error) { this.scheduler.stop(); this.scheduler = null; this.importer.close(); this.importer = null; throw error; }
-    this.watchTranscript(binding);
-    if (final) this.importer.memory.cancelTasks(true);
-    this.observe("attach-complete", { final });
+      this.watchTranscript(binding);
+      if (final) this.importer.memory.cancelTasks(true);
+      this.observe("attach-complete", { final });
+    } catch (error) { await this.discardAttachment(); throw error; }
+  }
+
+  /** Detach references before disposal: facade close may close its Store and then throw. */
+  private async discardAttachment(): Promise<void> {
+    const importer = this.importer, scheduler = this.scheduler, control = this.control;
+    this.importer = null; this.scheduler = null; this.control = null;
+    this.transcriptWatcher?.close(); this.transcriptWatcher = null;
+    scheduler?.stop();
+    try { if (control) await control.close(); }
+    catch (error) { this.diagnostic(`attachment control cleanup failed: ${String(error)}`); }
+    try { importer?.close(); }
+    catch (error) { this.diagnostic(`attachment facade cleanup failed: ${String(error)}`); }
   }
 
   private watchTranscript(binding: CcSessionBinding): void {
@@ -237,7 +250,6 @@ export class CcCoordinator {
     }
     this.poll = setInterval(() => { void this.requestReconcile("stat wake-up"); }, this.config.pollIntervalMs);
     await this.requestReconcile("startup");
-    this.observe("startup-complete");
   }
 
   /** 65: follow the SessionStart Hook's session id while no binding has been attached. Returns false
@@ -290,6 +302,7 @@ export class CcCoordinator {
     this.queue = this.queue.then(async () => {
       if (!final) this.wakeQueued = false;
       if (this.closed || this.closing && !final) return null;
+      const wasAttached = this.importer !== null;
       try {
         const attaching = this.attach(final, deadline);
         // attach() constructs the scheduler synchronously before its first await. Capture that first
@@ -301,11 +314,16 @@ export class CcCoordinator {
         // The explicit drain still observes path/enrollment changes, but its reconciliation must
         // not first become an ordinary threshold-trigger opportunity before the boundary freezes.
         if (!final && result) this.scheduler?.reconcile(result, reason !== "manual catchup", epoch);
+        if (this.importer && !this.startupComplete && !final) {
+          this.startupComplete = true;
+          this.observe("startup-complete");
+        }
         if (reason !== "stat wake-up") this.observe("reconcile", { reason, final, state: result?.state ?? "unbound",
           coreSessionId: result?.coreSessionId ?? null, appended: result?.appendedEntryIds.length ?? 0 });
         if (result?.problems.length && reason !== "stat wake-up") this.diagnostic(`${reason}: ${result.problems.join("; ")}`);
         return result;
       } catch (error) {
+        if (!wasAttached) await this.discardAttachment();
         if ((error as { name?: string }).name === "AbortError") this.observe("startup-cancelled", { reason });
         else this.diagnostic(`${reason} reconciliation failed: ${error instanceof Error ? error.message : String(error)}`);
         return null;

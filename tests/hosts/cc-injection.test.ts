@@ -292,9 +292,9 @@ test("43d Hook projection failure leaves committed records retryable without pub
   const before = readBinding(f.config, f.nativeSession)!;
   appendFileSync(f.transcriptPath, line({ uuid: "retry-compact", parentUuid: null, logicalParentUuid: "a",
     type: "system", subtype: "compact_boundary", timestamp: time(7) }));
-  const select = Store.prototype.selectSourcePath; let failed = false;
-  vi.spyOn(Store.prototype, "selectSourcePath").mockImplementation(function (this: Store,
-    ...args: Parameters<Store["selectSourcePath"]>) {
+  const select = Store.prototype.publishSourcePath; let failed = false;
+  vi.spyOn(Store.prototype, "publishSourcePath").mockImplementation(function (this: Store,
+    ...args: Parameters<Store["publishSourcePath"]>) {
     if (!failed) { failed = true; throw new Error("injected Hook projection failure"); }
     return select.apply(this, args);
   });

@@ -155,8 +155,10 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
       return { ...current, executor };
     }, bindingTimeoutMs, signal);
   } catch (error) {
-    await closeServer(server);
-    rmSync(path, { force: true });
+    try { await closeServer(server); }
+    catch (cleanup) { console.error(`Trace Memory CC: failed attach socket close: ${String(cleanup)}`); }
+    try { rmSync(path, { force: true }); }
+    catch (cleanup) { console.error(`Trace Memory CC: failed attach socket removal: ${String(cleanup)}`); }
     throw error;
   }
   const attachTo = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId, current => {
@@ -172,9 +174,11 @@ export async function startControlServer(config: ResolvedCcHostConfig, initial: 
   const release = (target: CcSessionBinding) => updateBinding(config, target.nativeSessionId,
     current => !current || current.executor?.token !== token ? current! : { ...current, executor: null });
   return { executor, close: async (preserveExecutor = false) => {
-    await closeServer(server);
-    rmSync(path, { force: true });
-    if (!preserveExecutor) await release(binding);
+    try { await closeServer(server); }
+    finally {
+      try { rmSync(path, { force: true }); }
+      finally { if (!preserveExecutor) await release(binding); }
+    }
   }, retarget: async next => {
     // The binding captured at attach may predate enrollment (a provisional parent turned on later);
     // compare against what the Hook persisted since, not the stale in-memory copy.

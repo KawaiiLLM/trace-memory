@@ -24,6 +24,7 @@ interface Catchup {
   state: CcCatchupState;
   phase?: "noting" | "consolidation";
   diagnostic?: string;
+  downstream: Set<"consolidation" | "dreaming">;
 }
 
 /** One CC-local slot per phase. Core remains the authority for eligibility, claims, borrowing and settlement. */
@@ -55,17 +56,17 @@ export class CcTaskScheduler {
       }
     }
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
-    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
+    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && (reconcile.bootstrap || reconcile.appendedEntryIds.length)) {
       const selected = new Set(reconcile.selectedEntryIds);
-      // One reconciliation may import several completed native entries. Preserve each selected
-      // entry as its own scheduling opportunity and trigger origin; sibling transcript records that
-      // are not on the published foreground path do not grant this executor a host opportunity.
-      for (const entryId of reconcile.appendedEntryIds) {
+      // Bootstrap publishes history once; only subsequent live increments replay their own
+      // selected entries. The final entry is the bootstrap origin, never the first old record.
+      const opportunities = reconcile.bootstrap ? [reconcile.selectedEntryIds.at(-1)!] : reconcile.appendedEntryIds;
+      for (const entryId of opportunities) {
         if (!selected.has(entryId)) continue;
         const entry = this.memory.store.getSourceEntry(entryId);
         if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
         const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,
-          headTurnId: entry.turnId, triggerEntryId: entry.id };
+          headTurnId: reconcile.bootstrap ? reconcile.headTurnId : entry.turnId, triggerEntryId: entry.id };
         for (const phase of ["noting", "consolidation", "dreaming"] as const) this.startAutomatic(phase, own);
       }
     }
@@ -90,7 +91,7 @@ export class CcTaskScheduler {
     const facts = this.memory.store.consolidationBatch(target.sessionId, target.branch, target.headTurnId).map(fact => fact.id);
     this.catchup = { target, maxEntryId: entries.length ? Math.max(...entries.map(entry => entry.id)) : undefined,
       entryTotal: entries.length, factIds: new Set(facts), factTotal: facts.length,
-      state: entries.length || facts.length ? "running" : "completed" };
+      state: entries.length ? "running" : "completed", downstream: new Set() };
     this.driveCatchup();
     return this.catchupStatus();
   }
@@ -187,18 +188,19 @@ export class CcTaskScheduler {
     const remainingEntries = drain.maxEntryId === undefined ? [] : this.memory
       .pendingEntries(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
       .filter(entry => entry.id <= drain.maxEntryId!);
-    const remainingFacts = this.memory.store
-      .consolidationBatch(drain.target.sessionId, drain.target.branch, drain.target.headTurnId)
-      .filter(fact => drain.factIds.has(fact.id));
-    const phase = remainingEntries.length ? "noting" : remainingFacts.length ? "consolidation" : undefined;
-    if (!phase) { drain.state = "completed"; drain.phase = undefined; return; }
+    if (!remainingEntries.length) {
+      drain.state = drain.downstream.size ? "waiting" : "completed";
+      drain.phase = drain.downstream.has("consolidation") ? "consolidation" : undefined;
+      return;
+    }
+    const phase = "noting";
     drain.phase = phase;
     if (this.slots.has(phase)) { drain.state = "waiting"; return; }
     const claim = this.memory.store.getClaim(drain.target.sessionId, phase);
     if (claim && claim.expiresAt > Date.now() && claim.executorId !== this.memory.executorId) { drain.state = "waiting"; return; }
     drain.state = "running";
     const cancellationEpoch = this.cancellationEpoch;
-    const boundary: TaskBoundary = phase === "noting" ? { maxEntryId: drain.maxEntryId } : { allowedFactIds: [...drain.factIds] };
+    const boundary: TaskBoundary = { maxEntryId: drain.maxEntryId };
     let chain = true;
     const drainActive = () => drain.state === "running" || drain.state === "waiting";
     this.reserve(phase, async () => {
@@ -206,10 +208,9 @@ export class CcTaskScheduler {
       // boundary so stop/off/path changes cannot launch a task after their cancellation acknowledgement.
       if (this.stopped || this.catchup !== drain || this.cancellationEpoch !== cancellationEpoch ||
           !drainActive()) { chain = false; return; }
-      let result: NotingResult | ConsolidateResult;
+      let result: NotingResult;
       try {
-        result = phase === "noting" ? await this.memory.noting(this.common(phase, drain.target, false, false, boundary))
-          : await this.memory.consolidate(this.common(phase, drain.target, false, false, boundary));
+        result = await this.memory.noting(this.common(phase, drain.target, false, false, boundary));
       } catch (error) {
         if (this.catchup === drain && drainActive()) {
           drain.state = "failed"; drain.phase = undefined; drain.diagnostic = error instanceof Error ? error.message : String(error);
@@ -225,8 +226,29 @@ export class CcTaskScheduler {
         drain.state = result.outcome === "cancelled" ? "stopped" : "failed"; drain.phase = undefined;
         drain.diagnostic = result.problems?.join("; ") || result.outcome;
       }
+      if (result.outcome === "success") this.checkDownstream(drain, "consolidation", cancellationEpoch);
       return result;
     }, () => chain);
+  }
+
+  /** Catchup adds completion opportunities, not a second admission policy or a retry queue. */
+  private checkDownstream(drain: Catchup, phase: "consolidation" | "dreaming", epoch: number): void {
+    const active = () => !this.stopped && this.catchup === drain && this.cancellationEpoch === epoch &&
+      (drain.state === "running" || drain.state === "waiting") && this.memory.store.enabled(drain.target.sessionId);
+    if (!active() || this.slots.has(phase)) return;
+    let due: boolean;
+    try { due = this.memory.taskEligibility(phase, drain.target).due; }
+    catch (error) { this.diagnostic(`${phase} eligibility failed: ${String(error)}`); return; }
+    if (!due) return;
+    drain.downstream.add(phase);
+    this.reserve(phase, async () => {
+      if (!active()) return;
+      const result = await this.runCandidates(phase, drain.target.sessionId,
+        [{ ...drain.target, borrowed: false }], epoch);
+      if (active() && result?.outcome === "success" && phase === "consolidation")
+        this.checkDownstream(drain, "dreaming", epoch);
+      return result;
+    }, () => { drain.downstream.delete(phase); return true; });
   }
 
   stop(): void { this.stopCatchup("executor shutdown"); this.stopped = true; }
