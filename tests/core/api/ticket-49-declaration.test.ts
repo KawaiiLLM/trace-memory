@@ -99,6 +99,7 @@ test("64c/49: disabled enrollment does not mask the preserved Consolidation decl
 test.each(["project", "global"] as const)("64c: active affected-project Dreamer blocks a move even while processing %s", scope => {
   const f = base(false), item = knowledge(f, scope);
   const pool = scope === "global" ? "global" : `project:${f.own.id}`;
+  f.memory.config.dreaming.triggerTokens = 1;
   f.store.setKnowledgeBudget(scope, f.store.pendingPoolWeight(pool, f.path) * 2);
   expect(f.memory.taskEligibility("dreaming", f.path).due).toBe(true);
   const claim = f.store.acquireClaim(f.path, "dreaming", "worker")!;
