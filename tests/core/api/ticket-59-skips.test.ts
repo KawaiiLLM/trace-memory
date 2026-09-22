@@ -38,7 +38,7 @@ test("59: the memory schema branches on phase and says skips never change knowle
   expect(items(consolidationToolDefinitions()).required).toEqual(["fact", "because"]);
   expect(items(toolDefinitions as any).required).toEqual(["fact", "because"]);
   expect(dreamingToolDefinitions().find(t => t.name === "memory")!.description)
-    .toContain("a skip accounts for the item and never changes it, and has no scheduling effect");
+    .toContain("a skip accounts for a deliberated item and never changes it, and has no scheduling effect; untouched pool references need none");
   const search = toolDefinitions.find(t => t.name === "search")!.parameters as { properties: Record<string, unknown>; oneOf?: unknown[] };
   expect(search.properties.queries).toMatchObject({ type: "array", minItems: 1 });
   expect(search.oneOf).toBeUndefined();
