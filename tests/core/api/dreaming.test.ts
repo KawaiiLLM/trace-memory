@@ -47,6 +47,8 @@ test("64c exact provider request and terminal audit are preserved while success 
     expect(task.material.changed).toContain(address(base));
     expect(task.material.changed).toContain(address(trigger));
     expect(task.tools.map(tool => tool.name)).toEqual(["trace", "search", "check", "memory"]);
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [], skipped: [base, trigger]
+      .map(item => ({ knowledge: address(item), because: "fixture reviewed unchanged" })) });
     return { outcome: "success", output: "audited", request: exact, nativeLog: "/tmp/dream.jsonl",
       usage: { input: 7, output: 3, cacheRead: 0, cacheWrite: 0, cost: { total: 0.1 } } };
   });
@@ -83,17 +85,17 @@ test("64c missing request without an unavailable-audit acknowledgement is an exp
   expect(f.store.getRun(result.runId)!.request).toBeNull();
 });
 
-test("64c provider failure consumes the exact frozen set once and is never retained for retry", async () => {
+test("68 provider failure leaves untouched frozen versions pending", async () => {
   const f = fixture(), base = f.create("failed base");
   const { trigger, result } = await admitted(f, task => {
     task.acknowledgeRequest();
     return { outcome: "failure", output: "provider failed", request: { exact: "failure" } };
   });
   expect(result.outcome).toBe("failure");
-  expect(processed(f).map(row => Number(row.revision_id))).toEqual([base.commit, trigger.commit]);
+  expect(processed(f)).toEqual([]);
   expect(f.store.openDreamingRange(f.session.id, "main")).toBeNull();
-  expect(f.store.pendingVersions(`project:${f.project.id}`, f.target)).toEqual([]);
-  expect((await f.memory.dream(f.target)).outcome).toBe("empty");
+  expect(f.store.pendingVersions(`project:${f.project.id}`, f.target).map(item => item.revisionId)).toEqual([base.commit, trigger.commit]);
+  expect(f.memory.taskEligibility("dreaming", f.target).due).toBe(true);
 });
 
 test("64c pre-first-commit cancellation consumes nothing and leaves the pool due", async () => {
@@ -124,7 +126,6 @@ test("64c cancellation after a commit consumes the frozen revisions and the own 
   expect(result.outcome, JSON.stringify(result)).toBe("cancelled");
   expect(processed(f).map(row => ({ pool: String(row.pool), revision: Number(row.revision_id) }))).toEqual([
     { pool: "global", revision: own },
-    { pool: `project:${f.project.id}`, revision: base.commit },
     { pool: `project:${f.project.id}`, revision: trigger.commit },
   ]);
 });
@@ -149,7 +150,7 @@ test("64c two schema-valid updates roll back atomically when the second hits a S
   expect(f.store.currentCommit(first.knowledgeId, f.target)[0]!.id).toBe(first.commit);
   expect(f.store.currentCommit(second.knowledgeId, f.target)[0]!.id).toBe(second.commit);
   expect(f.store.listKnowledgeRevisions()).toHaveLength(before + 1);
-  expect(processed(f).map(row => Number(row.revision_id))).toEqual([first.commit, second.commit, trigger.commit]);
+  expect(processed(f)).toEqual([]);
 });
 
 test("64c a complete exact read grants same-pool maintenance without enlarging the frozen range", async () => {
@@ -216,7 +217,12 @@ test("64c reference material is genuinely non-empty, capped and receipted when c
   const references = Array.from({ length: 4 }, (_, index) => f.create(`reference-${index} ${"reference ".repeat(6_000)}`));
   const pool = `project:${f.project.id}`, pendingWeight = f.store.pendingPoolWeight(pool, f.target);
   f.store.setKnowledgeBudget("project", pendingWeight * 2);
-  const settled = await f.scenarios.run(f.memory, f.target, () => success);
+  const settled = await f.scenarios.run(f.memory, f.target, task => {
+    const handles = [...new Set([...task.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))];
+    task.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
+    return success;
+  });
   expect(settled.outcome).toBe("success");
   expect(f.store.pendingVersions(pool, f.target)).toEqual([]);
   f.store.setKnowledgeBudget("project", 15_000);
