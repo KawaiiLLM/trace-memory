@@ -59,10 +59,32 @@ test.each(["empty", "dropped"] as const)("R4 %s does not spin, complete while du
   expect(f.scheduler.catchupStatus().state).toBe("waiting");
 });
 
-test.each(["consolidation", "dreaming"] as const)("R4 does not adopt, queue, or replay a busy ordinary %s slot with zero Raw", async phase => {
+test.each(["consolidation", "dreaming"] as const)("R4 a successful ordinary %s completion launches the still-due drain phase and converges", async phase => {
+  const f = fixture();
+  let due = true;
+  const releases: Array<() => void> = [];
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { releases.push(resolve); }); return { outcome: "success" }; });
+  if (phase === "consolidation") f.memory.consolidate = execute as any;
+  else f.memory.dream = execute as any;
+  f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase && due }));
+  f.scheduler.reconcile({ ...projection, appendedEntryIds: [1] });
+  await tick();
+  expect(execute).toHaveBeenCalledTimes(1); // ordinary slot busy
+  expect(f.scheduler.startCatchup(projection)).toMatchObject({ state: "waiting", phase });
+  // The ordinary run succeeds while the phase is still due: R4 makes this a full checkpoint.
+  releases[0]!(); await tick(); await tick();
+  expect(execute).toHaveBeenCalledTimes(2); // drain launched its own due phase, not adopting the ordinary one
+  expect(f.scheduler.catchupStatus().state).toBe("running");
+  due = false;
+  releases[1]!(); await settle(f);
+  expect(execute).toHaveBeenCalledTimes(2); // no longer due: converges without a third launch
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
+});
+
+test.each(["consolidation", "dreaming"] as const)("R4 a non-success ordinary %s completion does not launch the drain", async phase => {
   const f = fixture();
   let release!: () => void;
-  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "failure", problems: ["boom"] }; });
   if (phase === "consolidation") f.memory.consolidate = execute as any;
   else f.memory.dream = execute as any;
   f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase }));
@@ -73,6 +95,42 @@ test.each(["consolidation", "dreaming"] as const)("R4 does not adopt, queue, or 
   release(); await tick(); await tick();
   expect(execute).toHaveBeenCalledTimes(1);
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
+});
+
+test.each(["consolidation", "dreaming"] as const)("R4 a repeated catchup command re-checks a waiting idle drain and launches a due %s", async phase => {
+  const f = fixture();
+  let calls = 0;
+  const execute = vi.fn(async () => (++calls === 1 ? { outcome: "dropped" } : { outcome: "success" }));
+  if (phase === "consolidation") f.memory.consolidate = execute as any;
+  else f.memory.dream = execute as any;
+  f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === phase && calls < 2 }));
+  f.scheduler.startCatchup(projection);
+  for (let i = 0; i < 5; i++) await tick();
+  // The dropped admission (a foreign claim) leaves the drain waiting with nothing drain-owned active:
+  // no in-process completion will ever re-check it.
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase });
+  f.scheduler.startCatchup(projection);
+  await settle(f);
+  expect(execute).toHaveBeenCalledTimes(2);
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
+});
+
+test("R4 a repeated catchup command on a running drain does not start a second run", async () => {
+  const f = fixture();
+  let due = true, release!: () => void;
+  const execute = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { outcome: "success" }; });
+  f.memory.consolidate = execute as any;
+  f.memory.taskEligibility.mockImplementation(candidate => ({ due: candidate === "consolidation" && due }));
+  f.scheduler.startCatchup(projection);
+  await tick();
+  expect(execute).toHaveBeenCalledTimes(1);
+  expect(f.scheduler.catchupStatus().state).toBe("running");
+  f.scheduler.startCatchup(projection);
+  await tick();
+  expect(execute).toHaveBeenCalledTimes(1); // still running: the repeated command only reports, never drives
+  due = false; release(); await settle(f);
+  expect(execute).toHaveBeenCalledTimes(1);
 });
 
 test("R4 ordinary completion may settle a zero-Raw wait when it clears all due work, without replay", async () => {

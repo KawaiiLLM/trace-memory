@@ -107,7 +107,10 @@ test("busy C discards an N completion opportunity and slot release does not repl
   expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
 });
 
-// Retained ordinary-task ownership: catchup does not adopt a worker that predates it.
+// Retained ordinary-task ownership: catchup does not adopt a worker that predates it. Its promise is
+// never hijacked mid-flight — but under R4 a *successful* completion while the drain is active is
+// still a full checkpoint, so a phase left due by that completion (here, C once N cleared) is picked
+// up by the drain's own admission, not stalled.
 test.each([1, 2])("preexisting ordinary N consuming %s entries is not adopted by catchup", async consumed => {
   const f = fixture();
   let release!: () => void, finishedOrdinary = false;
@@ -126,30 +129,37 @@ test.each([1, 2])("preexisting ordinary N consuming %s entries is not adopted by
   release();
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(consumed === 2 ? 1 : 2);
-  expect(f.memory.consolidate).toHaveBeenCalledTimes(consumed === 2 ? 0 : 1);
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
   expect(f.memory.dream).not.toHaveBeenCalled();
-  expect(f.scheduler.catchupStatus().state).toBe(consumed === 2 ? "waiting" : "completed");
-  if (consumed === 2) expect(f.scheduler.catchupStatus().phase).toBe("consolidation");
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
-test("preexisting ordinary C is not adopted for catchup's D callback", async () => {
+test("preexisting ordinary C is not adopted, but its success is a checkpoint that launches the drain's own C", async () => {
   const f = fixture();
-  let release!: () => void;
+  const releases: Array<() => void> = [];
   f.memory.consolidate.mockImplementation(async () => {
-    await new Promise<void>(resolve => { release = resolve; });
+    await new Promise<void>(resolve => { releases.push(resolve); });
     return { outcome: "success" };
   });
-  f.memory.taskEligibility.mockImplementation(phase => ({ due: phase === "consolidation" }));
+  f.memory.taskEligibility.mockImplementation(phase =>
+    ({ due: phase === "consolidation" && f.memory.consolidate.mock.calls.length < 2 }));
   f.scheduler.reconcile({ ...projection, appendedEntryIds: [2] });
   await tick();
   f.scheduler.startCatchup(projection);
   for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
   expect(f.memory.noting).toHaveBeenCalledTimes(2);
-  expect(f.memory.consolidate).toHaveBeenCalledTimes(1);
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(1); // ordinary C is busy, not adopted
   expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "consolidation" });
-  release(); await tick(); await tick();
+  // The ordinary C's success is a full checkpoint (R4): C is still due, so the drain launches its own
+  // C admission rather than stalling — the promise itself was never adopted, only its outcome observed.
+  releases[0]!(); await tick(); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(2);
   expect(f.memory.dream).not.toHaveBeenCalled();
-  expect(f.scheduler.catchupStatus()).toMatchObject({ state: "waiting", phase: "consolidation" });
+  expect(f.scheduler.catchupStatus().state).toBe("running");
+  releases[1]!(); await tick(); await tick();
+  expect(f.memory.consolidate).toHaveBeenCalledTimes(2);
+  expect(f.memory.dream).not.toHaveBeenCalled();
+  expect(f.scheduler.catchupStatus().state).toBe("completed");
 });
 
 test.each(["consolidation", "dreaming"] as const)("catchup-owned %s terminal failures fence future continuation", async phase => {

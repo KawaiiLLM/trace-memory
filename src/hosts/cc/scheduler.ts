@@ -78,7 +78,13 @@ export class CcTaskScheduler {
 
   startCatchup(reconcile: CcReconcileResult, ticket = this.cancellationEpoch): CcCatchupStatus {
     if (ticket !== this.cancellationEpoch) return this.failedStatus("catchup was cancelled before admission");
-    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) return this.catchupStatus();
+    if (this.catchup && (this.catchup.state === "running" || this.catchup.state === "waiting")) {
+      // A waiting drain with nothing drain-owned active has no in-process completion left to wake it
+      // (e.g. a C/D admission dropped by a foreign claim). A repeated command is that recovery. A
+      // running drain is only reported, never duplicated.
+      if (this.catchup.state === "waiting" && !this.catchup.active.size) this.driveCatchup(true);
+      return this.catchupStatus();
+    }
     if (this.stopped) return this.failedStatus("CC executor is shutting down");
     if (!this.worker)
       return this.failedStatus("CC per-phase worker models, thinking levels, executable version and finite context capacities are not configured");
@@ -139,12 +145,23 @@ export class CcTaskScheduler {
     this.reserve(phase, () => this.runCandidates(phase, own.sessionId, candidates, cancellationEpoch));
   }
 
+  /**
+   * R4: a successful ordinary completion while a drain is active is a full checkpoint (all of N/C/D
+   * checked); any other ordinary outcome (failure, cancelled, empty, dropped, bounced) stays N-only,
+   * matching the per-poll drive.
+   */
   private reserve(phase: CcWorkerPhase, run: () => Promise<CcTaskResult | undefined>,
-    shouldDrive: () => boolean = () => { this.driveCatchup(false); return false; }): void {
-    const work = Promise.resolve().then(run);
+    shouldDrive: (result: CcTaskResult | undefined) => boolean = result => {
+      const drain = this.catchup;
+      const drainActive = !!drain && (drain.state === "running" || drain.state === "waiting");
+      this.driveCatchup(drainActive && result?.outcome === "success");
+      return false;
+    }): void {
+    let settled: CcTaskResult | undefined;
+    const work = Promise.resolve().then(run).then(result => { settled = result; return result; });
     this.slots.set(phase, work);
     void work.catch(error => this.diagnostic(`${phase} worker failed: ${error instanceof Error ? error.message : String(error)}`))
-      .finally(() => { this.slots.delete(phase); if (shouldDrive()) this.driveCatchup(); });
+      .finally(() => { this.slots.delete(phase); if (shouldDrive(settled)) this.driveCatchup(); });
   }
 
   private common(phase: CcWorkerPhase, target: TaskTarget, borrowed: boolean, automatic: boolean, boundary?: TaskBoundary) {
@@ -191,8 +208,10 @@ export class CcTaskScheduler {
   }
 
   /**
-   * One catchup checkpoint. Start and every successful catchup-owned completion enter here and
-   * independently check N, C and D. Busy ordinary slots are observed once and never adopted or queued.
+   * One catchup checkpoint (R4). Start, every successful completion (catchup-owned or ordinary) while
+   * a drain is active, and a repeated `catchup` command on an idle waiting drain enter here with
+   * checkAll and independently check N, C and D. The per-poll/per-entry drive stays N-only (checkAll
+   * false). Busy ordinary slots are observed once and never adopted or queued.
    */
   private driveCatchup(checkAll = true): void {
     const drain = this.catchup;
