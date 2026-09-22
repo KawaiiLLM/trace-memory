@@ -28,9 +28,14 @@ export class AdmittedDreamerScenarios {
   async run(memory: TraceMemory, path: TaskTarget, scenario: DreamerScenario) {
     if (this.pending) throw new Error("a Dreamer fixture scenario is already queued");
     this.pending = scenario;
+    const trigger = memory.config.dreaming.triggerTokens;
+    // These fixtures exercise an explicitly requested admitted run, not threshold policy. Keep their
+    // tiny synthetic pools reachable under ticket 68's production 5k cap.
+    memory.config.dreaming.triggerTokens = 1;
     try {
       return await memory.dream(path);
     } finally {
+      memory.config.dreaming.triggerTokens = trigger;
       this.pending = undefined;
     }
   }

@@ -363,7 +363,7 @@ test("20c 2026-09-08 scenario 11: when the bounded views miss a cap compact asks
 // material reserved out of it before either refill ----
 
 test("64c: a tight derived allowance bounds consolidated history", () => {
-  setKnowledgeCapacity(memory, 2);
+  setKnowledgeCapacity(memory, 3);
   const { s, t } = populated();
   // Already-consolidated facts, large enough that "some space" and "no space" are far apart: about
   // 830 tokens each. Consolidated, so they are refill (a) — optional history in the spare — and not

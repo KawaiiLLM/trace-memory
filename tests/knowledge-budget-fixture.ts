@@ -12,7 +12,7 @@ export function setKnowledgeInjection(memory: TraceMemory, capacity: number): vo
 /** Set an exact total Knowledge input capacity through the real authorities. This intentionally
  * puts the whole capacity in N/C triggers and zeroes the database base for focused renderer tests. */
 export function setKnowledgeCapacity(memory: TraceMemory, capacity: number): void {
-  if (!Number.isSafeInteger(capacity) || capacity < 2) throw new Error("test total Knowledge capacity must be a safe integer of at least two");
+  if (!Number.isSafeInteger(capacity) || capacity < 3) throw new Error("test total Knowledge capacity must be a safe integer of at least three");
   setKnowledgeInjection(memory, 0);
   memory.config.noting.triggerTokens = 1;
   memory.config.consolidation.triggerTokens = 1;
