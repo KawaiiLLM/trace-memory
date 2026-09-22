@@ -19,7 +19,8 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
   const touched = new Set<number>();
   const dreaming = store.isDreamingRun(run);
   if (!batch || typeof batch !== "object" || Array.isArray(batch) || !Array.isArray(batch.operations) || !Array.isArray(batch.skipped) || Object.keys(batch).some(k => !["operations", "skipped"].includes(k))) {
-    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch, diagnostics: [] as ConsolidationDiagnostic[] };
+    return { results: ["rejected: memory expects {operations: [...], skipped: [...]} only"], operations, batch,
+      diagnostics: [] as ConsolidationDiagnostic[], declinedCommits: new Map<MemoryBatch["skipped"][number], number>() };
   }
   const facts = (raw: unknown, errors: string[], nonempty = false): number[] => {
     if (!Array.isArray(raw) || (nonempty && !raw.length)) { errors.push("expected fact array" + (nonempty ? "; supports must not be empty" : "")); return []; }
@@ -108,6 +109,9 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
     results.push(errors.length ? `rejected: ${errors.join("; ")}` : "ok");
   });
   const declined = new Set<number>();
+  // Carries each dreaming skip's already-resolved numeric revision to bindMemory, so a later consumer
+  // (runDreaming) never has to re-derive it by re-parsing the rendered `K<id>@<commit>` handle.
+  const declinedCommits = new Map<MemoryBatch["skipped"][number], number>();
   for (const skipped of batch.skipped) {
     const errors: string[] = [];
     if (!skipped || typeof skipped !== "object" || Array.isArray(skipped)) errors.push("invalid skipped item");
@@ -123,6 +127,7 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (problem) errors.push(`${handle}: ${problem}`);
       else if (declined.has(commit)) errors.push("duplicate skipped knowledge");
       declined.add(commit);
+      declinedCommits.set(skipped, commit);
     } else {
       const ids = facts(["fact" in skipped ? skipped.fact : undefined], errors);
       if (Object.keys(skipped).some(k => !["fact", "because"].includes(k)) || typeof skipped.because !== "string" || !skipped.because.trim()) errors.push("skipped requires fact and non-empty because only");
@@ -147,5 +152,5 @@ export function prepareMemory(store: Store, sessionId: number, raw: unknown, run
       if (tokens(body.text) > 200) diagnostics.push({ kind: "over_200_tokens", knowledge: body.label, tokens: tokens(body.text) });
     }
   }
-  return { results, operations, batch, diagnostics };
+  return { results, operations, batch, diagnostics, declinedCommits };
 }

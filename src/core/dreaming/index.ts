@@ -145,8 +145,7 @@ export async function runDreaming(store: Store, frozen: ReturnType<typeof freeze
   const checked = check();
   const problems = [...checked.problems, ...(result.outcome === "success" ? [] : [String(result.output ?? result.outcome)]),
     ...(requestMissing(result) ? ["runAgent must return the exact provider request"] : [])];
-  const skippedRevisionIds = binding.memory.skipped.map(value => Number(/^K[1-9]\d*@([1-9]\d*)$/.exec(value.knowledge)?.[1]))
-    .filter(Number.isSafeInteger);
+  const skippedRevisionIds = binding.memory.skippedCommits;
   const frozenSet = new Set(frozen.frozenIds);
   const operatedFrozenIds = new Set(checked.ownRevisionIds.flatMap(id => {
     const revision = store.knowledgeRevision(id);

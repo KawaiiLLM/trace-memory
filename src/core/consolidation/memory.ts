@@ -24,6 +24,8 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
   const allCommitted: import("../store/index.ts").CommittedKnowledgeOp[] = [];
   // Accepted Dreamer skips become exact processing records when the frozen range settles.
   const skipped: { knowledge: string; because: string }[] = [];
+  // Parallel to `skipped`: each entry's already-resolved numeric revision (68 fix 4 — no re-parsing).
+  const skippedCommits: number[] = [];
   let problems: string[] = [];
   let committed: { runId: number; committed: import("../store/index.ts").CommittedKnowledgeOp[];
     diagnostics: import("./commit.ts").ConsolidationDiagnostic[]; output: MemoryBatch } | undefined;
@@ -47,10 +49,12 @@ export function bindMemory(store: Store, sessionId: number, run: RunInput,
       return JSON.stringify({ results: prepared.results.map(() => `rejected: ${problems.join("; ")}`) }); }
     committed = { ...result, diagnostics, output: structuredClone(prepared.batch) };
     allCommitted.push(...result.committed);
-    if (skippable) skipped.push(...prepared.batch.skipped.flatMap(skip => "knowledge" in skip ? [skip] : []));
+    if (skippable) for (const skip of prepared.batch.skipped) if ("knowledge" in skip) {
+      skipped.push(skip); skippedCommits.push(prepared.declinedCommits.get(skip)!);
+    }
     problems = []; failure = undefined;
     return receipt(result.committed);
   };
-  return { execute, reread, sequence, allCommitted, skipped, get readCommits() { return [...reads.keys()]; },
+  return { execute, reread, sequence, allCommitted, skipped, skippedCommits, get readCommits() { return [...reads.keys()]; },
     get committed() { return committed; }, get problems() { return problems; }, get failure() { return failure; } };
 }
