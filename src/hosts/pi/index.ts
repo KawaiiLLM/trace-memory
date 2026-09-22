@@ -365,6 +365,35 @@ export default function (pi: ExtensionAPI) {
   // background runs never enter Pi's session totals, which only count entries of the session file.
   const activity = { running: new Map<WorkerPhase, number>() };
   const runningKind = (kind: WorkerPhase) => (activity.running.get(kind) ?? 0) > 0;
+  /** Ticket 69: Consolidation and Dreaming are only worth re-evaluating per ingested entry while
+   * something that can change their answer may have happened since the last time each was checked.
+   * Noting has no entry here — it is always re-evaluated per entry, exactly as before. A phase disarms
+   * itself the moment its own evaluation comes back not-due (nothing changed it, so nothing will,
+   * until an arming event below happens); it never disarms merely by being launched, so a launch that
+   * ends up dropped, fork-waiting or bounced off a busy slot leaves it exactly as armed as it was —
+   * the next opportunity retries it, as today. `noting: true` is never read; it exists only so `kind:
+   * WorkerPhase` can index this object without narrowing. Executor start (this initializer) is itself
+   * an arming event. */
+  const armed: Record<WorkerPhase, boolean> = { noting: true, consolidation: true, dreaming: true };
+  /** A completed run of ANY phase — including Noting — may have committed facts or knowledge, so it
+   * arms both Consolidation and Dreaming for re-evaluation (68 R4's own trigger: "a Noting run that
+   * commits facts re-checks Consolidation immediately"). Called beside the other arming events: restore
+   * (session start, branch switch), enabling memory, and a knowledge-budget settings change. A phase
+   * trigger has no live-reconfiguration path in Pi (`configure` below refuses it at runtime), so
+   * changing one only takes effect through an extension reload, which is a `restore` and arms there. */
+  const armCD = () => { armed.consolidation = true; armed.dreaming = true; };
+  /** The signal-based re-arm below closes what would otherwise be this mechanism's blind spot: a
+   * commit made through a DIFFERENT connection to this same database file — another executor, or (in
+   * this codebase's own tests) the observer connection used to seed fixtures — touches none of the
+   * named events above, so the flag alone would leave it unnoticed until this executor's own next
+   * arming event. `lastArmSignal` compares `Store.progressSignal` (the same cheap composite the
+   * footer cache in `core/api/read.ts` uses: indexed `MAX(id)`/`MAX(rowid)` lookups over the tables a
+   * commit that changes `consolidationBatch`/`duePools` writes to, plus this session's own project)
+   * against its last-seen value at every opportunity. A change re-arms both phases for that same call,
+   * so the very next entry after an out-of-band commit re-checks it — one indexed query, not the
+   * taskEligibility computation this ticket removes from the per-entry path, and never triggered by
+   * ingesting Raw alone, since Store.progressSignal deliberately excludes the source/entry tables. */
+  let lastArmSignal: string | undefined;
   /** Ticket 24 "Footer counts and cost" and "Indicator semantics" (24a), scope and colours revised by
    * ticket 51. One status item, one line:
    *
@@ -633,6 +662,7 @@ export default function (pi: ExtensionAPI) {
     }
     current = undefined;
     reconciledLeaf = undefined; reconciled = undefined; // 22b: a restored session reconciles its ancestry from the start
+    armCD(); // ticket 69: a restore (session start or branch switch) rebuilds the selected path, so C and D are re-checked at the next opportunity
     reconcile(false);
     showSpend(ctx);
     if (state.sessionId) {
@@ -924,11 +954,13 @@ export default function (pi: ExtensionAPI) {
     void settled.catch(error => { try { context.ui.notify(`Trace Memory cleanup failed: ${String(error)}`, "error"); } catch { /* exit must still finish */ } });
     return settled;
   };
-  const checkQueues = (opportunity?: TaskTarget) => {
+  const checkQueues = (opportunity?: TaskTarget, phases: readonly WorkerPhase[] = ["noting", "consolidation", "dreaming"], includeBorrowed = true) => {
     if (closed || !enabled() || !state.sessionId || !state.head) return;
     const context = ctx;
     const own = opportunity ?? { sessionId: state.sessionId, branch: state.branch, headTurnId: state.head, triggerEntryId: state.sourceHead };
-    for (const kind of ["noting", "consolidation", "dreaming"] as const) {
+    const signal = memory.store.progressSignal(own.sessionId);
+    if (signal !== lastArmSignal) { lastArmSignal = signal; armCD(); }
+    for (const kind of phases) {
       if (slots.has(kind)) continue;
       const selected = launch(kind);
       // The readiness wait follows the mode that will actually run: a session the cache-miss latch has
@@ -936,17 +968,31 @@ export default function (pi: ExtensionAPI) {
       // nothing. The requested mode stays what it is, for the audit (review 2026-09-08). 29d removed
       // the delivery pause that used to read this too.
       const effective = effectiveMode(selected.mode, { kind, target: own });
+      // Ticket 69: Noting is always evaluated (own and borrowed, exactly as before). Consolidation and
+      // Dreaming are evaluated only while armed — an ingested entry alone cannot change either answer
+      // (67/69: no fact and no knowledge revision comes from Raw), so a disarmed phase costs nothing
+      // here until something that can change it happens. The borrowed closed-session scan below is
+      // untouched by this gate and keeps running every opportunity, as before.
       let due = false;
-      try { ({ due } = memory.taskEligibility(kind, own)); }
-      catch (error) { context.ui.notify(String(error), "error"); }
+      const evaluate = kind === "noting" || armed[kind];
+      if (evaluate) {
+        try { ({ due } = memory.taskEligibility(kind, own)); }
+        catch (error) { context.ui.notify(String(error), "error"); }
+        if (kind !== "noting") armed[kind] = due; // not-due disarms; due leaves it armed until launch settles
+      }
       // 19c "Trigger versus launch": the threshold above decides that this task is due; the checkpoint
       // decides when it may launch. A due fork-mode task whose native checkpoint is not yet persisted,
       // reopenable and free of an open tool-call group waits for the next safe boundary — no timer, no
       // duplicate task, no progress, and starting later is not a new extraction trigger. Borrowed
       // closed-session work is fresh-context and is never held back by this.
       const waiting = due ? forkWait(context, effective) : undefined;
+      // Ticket 69's completion checkpoint (below) is a NEW kind of opportunity the borrowed scan's
+      // "existing per-opportunity scan unchanged" promise never anticipated: it exists only to re-check
+      // OWN C/D urgency immediately after a commit, not to give idle-time borrowed work an extra,
+      // earlier chance to fan out. `includeBorrowed=false` there keeps the scan's timing exactly what
+      // it was — the next ordinary per-entry opportunity — while still admitting due OWN work now.
       const candidates = [...(due && !waiting ? [{ ...own, borrowed: false }] : []),
-        ...(kind === "dreaming" ? [] : memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
+        ...(kind === "dreaming" || !includeBorrowed ? [] : memory.store.closedTasks(kind, own.sessionId, memory.config.closedSessionScope)
           .map(target => ({ ...target, borrowed: true })))];
       if (!candidates.length) continue;
       const slot: Slot = { target: own }; // ordinary automatic work: the whole pending set, no frozen boundary
@@ -976,6 +1022,19 @@ export default function (pi: ExtensionAPI) {
         context.ui.notify(String(error), "error");
       }), context, () => {
         showSpend(context);
+        // Ticket 69's completion checkpoint: ANY phase's non-empty, non-dropped completion (success or
+        // failure — a failed run may still have committed incrementally) arms C and D and checks them
+        // immediately, at the current head, rather than waiting for the next ingested entry. `work()`
+        // above only ever resolves `settled` to a truthy value when the outcome was neither, so a
+        // truthy `settled` is exactly that case. Gated against `signal` — this call's own progress
+        // snapshot, taken before this task was admitted, not the shared `lastArmSignal` another
+        // concurrent phase or entry may have moved meanwhile: a run that settles without moving
+        // `consolidationBatch`/`duePools` at all (success or failure, nothing committed — a Consolidator
+        // that only ever replies with prose is the standing example) must not re-admit itself in a tight
+        // synchronous loop with no throttling entry between attempts; it falls back to the ordinary
+        // next-entry pace instead, exactly as before this ticket. A run that did commit something
+        // always changes this signal, so the immediate check still fires for it.
+        if (settled && memory.store.progressSignal(own.sessionId) !== signal) { armCD(); checkQueues(undefined, ["consolidation", "dreaming"], false); }
         // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
         // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
         if (catchup) driveCatchup(settled?.outcome === "success");
@@ -1049,11 +1108,22 @@ export default function (pi: ExtensionAPI) {
         { borrowed: false, automatic: phase !== "noting", ...(boundary ? { boundary } : {}) });
       slot.result = promise.catch(() => undefined);
       let checkpoint = false;
+      // Ticket 69: independent of R4's own catchup checkpoint (`checkpoint` above, successful-only),
+      // any non-empty non-dropped outcome of ANY phase — including a catchup-owned failure — arms C
+      // and D (a partial commit before a failure is still a commit), for the ordinary per-entry path
+      // to pick up once the drain ends. This does NOT also run an immediate ordinary-path check here:
+      // a successful completion already gets one, more completely, from `driveCatchup()`'s own R4
+      // recursion below (noting's drain condition plus C and D, with proper `c.active` bookkeeping);
+      // running the ordinary `checkQueues` here too would race it for the slot and can leave a
+      // catchup-owned admission invisible to the drain's own state. A non-success outcome must not
+      // launch a new admission at all here — the drain ends honestly on it, exactly as before 69.
+      let completed = false;
       const handled = promise.then(result => {
         if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
           for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
         reportProblems(result, context);
         const outcome = (result as { outcome?: string }).outcome;
+        completed = outcome !== undefined && outcome !== "empty" && outcome !== "dropped";
         checkpoint = outcome === "success";
         if (c.stopped) { c.outcome = "stopped"; checkpoint = false; return; }
         const permanent = (result as { permanent?: string }).permanent;
@@ -1067,6 +1137,7 @@ export default function (pi: ExtensionAPI) {
       }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
       trackSlot(phase, slot, handled, context, () => {
         c.active.delete(phase); showSpend(context);
+        if (completed) armCD();
         if (catchup !== c) return; // A late completion owns no checkpoint in a replacement drain.
         if (checkpoint) driveCatchup();
         else finishCatchup(c); // empty/dropped settle this opportunity but never re-arm it.
@@ -1192,16 +1263,26 @@ export default function (pi: ExtensionAPI) {
     context.ui.notify(`Trace Memory: compaction is running ${phase} to reduce the pending ${kind === "noting" ? "Raw" : kind === "dreaming" ? "knowledge" : "facts"}.`, "info");
     const promise = attemptPhase(context, kind, target, { mode: "subagent", model: modelName(kind) },
       { borrowed: false, automatic: false, boundary, signal });
+    let recovered: string | undefined;
     const settled = trackSlot(kind, slot, promise.then(result => {
       reportProblems(result, context);
+      recovered = (result as { outcome?: string }).outcome;
       if (result.outcome === "failure") context.ui.notify(`Trace Memory: ${phase} recovery failed. ${result.problems.join("; ")}`, "warning");
       return result;
     },
       error => { context.ui.notify(String(error), "error"); return undefined; }),
       // Deliberately not an R4 checkpoint (unlike the ordinary checkQueues site): this function's own
       // contract above is "do not ... turn recovery into a drain" — a bounded, one-shot recovery
-      // admission that must not compete with the catchup drain for the slot it just freed or claimed.
-      context, () => { showSpend(context); if (catchup) driveCatchup(false); });
+      // admission that must not compete with the catchup drain, or with `session_before_compact`'s own
+      // concurrent recovery of a sibling phase, for a slot. Ticket 69 arms C and D here (a
+      // compaction-recovery run that actually ran, not empty/dropped, may have committed), but does
+      // not also run the ordinary immediate check that site does: that would admit through a second,
+      // independent path exactly what this function's own contract exists to prevent racing.
+      context, () => {
+        showSpend(context);
+        if (recovered !== undefined && recovered !== "empty" && recovered !== "dropped") armCD();
+        if (catchup) driveCatchup(false);
+      });
     slot.result = settled;
     const result = await settled;
     return { used: !!result && "runId" in result, result };
@@ -1378,6 +1459,11 @@ export default function (pi: ExtensionAPI) {
       if (!state.sessionId || !current?.id) throw new Error("A tool call requires an assistant reply and current turn");
       const content = bound!.find(t => t.name === definition.name)!.execute(raw);
       if (toolRejected(definition.name, content)) throw new Error(content);
+      // Ticket 69: a manual `note`/`memory` commit is a real commit in this executor, made outside any
+      // automatic run's own completion checkpoint, so it arms C and D itself. Not gated on whether this
+      // particular call actually wrote a fact or a revision (an empty batch or an all-skip review costs
+      // one extra due:false re-check, not a wrong answer).
+      armCD();
       return result(content);
     } }) as unknown as ToolDefinition);
   for (const definition of definitions) pi.registerTool(definition);
@@ -1390,7 +1476,7 @@ export default function (pi: ExtensionAPI) {
     // carriers; enabling creates no generation or one-shot intent.
     save();
     reconciledLeaf = undefined; reconciled = undefined; // 22b: the enrollment switch reconciles from the start too
-    if (value) { reconcile(false); save(); }
+    if (value) { armCD(); reconcile(false); save(); } // ticket 69: enabling memory re-checks C and D at the next opportunity
     showSpend(ctx);
     const { lines, recovery, cost, composition, shared } = sessionSummary();
     const notice = statusBody([...recovery, ...lines, cost, ...composition, ...shared], Math.max(1, (process.stdout.columns ?? 100) - 2));
@@ -1549,6 +1635,7 @@ export default function (pi: ExtensionAPI) {
       try {
         const value = parseKnowledgeBudgetInput(input, budget.name);
         const saved = memory.setKnowledgeBudget(budget.field, value);
+        if (saved.changed) armCD(); // ticket 69: a knowledge-budget change may make a pool due; re-check at the next opportunity
         const base = saved.policy.global + saved.policy.project + saved.policy.session;
         const shared = deriveSharedMaterialAllowance({ noting: memory.config.noting.triggerTokens,
           consolidation: memory.config.consolidation.triggerTokens, dreaming: memory.config.dreaming.triggerTokens });
