@@ -148,9 +148,16 @@ test("32c: Consolidation uses the selected oldest fact, not the smallest F id or
   expect(m.store.consolidationBatch(target.sessionId, "main", next.id).map(f => f.id)).toEqual([2, 1]);
 });
 
-test("64c: Dreamer terminal failure consumes its pair once; a later pair settles independently without retry", async () => {
+test("68: Dreamer terminal outcomes consume accepted skips; a later range settles independently", async () => {
   let outcome: "failure" | "success" = "failure";
-  const m = open(":memory:", async () => ({ outcome, output: outcome, request }));
+  const m = open(":memory:", async input => {
+    if (input.kind !== "dreaming") return { outcome, output: outcome, request };
+    const handles = [...new Set([...input.material.changed.matchAll(/K\d+@\d+/g)].map(match => match[0]))];
+    input.tools.find(tool => tool.name === "memory")!.execute({ operations: [],
+      skipped: handles.map(knowledge => ({ knowledge, because: "fixture reviewed unchanged" })) });
+    return { outcome, output: outcome, request };
+  });
+  m.config.dreaming.triggerTokens = 1;
   const target = seed(m);
   const facts = m.store.commitNotingRun({ run: { kind: "manual", sessionId: target.sessionId, createdAt: "now" }, facts: [
     { turnId: target.headTurnId, category: "decision", actor: "user", text: "evidence", source: [`T${target.headTurnId}#user`], createdAt: "now" }] });

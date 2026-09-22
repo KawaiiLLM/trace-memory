@@ -48,9 +48,8 @@ test("64c another target waits while the database-wide Dreamer seat is occupied"
   expect(f.store.db.prepare("SELECT * FROM knowledge_processed").all()).toEqual([]);
   release.release();
   expect((await running).outcome).toBe("success");
-  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([
-    { pool: f.pool, revision_id: f.item.commit },
-  ]);
+  expect(f.store.db.prepare("SELECT pool, revision_id FROM knowledge_processed").all()).toEqual([]);
+  expect(f.store.pendingVersions(f.pool, f.target).map(item => item.revisionId)).toEqual([f.item.commit]);
   expect(f.store.openDreamingRange(f.target.sessionId, f.target.branch)).toBeNull();
 });
 
