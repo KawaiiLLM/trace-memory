@@ -2,14 +2,12 @@ import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { Store } from "../../../src/core/store/index.ts";
 import { host, reply, notingFact, consolidationReply, emptyNote, type Reply } from "./test-host.ts";
-import { recorded } from "../../source-fixture.ts";
 
 // Ticket 18b — manual catchup and stop. Parent scenarios 18 (manual finite drain), 19 (capacity
 // and command parity), 20 (stop and resume) and 21 (drain lifecycle), plus the three named revert
 // probes (a frozen snapshot must not expand, only an active catchup may chain its own batches, and
 // stop must never touch a foreign owner's claim).
 
-const at = "2026-09-08T00:00:00.000Z";
 const command = (h: ReturnType<typeof host>, args: string) => h.commands.get("trace").handler(args, h.ctx);
 const phaseOf = (c: { systemPrompt?: string }) => c.systemPrompt?.includes("You are the Consolidator:") ? "consolidation" : "noting";
 function hold(h: ReturnType<typeof host>) {
@@ -44,7 +42,7 @@ function backlog(h: ReturnType<typeof host>) {
   }
 }
 
-test("18b 2026-09-08: manual catchup drains bounded Noting batches then integrates the frozen-plus-produced facts; later entries and facts stay outside the target", async () => {
+test("67: catchup drains bounded Noting batches but leaves below-threshold facts pending; later entries stay outside the target", async () => {
   const h = host();
   try {
     backlog(h);
@@ -63,9 +61,8 @@ test("18b 2026-09-08: manual catchup drains bounded Noting batches then integrat
     const allFacts = h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b);
     expect(allFacts.length).toBe(2 + notingRuns.length); // 2 pre-existing plus one fact per Noting batch
     const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
-    expect(consolidationRuns).toHaveLength(1); // these few short facts fit one bounded batch; the multi-batch drain is 20c's scenario 16
-    expect(consolidationRuns.flatMap(r => h.memory.store.listConsolidatedFacts(r.id)).map(f => f.id).sort((a, b) => a - b)).toEqual(allFacts);
-    expect(h.memory.store.consolidationBatch(1, "main", head)).toEqual([]);
+    expect(consolidationRuns).toHaveLength(0);
+    expect(h.memory.store.consolidationBatch(1, "main", head).map(f => f.id)).toEqual(allFacts);
     const requestsBefore = h.requests.length;
     // A later ordinary Turn and a later manual fact must stay outside this already-completed target.
     await h.turn();
@@ -75,7 +72,7 @@ test("18b 2026-09-08: manual catchup drains bounded Noting batches then integrat
     expect(h.memory.pendingEntries(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id).length).toBeGreaterThan(0);
     await command(h, "");
-    expect(h.notices.at(-1)).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted, ${allFacts.length} facts integrated)`);
+    expect(h.notices.at(-1)).toContain(`Catchup: completed (${notingRuns.reduce((n, r) => n + JSON.parse(r.response!).entryAudit.entries.length, 0)} entries noted, 0 facts integrated; below-threshold work may remain pending)`);
   } finally { await h.dispose(); }
 }, 30000);
 
@@ -126,7 +123,7 @@ test("18b 2026-09-08: an occupied local slot shows Waiting and resumes on releas
     release[0]!(reply("No durable material.")); // free the ordinary worker's slot
     await settle(h);
     expect(h.requests.length).toBeGreaterThan(1); // the released slot let the waiting catchup continue
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
+    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(2);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
@@ -136,26 +133,24 @@ test("18b 2026-09-08: a foreign claim on the target shows Waiting without steali
   const h = host();
   try {
     await h.turn();
-    expect(h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: at },
-      facts: [], entryIds: h.memory.pendingEntries(1, "main", 1).map(e => e.id) }).ok).toBe(true);
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Foreign claim target", source: ["T1#user"] } ] });
     const other = TraceMemory(h.dbPath, async () => { throw new Error("no model expected"); });
     try {
-      const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "consolidation", "foreign-executor")!;
+      const foreign = other.store.acquireClaim({ sessionId: 1, branch: "main", headTurnId: 1 }, "noting", "foreign-executor")!;
       expect(foreign).not.toBeNull();
       await command(h, "catchup");
-      expect(h.notices.at(-1)).toContain("Catchup: waiting for consolidation");
+      expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
       h.ctx.hasUI = true; h.answers.push("Catch up");
       await command(h, ""); // menu and command share the same controller/state
-      expect(h.notices.at(-1)).toContain("Catchup: waiting for consolidation");
+      expect(h.notices.at(-1)).toContain("Catchup: waiting for noting");
       h.ctx.hasUI = false;
       expect(other.store.releaseClaim(foreign)).toBe(true);
     } finally { other.close(); }
-    h.provider(async () => consolidationReply());
+    h.provider(async c => emptyNote(c) ?? reply("No durable material."));
     await h.turn(); // the next ordinary opportunity retries the waiting catchup
     await settle(h);
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
+    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
@@ -215,7 +210,7 @@ test("18b 2026-09-08: stop while waiting for an occupied slot prevents the froze
 });
 
 test("18b 2026-09-08: stop during Consolidation cancels it and preserves an already-committed Noting batch", async () => {
-  const h = host();
+  const h = host({ "consolidation.triggerTokens": 1 });
   try {
     await h.turn();
     h.provider(async (c, signal) => phaseOf(c) === "consolidation"
@@ -263,12 +258,10 @@ test("18b 2026-09-08: switching tree paths during catchup ends it; it is never r
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts: [
       { category: "observation", actor: "user", text: "Old path fact", source: ["T1#user"] } ] });
-    expect(h.memory.store.commitNotingRun({ run: { kind: "noting", sessionId: 1, branch: "main", createdAt: at },
-      facts: [], entryIds: h.memory.pendingEntries(1, "main", 1).map(e => e.id) }).ok).toBe(true);
     h.provider(async (_c, signal) => new Promise<Reply>(resolve => signal!.addEventListener("abort", () => resolve({ ...reply(""), stopReason: "aborted" }), { once: true })));
     await command(h, "catchup");
     await h.drain();
-    expect(h.requests).toHaveLength(1); // the frozen Consolidation batch is in flight
+    expect(h.requests).toHaveLength(1); // the frozen Noting batch is in flight
     const old = [...h.entries], oldAll = [...h.allEntries];
     h.entries.length = 0; h.allEntries.length = 0;
     h.ctx.sessionManager.getSessionId = () => "forked-session";
@@ -374,15 +367,10 @@ test("18b 2026-09-08: stop invalidates only this executor's own claims, never a 
   } finally { await h.dispose(); }
 });
 
-// ---- Ticket 20c: 18b's single Consolidation call is superseded ------------------------------------
-
-// 18b, 2026-09-08: "the drain runs bounded Noting batches against the frozen entry-id boundary, then
-// ONE Consolidation batch against the frozen fact set". Superseded by ticket 20 on 2026-09-08: both
-// phases drain successive bounded batches until the frozen target is exhausted, under the same host-
-// local controller, the same executor phase slots and the same target claims.
-test("20c 2026-09-08 scenario 16: 18b's single Consolidation call is superseded — catchup drains successive bounded batches in both phases until the frozen target is exhausted", async () => {
-  // A frozen target of more than one batch in each phase, with a below-trigger tail in both: nothing
-  // here is due automatically, so every run below belongs to the manual drain.
+// Ticket 67 supersedes the forced C drain; the many-batch fixture now pins the
+// distinction between N's finite drain and C's ordinary trigger.
+test("67: even a many-batch fact backlog remains pending below C's ordinary trigger", async () => {
+  // More than one batch in each phase, all below trigger: only N may drain.
   const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1_000_000_000, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
   try {
     backlog(h);
@@ -398,20 +386,16 @@ test("20c 2026-09-08 scenario 16: 18b's single Consolidation call is superseded 
     const notingRuns = h.memory.store.listRuns(1).filter(r => r.kind === "noting" && r.outcome === "success");
     const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
     expect(notingRuns.length).toBeGreaterThan(1);        // successive bounded Noting batches
-    expect(consolidationRuns.length).toBeGreaterThan(1); // then successive bounded Consolidation batches
-    // Noting comes first and is exhausted before Consolidation starts.
-    expect(Math.max(...notingRuns.map(r => r.id))).toBeLessThan(Math.min(...consolidationRuns.map(r => r.id)));
-    // Both phases always run in subagent mode and ignore the triggers, but not the batch ceilings.
-    // 25b: this is also the third of Consolidation's launch paths, and it has no other mode on any of them.
+    expect(consolidationRuns).toHaveLength(0); // Only N ignores its ordinary trigger.
+    // Catchup workers remain fresh subagents; only N ignores its trigger.
     expect([...notingRuns, ...consolidationRuns].every(r => r.mode === "subagent")).toBe(true);
     for (const run of consolidationRuns) expect(h.memory.store.listConsolidatedFacts(run.id).length).toBeLessThan(frozenFacts.length);
-    // The frozen target — the pending entries plus the frozen facts and the ones those batches produced
-    // — is exhausted exactly, with no fact consolidated twice.
+    // The frozen Raw target is exhausted; every fact remains pending.
     const all = consolidationRuns.flatMap(r => h.memory.store.listConsolidatedFacts(r.id).map(f => f.id));
     expect(new Set(all).size).toBe(all.length);
-    expect(all.sort((a, b) => a - b)).toEqual(h.memory.store.listSessionFacts(1).map(f => f.id).sort((a, b) => a - b));
+    expect(all).toEqual([]);
     expect(h.memory.pendingEntries(1, "main", head)).toEqual([]);
-    expect(h.memory.store.consolidationBatch(1, "main", head)).toEqual([]);
+    expect(h.memory.store.consolidationBatch(1, "main", head).length).toBeGreaterThanOrEqual(frozenFacts.length);
     // Later entries and unrelated later facts were never pulled into the frozen target.
     const requests = h.requests.length;
     await h.turn();
@@ -424,8 +408,8 @@ test("20c 2026-09-08 scenario 16: 18b's single Consolidation call is superseded 
   } finally { await h.dispose(); }
 }, 60000);
 
-test("20c 2026-09-08 scenario 16: stop between Consolidation batches discards the remaining plan only, leaving the committed batch and the rest of the frozen target", async () => {
-  const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1_000_000_000, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
+test("67: stop after a C commit preserves the commit and does not force another C batch", async () => {
+  const h = host({ "consolidation.batchTokens": 400, "consolidation.triggerTokens": 1, "noting.triggerTokens": 1_000_000_000, "consolidation.maxToolRounds": 6 });
   try {
     await h.turn();
     h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 })[2]!.execute({ facts:
@@ -448,36 +432,42 @@ test("20c 2026-09-08 scenario 16: stop between Consolidation batches discards th
     expect(stoppedOnce).toBe(true);
     const consolidationRuns = h.memory.store.listRuns(1).filter(r => r.kind === "consolidation" && r.outcome === "success");
     expect(consolidationRuns).toHaveLength(1); // the committed batch survives; no further batch was scheduled
-    // Durable pending facts are not deleted: the rest of the frozen target waits for a new invocation.
+    // Durable pending facts are not deleted or marked processed by the stopped controller.
     const remaining = h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id);
+    const processed = h.memory.store.listConsolidatedFacts(consolidationRuns[0]!.id).map(f => f.id);
     expect(remaining.length).toBeGreaterThan(0);
-    expect(remaining.every(id => frozen.includes(id) || !frozen.includes(id))).toBe(true);
+    expect(frozen.every(id => remaining.includes(id) || processed.includes(id))).toBe(true);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: stopped");
-    // A new catchup freezes a fresh target over what is left and drains it.
+    // No pending N means no N-completion opportunity: catchup is not a forced C drain.
     await command(h, "catchup");
     await settle(h);
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toEqual([]);
+    expect(h.memory.store.consolidationBatch(1, "main", 1).map(f => f.id)).toEqual(remaining);
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 }, 60000);
 
 test("review 2026-09-08: an unavailable Consolidator model fails the catchup once instead of re-admitting it in a loop", async () => {
-  const h = host({ "noting.triggerTokens": 1e9, consolidationModel: "missing/model" });
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, consolidationModel: "missing/model" });
   try {
     await h.turn();
-    recorded(h.memory, 1, "main", 1);
+    h.provider(async c => emptyNote(c) ?? reply("done"));
     const note = h.memory.tools({ kind: "manual", sessionId: 1, branch: "main", currentTurnId: 1 }).find(t => t.name === "note")!;
     expect(note.execute({ facts: [{ category: "decision", actor: "user", text: "Use pnpm", source: ["T1#user"] }] })).toContain("ok: F1");
     let lookups = 0;
     // A re-admission loop has no wait a timeout could catch, so the stub itself stops it after a few lookups.
-    h.ctx.modelRegistry.find = () => { if (++lookups > 3) throw new Error("probe: the catchup re-admitted a permanent configuration error"); return undefined; };
+    const find = h.ctx.modelRegistry.find.bind(h.ctx.modelRegistry);
+    h.ctx.modelRegistry.find = (provider, id) => {
+      if (provider !== "missing") return find(provider, id);
+      if (++lookups > 3) throw new Error("probe: the catchup re-admitted a permanent configuration error");
+      return undefined;
+    };
     await command(h, "catchup");
     await h.drain();
     expect(lookups).toBe(1); // one admission, one lookup: a configuration error is not a wait to retry
     expect(h.notices.filter(n => n.includes("Consolidation capacity: unavailable model"))).toHaveLength(1);
-    expect(h.requests).toEqual([]);
+    expect(h.requests.length).toBeGreaterThan(0); // N succeeded before C admission failed.
     await command(h, "");
     expect(h.notices.at(-1)).toContain("Catchup: failed");
     expect(h.notices.at(-1)).toContain("unavailable model");

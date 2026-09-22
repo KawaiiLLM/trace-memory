@@ -723,19 +723,34 @@ export function readFacade(store: Store, config: TraceMemoryConfig, prepare: (ad
       // not Noting's next batch, and keep a newest whole suffix under the shared view profile.
       // Charge the Raw title, separators and omission receipt too; even the newest entry may not fit.
       const title = "Pending raw:";
-      const pending = store.pendingEntries(sessionId, branch, headTurnId).map(e => renderEntry(e, config.render, resultText));
-      const costs = pending.map(view => charge([view.content, ...view.receipts]));
-      let omitted = 0, used = charge([title]) + costs.reduce((sum, cost) => sum + cost, 0);
+      const pending = store.pendingEntries(sessionId, branch, headTurnId);
+      const raw: ReturnType<typeof renderEntry>[] = [];
+      let omitted = pending.length, used = charge([title]);
       const receipt = () => omitted ? [`[... ${omitted} earlier pending entries omitted from the carry budget; read them with trace]`] : [];
-      while (used + charge(receipt()) > config.render.episodicBlockTokens && omitted < pending.length)
-        used -= costs[omitted++]!;
+      // A whole suffix is monotone: after the first entry that cannot fit, no earlier
+      // entry can join it. Do not render the history that will only be receipted.
+      for (let i = pending.length - 1; i >= 0; i--) {
+        const view = renderEntry(pending[i]!, config.render, resultText);
+        const cost = charge([view.content, ...view.receipts]);
+        if (used + cost > config.render.episodicBlockTokens) break;
+        omitted--; raw.push(view); used += cost;
+      }
+      // Defer the receipt until the suffix is known: a complete short history has
+      // no receipt, which can itself cost more than its oldest entry.
+      while (raw.length && used + charge(receipt()) > config.render.episodicBlockTokens) {
+        const removed = raw.pop()!;
+        used -= charge([removed.content, ...removed.receipts]); omitted++;
+      }
+      raw.reverse();
       if (used + charge(receipt()) > config.render.episodicBlockTokens)
         throw new Error(`Branch carry capacity: Raw framing and omission receipt exceed render.episodicBlockTokens (${config.render.episodicBlockTokens})`);
-      const raw = pending.slice(omitted);
       const path = { sessionId, headTurnId, branch }, snapshot = store.pathSnapshot(path); // one membership for facts and commits alike
       const facts = store.listSessionFacts(sessionId).filter(f => store.factOnPath(f, path, snapshot)).sort((a, b) => a.id - b.id);
       const factIds = new Set(facts.map(f => f.id));
-      const commits = store.listKnowledgeRevisions().filter(r => store.commitApplies(r, path, snapshot) &&
+      const revisions = store.listKnowledgeRevisions();
+      const input = store.commitGraphInput(revisions).metadata;
+      const applicableFacts = new Map<number, boolean>(), applicableCommits = new Map<number, boolean>();
+      const commits = revisions.filter(r => store.commitApplies(r, path, snapshot, input, applicableFacts, applicableCommits) &&
         r.supports.some(id => factIds.has(id)))
         .map(revision => ({ knowledge: store.getKnowledge(revision.knowledgeId)!, revision }));
       const relations = store.listFactRelationsOnPathOf(facts.map(fact => fact.id), path, snapshot);

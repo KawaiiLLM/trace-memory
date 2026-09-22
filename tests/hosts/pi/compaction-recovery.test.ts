@@ -469,8 +469,8 @@ test("a second unrelated slot owner ends the capacity wait without false recover
   } finally { releaseFirst(); releaseRest(); await h.dispose(); }
 });
 
-test("a compatible reused Noter's exact output enters the unused Consolidation allowance", async () => {
-  const h = host({ ...quiet, ...windows(1, 1, 200) });
+test("a reused Noter's output waits for catchup's ordinary-threshold C without duplicating it", async () => {
+  const h = host({ ...quiet, ...windows(1, 1, 200), "consolidation.triggerTokens": 1 });
   let releaseNoting = () => {}, releaseConsolidation = () => {};
   const notingGate = new Promise<void>(resolve => { releaseNoting = resolve; });
   const consolidationGate = new Promise<void>(resolve => { releaseConsolidation = resolve; });
@@ -490,14 +490,13 @@ test("a compatible reused Noter's exact output enters the unused Consolidation a
     const attempt = compact(h).then(result => { finished = true; return result; });
     await vi.waitFor(() => expect(h.notices.some(n => n.includes("waiting for the running Noting task"))).toBe(true));
     releaseNoting();
-    await vi.waitFor(() => expect(h.notices.some(n => n.includes("compaction is running Consolidation")
-      || n.includes("compaction is waiting for the running Consolidation"))).toBe(true));
+    await vi.waitFor(() => expect(h.notices.join("\n")).toMatch(/compaction is waiting for the occupied Consolidation slot/));
     expect(finished).toBe(false); // native fallback cannot race past the remaining opportunity
     releaseConsolidation();
     expect((await attempt).compaction.summary).toBeTruthy();
     expect(runs(h, "noting")).toHaveLength(1);
     expect(runs(h, "consolidation")).toHaveLength(1);
-    expect(h.notices.some(n => n.includes("after recovery: Noting, Consolidation"))).toBe(true);
+    expect(h.notices.some(n => n.includes("after recovery: Noting"))).toBe(true);
   } finally { releaseNoting(); releaseConsolidation(); await h.dispose(); }
 });
 

@@ -212,14 +212,14 @@ export default function (pi: ExtensionAPI) {
   type State = { enrollment?: { defaultEnabled: boolean; choice: boolean | null }; shared?: boolean; sourceHead?: number; originPiId?: string; sessionId?: number; projectId: number; branch: string; head?: number; piId: string; project?: string; supplementGeneration?: number; supplementServed?: number };
   let state: State;
   // 18b: one manual catchup at a time per executor, host-local state only (no new queue/claim
-  // system — it drives 17c's own executor slot and target claim under a frozen entry/fact snapshot).
+  // system — it drives 17c's own executor slots and claims under a frozen Raw boundary).
   type Catchup = {
     sessionId: number; branch: string; headTurnId: number; triggerEntryId?: number;
     maxEntryId?: number; entryTotal: number; // Noting boundary: undefined means nothing was pending to note
-    factIds: Set<number>; factTotal: number; // Consolidation boundary: pending-at-freeze plus produced-by-this-drain
+    factIds: Set<number>; factTotal: number; // Progress only: C uses ordinary target eligibility, not a frozen fact drain.
     stopped: boolean;
-    runningPhase?: "noting" | "consolidation";
-    waitingPhase?: "noting" | "consolidation";
+    waitingPhase?: "noting";
+    active: Set<WorkerPhase>;
     outcome?: "completed" | "stopped" | "failed";
     diagnostic?: string;
   };
@@ -628,7 +628,7 @@ export default function (pi: ExtensionAPI) {
     // in-flight work; it is never retargeted to the newly selected branch or resumed on reopen.
     if (catchup && !catchup.outcome && (catchup.sessionId !== state.sessionId || catchup.branch !== state.branch)) {
       catchup.stopped = true;
-      if (!catchup.runningPhase) catchup.outcome = "stopped";
+      if (!catchup.active.size) catchup.outcome = "stopped";
       memory.cancelTasks();
     }
     current = undefined;
@@ -753,11 +753,11 @@ export default function (pi: ExtensionAPI) {
       }
     }
     if (state.head && !turnId && memory.store.listSourceEntries(state.sessionId).length) missing("selected ancestry contains no available source entries");
-    memory.selectEntries(state.sessionId, state.branch, selected);
+    if (turnId) memory.store.publishSourcePath(state.sessionId, state.branch, selected, turnId, state.piId);
+    else memory.selectEntries(state.sessionId, state.branch, selected);
     state.sourceHead = selected.at(-1);
     if (turnId) {
       state.head = turnId;
-      memory.store.setCurrentPath(state.sessionId, state.branch, turnId, state.piId);
       if (current) current.id = turnId;
     }
     reconciled = { ids, lineage, turnId, selected, seen, toolCalls };
@@ -813,7 +813,8 @@ export default function (pi: ExtensionAPI) {
     reconcile(false);
     if (enabled() && ended && current?.id && state.sessionId && state.head) memory.store.transaction(() => {
       memory.store.updateTurn(current!.id!, { endedAt: now() });
-      memory.store.setCurrentPath(state.sessionId!, state.branch, state.head!, state.piId);
+      // Reconcile already published this path and cursor atomically; ending a Turn
+      // changes no membership and must not revalidate the entire ancestry.
     });
   };
   pi.on("before_provider_request", (event, context) => {
@@ -976,10 +977,9 @@ export default function (pi: ExtensionAPI) {
     }
     if (catchup) driveCatchup(); // 18b: an ordinary eligible-entry opportunity is the other resumption event.
   };
-  // 18b: manual catchup drains a frozen snapshot (18-"Manual catchup and stop"). It shares 17c's
-  // executor slots and target claim through `attemptPhase`; no second scheduler or queue is added.
-  // `driveCatchup` is the sole place that starts a batch on completion of the previous one — the
-  // one explicit exception to 17b/17c's no-completion-chaining rule.
+  // 67: only Noting drains its frozen Raw boundary. Successful N and C completions
+  // check their downstream phase once through ordinary eligibility and admission.
+  // The explicit controller shares ordinary slots/claims, with no pending-trigger queue.
   const catchupProgress = (c: Catchup) => {
     const remainingEntries = c.maxEntryId === undefined ? 0 : memory.pendingEntries(c.sessionId, c.branch, c.headTurnId).filter(e => e.id <= c.maxEntryId!).length;
     const remainingFacts = memory.store.consolidationBatch(c.sessionId, c.branch, c.headTurnId).filter(f => c.factIds.has(f.id)).length;
@@ -988,43 +988,82 @@ export default function (pi: ExtensionAPI) {
   const catchupLine = (): string | undefined => {
     if (!catchup) return undefined;
     const c = catchup, p = catchupProgress(c);
-    if (c.outcome === "completed") return `Catchup: completed (${c.entryTotal} entries noted, ${c.factTotal} facts integrated)`;
+    if (c.outcome === "completed") return `Catchup: completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending)`;
     if (c.outcome === "stopped") return `Catchup: stopped (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts processed; unprocessed work stays pending; /trace catchup resumes it)`;
     if (c.outcome === "failed") return `Catchup: failed — ${c.diagnostic} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts processed)`;
     if (c.waitingPhase) return `Catchup: waiting for ${c.waitingPhase} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
-    if (c.runningPhase) return `Catchup: running ${c.runningPhase} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
+    if (c.active.size) return `Catchup: running ${[...c.active].join(" + ")} (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
     return `Catchup: idle (${p.entriesDone}/${c.entryTotal} entries, ${p.factsDone}/${c.factTotal} facts)`;
   };
   const hasBackgroundWork = () => runningKind("noting") || runningKind("consolidation") || runningKind("dreaming") || !!(catchup && !catchup.outcome);
+  // Completion checks use ordinary admission: an occupied slot/claim is not a queued
+  // request. Only Noting is a drain; C and D each get one opportunity per upstream success.
+  const checkCatchupDownstream = (c: Catchup, phase: "consolidation" | "dreaming") => {
+    if (catchup !== c || c.stopped || c.outcome || closed || !enabled() || slots.has(phase)) return;
+    const context = ctx;
+    const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
+    try {
+      if (!memory.taskEligibility(phase, own).due) return;
+      const slot: Slot = { target: own };
+      slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1);
+      const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: true });
+      slot.result = promise.catch(() => undefined);
+      let succeeded = false;
+      const handled = promise.then(result => {
+        reportProblems(result, context);
+        succeeded = result.outcome === "success";
+        if (c.stopped) { c.outcome = "stopped"; return; }
+        if (!["success", "empty", "dropped"].includes(result.outcome)) {
+          c.outcome = result.outcome === "cancelled" ? "stopped" : "failed";
+          c.diagnostic = (result as { problems?: string[] }).problems?.join("; ") ?? result.outcome;
+        }
+        const permanent = (result as { permanent?: string }).permanent;
+        if (permanent) { c.outcome = "failed"; c.diagnostic = permanent; }
+      }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
+      trackSlot(phase, slot, handled, context, () => {
+        c.active.delete(phase);
+        if (succeeded && phase === "consolidation") checkCatchupDownstream(c, "dreaming");
+        // Downstream completion never resumes a dropped admission or starts Noting.
+        // It can only close the finite controller after the last N has drained.
+        if (!c.active.size && !catchupProgress(c).remainingEntries) driveCatchup();
+        showSpend(context);
+      });
+    } catch (error) {
+      c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error");
+    }
+  };
   const driveCatchup = () => {
     const c = catchup;
-    if (!c || c.stopped || c.outcome || closed) return;
+    if (!c || c.stopped || c.outcome || closed || !enabled()) return;
     const context = ctx;
     const own = { sessionId: c.sessionId, branch: c.branch, headTurnId: c.headTurnId, triggerEntryId: c.triggerEntryId };
     const p = catchupProgress(c);
-    const phase: "noting" | "consolidation" | undefined = p.remainingEntries ? "noting" : p.remainingFacts ? "consolidation" : undefined;
+    const phase = p.remainingEntries ? "noting" : undefined;
     if (!phase) {
-      c.outcome = "completed"; c.waitingPhase = undefined; c.runningPhase = undefined;
-      context.ui.notify(`Trace Memory: catchup completed (${c.entryTotal} entries noted, ${c.factTotal} facts integrated).`, "info");
+      if (c.active.size) return; // Keep the final C completion's D check attached.
+      c.outcome = "completed"; c.waitingPhase = undefined;
+      context.ui.notify(`Trace Memory: catchup completed (${p.entriesDone} entries noted, ${p.factsDone} facts integrated; below-threshold work may remain pending).`, "info");
       showSpend(context); return;
     }
-    if (slots.has(phase)) { c.waitingPhase = phase; c.runningPhase = undefined; return; } // 17c's slot is not stolen; wait for its release.
+    if (slots.has(phase)) { c.waitingPhase = phase; return; } // 17c's slot is not stolen; wait for its release.
     const foreign = memory.store.getClaim(own.sessionId, phase);
     if (foreign && foreign.expiresAt > Date.now() && foreign.executorId !== memory.executorId) {
-      c.waitingPhase = phase; c.runningPhase = undefined; return; // A live foreign claim on our own target is exposed as Waiting, not stolen.
+      c.waitingPhase = phase; return; // A live foreign claim on our own target is exposed as Waiting, not stolen.
     }
-    c.waitingPhase = undefined; c.runningPhase = phase;
+    c.waitingPhase = undefined;
     // 29e: the *allowable* set, never the exact one — a drain takes it in bounded batches (18b).
-    const boundary = phase === "noting" ? { maxEntryId: c.maxEntryId } : { allowedFactIds: [...c.factIds] };
+    const boundary = { maxEntryId: c.maxEntryId };
     const slot: Slot = { target: own, boundary };
-    slots.set(phase, slot); activity.running.set(phase, 1); showSpend(context);
+    slots.set(phase, slot); c.active.add(phase); activity.running.set(phase, 1); showSpend(context);
     const promise = attemptPhase(context, phase, own, { mode: "subagent", model: modelName(phase) }, { borrowed: false, automatic: false, boundary });
+    let succeeded = false;
     let waited = false; // this attempt itself ended in Waiting (a concurrent drive may set waitingPhase too, and that must not stop the chain)
     const handled = promise.then(result => {
       if (phase === "noting" && result && Array.isArray((result as { facts?: unknown }).facts))
         for (const f of (result as { facts: { id: number }[] }).facts) if (!c.factIds.has(f.id)) { c.factIds.add(f.id); c.factTotal++; }
       reportProblems(result, context);
       const outcome = (result as { outcome?: string }).outcome;
+      succeeded = outcome === "success";
       if (c.stopped) { c.outcome = "stopped"; return; } // Stop wins the race: no further chaining, whatever this batch returned.
       const permanent = (result as { permanent?: string }).permanent;
       if (outcome === "dropped" && permanent) { c.outcome = "failed"; c.diagnostic = permanent; return; } // a configuration error ends the drain
@@ -1036,7 +1075,8 @@ export default function (pi: ExtensionAPI) {
     }, error => { c.outcome = "failed"; c.diagnostic = String(error); context.ui.notify(String(error), "error"); });
     slot.result = promise.catch(() => undefined);
     trackSlot(phase, slot, handled, context, () => {
-      c.runningPhase = undefined; showSpend(context);
+      c.active.delete(phase); showSpend(context);
+      if (succeeded) checkCatchupDownstream(c, "consolidation");
       // Only this explicit drain chains. A dropped attempt waits for a later opportunity;
       // immediately re-driving it would loop without a wait.
       if (!waited) driveCatchup();
@@ -1053,14 +1093,14 @@ export default function (pi: ExtensionAPI) {
     const pendingNow = memory.pendingEntries(sessionId, branch, headTurnId);
     const maxEntryId = pendingNow.length ? Math.max(...pendingNow.map(e => e.id)) : undefined;
     const factsNow = memory.store.consolidationBatch(sessionId, branch, headTurnId).map(f => f.id);
-    catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length, factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false };
+    catchup = { sessionId, branch, headTurnId, triggerEntryId: state.sourceHead, maxEntryId, entryTotal: pendingNow.length, factIds: new Set(factsNow), factTotal: factsNow.length, stopped: false, active: new Set() };
     if (!pendingNow.length && !factsNow.length) { catchup.outcome = "completed"; ctx.ui.notify("Trace Memory: catchup found nothing pending; already caught up.", "info"); return; }
     driveCatchup(); // Starts the cancellable operation and returns; stop remains available while it runs.
     ctx.ui.notify(catchupLine()!, "info"); // Honestly reports the immediate result: running or Waiting for an occupied phase/claim.
   };
   const stopCatchup = () => {
     const active = hasBackgroundWork();
-    if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.runningPhase) catchup.outcome = "stopped"; }
+    if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.active.size) catchup.outcome = "stopped"; }
     memory.cancelTasks(); // Not the `stopping` form: future ordinary/explicit admission for this executor remains possible.
     showSpend(ctx);
     ctx.ui.notify(active ? "Trace Memory: stop requested. This executor's background work is being cancelled; future automatic triggers remain enabled."
@@ -1340,7 +1380,7 @@ export default function (pi: ExtensionAPI) {
     if (state.sessionId) memory.store.setEnrollment(state.sessionId, value);
     else { state.enrollment = { ...enrollment(), choice: value }; persistProvisional(state.enrollment, true); }
     // Disable ends a manual catchup the same way it cancels any other owned in-flight work (18b lifecycle).
-    if (!value) { memory.cancelTasks(); if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.runningPhase) catchup.outcome = "stopped"; } }
+    if (!value) { memory.cancelTasks(); if (catchup && !catchup.outcome) { catchup.stopped = true; if (!catchup.active.size) catchup.outcome = "stopped"; } }
     // Enrollment changes immediately. The next ordinary prompt recomputes delivery from its retained
     // carriers; enabling creates no generation or one-shot intent.
     save();

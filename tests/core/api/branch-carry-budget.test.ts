@@ -1,7 +1,8 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { TraceMemory } from "../../../src/core/api/index.ts";
 import { charge, renderEntry, tokens } from "../../../src/core/render/index.ts";
 import { piSourceBlocks } from "../../../src/hosts/pi/source.ts";
+import * as render from "../../../src/core/render/index.ts";
 
 function fixture(texts: string[], normalized = false) {
   const memory = TraceMemory(":memory:", async () => { throw new Error("No provider expected"); }, {}, undefined, normalized ? piSourceBlocks : undefined);
@@ -65,6 +66,36 @@ test("entry/cleanup integration: carry budgets only its exact normalized Raw suf
   } finally { f.memory.close(); }
 });
 
+test("67: long carry renders only its bounded suffix and prepares applicability once across revisions and cursors", () => {
+  const f = fixture(Array.from({ length: 2_000 }, (_, i) => `history ${i} ` + "word ".repeat(50)));
+  try {
+    const { memory: m, session, turn, entries } = f;
+    for (const lineage of ["left", "right", "reopened"]) m.store.setCurrentPath(session.id, "main", turn.id, lineage);
+    const noted = m.store.commitNotingRun({ run: { kind: "noting", sessionId: session.id, branch: "main", createdAt: "now" },
+      entryIds: [entries[0]!.id], facts: [{ turnId: turn.id, category: "observation", actor: "user", text: "shared evidence",
+        source: [`T${turn.id}#E1@text`], entryIds: [entries[0]!.id], createdAt: "now" }] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const created = m.store.commitConsolidationRun({ path: { sessionId: session.id, branch: "main", headTurnId: turn.id },
+      run: { kind: "manual", sessionId: session.id, createdAt: "now" },
+      operations: Array.from({ length: 100 }, (_, i) => ({ op: "create" as const, handle: `$k${i}`, author: "test", text: `conclusion ${i}`,
+        category: "mechanism" as const, scope: "session" as const, supports: [noted.facts[0]!.id], topics: [], reason: "carry work bound", createdAt: "now" })) });
+    if (!created.ok) throw new Error(created.problems.join("; "));
+    m.config.render.episodicBlockTokens = 250;
+    const rendered = vi.spyOn(render, "renderEntry"), inputs = vi.spyOn(m.store, "commitGraphInput");
+    try {
+      const started = performance.now();
+      const carry = f.carry();
+      process.stdout.write(`67 branch carry ${JSON.stringify({ entries: entries.length, revisions: created.committed.length,
+        graphInputs: inputs.mock.calls.length, renderedEntries: rendered.mock.calls.length, elapsedMs: performance.now() - started })}\n`);
+      expect(inputs).toHaveBeenCalledTimes(1);
+      expect(rendered.mock.calls.length).toBeLessThan(10);
+      expect(carry).toContain("conclusion 0"); expect(carry).toContain("conclusion 99");
+      expect(carry).toContain("history 1999"); expect(carry).not.toContain("history 1 ");
+      expect(carry).toContain("earlier pending entries omitted");
+    } finally { rendered.mockRestore(); inputs.mockRestore(); }
+  } finally { f.memory.close(); }
+});
+
 test("an impossible optional carry envelope fails instead of retaining one oversized entry", () => {
   const f = fixture(["hello world"]);
   try {
@@ -107,7 +138,7 @@ test("carry keeps the newest whole suffix in source order and charges framing an
 });
 
 test("empty carry and a complete small Raw view need no omission receipt", () => {
-  for (const texts of [[], ["hello world"]]) {
+  for (const texts of [[], ["hello world"], ["a", "b", "c"]]) {
     const f = fixture(texts);
     try {
       const views = f.entries.map(e => renderEntry(e, f.memory.config.render).content);
