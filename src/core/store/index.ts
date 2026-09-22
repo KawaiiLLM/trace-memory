@@ -1007,6 +1007,10 @@ export class Store {
     const problem = this.currentPathProblem(sessionId, branch, headTurnId);
     if (problem) throw new Error(problem);
     if (!this.getSession(sessionId)) throw new Error(`session S${sessionId} does not exist`);
+    this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+  }
+
+  private writeCurrentPath(sessionId: number, branch: string, headTurnId: number, lineage: string): void {
     this.db.prepare(`INSERT INTO session_lineage_cursors (session_id, lineage, branch, head_turn_id) VALUES (?, ?, ?, ?)
       ON CONFLICT (session_id, lineage) DO UPDATE SET branch = excluded.branch, head_turn_id = excluded.head_turn_id`)
       .run(sessionId, lineage, branch, headTurnId);
@@ -2762,6 +2766,29 @@ export class Store {
       });
     return preferred && matches.includes(preferred) ? preferred : matches[0] ?? null;
   }
+  /** Publish source selection and its lineage cursor atomically, validating the supplied identities
+   * once without writing and then reparsing the full path. Other lineage cursors remain untouched. */
+  publishSourcePath(sessionId: number, branch: string, entryIds: number[], headTurnId: number, lineage: string): void {
+    this.transaction(() => {
+      this.requireEnabled(sessionId);
+      if (typeof lineage !== "string" || !lineage) throw new Error("current path requires a non-empty lineage");
+      if (!branch || new Set(entryIds).size !== entryIds.length || entryIds.some(id => !Number.isSafeInteger(id) || id < 1))
+        throw new Error("invalid source path");
+      const rows = this.db.prepare("SELECT id, turn_id, session_id FROM source_entries WHERE id IN (SELECT value FROM json_each(?))")
+        .all(JSON.stringify(entryIds));
+      const entries = new Map(rows.map(row => [Number(row.id), { turnId: Number(row.turn_id), sessionId: Number(row.session_id) }]));
+      if (entryIds.some(id => entries.get(id)?.sessionId !== sessionId)) throw new Error("invalid source path");
+      const headAncestry = this.pathTurns({ sessionId, headTurnId });
+      const tail = entryIds.length ? entries.get(entryIds.at(-1)!)!.turnId : null;
+      const tailAncestry = tail !== null && !headAncestry.has(tail) ? this.pathTurns({ sessionId, headTurnId: tail }) : undefined;
+      const problem = this.pathCoherenceProblem(sessionId, branch, headTurnId, entryIds, entries, headAncestry, tailAncestry);
+      if (problem) throw new Error(problem);
+      this.db.prepare("INSERT INTO source_paths (session_id, branch, entry_ids) VALUES (?, ?, ?) ON CONFLICT (session_id, branch) DO UPDATE SET entry_ids = excluded.entry_ids")
+        .run(sessionId, branch, JSON.stringify(entryIds));
+      this.writeCurrentPath(sessionId, branch, headTurnId, lineage);
+    });
+  }
+
   selectSourcePath(sessionId: number, branch: string, entryIds: number[]): void {
     return this.transaction(() => {
       this.requireEnabled(sessionId);
