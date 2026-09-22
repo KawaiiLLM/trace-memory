@@ -217,17 +217,25 @@ test("Hook-first bootstrap and fresh resume validate known records without per-r
   finally { hook.close(); }
   const importer = new CcImporter(config, readBinding(config, nativeSessionId)!);
   const transaction = vi.spyOn(importer.memory.store, "transaction");
+  const eligibility = vi.spyOn(importer.memory, "taskEligibility");
+  const scheduler = new CcTaskScheduler(importer.memory, undefined, () => {});
   try {
     const resumed = await importer.reconcile();
     expect(resumed.bootstrap).toBe(true);
     expect(resumed.appendedEntryIds).toEqual([]);
     expect(resumed.selectedEntryIds).toHaveLength(2000);
     expect(transaction.mock.calls.length).toBeLessThan(10);
+    scheduler.reconcile(resumed);
+    expect(eligibility).not.toHaveBeenCalled();
     expect((await importer.reconcile()).bootstrap).toBe(false);
     const next = records(1001).slice(-2);
     appendFileSync(transcriptPath, next.map(line).join(""));
     const live = await importer.reconcile();
     expect(live.bootstrap).toBe(false);
     expect(live.appendedEntryIds).toHaveLength(2);
-  } finally { transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
+    scheduler.reconcile(live);
+    expect(eligibility).toHaveBeenCalledTimes(6);
+    expect(eligibility.mock.calls.map(call => call[1].triggerEntryId)).toEqual(
+      live.appendedEntryIds.flatMap(id => [id, id, id]));
+  } finally { scheduler.stop(); eligibility.mockRestore(); transaction.mockRestore(); importer.close(); rmSync(dir, { recursive: true, force: true }); }
 });

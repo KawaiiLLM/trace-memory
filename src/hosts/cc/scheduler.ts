@@ -56,13 +56,13 @@ export class CcTaskScheduler {
       }
     }
     if (reconcile.state !== "ready" || reconcile.coreSessionId === null || reconcile.headTurnId === null || !reconcile.selectedEntryIds.length) return;
-    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && (reconcile.bootstrap || reconcile.appendedEntryIds.length)) {
+    if (admitAutomatic && opportunityEpoch === this.cancellationEpoch && reconcile.appendedEntryIds.length) {
       const selected = new Set(reconcile.selectedEntryIds);
-      // Bootstrap publishes history once; only subsequent live increments replay their own
-      // selected entries. The final entry is the bootstrap origin, never the first old record.
-      const opportunities = reconcile.bootstrap ? [reconcile.selectedEntryIds.at(-1)!] : reconcile.appendedEntryIds;
+      // Bootstrap collapses actual new selected history, never an instance-start opportunity.
+      // Hook-first/known resumes and newly imported siblings grant no final-path check.
+      const appended = reconcile.appendedEntryIds.filter(id => selected.has(id));
+      const opportunities = reconcile.bootstrap && appended.length ? [reconcile.selectedEntryIds.at(-1)!] : appended;
       for (const entryId of opportunities) {
-        if (!selected.has(entryId)) continue;
         const entry = this.memory.store.getSourceEntry(entryId);
         if (!entry) throw new Error(`CC appended entry ${entryId} disappeared before scheduling`);
         const own: TaskTarget = { sessionId: reconcile.coreSessionId, branch: reconcile.branch,

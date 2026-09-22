@@ -25,10 +25,13 @@ function fixture() {
     consume: (count: number) => { pending.splice(0, count); }, append: () => pending.push(3) };
 }
 
-test("bootstrap checks the final origin once, including Hook-first, while live entries remain independent", async () => {
+test("bootstrap collapses new selected history only; known resumes and Hook-first do not trigger", async () => {
   const f = fixture();
   f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
   f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [] });
+  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [99] });
+  expect(f.memory.taskEligibility).not.toHaveBeenCalled();
+  f.scheduler.reconcile({ ...projection, bootstrap: true, appendedEntryIds: [1] });
   expect(f.memory.taskEligibility).toHaveBeenCalledTimes(3);
   for (const [, target] of f.memory.taskEligibility.mock.calls as any)
     expect(target).toMatchObject({ triggerEntryId: 2, headTurnId: 1 });
@@ -38,6 +41,19 @@ test("bootstrap checks the final origin once, including Hook-first, while live e
   f.scheduler.reconcile({ ...projection, bootstrap: false, appendedEntryIds: [1, 2] });
   expect(f.memory.taskEligibility).toHaveBeenCalledTimes(6);
   expect((f.memory.taskEligibility.mock.calls as any).map((call: any) => call[1].triggerEntryId)).toEqual([1, 1, 1, 2, 2, 2]);
+});
+
+test("known restart grants no automatic opportunity but explicit catchup still drains frozen Raw", async () => {
+  const f = fixture();
+  f.memory.taskEligibility.mockImplementation(() => ({ due: false }));
+  f.scheduler.reconcile({ ...projection, bootstrap: true });
+  await tick();
+  expect(f.memory.taskEligibility).not.toHaveBeenCalled();
+  expect(f.memory.noting).not.toHaveBeenCalled();
+  f.scheduler.startCatchup(projection);
+  for (let i = 0; i < 10 && f.scheduler.catchupStatus().state !== "completed"; i++) await tick();
+  expect(f.memory.noting).toHaveBeenCalledTimes(2);
+  expect(f.memory.consolidate).not.toHaveBeenCalled();
 });
 
 test("last N retains its launched C completion check for D, without a D chain", async () => {
