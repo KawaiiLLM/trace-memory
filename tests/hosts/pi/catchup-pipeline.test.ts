@@ -31,11 +31,13 @@ for (const stop of [false, true]) test(`68: N and C overlap; successful checkpoi
         await Promise.race([held, new Promise<void>(resolve => signal!.addEventListener("abort", () => resolve(), { once: true }))]);
         if (signal?.aborted) return { ...reply(""), stopReason: "aborted" };
         return call("memory", { operations: [{ op: "create", topics: [], reason: "Admit supported conclusion", text: "constraint ".repeat(250),
-          category: "constraint", scope: "session", supports: ["F1"] }], skipped: [] });
+          category: "constraint", scope: cCalls === 1 ? "global" : "session", supports: ["F1"] }], skipped: [] });
       }
       dCalls++;
-      const r = h.memory.store.listKnowledgeRevisions().at(-1)!;
-      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@${r.id}`, because: "Reviewed; retain" }] });
+      const changed = JSON.stringify(c.messages.at(-1));
+      const handle = changed.match(/New (K\d+@\d+)/)?.[1];
+      if (!handle) throw new Error(`fixture could not identify changed Dreamer handle: ${changed}`);
+      return call("memory", { operations: [], skipped: [{ knowledge: handle, because: "Reviewed; retain" }] });
     });
     await command(h, "catchup");
     await vi.waitFor(() => expect(cCalls).toBe(1));
@@ -50,7 +52,7 @@ for (const stop of [false, true]) test(`68: N and C overlap; successful checkpoi
     if (stop) expect(dCalls).toBe(0); else expect(dCalls).toBeGreaterThan(0);
     expect(cCalls).toBe(stop ? 1 : 2); // Success creates a fresh checkpoint; busy checks themselves are not queued.
     if (!stop) {
-      expect(h.memory.store.listRuns(1).some(r => r.kind === "dreaming")).toBe(true);
+      expect(h.memory.store.listRuns(1).filter(r => r.kind === "dreaming" && r.outcome === "success").length).toBeGreaterThan(1);
       expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
       const settledDreams = dCalls;
       await settle(h); expect(cCalls).toBe(2); expect(dCalls).toBe(settledDreams);

@@ -153,7 +153,7 @@ try {
   await dreamer.commands.get("trace").handler("", dreamer.ctx);
   assert.ok(dreamer.notices.at(-1)!.includes("Compaction: bounded entry views"));
   assert.equal(dreamer.requests.length, requestsAfterRecovery, "reading the persisted recovery warning starts no worker");
-  console.log("Dreamer smoke passed: per-entry native child, trusted archive, frozen/own processing pairs, persisted custom carrier and read-only status.");
+  console.log("Dreamer smoke passed: per-entry native child, trusted archive, skip/own processing, persisted custom carrier and read-only status.");
 } finally { await dreamer.dispose(); }
 
 // 22b: the long-history regression, on the same entry the case above used — the installed one under
