@@ -503,7 +503,13 @@ test("a reused Noter's output waits for catchup's ordinary-threshold C without d
   } finally { releaseNoting(); releaseConsolidation(); await h.dispose(); }
 });
 
-test("67: a compatible reused Noter's exact output enters compaction's unused C allowance after a capacity wait", async () => {
+test("68: R4's checkpoint claims a freed Consolidation slot ahead of compaction's own recovery, which delegates instead; the drain still converges it", async () => {
+  // Before 68, an ordinary completion's release only ever drove catchup's N check (never C/D), so
+  // compaction's own bounded recovery always had a clear run at a slot an ordinary task just freed.
+  // R4 fixes that stall: an active drain now rechecks C/D on any ordinary success too, so it can beat
+  // compaction's recovery to that same freed slot. Losing that race is documented, correct behaviour
+  // for recovery ("do not ... turn recovery into a drain"): it steps aside and delegates instead of
+  // queuing, and the material still gets consolidated — just by the drain's own run, not compaction's.
   const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 20, ...windows(1, 100, 200) });
   let releaseNoting = () => {}, releaseOrdinary = () => {}, releaseRecovery = () => {};
   const notingGate = new Promise<void>(resolve => { releaseNoting = resolve; });
@@ -537,17 +543,18 @@ test("67: a compatible reused Noter's exact output enters compaction's unused C 
       produced = facts(h).map(f => f.id).filter(id => !seeded.includes(id));
       expect(produced).toHaveLength(1);
     });
-    releaseOrdinary();
-    await vi.waitFor(() => expect(h.notices.join("\n")).toContain("compaction is running Consolidation"));
-    await vi.waitFor(() => expect(JSON.stringify(h.conversations.filter(c => !isNoting(c)))).toContain("compatible reused output"));
-    expect(h.memory.store.consolidationBatch(1, "main", currentTarget(h).headTurnId).map(f => f.id)).toEqual(produced);
-    releaseRecovery();
-    expect((await attempt).compaction.summary).toBeTruthy();
+    releaseOrdinary(); // R4 checkpoint: the drain claims the freed slot for its own C before recovery re-checks it.
+    releaseRecovery(); // unblocks the drain's own C round, gated on the same text match as recovery's would be.
+    expect(await attempt).toBeUndefined(); // recovery found the slot taken by someone else and delegated
+    expect(h.notices.join("\n")).toContain("compaction preparing native delegation");
+    expect(h.notices.join("\n")).toContain("(after recovery: Noting)"); // Consolidation recovery was never attempted
+    expect(h.notices.join("\n")).not.toContain("compaction is running Consolidation");
+    // The drain's own C round converges the same material independently of compaction's delegation.
+    await vi.waitFor(() => expect(h.notices.join("\n")).toContain("Trace Memory: catchup completed"));
     expect(runs(h, "noting")).toHaveLength(1);
     expect(runs(h, "consolidation")).toHaveLength(2);
     expect(runs(h, "consolidation").map(r => h.memory.store.listConsolidatedFacts(r.id).map(f => f.id))).toEqual([seeded, produced]);
-    expect(h.notices.join("\n")).toContain("after recovery: Noting, Consolidation");
-    expect(h.notices.join("\n")).not.toContain("compaction is running Noting");
+    expect(h.memory.store.consolidationBatch(1, "main", currentTarget(h).headTurnId)).toEqual([]);
   } finally { releaseNoting(); releaseOrdinary(); releaseRecovery(); await h.dispose(); }
 });
 

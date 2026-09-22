@@ -60,7 +60,7 @@ for (const stop of [false, true]) test(`68: N and C overlap; successful checkpoi
   } finally { release(); await h.dispose(); }
 }, 30000);
 
-test("68: catchup does not adopt an already-running ordinary N's downstream completion", async () => {
+test("68: catchup does not adopt an already-running ordinary N, but its success is a checkpoint that launches C", async () => {
   const h = host({ "noting.forkModeDefault": false, "noting.triggerTokens": 1000, "consolidation.triggerTokens": 1 });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -71,12 +71,14 @@ test("68: catchup does not adopt an already-running ordinary N's downstream comp
     expect(h.memory.store.getClaim(1, "noting")).not.toBeNull();
     await command(h, "catchup");
     expect(h.notices.at(-1)).toContain("waiting for noting");
+    // The ordinary N's promise itself is never adopted — but under R4 its success is a full checkpoint,
+    // so consolidation (now due from N's own facts) is launched by the drain, not stalled.
     release(); await settle(h);
     const runs = h.memory.store.listRuns(1);
     expect(runs.filter(r => r.kind === "noting" && r.outcome === "success")).toHaveLength(1);
-    expect(runs.filter(r => r.kind === "consolidation")).toEqual([]);
-    expect(h.memory.store.consolidationBatch(1, "main", 1)).toHaveLength(1); // Above the host's configured 1-token trigger.
-    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: waiting for consolidation");
+    expect(runs.filter(r => r.kind === "consolidation" && r.outcome === "success")).toHaveLength(1);
+    expect(h.memory.store.consolidationBatch(1, "main", h.memory.store.listTurns(1).at(-1)!.id)).toEqual([]);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { release(); await h.dispose(); }
 });
 
@@ -102,6 +104,69 @@ test("68: ordinary C completion settles a zero-Raw wait when it clears all due w
     expect(h.notices.at(-1)).toContain("waiting for consolidation");
     release(); await settle(h);
     expect(store.listRuns(1).filter(run => run.kind === "consolidation" && run.outcome === "success")).toHaveLength(1);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
+  } finally { release(); await h.dispose(); }
+});
+
+test("68: a non-success ordinary C completion does not launch the drain", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    await h.turn();
+    const store = h.memory.store, pending = h.memory.pendingEntries(1, "main", 1);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "seed" },
+      facts: [{ turnId: 1, category: "decision", actor: "user", text: "ordinary C target",
+        source: ["T1#user"], createdAt: "seed" }], entryIds: pending.map(entry => entry.id) });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    h.provider(async c => {
+      if (phase(c) !== "C") return notingFact(c);
+      await held;
+      // The deterministic worker terminates unsuccessfully (non-retryable): core returns
+      // outcome:failure rather than a thrown admission error or cancellation.
+      return { ...reply(""), stopReason: "error", errorMessage: "fixture terminal worker failure" };
+    });
+    await h.turn(); await h.drain();
+    expect(store.getClaim(1, "consolidation")).not.toBeNull(); // ordinary C is busy
+    const head = store.listTurns(1).at(-1)!.id, later = h.memory.pendingEntries(1, "main", head);
+    const cleared = store.commitNotingRun({ run: { kind: "manual", sessionId: 1, branch: "main", createdAt: "clear" },
+      facts: [], entryIds: later.map(entry => entry.id) }); // no Raw left for the drain's own N phase
+    if (!cleared.ok) throw new Error(cleared.problems.join("; "));
+    await command(h, "catchup");
+    expect(h.notices.at(-1)).toContain("waiting for consolidation");
+    release(); await settle(h);
+    const runs = store.listRuns(1).filter(r => r.kind === "consolidation");
+    expect(runs).toHaveLength(1); // the drain never adopted or replayed it: only the ordinary attempt ran
+    expect(runs[0]!.outcome).toBe("failure");
+    await command(h, ""); expect(h.notices.at(-1)).toContain("waiting for consolidation");
+  } finally { release(); await h.dispose(); }
+});
+
+test("68: a repeated catchup command on a running drain does not start a second run", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1 });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let cCalls = 0;
+  try {
+    backlog(h); await h.emit("session_start");
+    h.provider(async c => {
+      if (phase(c) === "N") return notingFact(c);
+      cCalls++; await held; return consolidationReply(c);
+    });
+    await command(h, "catchup");
+    await vi.waitFor(() => expect(cCalls).toBe(1));
+    await command(h, ""); expect(h.notices.at(-1)).toContain("running consolidation");
+    const requests = h.requests.length;
+    // Repeating the command while the drain is running only reports the live run; it never starts a
+    // second one alongside it.
+    await command(h, "catchup");
+    expect(cCalls).toBe(1);
+    expect(h.requests.length).toBe(requests);
+    expect(h.notices.at(-1)).toContain("running consolidation");
+    // Releasing lets the drain's own fixpoint continue (more facts remain due, over several C batches);
+    // that convergence is unrelated to the repeated command, which never added a run of its own.
+    release(); await settle(h);
+    expect(cCalls).toBeGreaterThanOrEqual(1);
     await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { release(); await h.dispose(); }
 });
@@ -181,6 +246,53 @@ test("67: a global Dreamer seat conflict discards C's opportunity; release alone
     expect(store.releaseClaim(claim)).toBe(true);
     await settle(h); expect(dreams).toBe(0);
     await h.turn(); await settle(h); expect(dreams).toBe(1); // A new ordinary opportunity checks again.
+  } finally { await h.dispose(); }
+});
+
+test("68: a repeated catchup command re-checks a waiting idle drain and recovers a D admission dropped by a foreign claim", async () => {
+  const h = host({ "noting.triggerTokens": 1e9, "consolidation.triggerTokens": 1, "dreaming.triggerTokens": 1 });
+  try {
+    await h.turn(); h.memory.setKnowledgeBudget("session", 1000);
+    const store = h.memory.store;
+    const foreignSession = store.createSession({ host: "foreign", projectId: store.getSession(1)!.projectId,
+      enrollmentChoice: true, startedAt: "now", firstReplyAt: "now" });
+    const turn = store.appendTurn({ sessionId: foreignSession.id, kind: "turn", userPrompt: "foreign", startedAt: "now" });
+    const entry = store.appendSourceEntry({ sessionId: foreignSession.id, turnId: turn.id, nativeLineage: "foreign", nativeId: "user",
+      role: "user", text: "foreign", raw: JSON.stringify({ role: "user", content: "foreign" }), calls: [] });
+    store.selectSourcePath(foreignSession.id, "main", [entry.id]);
+    const noted = store.commitNotingRun({ run: { kind: "manual", sessionId: foreignSession.id, createdAt: "now" }, facts: [
+      { turnId: turn.id, source: [`T${turn.id}#user`], entryIds: [entry.id], actor: "user", category: "decision", text: "foreign evidence", createdAt: "now" },
+    ] });
+    if (!noted.ok) throw new Error(noted.problems.join("; "));
+    const seeded = store.commitConsolidationRun({ run: { kind: "manual", sessionId: foreignSession.id, createdAt: "now" }, operations: [
+      { op: "create", handle: "$foreign", author: "test", text: "foreign rule", category: "constraint", scope: "session",
+        supports: [noted.facts[0]!.id], topics: [], reason: "seat fixture", createdAt: "now" },
+    ] });
+    if (!seeded.ok) throw new Error(seeded.problems.join("; "));
+    const claim = store.acquireClaim({ sessionId: foreignSession.id, branch: "main", headTurnId: turn.id }, "dreaming", "foreign-executor")!;
+    expect(claim).not.toBeNull();
+    let dreams = 0;
+    h.provider(async c => {
+      if (phase(c) === "N") return notingFact(c);
+      if (phase(c) === "C") return call("memory", { operations: [{ op: "create", topics: [], reason: "Admit supported conclusion",
+        text: "constraint ".repeat(250), category: "constraint", scope: "session", supports: [`F${store.listSessionFacts(1)[0]!.id}`] }], skipped: [] });
+      dreams++;
+      const r = store.listKnowledgeRevisions().at(-1)!;
+      return call("memory", { operations: [], skipped: [{ knowledge: `K${r.knowledgeId}@${r.id}`, because: "Reviewed; retain" }] });
+    });
+    await command(h, "catchup"); await settle(h);
+    expect(dreams).toBe(0);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("waiting for dreaming");
+    // The claim still holds: a repeated command re-checks and finds D still blocked. No new dream.
+    await command(h, "catchup"); await settle(h);
+    expect(dreams).toBe(0);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("waiting for dreaming");
+    expect(store.releaseClaim(claim)).toBe(true);
+    await settle(h); expect(dreams).toBe(0); // no in-process completion left to wake the drain (R4's gap)
+    // The repeated command is the recovery: it re-checks and launches the now-unblocked D.
+    await command(h, "catchup"); await settle(h);
+    expect(dreams).toBe(1);
+    await command(h, ""); expect(h.notices.at(-1)).toContain("Catchup: completed");
   } finally { await h.dispose(); }
 });
 

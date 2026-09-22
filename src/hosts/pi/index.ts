@@ -971,9 +971,15 @@ export default function (pi: ExtensionAPI) {
       const promise = work();
       slot.result = promise;
       activity.running.set(kind, 1); showSpend(context);
-      trackSlot(kind, slot, promise.then(result => reportProblems(result, context), error => {
+      let settled: Awaited<ReturnType<typeof work>>;
+      trackSlot(kind, slot, promise.then(result => { settled = result; reportProblems(result, context); }, error => {
         context.ui.notify(String(error), "error");
-      }), context, () => { showSpend(context); if (catchup) driveCatchup(false); });
+      }), context, () => {
+        showSpend(context);
+        // R4: a successful ordinary completion while a drain is active is a full checkpoint; any other
+        // outcome (failure, cancelled, empty, dropped, bounced) stays N-only, matching the per-poll drive.
+        if (catchup) driveCatchup(settled?.outcome === "success");
+      });
     }
     if (catchup) driveCatchup(false); // Ordinary completion may free N's drain slot, but is not an R4 checkpoint.
   };
@@ -1072,7 +1078,13 @@ export default function (pi: ExtensionAPI) {
   };
   const startCatchup = () => {
     if (!enabled()) throw new Error("Trace Memory is Disabled; use /trace on to enable memory.");
-    if (catchup && !catchup.outcome) { ctx.ui.notify(catchupLine()!, "info"); return; }
+    if (catchup && !catchup.outcome) {
+      // A waiting/idle drain (nothing drain-owned active) has no in-process completion left to wake it
+      // (e.g. a C/D admission dropped by a foreign claim). A repeated command is that recovery. A
+      // running drain is only reported, never duplicated.
+      if (!catchup.active.size) driveCatchup(true);
+      ctx.ui.notify(catchupLine()!, "info"); return;
+    }
     if (!state.sessionId || !state.head) { ctx.ui.notify("Trace Memory: no assistant reply yet; nothing to catch up.", "info"); return; }
     reconcile(false);
     showSpend(ctx);
@@ -1186,6 +1198,9 @@ export default function (pi: ExtensionAPI) {
       return result;
     },
       error => { context.ui.notify(String(error), "error"); return undefined; }),
+      // Deliberately not an R4 checkpoint (unlike the ordinary checkQueues site): this function's own
+      // contract above is "do not ... turn recovery into a drain" — a bounded, one-shot recovery
+      // admission that must not compete with the catchup drain for the slot it just freed or claimed.
       context, () => { showSpend(context); if (catchup) driveCatchup(false); });
     slot.result = settled;
     const result = await settled;
