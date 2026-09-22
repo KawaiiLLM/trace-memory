@@ -2568,7 +2568,7 @@ test("59: every supplied item is accounted for by an operation or a skip; New it
   // The loop's opening: an item ends the round in an operation or a reasoned skip; a skip never mutates it.
   expect(prompt).toContain("Every supplied item ends in an operation or in a skip with a reason.");
   // Step B, before the first New item: one batched history search; a hit is read in full before the revival decision.
-  expect(prompt).toContain("Before the first `New:` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
+  expect(prompt).toContain("Before the first `New` item, run one `search` with `queries`, `layer: knowledge`, `versions: history`, `cap: 3`. One query per New item: the shortest common noun of its object, the word an older body would use, never the item's own phrase.");
   // The memory call names the skip shape; the empty-skip literal is gone.
   expect(prompt).toContain('`memory({operations, skipped})`; a skip is `{knowledge: "K12@57", because}` for a supplied item left without an operation.');
   expect(prompt).not.toContain("skipped: []");
@@ -2611,7 +2611,7 @@ test("61: definitions are shared and hold definitions only; the principles are t
   expect(principles[0]).toContain("What does not enter knowledge is information that carries no surprise given the resident knowledge — what one step of reasoning from it yields; this includes but is not limited to:");
   expect(principles[1]).toContain("`scope` defaults to `project`.");
   expect(principles[1]).toContain("different independent claims are maintained apart");
-  expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state updates that item; no second item is created for it.");
+  expect(block("knowledge")).toContain("has one `reference` whose body is its current state. A new state belongs to that item, never to a second identity.");
   expect(principles[2]).toContain("Its body names the strength of its evidence: whether it comes from the user, the assistant or an observation, and whether it is a decision, a proposal, a question, an event or the like.");
   expect(loadPrompt("dreaming.md")).toContain("- Split an item that fails Atomicity.");
   expect(loadPrompt("dreaming.md")).toContain("When over budget, remove first:");

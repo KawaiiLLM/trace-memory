@@ -69,8 +69,9 @@ test("64c prompt and fixture use only the current maintenance contract", () => {
     "finished-reference-archived-on-completion-fact", "finished-status-folded-into-ruling",
   ]) expect(renderedFixture).not.toContain(retired);
   expect(prompt).not.toContain("### Intensity, set by the failed check");
-  expect(prompt).toContain("A pool over budget: another round of Archiving on that pool, then `check` again");
-  expect(prompt).toContain("until every pool fits");
+  expect(prompt).toContain("over budget: another round of Archiving on it, then `check` again");
+  expect(prompt).toContain("then `check` again, until it fits");
+  expect(prompt).toContain("Another pool over budget is reported, not acted on");
 });
 
 test("35c faithful merge keeps authority, conditions, exception and rendered topics through a real pool run", async () => {
