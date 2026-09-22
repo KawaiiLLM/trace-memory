@@ -1033,12 +1033,14 @@ worker. The two outcomes remain a custom replacement or native delegation; `reas
 `TaskOptions` (shared by `NotingInput` and `ConsolidateInput`) gains an optional
 `boundary: { maxEntryId?: number; allowedFactIds?: number[]; exactEntryIds?: number[]; exactFactIds?: number[] }`.
 Absent, selection is the ordinary unbounded pending set; nothing about existing
-automatic callers changes. **29e names the two meanings apart.** The *allowable* set is a manual
-catchup's snapshot, which a drain takes in bounded batches: `freezeNoting` filters `pendingEntries`
+automatic callers changes. **29e names the two meanings apart.** The *allowable* set is a
+bounded caller's snapshot: `freezeNoting` filters `pendingEntries`
 to ids no later than `maxEntryId` before its usual batch-token loop, and
 `freezeConsolidation` filters `consolidationBatch` to `allowedFactIds` (27d's `factIds`) before
 building its range; both reuse the same store readers rather than adding a second
-selection query. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
+selection query. Under ticket 67, manual catchup drains only its frozen Noting boundary;
+C and D instead use ordinary eligibility on the target after successful upstream batches.
+It no longer freezes a fact set for forced below-threshold Consolidation. The *exact* target is what a fork fallback re-admits on: `exactEntryIds`
 (27d's `entryIds`) and `exactFactIds` (29e). Under either, the freeze selects exactly those pending
 members, trims optional material to fit them — the Noter's history, the Consolidator's knowledge
 block — never pops one, raises `NOTING_CAPACITY` / `CONSOLIDATION_CAPACITY` when they

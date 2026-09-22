@@ -903,33 +903,33 @@ from the key: applicability must observe a new fact or commit even when the nati
 `/trace catchup` operates on the current enabled session's selected branch, not
 every closed session. Handler order: require enabled (reject with the enable
 instruction otherwise, never silently enrolling); reconcile available native
-history (17a); freeze the target as the highest currently-pending source-entry id
-(`undefined` when nothing is pending) plus the exact set of currently-pending
-fact ids. An empty target completes immediately with no model call. Repeating
+history (17a); freeze the Raw target as the highest currently-pending source-entry id
+(`undefined` when nothing is pending). No pending Raw means no drain and no forced
+Consolidation tail. An empty target completes immediately with no model call. Repeating
 `/trace catchup` while one is active reports its current state instead of
 starting a second one or extending its snapshot.
 
-The drain runs successive bounded Noting batches — ignoring `noting.triggerTokens`
-and `consolidation.triggerTokens` but not `noting.batchTokens`,
-`consolidation.batchTokens` or model context — against the frozen entry-id boundary,
-then successive bounded Consolidation batches against the frozen fact-id set
-extended with every fact those Noting batches went on to produce, until the frozen
-target is exhausted. (Ticket 20 superseded 18b's single Consolidation call on
-2026-09-08: with a 10,000-token Consolidation batch ceiling, one call can no longer
-be assumed to cover a frozen target.) Both phases always run in subagent mode. Batch-to-batch
-chaining happens only inside this host-local controller (`driveCatchup`), which
-is the sole exception to 17b/17c's no-completion-chaining rule; ordinary entry
-events never expand the frozen target or start a second scheduling loop. The
-core façade enforces the same boundary through an optional `boundary:
-{maxEntryId, entryIds, factIds}` on `noting`/`consolidate` input (`entryIds` is
-27d's exact-membership form, used by the fork fallback, not by this drain), so a
-host bug cannot silently widen what a bounded call is allowed to see.
+Ticket 67 replaces the old N-then-C drain. Noting runs successive bounded subagent
+batches against the frozen entry boundary, ignoring only `noting.triggerTokens`,
+not batch or context limits. Each successful N batch checks C's ordinary threshold;
+each successful catchup-launched C batch checks D's ordinary per-pool thresholds.
+These checks need no foreground entry. C and D do not drain their below-threshold
+tails, and D completion starts no phase. Completion does not promise zero pending
+facts or knowledge.
 
-The drain reuses 17c's one Noter slot, one Consolidator slot and one target
-phase claim per executor — no second queue, worker pool or claim table. An
-occupied local slot or a live foreign claim on the same target shows Waiting
-and is retried only when that slot next releases or the next ordinary eligible
-entry gives the executor another opportunity; there is no polling timer.
+N and C can overlap. The catchup lifetime retains already launched C callbacks
+after the final N batch so their D check is not lost. Stop/off/shutdown/path changes
+fence those callbacks. Chaining remains host-local and is the sole exception to
+ordinary no-completion-chaining; entry events do not expand the frozen N boundary.
+Core enforces that boundary through `boundary.maxEntryId`. Other exact-membership
+forms remain available for fork fallback; they do not force a catchup C tail.
+
+The drain reuses ordinary capacity: one N and one C per session, independently
+concurrent, and one database-wide D seat. The explicit frozen N drain retains its
+existing cancellable wait when its own N slot or claim is occupied. A completion-triggered
+C or D check instead behaves exactly like normal extraction: busy means skip that
+opportunity, with no retained trigger or release-time retry. A later legitimate
+check reevaluates eligibility. There is no extra queue, claim table or polling timer.
 
 `/trace stop` sets the controller's own stop flag (so it schedules no further
 batch, whatever the in-flight one returns) and then calls the façade's existing

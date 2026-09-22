@@ -77,7 +77,7 @@ Start a new Pi process, run `/trace` (the menu, or status when headless), and us
 Enabled sessions make background model requests using your Pi credentials and may incur charges. By default, Noter and Consolidator use fresh subagents and follow the foreground model; Dreamer always uses a fresh subagent. The mode default applies only when no explicit override is supplied; existing `forkModeDefault: true` settings (including the legacy `noting.branchModeDefault` alias) still request fork execution.
 
 - **Inspect:** `/trace` opens the menu — Current session (context composition, three phase queues, status, On/Off, runs and project), Catch up, Stop and Settings.
-- **Catch up:** `/trace catchup` drains a finite snapshot of pending work in subagent mode.
+- **Catch up:** `/trace catchup` drains a frozen Raw backlog in bounded Noting subagents. Each successful N batch checks C's normal trigger; each successful C batch checks D's. Busy triggers are skipped, not queued; C/D tails below their thresholds stay pending.
 - **Stop:** `/trace stop` cancels this executor's background work; future automatic triggers remain enabled.
 - **Turn off:** `/trace off` pauses this session's processing and future injection without deleting memory; `/trace on` resumes it. There is no global switch.
 - **Settings:** saves phase mode/model/thinking and `closedSessionScope`: `project` (default), `global`, or `off`. Closed-session borrowing applies only to Noting and Consolidation; Dreamer processes a due pool visible at the current node. Database budgets are edited separately without writing Pi settings. Running tasks retain their frozen settings and material.
